@@ -3,8 +3,9 @@
 **Status**: Draft
 **Date**: September 2026
 
-This document specifies two changes that together let AuthBridge cut an agent's
-token bill by removing tool definitions the agent never calls:
+This document specifies three changes that together let AuthBridge cut an agent's
+token bill by removing tool definitions the agent never calls, and show the
+operator what that saved:
 
 1. **A directional split of the body-write capability.** `PluginCapabilities.WritesBody`
    is renamed to `WritesRequestBody` and joined by `WritesResponseBody`. Response
@@ -13,9 +14,13 @@ token bill by removing tool definitions the agent never calls:
 2. **`tool-prune`**, an outbound plugin that deletes named entries from the `tools`
    array of an inference request. The list is static, produced at setup time by a
    new `abctl tools scan` subcommand that analyses local Claude Code transcripts.
+3. **A plugin metrics channel**, surfaced in the existing `abctl` plugin detail
+   pane. Claude Code's `/cost` reports a session total, which is too coarse to
+   attribute a saving to the plugin, so the plugin reports its own counters.
 
 Part 1 is a prerequisite for part 2 but stands on its own merits: it is a
 framework correctness fix that any future request-only mutator benefits from.
+Part 3 is likewise generic — any plugin gains a display channel.
 
 ## Motivation
 
@@ -336,6 +341,10 @@ What does move is `/cost` and any figure derived from the API response `usage`
 block: the server bills the request it received, so `input_tokens` and
 `cache_read_input_tokens` genuinely drop.
 
+But `/cost` reports a **session total**, with no baseline to compare against. A
+user cannot tell from one aggregate number how much of it the plugin saved, or
+whether enabling the plugin was worth it. That is what part 3 is for.
+
 The honest limit: proxy-side pruning saves money but does **not** return context
 window to the user. The client still believes it sent the full manifest, so
 auto-compact triggers at the same point. Recovering headroom requires client-side
@@ -343,9 +352,135 @@ configuration (`--allowedTools`, disabling unused MCP servers). AuthBridge's
 advantage is the complement — it applies to every agent behind it with no
 per-client change, and it measures.
 
+## Part 3: Plugin metrics in `abctl`
+
+### What the plugin counts
+
+Counters are in-memory and per-process, guarded by a mutex. No persistence, no
+storage backend, no new dependency.
+
+```go
+type metrics struct {
+	mu sync.Mutex
+
+	requestsSeen      uint64 // matched the path gate
+	requestsPruned    uint64 // body actually rewritten (enforce)
+	requestsProjected uint64 // would have been rewritten (observe)
+
+	toolsRemoved uint64
+	perTool      map[string]uint64
+
+	bytesRemoved uint64 // sum of deleted tools array elements
+
+	promptTokens      uint64 // from response usage, via OnFinish
+	requestBytes      uint64 // body size of the same requests
+	requestsWithUsage uint64
+}
+```
+
+The plugin distinguishes enforce from observe without inspecting policy: under
+`ErrorPolicyObserve`, `SetBody` leaves `bodyMutated` false
+(`pipeline/context.go:418-421`), so checking `pctx.BodyMutated()` after the call
+tells the plugin which counter to increment. This makes **observe mode a
+projection**: the plugin computes exactly what it would remove and reports the
+saving before a single request changes. Read the projection, then flip to
+`enforce`.
+
+### Turning bytes into tokens without guessing
+
+The plugin knows removed bytes exactly, but billing is denominated in tokens.
+Rather than bundle a tokenizer or hardcode a bytes-per-token constant, the ratio
+is calibrated on the user's own traffic: `OnFinish` reads
+`pctx.Extensions.Inference.PromptTokens` — populated by `inference-parser` from
+the response `usage` block — alongside the request body size for that same
+request. Estimated tokens saved is then `bytesRemoved x (promptTokens /
+requestBytes)`, reported with its sample size and labelled an estimate.
+
+`OnFinish` is the correct hook for response-derived data: `inference-parser` is a
+`StreamingResponder`, and `RunResponse` skips `OnResponse` for such plugins.
+
+This re-adds `OnFinish`, which the static-list decision had removed. The scope is
+deliberately narrow — two counter reads, no persistence and no influence on the
+removal list, which stays entirely configuration-driven.
+
+One approximation to state plainly: under `enforce`, `PromptTokens` is already the
+post-pruning count, so the ratio is measured on pruned requests. That is
+acceptable for a bytes-to-tokens conversion factor, which is a property of the
+tokenizer and content mix rather than of the pruning, but it is why the figure is
+labelled an estimate rather than a measurement.
+
+### A generic metrics interface
+
+Added to `authlib/pipeline/plugin.go` beside the existing optional interfaces:
+
+```go
+// Metric is one operator-facing counter reported by a plugin.
+type Metric struct {
+	Name  string  `json:"name"`
+	Value float64 `json:"value"`
+	Unit  string  `json:"unit,omitempty"` // count | bytes | tokens | ratio
+	Note  string  `json:"note,omitempty"` // e.g. "estimate, n=1284"
+}
+
+// MetricsProvider is implemented by plugins that expose counters for
+// operator display. Called on demand from the session API; must be safe
+// for concurrent use and must not block.
+type MetricsProvider interface {
+	Metrics() []Metric
+}
+```
+
+`plugins.StatsSource` and `auth.Stats` already exist but are the wrong vehicle:
+`auth.Stats` is auth-specific, with typed approval and denial enums and a custom
+`MarshalJSON` (`auth/auth.go:61,183`). Carrying "bytes removed" through it would
+distort its meaning. A separate plugin-defined interface keeps auth statistics
+auth-shaped and gives every future plugin a display channel.
+
+### Wire and UI
+
+Both extension points already have the exact pattern needed.
+
+- `sessionapi`: add `Metrics []pipeline.Metric` to the pipeline plugin view and
+  populate it in `describePipeline` with a three-line type assertion mirroring the
+  `RawConfigProvider` case at `sessionapi/server.go:234`. Matching field on
+  `apiclient.PipelinePlugin`.
+- `cmd/abctl/tui/plugin_detail_pane.go`: a `Metrics:` section after the dependency
+  sections and before `Config:`, following the always-newline convention that the
+  comment at `:67-70` records as deliberate — it exists to stop layout jitter when
+  navigating between plugins that do and do not have the section. `Note` renders
+  in `styleHint`, as `Description` already does at `:27`.
+
+Roughly 20 lines in the pane, 3 in `describePipeline`, 2 struct fields, and about
+35 lines for the interface plus the plugin's counters.
+
+The operator reads something like:
+
+```
+Metrics:
+  requests seen              1284  count
+  requests pruned            1284  count
+  tools removed             11556  count
+  bytes removed           9389184  bytes
+  bytes removed / request     7312  bytes
+  tokens saved / request     ~1830  tokens   estimate, n=1284
+```
+
+In observe mode the same rows appear with `requests projected` in place of
+`requests pruned`, so the distinction between a projection and a realised saving
+is visible in the readout rather than inferred from configuration.
+
+### Limits
+
+Counters are per-process and in-memory: they reset when the proxy restarts and are
+not aggregated across a fleet. That is the right trade for the laptop scenario this
+targets, and it is what keeps the plugin free of a storage dependency. Fleet-wide
+aggregation belongs on the existing stats server
+(`runtimeutil.StartStatServer`, port 47602 in the demo config), which is a
+natural later addition and does not change the plugin.
+
 ## Delivery
 
-Three commits, sequenced so the regression argument survives review.
+Four commits, sequenced so the regression argument survives review.
 
 1. **Mechanical rename.** `WritesBody` to `WritesRequestBody` across 107
    references in 28 files (Go and documentation), with no semantic change.
@@ -354,8 +489,12 @@ Three commits, sequenced so the regression argument survives review.
 2. **The split.** Add `WritesResponseBody`; declare it on `sparc` and `cpex`;
    point both listener branches at `Pipeline.WritesResponseBody()`; convert
    `cloneCatalog` to a struct copy; correct the `SetBody` godoc; add tests.
-3. **`tool-prune`.** Plugin, `abctl tools scan`, `demoConfigYAML()` entry,
-   `install-demo.sh` wiring, and documentation.
+3. **The metrics channel.** `Metric` and `MetricsProvider` in `authlib/pipeline`;
+   the `describePipeline` type assertion and wire field; the `abctl` pane section.
+   Lands before the plugin so the plugin arrives already visible, and so this
+   generic addition is reviewed on its own merits rather than as plugin scaffolding.
+4. **`tool-prune`.** Plugin and its counters, `abctl tools scan`,
+   `demoConfigYAML()` entry, `install-demo.sh` wiring, and documentation.
 
 ### Testing
 
@@ -384,6 +523,18 @@ For part 2:
 - Scanner tests over fixture transcripts: window boundaries, `tool_use` block
   deduplication, unknown names retained, `--keep` honoured.
 
+For part 3:
+
+- A plugin that does not implement `MetricsProvider` produces no `metrics` key on
+  the wire and renders `(none)` without disturbing pane layout.
+- Concurrent `Metrics()` calls against a live counter update, under the race
+  detector.
+- Enforce mode increments `requestsPruned`; observe mode increments
+  `requestsProjected` and leaves `bytesRemoved` accumulating, so the projection is
+  non-zero while the body is untouched.
+- The bytes-to-tokens ratio is reported as zero-valued rather than dividing by
+  zero when no response usage has been seen yet.
+
 ### Risks
 
 | Risk | Mitigation |
@@ -393,6 +544,8 @@ For part 2:
 | One-off prompt-cache invalidation when the list changes | Inherent and bounded: static list means it happens once, then the prefix is stable |
 | Commit 1 conflicts with in-flight branches declaring `WritesBody` | One-line fix per branch; the compile error makes it self-evident |
 | `context-guru` regaining response streaming exposes a latent bug in that path | Covered by the listener tests above; the path is already exercised by chains with no body writer |
+| The estimated token saving is read as a measurement | Unit and sample size shown on the row; the underlying byte counts are exact and reported separately, so the estimate is never the only number |
+| Counters reset on restart and mislead someone comparing across restarts | Documented; `requests seen` is displayed alongside every derived figure so the sample behind it is always visible |
 
 ## Open questions
 
@@ -400,6 +553,6 @@ None blocking. Two items deliberately deferred:
 
 - Adding the missing enforcement so `SetBody` matches its documented contract.
   Needs its own compatibility review.
-- Surfacing per-plugin savings in `abctl`. The in-session `/cost` readout covers
-  the first cut; a `Metrics:` section in the existing plugin detail pane is a
-  natural follow-up if operators want it centrally.
+- Fleet-wide metric aggregation on the stats server, and a Prometheus exposition
+  of `MetricsProvider`. The per-process counters in part 3 cover the laptop case
+  this targets; neither addition changes the plugin.
