@@ -126,13 +126,31 @@ func (p *ToolPrune) Configure(raw json.RawMessage) error {
 }
 
 // gated reports whether the request path is one the plugin acts on.
+//
+// The query string is stripped first. Providers accept query parameters on
+// these endpoints — /v1/messages?beta=true is a real request Claude Code makes —
+// and a suffix match against the raw target silently misses every one of them,
+// which reads as the plugin doing nothing for no visible reason.
 func (p *ToolPrune) gated(path string) bool {
+	path = pathOnly(path)
 	for _, s := range p.cfg.Paths {
 		if path == s || strings.HasSuffix(path, s) {
 			return true
 		}
 	}
 	return false
+}
+
+// pathOnly drops a query string and any trailing slash, so the configured
+// suffixes match the endpoint rather than the exact request target.
+func pathOnly(target string) string {
+	if i := strings.IndexAny(target, "?#"); i >= 0 {
+		target = target[:i]
+	}
+	if len(target) > 1 && strings.HasSuffix(target, "/") {
+		target = strings.TrimRight(target, "/")
+	}
+	return target
 }
 
 // toolNameAt extracts a tool's name from raw manifest element i, covering both
@@ -178,7 +196,20 @@ func (p *ToolPrune) OnRequest(_ context.Context, pctx *pipeline.Context) (action
 	}()
 
 	if !p.gated(pctx.Path) {
-		pctx.Record(pipeline.Invocation{Action: pipeline.ActionSkip, Reason: "path_not_inference"})
+		// Distinguish "this is not an HTTP request at all" from "the path did
+		// not match". A CONNECT tunnel has no path, and reporting it as a path
+		// mismatch sends an operator hunting for a routing problem when the
+		// real answer is that TLS is not being decrypted — so the client does
+		// not trust the bridge CA and nothing downstream can see the request.
+		reason := "path_not_inference"
+		if pctx.Path == "" {
+			reason = "no_path_tunnelled"
+		}
+		pctx.Record(pipeline.Invocation{
+			Action: pipeline.ActionSkip,
+			Reason: reason,
+			Path:   pctx.Path,
+		})
 		return action
 	}
 	// inference-parser establishes that this is an inference call at all. Its

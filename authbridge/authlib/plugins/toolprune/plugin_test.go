@@ -471,3 +471,75 @@ func TestPrune_ToolChoiceAutoDoesNotBlockPruning(t *testing.T) {
 		})
 	}
 }
+
+// TestPrune_PathGateIgnoresQueryString: providers accept query parameters on
+// these endpoints, and Claude Code really does send /v1/messages?beta=true. A
+// suffix match against the raw target misses every such request and the plugin
+// silently does nothing — the least debuggable possible failure, because
+// everything looks configured correctly.
+func TestPrune_PathGateIgnoresQueryString(t *testing.T) {
+	body := `{"tools":[{"name":"Read"},{"name":"NotebookEdit"}]}`
+	for _, path := range []string{
+		"/v1/messages",
+		"/v1/messages?beta=true",
+		"/v1/messages?beta=true&x=1",
+		"/v1/messages/",
+		"/v1/chat/completions?stream=false",
+		"https://host/v1/messages?beta=true", // absolute-form target via a proxy
+	} {
+		t.Run(path, func(t *testing.T) {
+			p := configured(t, "NotebookEdit")
+			pctx := inferenceCtx(path, body, "Read", "NotebookEdit")
+			run(t, p, pctx)
+			if !pctx.BodyMutated() {
+				t.Errorf("path %q was not treated as an inference endpoint", path)
+			}
+		})
+	}
+}
+
+// TestPrune_NonInferencePathsStillSkip guards the other direction: loosening the
+// gate must not make it match everything.
+func TestPrune_NonInferencePathsStillSkip(t *testing.T) {
+	body := `{"tools":[{"name":"NotebookEdit"}]}`
+	for _, path := range []string{"/mcp", "/v1/models", "/healthz", "/v1/messages/batches"} {
+		t.Run(path, func(t *testing.T) {
+			p := configured(t, "NotebookEdit")
+			pctx := inferenceCtx(path, body, "NotebookEdit")
+			run(t, p, pctx)
+			if pctx.BodyMutated() {
+				t.Errorf("path %q must not be pruned", path)
+			}
+		})
+	}
+}
+
+// TestPrune_TunnelSkipIsDistinguishable: a CONNECT tunnel has no path. Reporting
+// that as a path mismatch sent a real investigation hunting for a routing
+// problem when the actual cause was that TLS was never decrypted. The reason
+// code has to say which.
+func TestPrune_TunnelSkipIsDistinguishable(t *testing.T) {
+	p := configured(t, "NotebookEdit")
+	pctx := inferenceCtx("", `{"tools":[{"name":"NotebookEdit"}]}`, "NotebookEdit")
+	run(t, p, pctx)
+
+	if pctx.Extensions.Invocations == nil || len(pctx.Extensions.Invocations.Inbound) == 0 {
+		t.Fatal("expected a skip invocation")
+	}
+	inv := pctx.Extensions.Invocations.Inbound[0]
+	if inv.Reason != "no_path_tunnelled" {
+		t.Errorf("reason = %q, want no_path_tunnelled so a tunnel is not mistaken for a routing problem", inv.Reason)
+	}
+}
+
+// TestPrune_PathMismatchRecordsThePath: a skip that does not say what it saw
+// cannot be diagnosed from the session timeline.
+func TestPrune_PathMismatchRecordsThePath(t *testing.T) {
+	p := configured(t, "NotebookEdit")
+	pctx := inferenceCtx("/v1/models", `{"tools":[{"name":"NotebookEdit"}]}`, "NotebookEdit")
+	run(t, p, pctx)
+	inv := pctx.Extensions.Invocations.Inbound[0]
+	if inv.Reason != "path_not_inference" || inv.Path != "/v1/models" {
+		t.Errorf("inv = %+v, want path_not_inference with the offending path recorded", inv)
+	}
+}

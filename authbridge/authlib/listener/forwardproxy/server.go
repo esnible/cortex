@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/rossoctl/cortex/authbridge/authlib/listener/httpx"
@@ -68,6 +69,17 @@ type Server struct {
 	SkipHosts *skiphost.Matcher
 
 	TLSBridge *tlsbridge.Engine // nil = disabled; set by caller after NewServer
+
+	// Bridge-health counters. When the TLS bridge is enabled but the client
+	// does not trust its CA, every HTTPS request opens a CONNECT tunnel and
+	// nothing is ever decrypted: the pipeline sees opaque tunnels, every
+	// body-reading plugin no-ops, and the proxy looks configured but inert.
+	// Nothing errors, so the only symptom is silence. These count the two
+	// outcomes so the listener can say so out loud.
+	tunnelsOpened   atomic.Uint64
+	bridgedRequests atomic.Uint64
+	bridgeWarnOnce  sync.Once
+	bridgeWarned    atomic.Bool
 }
 
 // MTLSOptions configures outbound mTLS for the forward proxy. When
@@ -211,6 +223,9 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 // they are origin-form (the caller sets r.URL.Scheme/Host) and must re-originate
 // via the dedicated upstream client, never the mesh-mTLS s.Client.
 func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, isBridge bool) {
+	if isBridge {
+		s.bridgedRequests.Add(1)
+	}
 	pctx := &pipeline.Context{
 		Direction: pipeline.Outbound,
 		Method:    r.Method,
@@ -916,6 +931,7 @@ const connectDialTimeout = 30 * time.Second
 // trust path. CONNECT targets are opaque externals (LiteMaaS, Bedrock,
 // GitHub API, etc.) where the agent's existing TLS is the right answer.
 func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
+	s.noteTunnel()
 	pctx := &pipeline.Context{
 		Direction: pipeline.Outbound,
 		Method:    r.Method, // always "CONNECT" here, but populated for parity with handleRequest
@@ -1225,3 +1241,44 @@ func portOf(authority string) int {
 	}
 	return 443
 }
+
+// tunnelWarnThreshold is how many tunnels may open with nothing decrypted
+// before the listener speaks up. A handful is normal — passthrough hosts, a
+// non-HTTPS CONNECT, the first request racing startup — so warning on the
+// first one would cry wolf. By this many, with zero bridged requests, the
+// client is not trusting the CA.
+const tunnelWarnThreshold = 5
+
+// noteTunnel counts a CONNECT tunnel and, once, warns if the bridge is enabled
+// yet has never decrypted anything.
+//
+// This is the failure that looks like a bug in whatever plugin you are testing:
+// tool-prune, the parsers and every body reader correctly do nothing, because
+// there is no plaintext to act on. Naming the trust anchor turns a silent
+// dead end into a one-line fix.
+func (s *Server) noteTunnel() {
+	n := s.tunnelsOpened.Add(1)
+	if s.TLSBridge == nil || n < tunnelWarnThreshold || s.bridgedRequests.Load() > 0 {
+		return
+	}
+	s.bridgeWarnOnce.Do(func() {
+		s.bridgeWarned.Store(true)
+		slog.Warn("tls-bridge: enabled but nothing has been decrypted — every request is tunnelling through opaquely, so body-reading plugins (parsers, tool-prune) cannot act",
+			"tunnels_opened", n,
+			"bridged_requests", 0,
+			"likely_cause", "the client does not trust the bridge CA",
+			"fix", "point the client at the trust anchor, e.g. NODE_EXTRA_CA_CERTS="+s.caFileHint())
+	})
+}
+
+func (s *Server) caFileHint() string {
+	if s.TLSBridge != nil && s.TLSBridge.CAFile != "" {
+		return s.TLSBridge.CAFile
+	}
+	return "<ca_dir>/ca.crt"
+}
+
+// warnFired reports whether the bridge-health warning has already been emitted.
+// Exists for tests: sync.Once has no public "has it run" query, and asserting
+// on log output would couple the test to the message text.
+func (s *Server) warnFired() bool { return s.bridgeWarned.Load() }

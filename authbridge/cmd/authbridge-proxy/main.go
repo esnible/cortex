@@ -378,6 +378,7 @@ func main() {
 			Skip:     tlsbridge.NewSkipSet(),
 			Upstream: up,
 			CAPEM:    src.CACertPEM(),
+			CAFile:   caTrustPath(cfg.TLSBridge.CADir),
 		}
 		slog.Info("tls-bridge enabled", "ca_dir", cfg.TLSBridge.CADir)
 	}
@@ -556,4 +557,16 @@ func startTransparentProxy(fp *forwardproxy.Server, addr string) *net.TCPListene
 		}
 	}()
 	return ln
+}
+
+// caTrustPath returns the absolute path of the CA clients must trust. Absolute
+// because --demo anchors the CA to its launch directory, so a relative path in
+// a log line is only correct for someone standing in that same directory —
+// which is exactly how the trust anchor gets mismatched.
+func caTrustPath(caDir string) string {
+	p := filepath.Join(caDir, "ca.crt")
+	if abs, err := filepath.Abs(p); err == nil {
+		return abs
+	}
+	return p
 }

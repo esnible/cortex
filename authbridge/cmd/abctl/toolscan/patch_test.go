@@ -173,3 +173,23 @@ func TestPatchConfig_DoesNotEscapeTheEntry(t *testing.T) {
 		t.Errorf("tool-prune's list was not patched:\n%s", got)
 	}
 }
+
+// TestPatchConfig_MissingFileExplainsWhere: the bare os error names a relative
+// path and nothing else, which twice sent a real user hunting in the wrong
+// directory — the demo anchors its config to wherever it was launched, so a
+// relative path usually resolves somewhere unintended.
+func TestPatchConfig_MissingFileExplainsWhere(t *testing.T) {
+	_, err := PatchConfig("./definitely-not-here/demo.yaml", []string{"NotebookEdit"})
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	msg := err.Error()
+	for _, want := range []string{"no config at", "/definitely-not-here/demo.yaml", "--demo", "absolute path", "ca_dir"} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("error should mention %q:\n%s", want, msg)
+		}
+	}
+	if strings.Contains(msg, "no such file or directory") {
+		t.Errorf("should replace the bare os error, not wrap it:\n%s", msg)
+	}
+}
