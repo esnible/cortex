@@ -169,6 +169,10 @@ type pipelinePluginView struct {
 	RequiresAny []string        `json:"requiresAny,omitempty"`
 	Description string          `json:"description,omitempty"`
 	Config      json.RawMessage `json:"config,omitempty"`
+	// Metrics is populated for plugins implementing pipeline.MetricsProvider.
+	// Omitted entirely when a plugin reports none, so abctl can distinguish
+	// "no such channel" from "channel with nothing in it".
+	Metrics []pipeline.Metric `json:"metrics,omitempty"`
 }
 
 // handlePipeline returns the composition of the inbound and outbound
@@ -233,6 +237,9 @@ func describePipeline(h *pipeline.Holder, direction string) []pipelinePluginView
 		}
 		if rc, ok := pl.(pipeline.RawConfigProvider); ok {
 			view.Config = redact.JSON(rc.RawConfig())
+		}
+		if mp, ok := pl.(pipeline.MetricsProvider); ok {
+			view.Metrics = mp.Metrics()
 		}
 		out[i] = view
 	}

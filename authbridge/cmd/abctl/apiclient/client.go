@@ -91,6 +91,18 @@ type PipelinePlugin struct {
 	RequiresAny []string        `json:"requiresAny,omitempty"`
 	Description string          `json:"description,omitempty"`
 	Config      json.RawMessage `json:"config,omitempty"`
+	Metrics     []PluginMetric  `json:"metrics,omitempty"`
+}
+
+// PluginMetric mirrors authlib/pipeline.Metric on the wire. Kept as a local
+// type rather than importing the server struct, matching PluginFieldEntry:
+// the client owns its decode shape, and a decode test guards the tags
+// against drift.
+type PluginMetric struct {
+	Name  string  `json:"name"`
+	Value float64 `json:"value"`
+	Unit  string  `json:"unit,omitempty"`
+	Note  string  `json:"note,omitempty"`
 }
 
 // GetPipeline fetches /v1/pipeline.
