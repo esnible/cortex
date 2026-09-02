@@ -49,3 +49,14 @@ var defaultPricing = map[string]modelRates{
 		CacheReadCostPerToken:  0.000000076,
 	},
 }
+
+func (s rateSource) String() string {
+	switch s {
+	case rateConfigured:
+		return "configured"
+	case rateDefault:
+		return "default"
+	default:
+		return "none"
+	}
+}

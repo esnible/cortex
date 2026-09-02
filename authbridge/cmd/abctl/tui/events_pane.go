@@ -27,7 +27,9 @@ func newEventsTable() table.Model {
 			{Title: "METHOD", Width: 22},
 			{Title: "STATUS", Width: 7},
 			{Title: "DURATION", Width: 10},
-			{Title: "TOKENS", Width: 8},
+			// Wide enough for "33,650  −10.6k  $0.1289": the request total, what
+			// tool-prune removed from it, and what that was worth.
+			{Title: "TOKENS / SAVED", Width: 24},
 			{Title: "HOST", Width: 20},
 		}),
 		table.WithFocused(true),
@@ -92,12 +94,12 @@ func (m *model) rebuildEventsTable() {
 	// Pair request rows with their response rows. ids drives the # column: one
 	// integer repeated across a request/response exchange, which is how an
 	// exchange is read off the timeline.
-	ids, _ := computeEventPairs(eventRows)
+	ids, partner := computeEventPairs(eventRows)
 
 	rows := make([]table.Row, 0, len(eventRows))
 	m.visibleRows = m.visibleRows[:0]
 	m.hiddenInactive = 0
-	for _, er := range eventRows {
+	for i, er := range eventRows {
 		ev := er.event
 		if m.filter != "" && !matchEventRow(er, m.filter) {
 			continue
@@ -137,7 +139,7 @@ func (m *model) rebuildEventsTable() {
 			eventMethod(*ev),
 			statusCell(*ev),
 			durationCell(*ev),
-			tokensCell(*ev),
+			m.tokensCellWithSaving(eventRows, partner, i, ev),
 			truncStr(ev.Host, 20),
 		})
 		m.visibleRows = append(m.visibleRows, er)
@@ -743,4 +745,36 @@ func truncateScopes(scopes []string, n int) string {
 		return strings.Join(scopes, ", ")
 	}
 	return strings.Join(scopes[:n], ", ") + fmt.Sprintf(" +%d more", len(scopes)-n)
+}
+
+// tokensCellWithSaving renders the TOKENS cell. For a response row that pairs
+// with a request tool-prune rewrote, it appends the tokens removed and their
+// cost — the saving belongs on the row it happened to, not only in an aggregate
+// pane where cache-miss and cache-hit turns average into a number that describes
+// neither.
+//
+// Returns the plain total when the row is not such a response, so every other
+// event type renders exactly as before.
+func (m *model) tokensCellWithSaving(rows []eventRow, partner map[int]int, i int, ev *pipeline.SessionEvent) string {
+	base := tokensCell(*ev)
+	if base == "" {
+		return ""
+	}
+	j, ok := partner[i]
+	if !ok || j < 0 || j >= len(rows) {
+		return base
+	}
+	req := rows[j].event
+	if req == nil || req.Phase != pipeline.SessionRequest {
+		return base
+	}
+	ps, ok := decodePruneSaving(req)
+	if !ok {
+		return base
+	}
+	tokens, usd, ok := savedTokensAndCost(ps, ev.Inference)
+	if !ok {
+		return base
+	}
+	return formatSavedCell(ev.Inference.TotalTokens, tokens, usd, ps.RateSource)
 }

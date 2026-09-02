@@ -91,6 +91,29 @@ Metrics:
 In observe mode `requests projected` replaces `requests pruned`, so a
 projection is never mistaken for a realised saving.
 
+### Per request, in the events timeline
+
+The events pane's `TOKENS / SAVED` column shows each request's own saving beside
+its token total:
+
+```
+#   TIME          PHASE  PLUGIN            TOKENS / SAVED           CODE
+7   16:42:53.56   req    tool-prune
+7   16:42:57.27   resp   inference-parser  33,604  −24.7k  $0.117    200
+8   16:43:11.02   resp   inference-parser  33,656  −24.7k  $0.009    200
+```
+
+Those two rows removed the same bytes and differ ~12x in value: the first was a
+cache miss (the manifest was written to cache, ~1.25x the input rate), the second
+a hit (read from it, ~0.1x). An aggregate averages the two into a number that
+describes neither turn, which is why the saving is shown per row.
+
+The plugin publishes the byte saving and the applicable rates on the request
+event; the tier and the bytes-to-tokens ratio come from the paired response, so
+`abctl` finishes the arithmetic. Pairing is exact, on the proxy-stamped request
+id. A model with no rate shows the token saving without a dollar figure rather
+than one computed at another model's rate.
+
 ### Why tokens are reported per tier and never summed
 
 Byte counts are exact. Tokens are an estimate, and — more importantly — they

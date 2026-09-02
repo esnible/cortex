@@ -414,6 +414,27 @@ func (p *ToolPrune) OnRequest(_ context.Context, pctx *pipeline.Context) (action
 	}
 
 	removedBytes := len(body) - len(out)
+	// Publish the per-request saving so a UI can show it on the row rather than
+	// only in an aggregate pane. Emitted here, in OnRequest, because the
+	// listener records the response session event before the deferred
+	// RunFinish, so anything published from OnFinish arrives too late to appear.
+	//
+	// Everything except the token tier is known now: inference-parser runs
+	// earlier in the chain and has already set the model, so the applicable
+	// rates resolve here. The consumer pairs this with the response event
+	// (matching on RequestID) to get the prompt token total and which tier the
+	// saving came out of, and finishes the arithmetic.
+	rates, src := p.cfg.ratesFor(inferenceModel(pctx))
+	p.publish(pctx, pruneEvent{
+		ToolsRemoved:   names,
+		BytesRemoved:   removedBytes,
+		BodyBytesAfter: len(out),
+		Model:          inferenceModel(pctx),
+		RateInput:      rates.InputCostPerToken,
+		RateCacheWrite: rates.rateFor(tierCacheWrite),
+		RateCacheRead:  rates.rateFor(tierCacheRead),
+		RateSource:     src.String(),
+	})
 	// Carry the saving to OnFinish, where the response reveals which token tier
 	// it came out of. SetState keeps it private to this plugin, unlike
 	// Extensions.Custom which is shared.
