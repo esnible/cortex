@@ -3,6 +3,7 @@ package toolprune
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -770,5 +771,132 @@ func TestPricing_ModelMatchIsCaseInsensitive(t *testing.T) {
 	pruneWithModel(t, p, "claude-opus-5")
 	if findMetric(t, p.Metrics(), "$ saved").Value <= 0 {
 		t.Error("model lookup should be case-insensitive")
+	}
+}
+
+// TestPrune_ByteExactAgainstJSONReconstruction is the real byte-exactness check.
+// The earlier test asserted only that some fragments survived and the body got
+// shorter, which passes even if the rewrite reflows the whole document — and it
+// removed only a middle element, so the two comma cases that actually differ
+// (first and last) were never exercised.
+//
+// Here the expected output is built by deleting the same elements from the
+// ORIGINAL bytes by hand, so any reformatting, key reordering or whitespace
+// change fails. Also validates the result with encoding/json, which nothing did.
+func TestPrune_ByteExactAgainstJSONReconstruction(t *testing.T) {
+	const orig = `{"model":"m","tools":[{"name":"A","x":1},{"name":"B","x":2},{"name":"C","x":3}],"max_tokens":8}`
+	cases := []struct {
+		remove []string
+		want   string
+	}{
+		{[]string{"A"}, `{"model":"m","tools":[{"name":"B","x":2},{"name":"C","x":3}],"max_tokens":8}`},
+		{[]string{"C"}, `{"model":"m","tools":[{"name":"A","x":1},{"name":"B","x":2}],"max_tokens":8}`},
+		{[]string{"B"}, `{"model":"m","tools":[{"name":"A","x":1},{"name":"C","x":3}],"max_tokens":8}`},
+		{[]string{"A", "C"}, `{"model":"m","tools":[{"name":"B","x":2}],"max_tokens":8}`},
+	}
+	for _, tc := range cases {
+		t.Run(strings.Join(tc.remove, "+"), func(t *testing.T) {
+			p := configured(t, tc.remove...)
+			pctx := inferenceCtx("/v1/messages", orig, "A", "B", "C")
+			run(t, p, pctx)
+			if got := string(pctx.Body); got != tc.want {
+				t.Errorf("byte mismatch\n got: %s\nwant: %s", got, tc.want)
+			}
+			var any map[string]any
+			if err := json.Unmarshal(pctx.Body, &any); err != nil {
+				t.Errorf("result is not valid JSON: %v", err)
+			}
+		})
+	}
+}
+
+// TestPrune_ToolChoiceStringForms: "required" / "any" force no specific tool, so
+// they must not suppress pruning; an object naming nothing recognisable must.
+func TestPrune_ToolChoiceStringForms(t *testing.T) {
+	body := `{"tools":[{"name":"Read"},{"name":"NotebookEdit"}],"tool_choice":%s}`
+	for _, tc := range []struct {
+		choice     string
+		wantPruned bool
+	}{
+		{`"required"`, true},
+		{`"any"`, true},
+		{`{"type":"required"}`, true},
+		{`{"tool":{"name":"NotebookEdit"}}`, false}, // Bedrock-style forced tool: kept
+		{`{"unknown_shape":true}`, false},           // cannot interpret: decline
+	} {
+		t.Run(tc.choice, func(t *testing.T) {
+			p := configured(t, "NotebookEdit")
+			pctx := inferenceCtx("/v1/messages", fmt.Sprintf(body, tc.choice), "Read", "NotebookEdit")
+			run(t, p, pctx)
+			pruned := !strings.Contains(string(pctx.Body), "NotebookEdit")
+			if pruned != tc.wantPruned {
+				t.Errorf("tool_choice %s: pruned=%v want %v — body: %s", tc.choice, pruned, tc.wantPruned, pctx.Body)
+			}
+		})
+	}
+}
+
+// TestPrune_OpenAIDialectAllRemoved: the all-removed path drops tools and
+// tool_choice, and must do so for the OpenAI shape too.
+func TestPrune_OpenAIDialectAllRemoved(t *testing.T) {
+	body := `{"model":"m","tools":[{"type":"function","function":{"name":"A"}},` +
+		`{"type":"function","function":{"name":"B"}}],"tool_choice":"auto"}`
+	p := configured(t, "A", "B")
+	pctx := inferenceCtx("/v1/chat/completions", body, "A", "B")
+	run(t, p, pctx)
+	got := string(pctx.Body)
+	if strings.Contains(got, "tools") || strings.Contains(got, "tool_choice") {
+		t.Errorf("both keys should be dropped: %s", got)
+	}
+	var any map[string]any
+	if err := json.Unmarshal(pctx.Body, &any); err != nil {
+		t.Errorf("result is not valid JSON: %v", err)
+	}
+}
+
+// TestPricing_PartialModelConfigIsUnpriced: set() ORs the three rate fields, so a
+// model configured with only a cache-read rate used to resolve as "priced" and
+// then return 0 for a cache-write request — charging zero into the total while
+// counting toward the priced denominator, so the saving vanished with no
+// `requests unpriced` row to show it had.
+func TestPricing_PartialModelConfigIsUnpriced(t *testing.T) {
+	p := configuredJSON(t, `{"remove":["NotebookEdit"],
+	  "pricing":{"some-model":{"cache_read_cost_per_token":1e-06}}}`)
+	pruneWithModel(t, p, "some-model") // pruneWithModel finishes as a cache WRITE
+
+	gap := findMetric(t, p.Metrics(), "requests unpriced")
+	if gap.Value != 1 {
+		t.Errorf("requests unpriced = %v, want 1 — no cache-write rate is configured", gap.Value)
+	}
+	for _, m := range p.Metrics() {
+		if m.Name == "$ saved" {
+			t.Errorf("$ saved = %v, want no row rather than a zero charged into the total", m.Value)
+		}
+	}
+}
+
+// TestPricing_BuiltInTableBeatsFlatFallback: the flat fields are documented as
+// covering "models absent from pricing", and a model in the built-in table is not
+// absent. Letting one flat input rate shadow every per-model default would
+// reintroduce the flat-rate mispricing the table exists to avoid — and silently,
+// since the figure would then claim to be operator-configured.
+func TestPricing_BuiltInTableBeatsFlatFallback(t *testing.T) {
+	p := configuredJSON(t, `{"remove":["NotebookEdit"],"input_cost_per_token":9e-05}`)
+	rates, src := p.cfg.ratesFor("claude-opus-5")
+	if src != rateDefault {
+		t.Errorf("source = %v, want rateDefault for a model in the built-in table", src)
+	}
+	if rates.InputCostPerToken == 9e-05 {
+		t.Error("flat fallback shadowed the built-in per-model rate")
+	}
+	// A model in neither table still uses the flat fallback.
+	_, src2 := p.cfg.ratesFor("no-such-model")
+	if src2 != rateConfigured {
+		t.Errorf("source = %v, want rateConfigured via the flat fallback", src2)
+	}
+	// And the caveat is still attached, because defaults were used.
+	pruneWithModel(t, p, "claude-opus-5")
+	if m := findMetric(t, p.Metrics(), "$ saved"); !strings.Contains(m.Note, "default rates") {
+		t.Errorf("note = %q, want the default-rates caveat", m.Note)
 	}
 }

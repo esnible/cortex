@@ -197,8 +197,9 @@ else
 fi
 info ""
 
-# tool-prune ships inert: present in the pipeline with an empty remove list and
-# on_error: observe. Offer the scan that fills the list in. Only patch a config
+# tool-prune ships inert: the remove list is empty, so it does nothing until a
+# name is added. That empty list is the guard — on_error is enforce, because the
+# list is what gates the plugin. Offer the scan that fills it in. Only patch a config
 # that already exists, so a first run never rewrites a file it just created
 # behind the user's back -- print the command instead and let them look first.
 demo_cfg="${ca_dir}/demo.yaml"

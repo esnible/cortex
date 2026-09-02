@@ -2,6 +2,7 @@ package toolscan
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io/fs"
@@ -119,7 +120,10 @@ func scanFile(path string, since time.Time, seenIDs map[string]struct{}, res *Re
 		line := sc.Bytes()
 		// Hot path: the overwhelming majority of lines carry no tool call.
 		// A literal substring check is far cheaper than parsing them.
-		if !strings.Contains(string(line), `"tool_use"`) {
+		// bytes.Contains, not strings.Contains(string(line), …): converting would
+		// copy every candidate line, and this is the hot path the prefilter exists
+		// to keep cheap.
+		if !bytes.Contains(line, []byte(`"tool_use"`)) {
 			continue
 		}
 		res.Lines++

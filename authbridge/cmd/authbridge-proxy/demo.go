@@ -1,6 +1,8 @@
 package main
 
 import (
+	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 )
@@ -70,16 +72,28 @@ pipeline:
 `
 }
 
-// writeDemoConfig writes the built-in --demo config next to the CA (in caDir)
-// and returns its path, so --demo reuses the normal file-based load +
-// hot-reload path — edits to the file are picked up live. caDir is
-// caller-resolved (cwd-relative by default, or --ca-dir); no absolute path is
-// baked into the binary. Overwrites any prior copy so the preset is canonical.
+// writeDemoConfig ensures the built-in --demo config exists next to the CA (in
+// caDir) and returns its path, so --demo reuses the normal file-based load +
+// hot-reload path. caDir is caller-resolved (cwd-relative by default, or
+// --ca-dir); no absolute path is baked into the binary.
+//
+// An existing file is KEPT, not overwritten. The config's own header invites
+// editing it, and `abctl tools scan --write` writes a prune list into it — and
+// this function runs before any port is bound, so an unconditional write meant
+// that even a --demo start which then failed on a port clash silently destroyed
+// those edits. Delete the file to regenerate the preset.
 func writeDemoConfig(caDir string) (string, error) {
 	if err := os.MkdirAll(caDir, 0o755); err != nil {
 		return "", err
 	}
 	path := filepath.Join(caDir, "demo.yaml")
+	if _, err := os.Stat(path); err == nil {
+		slog.Info("demo mode — keeping the existing config (edits and any prune list are preserved)",
+			"path", path, "hint", "delete it to regenerate the built-in preset")
+		return path, nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return "", err
+	}
 	if err := os.WriteFile(path, []byte(demoConfigYAML(caDir)), 0o644); err != nil {
 		return "", err
 	}

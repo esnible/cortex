@@ -163,3 +163,26 @@ func TestValidateCapabilities_Directional(t *testing.T) {
 		})
 	}
 }
+
+// TestValidateCapabilities_ResponseAndRequestMutatorsCoexist is the payoff the
+// directional split was arguing for. Before it, SPARC's undirected flag occupied
+// the only mutator slot, so a request-only mutator could not share a chain with
+// it even though the two write different bodies. Now the real in-tree shape —
+// parser, response mutator, request mutator — builds.
+func TestValidateCapabilities_ResponseAndRequestMutatorsCoexist(t *testing.T) {
+	err := validateCapabilities([]Plugin{
+		&stubPlugin{name: "inference-parser", caps: PluginCapabilities{ReadsBody: true}},
+		&stubPlugin{name: "sparc", caps: PluginCapabilities{WritesResponseBody: true}},
+		&stubPlugin{name: "tool-prune", caps: PluginCapabilities{WritesRequestBody: true}},
+	})
+	if err != nil {
+		t.Errorf("[parser, sparc, tool-prune] should build: %v", err)
+	}
+	// Two mutators on the SAME side are still rejected.
+	if err := validateCapabilities([]Plugin{
+		&stubPlugin{name: "sparc", caps: PluginCapabilities{WritesResponseBody: true}},
+		&stubPlugin{name: "cpex", caps: PluginCapabilities{WritesResponseBody: true}},
+	}); err == nil {
+		t.Error("two response mutators must still be rejected")
+	}
+}

@@ -532,6 +532,14 @@ func computeEventPairs(rows []eventRow) (map[*pipeline.SessionEvent]int, map[int
 		if _, done := partner[j]; done {
 			continue // already paired exactly by RequestID
 		}
+		if rj.RequestID != "" {
+			// It carried an id and still did not pair — a second response for
+			// the same request (a retry, or a streamed reply recorded twice).
+			// Letting it fall through would have the heuristic walk back and
+			// claim an unrelated earlier request, which is exactly the
+			// mis-attribution the id was added to end. Leave it unpaired.
+			continue
+		}
 		for i := j - 1; i >= 0; i-- {
 			if _, taken := partner[i]; taken {
 				continue
@@ -779,6 +787,12 @@ func (m *model) tokensCellWithSaving(rows []eventRow, partner map[int]int, i int
 	}
 	resp := rows[j].event
 	if resp == nil || resp.Phase != pipeline.SessionResponse {
+		return ""
+	}
+	// Only price against a response that pairs by id. A heuristically-matched
+	// response may belong to a different request, and its cache tier would
+	// then pick the wrong rate — a 12.5x error presented as a measurement.
+	if ev.RequestID == "" || resp.RequestID != ev.RequestID {
 		return ""
 	}
 	tokens, usd, ok := savedTokensAndCost(ps, resp.Inference)

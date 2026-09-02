@@ -149,7 +149,7 @@ Every in-tree plugin that declares the capability today, and what it actually do
 | Plugin | Rewrites request | Rewrites response | Evidence | After the change |
 |---|---|---|---|---|
 | `context-guru` | yes | **no** | `contextguru/plugin.go:160`; no `SetResponseBody` call anywhere | `WritesRequestBody` — **gains** response streaming |
-| `sparc` | yes | yes | `sparc/plugin.go:214`; `sparc/respond.go:111,122` | both flags — unchanged |
+| `sparc` | **no** | yes | `sparc/respond.go:111,122`; calls `SetBody` nowhere | `WritesResponseBody` only — the request flag was stale, and dropping it frees the request-mutator slot so `[sparc, tool-prune]` builds |
 | `cpex` | yes | yes | `cpex/plugin.go:122`; `cmf_body.go:609`, `cmf_a2a.go:216`, `cmf_inference.go:218` | both flags — unchanged |
 | `tool-prune` | yes | no | new | `WritesRequestBody` — streams |
 
@@ -253,7 +253,7 @@ pipeline:
       - mcp-parser
       - a2a-parser
       - name: tool-prune
-        on_error: observe        # measure only; switch to enforce when trusted
+        # on_error defaults to enforce; the empty remove list is the gate.
         config:
           remove: [NotebookEdit, ScheduleWakeup, TaskOutput]
 ```
@@ -273,9 +273,11 @@ This is why one registration suffices: the same plugin code serves measure and
 enforce, selected by one word of configuration. `context.go` states the intent
 directly — "Plugin code therefore looks identical under enforce and observe."
 
-Off-by-default is satisfied structurally: the plugin is absent from the shipped
-pipeline list until a user adds it, and the documented first step adds it with
-`on_error: observe`.
+Off-by-default is satisfied structurally, and by the remove list rather than the
+policy: an empty `remove` is a no-op whatever `on_error` says, so filling the list
+is the single deliberate act that enables the plugin. `on_error: observe` remains
+available as a projection mode, but is not the shipped default — two guards where
+one suffices only added a step operators skipped.
 
 ### Where the list comes from: `abctl tools scan`
 
@@ -546,7 +548,7 @@ For part 3:
 
 | Risk | Mitigation |
 |---|---|
-| Removing a tool the agent needs | Unknown names always kept; `--keep` override; ship with `on_error: observe`; fail open on any error |
+| Removing a tool the agent needs | Unknown names always kept; a tool forced by `tool_choice` never pruned; `--keep` override; empty `remove` ships as the off switch; fail open on any error |
 | Stale bundled tool set as Claude Code evolves | Drift reduces savings only; plugin warns on configured names never observed in `ext.Tools` |
 | One-off prompt-cache invalidation when the list changes | Inherent and bounded: static list means it happens once, then the prefix is stable |
 | Commit 1 conflicts with in-flight branches declaring `WritesBody` | One-line fix per branch; the compile error makes it self-evident |

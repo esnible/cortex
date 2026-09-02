@@ -3,14 +3,7 @@ package pipeline
 import (
 	"crypto/rand"
 	"encoding/hex"
-	"strconv"
-	"sync/atomic"
 )
-
-// requestIDCounter is the fallback when crypto/rand is unavailable, so an id is
-// always produced rather than an empty string that would silently disable
-// pairing.
-var requestIDCounter atomic.Uint64
 
 // newRequestID returns a short, unique-per-process request identifier.
 //
@@ -20,9 +13,9 @@ var requestIDCounter atomic.Uint64
 // cryptographically meaningful.
 func newRequestID() string {
 	var b [6]byte
-	if _, err := rand.Read(b[:]); err != nil {
-		return "r" + strconv.FormatUint(requestIDCounter.Add(1), 36)
-	}
+	// crypto/rand.Read never returns an error as of Go 1.24 — it panics on an
+	// unusable system source instead — so there is no failure branch to write.
+	_, _ = rand.Read(b[:])
 	return hex.EncodeToString(b[:])
 }
 

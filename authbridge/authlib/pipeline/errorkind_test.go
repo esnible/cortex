@@ -1,6 +1,9 @@
 package pipeline
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // TestUpstreamErrorKind: a bare "backend_error / 400" gives an operator nothing
 // to act on. The provider's own classification does — and it must be the
@@ -73,5 +76,38 @@ func TestDeriveError_PopulatesKindFrom4xxBody(t *testing.T) {
 	bare := DeriveError(&Context{StatusCode: 503})
 	if bare == nil || bare.Code != "503" || bare.Message != "" {
 		t.Errorf("bare 5xx = %+v, want backend_error/503 with empty message", bare)
+	}
+}
+
+// TestUpstreamErrorKind_RefusesStructuredValues is the privacy regression for a
+// leak the earlier test could not see: gjson's String() on an object or array
+// returns that node's RAW JSON. A provider (or a proxy in between) returning a
+// structured error.type therefore put response body content — including anything
+// quoted from the request — straight into the unauthenticated session store,
+// defeating the whole reason error.message is excluded.
+func TestUpstreamErrorKind_RefusesStructuredValues(t *testing.T) {
+	secret := "sk-live-DEADBEEF"
+	for _, body := range []string{
+		`{"error":{"type":{"secret":"` + secret + `","nested":true}}}`,
+		`{"error":{"type":["` + secret + `"]}}`,
+		`{"error":{"code":{"inner":"` + secret + `"}}}`,
+		`{"error":{"type":true}}`,
+		`{"error":{"type":null}}`,
+	} {
+		got := upstreamErrorKind([]byte(body))
+		if got != "" {
+			t.Errorf("structured value leaked %q from %s", got, body)
+		}
+		if strings.Contains(got, secret) {
+			t.Fatalf("CREDENTIAL LEAK: %q", got)
+		}
+	}
+	// A numeric code carries no payload and stays useful.
+	if got := upstreamErrorKind([]byte(`{"error":{"code":429}}`)); got != "429" {
+		t.Errorf("numeric code = %q, want 429", got)
+	}
+	// The normal string path is unaffected.
+	if got := upstreamErrorKind([]byte(`{"error":{"type":"rate_limit_error"}}`)); got != "rate_limit_error" {
+		t.Errorf("string type = %q", got)
 	}
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -98,5 +99,37 @@ func TestDemoConfig_WriteLoadsAndValidates(t *testing.T) {
 	if !strings.Contains(string(tp.Config), "\"remove\":[]") &&
 		!strings.Contains(string(tp.Config), "\"remove\": []") {
 		t.Errorf("tool-prune must ship with an empty remove list, got %s", tp.Config)
+	}
+}
+
+// TestWriteDemoConfig_PreservesAnExistingFile: the config's own header invites
+// editing it, and `abctl tools scan --write` writes a prune list into it. This
+// function also runs before any port is bound, so an unconditional overwrite
+// meant a --demo start that then failed on a port clash silently destroyed those
+// edits — which is exactly how a populated remove list was lost in practice.
+func TestWriteDemoConfig_PreservesAnExistingFile(t *testing.T) {
+	caDir := t.TempDir()
+	p, err := writeDemoConfig(caDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	edited := "# operator edit\nmode: proxy-sidecar\n"
+	if err := os.WriteFile(p, []byte(edited), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A second call — a restart — must not clobber it.
+	p2, err := writeDemoConfig(caDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p2 != p {
+		t.Errorf("path changed: %q vs %q", p2, p)
+	}
+	got, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != edited {
+		t.Errorf("edits were overwritten:\n%s", got)
 	}
 }

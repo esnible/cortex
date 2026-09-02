@@ -85,18 +85,25 @@ type modelRates struct {
 	CacheReadCostPerToken  float64 `json:"cache_read_cost_per_token" description:"USD per cache-read token; defaults to input_cost_per_token."`
 }
 
-func (r modelRates) rateFor(t tier) float64 {
+// rateFor returns the rate for a tier and whether one is actually available.
+//
+// The bool matters: set() is an OR across three fields, so a model configured
+// with only cache_read_cost_per_token used to resolve as "priced" and then
+// return 0 for a cache-write request — pricing it at zero while still counting
+// toward the priced denominator, so the saving silently vanished with no
+// `requests unpriced` row to show it had.
+func (r modelRates) rateFor(t tier) (float64, bool) {
 	switch t {
 	case tierCacheWrite:
 		if r.CacheWriteCostPerToken > 0 {
-			return r.CacheWriteCostPerToken
+			return r.CacheWriteCostPerToken, true
 		}
 	case tierCacheRead:
 		if r.CacheReadCostPerToken > 0 {
-			return r.CacheReadCostPerToken
+			return r.CacheReadCostPerToken, true
 		}
 	}
-	return r.InputCostPerToken
+	return r.InputCostPerToken, r.InputCostPerToken > 0
 }
 
 func (r modelRates) set() bool {
@@ -122,6 +129,15 @@ func (c *config) ratesFor(model string) (modelRates, rateSource) {
 	if r, ok := c.pricing[key]; ok && r.set() {
 		return r, rateConfigured
 	}
+	// The built-in table comes BEFORE the flat fallback. The flat fields are
+	// documented as covering "models absent from pricing", and a model in the
+	// built-in table is not absent — letting one flat input rate shadow every
+	// per-model default would reintroduce exactly the flat-rate mispricing the
+	// per-model table exists to avoid, and silently, since the figure would then
+	// claim to be configured.
+	if r, ok := defaultPricing[key]; ok {
+		return r, rateDefault
+	}
 	fallback := modelRates{
 		InputCostPerToken:      c.InputCostPerToken,
 		CacheWriteCostPerToken: c.CacheWriteCostPerToken,
@@ -130,24 +146,7 @@ func (c *config) ratesFor(model string) (modelRates, rateSource) {
 	if fallback.set() {
 		return fallback, rateConfigured
 	}
-	if r, ok := defaultPricing[key]; ok {
-		return r, rateDefault
-	}
 	return modelRates{}, rateNone
-}
-
-// configuredPricing reports whether the operator supplied any rates of their
-// own, as opposed to relying on the built-in defaults.
-func (c *config) configuredPricing() bool {
-	if c.InputCostPerToken > 0 || c.CacheWriteCostPerToken > 0 || c.CacheReadCostPerToken > 0 {
-		return true
-	}
-	for _, r := range c.Pricing {
-		if r.set() {
-			return true
-		}
-	}
-	return false
 }
 
 func (c *config) applyDefaults() {
@@ -264,22 +263,40 @@ func toolNameAt(body []byte, i int) string {
 	return gjson.GetBytes(body, fmt.Sprintf("tools.%d.function.name", i)).String()
 }
 
-// forcedToolName returns the tool a forced tool_choice names, or "" when the
-// request does not force one. Anthropic spells it tool_choice.name, OpenAI
-// tool_choice.function.name; "auto" / "none" / "any" carry no name.
+// forcedToolChoice reports the tool a forced tool_choice names, and whether the
+// tool_choice could be interpreted at all.
 //
-// This tool can never be removed: a tool_choice naming a tool absent from the
-// manifest is an invalid request, so pruning it would turn a cost optimisation
-// into a 400.
-func forcedToolName(body []byte) string {
+// resolvable is false only when tool_choice is an object from which no name can
+// be read. That is the dangerous case: the request forces *some* tool the plugin
+// cannot identify, so pruning risks removing it and producing an invalid request.
+// Dialects nest this differently — Anthropic tool_choice.name, OpenAI
+// tool_choice.function.name, Bedrock Converse tool_choice.tool.name — and an
+// unknown shape must not be read as "nothing is forced".
+//
+// A string form ("auto", "none", "any", "required") forces no *specific* tool, so
+// it is resolvable with an empty name: pruning is safe.
+func forcedToolChoice(body []byte) (name string, resolvable bool) {
 	tc := gjson.GetBytes(body, "tool_choice")
+	if !tc.Exists() {
+		return "", true
+	}
 	if !tc.IsObject() {
-		return "" // "auto" / "none" / absent
+		return "", true // "auto" / "none" / "any" / "required"
 	}
-	if n := tc.Get("name"); n.Exists() {
-		return n.String()
+	for _, path := range []string{"name", "function.name", "tool.name"} {
+		if n := tc.Get(path); n.Type == gjson.String && n.String() != "" {
+			return n.String(), true
+		}
 	}
-	return tc.Get("function.name").String()
+	// An object naming nothing we recognise. It may still be a plain
+	// {"type":"auto"}, which is safe — accept only that narrow shape.
+	if t := tc.Get("type"); t.Type == gjson.String {
+		switch t.String() {
+		case "auto", "none", "any", "required":
+			return "", true
+		}
+	}
+	return "", false
 }
 
 // OnRequest prunes the manifest. Every failure path returns Continue with the
@@ -346,14 +363,29 @@ func (p *ToolPrune) OnRequest(_ context.Context, pctx *pipeline.Context) (action
 	// Resolve indices from the raw bytes rather than from the parsed manifest:
 	// inference-parser drops unnamed tools, so manifest position does not
 	// reliably map back to array position.
-	forced := forcedToolName(body)
+	forced, resolvable := forcedToolChoice(body)
+	if !resolvable {
+		// tool_choice is an object but names no tool we recognise — e.g. a
+		// dialect that nests it differently (Bedrock Converse's
+		// {"tool":{"name":X}}). Treating that as "nothing is forced" risks
+		// pruning the one tool the request requires, so decline instead. A
+		// missed saving is the cheap direction of failure.
+		pctx.Record(pipeline.Invocation{
+			Action: pipeline.ActionSkip,
+			Reason: "tool_choice_unresolved",
+			Path:   pctx.Path,
+		})
+		return action
+	}
 	var victims []int
+	var anyNameResolved bool
 	names := make([]string, 0, len(raw))
 	for i := range raw {
 		name := toolNameAt(body, i)
 		if name == "" {
 			continue
 		}
+		anyNameResolved = true
 		if name == forced {
 			// Removing the tool tool_choice forces would make the request
 			// invalid. Keep it and prune the rest.
@@ -366,7 +398,15 @@ func (p *ToolPrune) OnRequest(_ context.Context, pctx *pipeline.Context) (action
 		}
 	}
 	if len(victims) == 0 {
-		pctx.Record(pipeline.Invocation{Action: pipeline.ActionSkip, Reason: "no_configured_tool_present"})
+		// Distinguish "the manifest had none of the configured tools" from "no
+		// tool name could be read at all" — the latter means an unrecognised
+		// dialect (Gemini, Bedrock toolSpec nesting), where the plugin is inert
+		// for a reason an operator would want to know about.
+		reason := "no_configured_tool_present"
+		if len(names) == 0 && !anyNameResolved {
+			reason = "names_unresolved"
+		}
+		pctx.Record(pipeline.Invocation{Action: pipeline.ActionSkip, Reason: reason, Path: pctx.Path})
 		return action
 	}
 
@@ -425,14 +465,23 @@ func (p *ToolPrune) OnRequest(_ context.Context, pctx *pipeline.Context) (action
 	// (matching on RequestID) to get the prompt token total and which tier the
 	// saving came out of, and finishes the arithmetic.
 	rates, src := p.cfg.ratesFor(inferenceModel(pctx))
+	rateInput, _ := rates.rateFor(tierInput)
+	rateWrite, okW := rates.rateFor(tierCacheWrite)
+	rateRead, okR := rates.rateFor(tierCacheRead)
+	if !okW {
+		rateWrite = 0
+	}
+	if !okR {
+		rateRead = 0
+	}
 	p.publish(pctx, pruneEvent{
 		ToolsRemoved:   names,
 		BytesRemoved:   removedBytes,
 		BodyBytesAfter: len(out),
 		Model:          inferenceModel(pctx),
-		RateInput:      rates.InputCostPerToken,
-		RateCacheWrite: rates.rateFor(tierCacheWrite),
-		RateCacheRead:  rates.rateFor(tierCacheRead),
+		RateInput:      rateInput,
+		RateCacheWrite: rateWrite,
+		RateCacheRead:  rateRead,
 		RateSource:     src.String(),
 	})
 	// Carry the saving to OnFinish, where the response reveals which token tier
@@ -498,7 +547,13 @@ func (p *ToolPrune) OnFinish(_ context.Context, pctx *pipeline.Context) {
 	}
 	t := tierOf(inf)
 	rates, src := p.cfg.ratesFor(inf.Model)
-	p.m.observeSaving(tokens, t, tokens*rates.rateFor(t), src, inf.Model)
+	rate, ok := rates.rateFor(t)
+	if !ok {
+		// No usable rate for the tier this request actually used. Count it
+		// unpriced rather than charging zero into the total.
+		src = rateNone
+	}
+	p.m.observeSaving(tokens, t, tokens*rate, src, inf.Model)
 }
 
 // tier names which prompt token tier a request's saving came out of.
@@ -551,4 +606,4 @@ func (p *ToolPrune) noteDrift(observed []pipeline.InferenceTool) {
 }
 
 // Metrics implements pipeline.MetricsProvider.
-func (p *ToolPrune) Metrics() []pipeline.Metric { return p.m.snapshot(&p.cfg) }
+func (p *ToolPrune) Metrics() []pipeline.Metric { return p.m.snapshot() }

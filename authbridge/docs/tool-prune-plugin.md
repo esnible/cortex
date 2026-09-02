@@ -20,7 +20,8 @@ pipeline:
       - inference-parser
       - mcp-parser
       - name: tool-prune
-        on_error: observe        # measure only; switch to enforce when trusted
+        # on_error defaults to enforce; the empty remove list is what gates the
+        # plugin. Set observe when you want a projection instead — see below.
         config:
           remove: [NotebookEdit, ScheduleWakeup, TaskOutput]
 ```
@@ -179,12 +180,6 @@ model outright:
     input_cost_per_token: 0.0000038
 ```
 
-**Deriving your own rates.** If your gateway reports cost on non-streaming
-responses (LiteLLM's `x-litellm-response-cost`), send two non-streaming requests
-of different prompt length and difference them: `rate = Δcost / Δinput_tokens`.
-Repeat with a `cache_control` block sent twice for the write and read rates. This
-is how the table above was obtained, and it is exact for your deployment.
-
 Model keys match what the parser records (`Extensions.Inference.Model`) and are
 matched case-insensitively, since gateways vary in how they echo the name and a
 case mismatch would silently unprice the traffic.
@@ -218,7 +213,8 @@ falls back to configured rates for streams.
 A saving is also a counterfactual — the cost of a request that was never sent —
 so even with a cost header it could only ever be priced from rates, not measured.
 
-Counters are in-memory and per-process. That is the right trade for the
+Counters are in-memory and per-process, and reset on a config hot-reload as well
+as a restart — a reload rebuilds the plugin. That is the right trade for the
 single-laptop case this targets and what keeps the plugin free of a storage
 dependency; fleet aggregation belongs on the stats server later and would not
 change the plugin.

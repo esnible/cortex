@@ -40,8 +40,9 @@ Watch an AI agent's traffic — its model, tool, and agent-to-agent calls — de
 ## Cut Claude Code token cost on your laptop
 
 Already using Claude Code? Cortex can strip the tool definitions your agent never
-calls out of every request — typically 20–25% of the prompt you pay for on each
-turn. Four steps, about two minutes:
+calls out of every request. On the traffic this was measured against that is
+20–25% of the prompt billed per turn; your share depends on how many of the
+tools you actually use. Four steps, about two minutes:
 **[Cut Claude Code token cost](./authbridge/docs/laptop-token-savings.md)**.
 
 ## Running on Kubernetes

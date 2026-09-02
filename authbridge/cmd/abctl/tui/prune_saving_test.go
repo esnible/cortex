@@ -129,3 +129,56 @@ func TestFormatCompactAndUSD(t *testing.T) {
 		}
 	}
 }
+
+// TestComputeEventPairs_DuplicateResponseStaysUnpaired: a second response sharing
+// a RequestID — a retry, or a streamed reply recorded twice — finds the request
+// already paired. Falling through to the adjacency heuristic would have it walk
+// back and claim an unrelated earlier request, reintroducing exactly the
+// mis-attribution the id was added to end.
+func TestComputeEventPairs_DuplicateResponseStaysUnpaired(t *testing.T) {
+	ev := func(phase pipeline.SessionPhase, id string, code int) *pipeline.SessionEvent {
+		return &pipeline.SessionEvent{
+			Direction: pipeline.Outbound, Phase: phase,
+			Host: "h", RequestID: id, StatusCode: code,
+		}
+	}
+	rows := []eventRow{
+		{event: ev(pipeline.SessionRequest, "aaa", 0)},    // 0
+		{event: ev(pipeline.SessionRequest, "bbb", 0)},    // 1
+		{event: ev(pipeline.SessionResponse, "bbb", 200)}, // 2 pairs with 1
+		{event: ev(pipeline.SessionResponse, "bbb", 500)}, // 3 duplicate for bbb
+	}
+	_, partner := computeEventPairs(rows)
+
+	if partner[1] != 2 {
+		t.Errorf("bbb should pair 1↔2, got %v", partner)
+	}
+	if j, ok := partner[3]; ok {
+		t.Errorf("duplicate response paired with row %d; it must stay unpaired", j)
+	}
+	if j, ok := partner[0]; ok {
+		t.Errorf("request aaa was claimed by the duplicate (row %d) — the bug this guards", j)
+	}
+}
+
+// TestTokensCellWithSaving_RequiresAnIDMatch: pricing against a heuristically
+// matched response could take its cache tier from a different request, and the
+// tiers are ~12.5x apart — a wrong figure presented as a measurement.
+func TestTokensCellWithSaving_RequiresAnIDMatch(t *testing.T) {
+	req := reqEvent(t, wire)
+	req.RequestID = "aaa"
+	resp := &pipeline.SessionEvent{
+		Phase: pipeline.SessionResponse, RequestID: "zzz", // different exchange
+		Inference: &pipeline.InferenceExtension{CacheWriteTokens: 24701, TotalTokens: 33582},
+	}
+	rows := []eventRow{{event: req}, {event: resp}}
+	m := &model{}
+	if got := m.tokensCellWithSaving(rows, map[int]int{0: 1, 1: 0}, 0, req); got != "" {
+		t.Errorf("priced against a mismatched response: %q", got)
+	}
+	// Matching ids do price.
+	resp.RequestID = "aaa"
+	if got := m.tokensCellWithSaving(rows, map[int]int{0: 1, 1: 0}, 0, req); got == "" {
+		t.Error("an id-matched pair should price")
+	}
+}

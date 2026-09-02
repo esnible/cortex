@@ -218,6 +218,7 @@ fail loud before serving traffic.
 type PluginCapabilities struct {
     ReadsBody   bool
     WritesRequestBody  bool
+    WritesResponseBody bool
 
     Requires    []string   // ALL must be present + earlier (hard)
     RequiresAny []string   // AT LEAST ONE must be present + run after it (hard)
@@ -763,7 +764,8 @@ nothing about how the response may be relayed.
 |---|---|---|
 | request-only mutator (`tool-prune`, `context-guru`) | `WritesRequestBody` | yes |
 | response mutator | `WritesResponseBody` | no — buffered |
-| both (`sparc`, `cpex`) | both | no — buffered |
+| response mutator (`sparc`) | `WritesResponseBody` | no — buffered |
+| both (`cpex`) | both | no — buffered |
 | pure reader (parsers) | `ReadsBody` | yes |
 
 ### Build-time validation (enforced by `pipeline.New`)

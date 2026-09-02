@@ -119,7 +119,7 @@ func (m *metrics) observeSaving(tokens float64, t tier, usd float64, src rateSou
 // snapshot renders the counters as operator-facing metrics. Every derived row
 // carries the sample it was computed from, so a figure can never be read as
 // more certain than it is.
-func (m *metrics) snapshot(cfg *config) []pipeline.Metric {
+func (m *metrics) snapshot() []pipeline.Metric {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 

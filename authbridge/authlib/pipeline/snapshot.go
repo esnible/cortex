@@ -165,9 +165,15 @@ func upstreamErrorKind(body []byte) string {
 	if !gjson.ValidBytes(body) {
 		return ""
 	}
-	t := gjson.GetBytes(body, "error.type").String()
+	// Only accept a JSON string. gjson's String() on an object or array returns
+	// that node's RAW JSON, so {"error":{"type":{...}}} would put response body
+	// content — quoted request data, credentials — straight into the
+	// unauthenticated session store, defeating the whole point of excluding
+	// error.message. A numeric code is accepted because a number carries no
+	// payload; anything structured is refused.
+	t := stringOrNumber(gjson.GetBytes(body, "error.type"))
 	if t == "" {
-		t = gjson.GetBytes(body, "error.code").String()
+		t = stringOrNumber(gjson.GetBytes(body, "error.code"))
 	}
 	if t == "" {
 		return ""
@@ -176,4 +182,16 @@ func upstreamErrorKind(body []byte) string {
 		t = t[:64]
 	}
 	return t
+}
+
+// stringOrNumber returns the value only when the node is a JSON string or
+// number. Every other type — object, array, true/false, absent — yields "",
+// because String() on a container returns its raw JSON and that is body content.
+func stringOrNumber(r gjson.Result) string {
+	switch r.Type {
+	case gjson.String, gjson.Number:
+		return r.String()
+	default:
+		return ""
+	}
 }

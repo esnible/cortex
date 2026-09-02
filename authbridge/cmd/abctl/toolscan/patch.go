@@ -80,8 +80,7 @@ func PatchConfig(path string, candidates []string) (changed bool, err error) {
 			return false, nil // already current — idempotent
 		}
 		lines[i] = replacement
-		out := strings.Join(lines, "\n")
-		if err := os.WriteFile(path, []byte(out), 0o600); err != nil {
+		if err := writeFileAtomic(path, []byte(strings.Join(lines, "\n"))); err != nil {
 			return false, err
 		}
 		return true, nil
@@ -96,4 +95,46 @@ func leadingSpaces(s string) int {
 		}
 	}
 	return len(s)
+}
+
+// writeFileAtomic replaces path's contents via a temp file and a rename.
+//
+// os.WriteFile truncates in place, which has two failure modes on a live config:
+// a crash mid-write leaves a truncated file with no copy to recover from, and
+// even on the success path the proxy's fsnotify reloader can wake on the
+// truncated intermediate state and reject its own config. A rename is atomic, so
+// a reader sees either the old file or the new one.
+//
+// The temp file is created in the same directory so the rename stays within one
+// filesystem, and the destination's existing mode is preserved — the file already
+// exists (PatchConfig read it), so its permissions are the operator's to keep.
+func writeFileAtomic(path string, data []byte) error {
+	dir := filepath.Dir(path)
+	mode := os.FileMode(0o600)
+	if fi, err := os.Stat(path); err == nil {
+		mode = fi.Mode().Perm()
+	}
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(path)+".tmp")
+	if err != nil {
+		return err
+	}
+	tmpName := tmp.Name()
+	defer os.Remove(tmpName) // no-op once the rename succeeds
+	if _, err := tmp.Write(data); err != nil {
+		tmp.Close()
+		return err
+	}
+	// Sync before rename: without it a crash after the rename can leave the
+	// new name pointing at unflushed (zero-length) content.
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmpName, mode); err != nil {
+		return err
+	}
+	return os.Rename(tmpName, path)
 }

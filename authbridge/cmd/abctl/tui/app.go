@@ -249,6 +249,10 @@ type model struct {
 	// until then.
 	pipeline *apiclient.PipelineView
 
+	// pipelineFetching is set while a /v1/pipeline request is outstanding, so
+	// the 2s refresh tick cannot stack fetches against a slow endpoint.
+	pipelineFetching bool
+
 	// helpVisible toggles the [?] key-help overlay. Deliberately a flag
 	// rather than a paneID: the overlay must be openable over ANY pane
 	// (picker included) without disturbing m.pane / m.previousPane, which
@@ -449,7 +453,9 @@ func (m *model) loadPipelineCmd() tea.Cmd {
 	return func() tea.Msg {
 		pv, err := m.client.GetPipeline(m.ctx)
 		if err != nil {
-			return errMsg{where: "get pipeline", err: err}
+			// Report as a load with no view so the in-flight flag clears; a
+			// failure that left it set would wedge refresh for the session.
+			return pipelineLoadedMsg(nil)
 		}
 		return pipelineLoadedMsg(pv)
 	}
@@ -591,12 +597,20 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// they were when the session was first opened. Skipped elsewhere:
 		// the composition itself does not change, so polling it while nobody
 		// is looking at metrics would be pure overhead.
-		if m.pane == panePluginDetail || m.pane == panePipeline {
+		// Guard against stacking fetches: the tick is 2s and the HTTP timeout is
+		// 10s, so a stalled endpoint would otherwise accumulate ~5 concurrent
+		// requests and keep adding one every tick.
+		if (m.pane == panePluginDetail || m.pane == panePipeline) && !m.pipelineFetching {
+			m.pipelineFetching = true
 			return m, tea.Batch(m.loadSessionsCmd(), m.loadPipelineCmd(), refreshTickCmd())
 		}
 		return m, tea.Batch(m.loadSessionsCmd(), refreshTickCmd())
 
 	case pipelineLoadedMsg:
+		m.pipelineFetching = false
+		if msg == nil {
+			return m, nil // fetch failed; keep the view we have
+		}
 		m.pipeline = (*apiclient.PipelineView)(msg)
 		m.rebuildPipelineTable()
 		// Re-render an open plugin detail pane against the new view. Without
