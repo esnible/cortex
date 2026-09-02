@@ -75,3 +75,49 @@ func TestFormatPluginMetrics_EmptyIsEmptyString(t *testing.T) {
 		t.Errorf("formatPluginMetrics(nil) = %q, want empty (pane renders (none))", got)
 	}
 }
+
+// TestLivePipelinePlugin_ResolvesAgainstRefreshedView: plugin Metrics are live
+// counters riding on a view that was originally fetched once at startup, on the
+// documented assumption that the pipeline composition never changes. That
+// assumption held for composition and broke for counters — an open detail pane
+// kept rendering its opening snapshot, so Metrics read "(none)" forever on a
+// proxy that had counted nothing yet at connect time.
+func TestLivePipelinePlugin_ResolvesAgainstRefreshedView(t *testing.T) {
+	shown := &apiclient.PipelinePlugin{Name: "tool-prune", Direction: "outbound"}
+
+	m := &model{pipeline: &apiclient.PipelineView{
+		Outbound: []apiclient.PipelinePlugin{
+			{Name: "inference-parser", Direction: "outbound"},
+			{Name: "tool-prune", Direction: "outbound", Metrics: []apiclient.PluginMetric{
+				{Name: "requests pruned", Value: 2, Unit: "count"},
+			}},
+		},
+	}}
+
+	got := m.livePipelinePlugin(shown)
+	if got == nil {
+		t.Fatal("tool-prune not resolved against the refreshed view")
+	}
+	if len(got.Metrics) != 1 || got.Metrics[0].Value != 2 {
+		t.Errorf("resolved plugin carries no fresh metrics: %+v", got.Metrics)
+	}
+}
+
+// TestLivePipelinePlugin_CatalogEntryHasNoLiveCounterpart: a catalog entry is
+// synthesised with a blank direction and is not in the active chain, so there is
+// nothing to refresh it from.
+func TestLivePipelinePlugin_CatalogEntryHasNoLiveCounterpart(t *testing.T) {
+	m := &model{pipeline: &apiclient.PipelineView{
+		Outbound: []apiclient.PipelinePlugin{{Name: "tool-prune", Direction: "outbound"}},
+	}}
+	if got := m.livePipelinePlugin(&apiclient.PipelinePlugin{Name: "tool-prune"}); got != nil {
+		t.Errorf("catalog entry (blank direction) should not resolve, got %+v", got)
+	}
+	if got := m.livePipelinePlugin(nil); got != nil {
+		t.Error("nil input should return nil")
+	}
+	// No view fetched yet.
+	if got := (&model{}).livePipelinePlugin(&apiclient.PipelinePlugin{Name: "x", Direction: "outbound"}); got != nil {
+		t.Error("nil pipeline should return nil")
+	}
+}

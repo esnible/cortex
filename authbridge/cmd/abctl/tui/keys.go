@@ -274,7 +274,9 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 			m.previousPane = panePipeline
 			m.showPluginDetail(p)
 			m.pane = panePluginDetail
-			return nil
+			// Fetch immediately rather than waiting for the next refresh tick:
+			// opening the pane is exactly when someone wants current counters.
+			return m.loadPipelineCmd()
 		case paneCatalog:
 			p := m.selectedCatalogEntry()
 			if p == nil {

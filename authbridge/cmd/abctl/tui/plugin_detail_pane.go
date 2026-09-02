@@ -93,3 +93,21 @@ func (m *model) showPluginDetail(p *apiclient.PipelinePlugin) {
 	m.detailVp.SetContent(b.String())
 	m.detailVp.GotoTop()
 }
+
+// livePipelinePlugin re-resolves a plugin against the current pipeline view by
+// name and direction, so a refreshed view can be rendered into an already-open
+// detail pane. Returns nil for a catalog entry (blank direction), which has no
+// counterpart in the active chain.
+func (m *model) livePipelinePlugin(want *apiclient.PipelinePlugin) *apiclient.PipelinePlugin {
+	if want == nil || m.pipeline == nil || want.Direction == "" {
+		return nil
+	}
+	for _, set := range [][]apiclient.PipelinePlugin{m.pipeline.Inbound, m.pipeline.Outbound} {
+		for i := range set {
+			if set[i].Name == want.Name && set[i].Direction == want.Direction {
+				return &set[i]
+			}
+		}
+	}
+	return nil
+}
