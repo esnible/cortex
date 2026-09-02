@@ -14,8 +14,14 @@
 //
 // Safety is one-directional. Removing a tool the model needs is the harmful
 // failure; carrying a few extra definitions is not. So every error path fails
-// open, forwarding the original bytes untouched: a cost optimisation must never
-// be able to break a request.
+// open, forwarding the original bytes untouched, and a tool named by a forced
+// tool_choice is never removed — the manifest and tool_choice have to agree or
+// the request is invalid.
+//
+// That is a promise about this plugin's own failure modes, not a claim that
+// pruning is always safe: whether a provider or gateway accepts a validly
+// pruned manifest is outside what the plugin can observe. on_error: observe
+// exists to establish that empirically before any request changes.
 package toolprune
 
 import (
@@ -138,6 +144,24 @@ func toolNameAt(body []byte, i int) string {
 	return gjson.GetBytes(body, fmt.Sprintf("tools.%d.function.name", i)).String()
 }
 
+// forcedToolName returns the tool a forced tool_choice names, or "" when the
+// request does not force one. Anthropic spells it tool_choice.name, OpenAI
+// tool_choice.function.name; "auto" / "none" / "any" carry no name.
+//
+// This tool can never be removed: a tool_choice naming a tool absent from the
+// manifest is an invalid request, so pruning it would turn a cost optimisation
+// into a 400.
+func forcedToolName(body []byte) string {
+	tc := gjson.GetBytes(body, "tool_choice")
+	if !tc.IsObject() {
+		return "" // "auto" / "none" / absent
+	}
+	if n := tc.Get("name"); n.Exists() {
+		return n.String()
+	}
+	return tc.Get("function.name").String()
+}
+
 // OnRequest prunes the manifest. Every failure path returns Continue with the
 // body untouched.
 func (p *ToolPrune) OnRequest(_ context.Context, pctx *pipeline.Context) (action pipeline.Action) {
@@ -189,11 +213,18 @@ func (p *ToolPrune) OnRequest(_ context.Context, pctx *pipeline.Context) (action
 	// Resolve indices from the raw bytes rather than from the parsed manifest:
 	// inference-parser drops unnamed tools, so manifest position does not
 	// reliably map back to array position.
+	forced := forcedToolName(body)
 	var victims []int
 	names := make([]string, 0, len(raw))
 	for i := range raw {
 		name := toolNameAt(body, i)
 		if name == "" {
+			continue
+		}
+		if name == forced {
+			// Removing the tool tool_choice forces would make the request
+			// invalid. Keep it and prune the rest.
+			slog.Debug("tool-prune: keeping tool forced by tool_choice", "tool", name)
 			continue
 		}
 		if _, ok := p.remove[name]; ok {

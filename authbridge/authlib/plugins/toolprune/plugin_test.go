@@ -414,3 +414,60 @@ func findMetric(t *testing.T, ms []pipeline.Metric, name string) pipeline.Metric
 	t.Fatalf("metric %q not found in %+v", name, ms)
 	return pipeline.Metric{}
 }
+
+// TestPrune_NeverRemovesForcedToolChoice: a tool_choice that forces a specific
+// tool must keep that tool, whichever dialect spells it. Removing it leaves a
+// tool_choice naming a tool absent from the manifest, which providers reject —
+// turning a cost optimisation into a 400, the one thing this plugin must never
+// do. The rest of the remove list still applies.
+func TestPrune_NeverRemovesForcedToolChoice(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+	}{
+		{
+			name: "anthropic tool_choice.name",
+			body: `{"tools":[{"name":"Read"},{"name":"WebSearch"},{"name":"NotebookEdit"}],` +
+				`"tool_choice":{"type":"tool","name":"WebSearch"}}`,
+		},
+		{
+			name: "openai tool_choice.function.name",
+			body: `{"tools":[{"type":"function","function":{"name":"Read"}},` +
+				`{"type":"function","function":{"name":"WebSearch"}},` +
+				`{"type":"function","function":{"name":"NotebookEdit"}}],` +
+				`"tool_choice":{"type":"function","function":{"name":"WebSearch"}}}`,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			// Both WebSearch (forced) and NotebookEdit are configured for removal.
+			p := configured(t, "WebSearch", "NotebookEdit")
+			pctx := inferenceCtx("/v1/messages", tc.body, "Read", "WebSearch", "NotebookEdit")
+			run(t, p, pctx)
+
+			got := string(pctx.Body)
+			if !strings.Contains(got, "WebSearch") {
+				t.Errorf("forced tool was removed — request is now invalid:\n  %s", got)
+			}
+			if strings.Contains(got, "NotebookEdit") {
+				t.Errorf("non-forced tool should still be pruned:\n  %s", got)
+			}
+		})
+	}
+}
+
+// TestPrune_ToolChoiceAutoDoesNotBlockPruning: "auto" / "none" name no tool, so
+// they must not be mistaken for a forced choice and suppress all pruning.
+func TestPrune_ToolChoiceAutoDoesNotBlockPruning(t *testing.T) {
+	for _, choice := range []string{`"auto"`, `"none"`, `{"type":"auto"}`} {
+		t.Run(choice, func(t *testing.T) {
+			body := `{"tools":[{"name":"Read"},{"name":"NotebookEdit"}],"tool_choice":` + choice + `}`
+			p := configured(t, "NotebookEdit")
+			pctx := inferenceCtx("/v1/messages", body, "Read", "NotebookEdit")
+			run(t, p, pctx)
+			if strings.Contains(string(pctx.Body), "NotebookEdit") {
+				t.Errorf("tool_choice %s should not suppress pruning:\n  %s", choice, pctx.Body)
+			}
+		})
+	}
+}

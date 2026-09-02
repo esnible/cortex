@@ -233,8 +233,15 @@ On each outbound request:
 Every byte outside the deleted array elements is unchanged. `gjson`/`sjson` are
 already in `authlib/go.mod` (currently indirect), so no new dependency.
 
-Any error or panic fails open: the original body is forwarded unmodified. A
-cost optimisation must never be able to break a request.
+Any error or panic fails open: the original body is forwarded unmodified, so the
+plugin's own failure modes cannot break a request. That is a narrower promise
+than "pruning is always safe": pruning changes the request, and whether a
+provider or gateway accepts a validly pruned manifest is outside what the plugin
+can see. `on_error: observe` is how that is established safely.
+
+A forced `tool_choice` is the one case where the manifest and another field must
+agree, so a tool named by `tool_choice` is never removed regardless of the
+configured list.
 
 ### Configuration
 

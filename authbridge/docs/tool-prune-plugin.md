@@ -124,13 +124,26 @@ rather than a silent no-op.
 
 ## Failure behaviour
 
-Every error path forwards the original bytes unmodified. A cost optimisation
-must never be able to break a request, so the plugin fails open on a malformed
-or truncated body, an unparseable manifest, a rewrite that does not shrink the
-body, a rewrite that produces invalid JSON, an unexpected tool count afterwards,
-and any panic.
+Every error path forwards the original bytes unmodified: the plugin fails open on
+a malformed or truncated body, an unparseable manifest, a rewrite that does not
+shrink the body, a rewrite that produces invalid JSON, an unexpected tool count
+afterwards, and any panic.
 
-Two specifics worth knowing:
+**What that does and does not promise.** It means the plugin's own failure modes
+cannot break a request — a bug or a surprising input forwards the original bytes
+rather than a damaged rewrite. It does **not** promise that a validly pruned
+manifest is acceptable to every provider or gateway in front of one. Pruning
+changes the request, so if a provider rejects a request for a reason the plugin
+cannot see, `on_error: observe` is how you find out safely: it counts what it
+would remove while sending the bytes untouched.
+
+Three specifics worth knowing:
+
+- **A forced `tool_choice` is never pruned.** `tool_choice: {"type":"tool",
+  "name":"X"}` (or OpenAI's `{"type":"function","function":{"name":"X"}}`) makes
+  `X` mandatory; a `tool_choice` naming a tool absent from the manifest is an
+  invalid request. `X` is kept even when the remove list names it, and the rest
+  of the list still applies.
 
 - **Nothing else in the request changes.** Deletions are surgical: every byte
   outside the removed array elements is preserved, including key order and
