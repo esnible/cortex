@@ -88,19 +88,26 @@ func TestSavedTokensAndCost_TierDecidesTheValue(t *testing.T) {
 	}
 }
 
-func TestFormatSavedCell(t *testing.T) {
-	got := formatSavedCell(33650, 10577.5, 0.05024, "default")
-	for _, want := range []string{"33,650", "−10.6k", "$0.050"} {
+// TestFormatSavedOnly: a request row carries the saving, not a total — the
+// billed token count belongs to the response, on its own row. Showing a saving
+// beside a response total read as though the response had shrunk, which it had
+// not.
+func TestFormatSavedOnly(t *testing.T) {
+	got := formatSavedOnly(10577.5, 0.05024, "default")
+	for _, want := range []string{"−10.6k", "$0.050"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("cell %q missing %q", got, want)
 		}
 	}
-	// No saving: the plain total, so unrelated rows are untouched.
-	if got := formatSavedCell(33650, 0, 0, "default"); got != "33,650" {
-		t.Errorf("no-saving cell = %q, want the bare total", got)
+	if strings.Contains(got, ",") {
+		t.Errorf("cell %q should carry no billed total", got)
+	}
+	// Nothing saved: an empty cell, so unrelated request rows stay blank.
+	if got := formatSavedOnly(0, 0, "default"); got != "" {
+		t.Errorf("no-saving cell = %q, want empty", got)
 	}
 	// Unpriced model: tokens shown, no dollar figure invented.
-	got = formatSavedCell(33650, 10577.5, 0, "none")
+	got = formatSavedOnly(10577.5, 0, "none")
 	if strings.Contains(got, "$") {
 		t.Errorf("cell %q shows a price for an unpriced model", got)
 	}

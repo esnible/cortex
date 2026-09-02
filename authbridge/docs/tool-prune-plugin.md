@@ -93,26 +93,31 @@ projection is never mistaken for a realised saving.
 
 ### Per request, in the events timeline
 
-The events pane's `TOKENS / SAVED` column shows each request's own saving beside
-its token total:
+The events pane's `TOKENS / SAVED` column splits the two halves across the rows
+they belong to — the saving on the request that was rewritten, the billed total on
+the response:
 
 ```
-#   TIME          PHASE  PLUGIN            TOKENS / SAVED           CODE
-7   16:42:53.56   req    tool-prune
-7   16:42:57.27   resp   inference-parser  33,604  −24.7k  $0.117    200
-8   16:43:11.02   resp   inference-parser  33,656  −24.7k  $0.009    200
+#   PHASE  ACTION   PLUGIN            TOKENS / SAVED     CODE
+12  req    modify   tool-prune        −24.7k  $0.117
+12  resp   observe  inference-parser  34,702             200
 ```
 
-Those two rows removed the same bytes and differ ~12x in value: the first was a
-cache miss (the manifest was written to cache, ~1.25x the input rate), the second
-a hit (read from it, ~0.1x). An aggregate averages the two into a number that
-describes neither turn, which is why the saving is shown per row.
+The saving is not shown on the response row: nothing about the response was
+reduced, and putting it there reads as though it had been. The two rows share a
+`#` so they are read together anyway.
+
+Two turns that removed the same bytes can still differ ~12x in value — a cache
+miss writes the manifest to cache (~1.25x the input rate), a hit reads it (~0.1x).
+An aggregate averages the two into a number that describes neither, which is why
+this is per row.
 
 The plugin publishes the byte saving and the applicable rates on the request
-event; the tier and the bytes-to-tokens ratio come from the paired response, so
-`abctl` finishes the arithmetic. Pairing is exact, on the proxy-stamped request
-id. A model with no rate shows the token saving without a dollar figure rather
-than one computed at another model's rate.
+event; the paired response supplies the prompt token total behind the
+bytes-to-tokens ratio and the tier that picks the rate, so `abctl` finishes the
+arithmetic. Pairing is exact, on the proxy-stamped request id. A model with no
+rate shows the token saving with no dollar figure rather than one priced at
+another model's rate.
 
 ### Why tokens are reported per tier and never summed
 

@@ -73,18 +73,14 @@ func savedTokensAndCost(ps pruneSaving, resp *pipeline.InferenceExtension) (toke
 	return tokens, tokens * rate, true
 }
 
-// formatSavedCell renders the TOKENS cell for a response row: the request's own
-// total, then what tool-prune removed from it, then what that was worth.
-//
-// Shown per request rather than only as a pane aggregate because an average
-// hides the thing an operator wants to see — cache-miss turns save an order of
-// magnitude more than cache-hit turns, and the aggregate flattens that.
-func formatSavedCell(total int, tokens, usd float64, rateSource string) string {
-	cell := formatCount(total)
+// formatSavedOnly renders a request row's saving: what was removed and what it
+// was worth. No total, because a request has no billed token count — that
+// belongs to the response, on its own row.
+func formatSavedOnly(tokens, usd float64, rateSource string) string {
 	if tokens <= 0 {
-		return cell
+		return ""
 	}
-	cell += fmt.Sprintf("  −%s", formatCompact(tokens))
+	cell := "−" + formatCompact(tokens)
 	if usd > 0 && rateSource != "none" {
 		cell += fmt.Sprintf("  $%s", formatUSD(usd))
 	}

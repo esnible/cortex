@@ -747,34 +747,43 @@ func truncateScopes(scopes []string, n int) string {
 	return strings.Join(scopes[:n], ", ") + fmt.Sprintf(" +%d more", len(scopes)-n)
 }
 
-// tokensCellWithSaving renders the TOKENS cell. For a response row that pairs
-// with a request tool-prune rewrote, it appends the tokens removed and their
-// cost — the saving belongs on the row it happened to, not only in an aggregate
-// pane where cache-miss and cache-hit turns average into a number that describes
-// neither.
+// tokensCellWithSaving renders the TOKENS / SAVED cell, splitting the two halves
+// across the rows they actually belong to:
 //
-// Returns the plain total when the row is not such a response, so every other
-// event type renders exactly as before.
+//   - a REQUEST row that tool-prune rewrote shows what was removed from it,
+//     which is where the plugin's own `modify` invocation already sits;
+//   - a RESPONSE row shows the token total the provider billed.
+//
+// The saving deliberately does NOT go on the response row. Nothing about the
+// response was reduced, and showing it there reads as though it were — the
+// pruning happened on the way out. The two rows share a # so they are read
+// together anyway.
+//
+// The response is still what makes the request-side figure computable: it
+// supplies the prompt token total behind the bytes-to-tokens ratio and the tier
+// that sets the rate. So a request row looks forward to its paired response.
 func (m *model) tokensCellWithSaving(rows []eventRow, partner map[int]int, i int, ev *pipeline.SessionEvent) string {
-	base := tokensCell(*ev)
-	if base == "" {
+	if ev.Phase == pipeline.SessionResponse {
+		return tokensCell(*ev)
+	}
+	if ev.Phase != pipeline.SessionRequest {
+		return ""
+	}
+	ps, ok := decodePruneSaving(ev)
+	if !ok {
 		return ""
 	}
 	j, ok := partner[i]
 	if !ok || j < 0 || j >= len(rows) {
-		return base
+		return "" // no response yet: the ratio and tier are not known
 	}
-	req := rows[j].event
-	if req == nil || req.Phase != pipeline.SessionRequest {
-		return base
+	resp := rows[j].event
+	if resp == nil || resp.Phase != pipeline.SessionResponse {
+		return ""
 	}
-	ps, ok := decodePruneSaving(req)
+	tokens, usd, ok := savedTokensAndCost(ps, resp.Inference)
 	if !ok {
-		return base
+		return ""
 	}
-	tokens, usd, ok := savedTokensAndCost(ps, ev.Inference)
-	if !ok {
-		return base
-	}
-	return formatSavedCell(ev.Inference.TotalTokens, tokens, usd, ps.RateSource)
+	return formatSavedOnly(tokens, usd, ps.RateSource)
 }
