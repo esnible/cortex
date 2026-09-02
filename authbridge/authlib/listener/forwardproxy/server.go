@@ -404,10 +404,12 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, isBridge 
 		// forwarding is incompatible with streaming) — fall back to
 		// buffered with a warning log instead.
 		if isEventStream(resp.Header.Get("Content-Type")) && resp.Body != nil {
-			if s.OutboundPipeline.WritesRequestBody() {
-				// A body mutator needs the whole body to rewrite it, so it
-				// can't stream — fall back to the buffered path with a warning.
-				slog.Warn("forward-proxy: text/event-stream response with WritesRequestBody plugin — falling back to buffered path", "host", r.Host)
+			if s.OutboundPipeline.WritesResponseBody() {
+				// A response mutator needs the whole response to rewrite it, so
+				// it can't stream — fall back to the buffered path with a warning.
+				// A request-only mutator does NOT land here: it never touches
+				// these bytes, so the relay stays incremental.
+				slog.Warn("forward-proxy: text/event-stream response with WritesResponseBody plugin — falling back to buffered path", "host", r.Host)
 			} else if s.OutboundPipeline.HasStreamingResponders() {
 				// Streaming-aware plugins (inference-parser, a2a-parser) parse
 				// each SSE frame; handleStreamingResponse re-frames via sseframe.

@@ -657,7 +657,7 @@ func (s *Server) handleResponseBody(ctx context.Context, body []byte, pctx *pipe
 		s.recordOutboundResponseSession(pctx)
 	}
 
-	// A plugin that declared WritesRequestBody: true and called pctx.SetResponseBody
+	// A plugin that declared WritesResponseBody: true and called pctx.SetResponseBody
 	// flips the ResponseBodyMutated flag. Emit the replacement bytes via
 	// BodyMutation so Envoy rewrites the downstream response; otherwise
 	// pass through with no mutation. The flag avoids the O(n) string

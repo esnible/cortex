@@ -118,10 +118,11 @@ func (p *CPEX) Name() string { return "cpex" }
 //     surfaces in the catalog.
 func (p *CPEX) Capabilities() pipeline.PluginCapabilities {
 	return pipeline.PluginCapabilities{
-		ReadsBody:         true,
-		WritesRequestBody: true,
-		RequiresAny:       []string{"mcp-parser", "inference-parser", "a2a-parser"},
-		Description:       "CPEX bridge: APL DSL + named CPEX plugins (Cedar, PII, audit, …) over a single chain step.",
+		ReadsBody:          true,
+		WritesRequestBody:  true,
+		WritesResponseBody: true, // cmf_body / cmf_a2a / cmf_inference rewrite responses
+		RequiresAny:        []string{"mcp-parser", "inference-parser", "a2a-parser"},
+		Description:        "CPEX bridge: APL DSL + named CPEX plugins (Cedar, PII, audit, …) over a single chain step.",
 	}
 }
 

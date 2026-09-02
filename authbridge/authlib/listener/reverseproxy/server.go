@@ -446,8 +446,8 @@ func (s *Server) modifyResponse(resp *http.Response) error {
 	if isEventStream(resp.Header.Get("Content-Type")) &&
 		s.InboundPipeline.HasStreamingResponders() &&
 		resp.Body != nil {
-		if s.InboundPipeline.WritesRequestBody() {
-			slog.Warn("reverse-proxy: text/event-stream response with WritesRequestBody plugin — falling back to buffered path", "host", pctx.Host)
+		if s.InboundPipeline.WritesResponseBody() {
+			slog.Warn("reverse-proxy: text/event-stream response with WritesResponseBody plugin — falling back to buffered path", "host", pctx.Host)
 		} else {
 			s.installStreamingResponseBody(resp, pctx)
 			// Strip Content-Length — the framing reader doesn't know

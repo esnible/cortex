@@ -368,7 +368,7 @@ func (p *Pipeline) NotReadyPlugin() string {
 func (p *Pipeline) NeedsBody() bool {
 	for _, plugin := range p.plugins {
 		caps := plugin.Capabilities().Normalize()
-		if caps.ReadsBody || caps.WritesRequestBody {
+		if caps.ReadsBody || caps.WritesRequestBody || caps.WritesResponseBody {
 			return true
 		}
 	}
@@ -383,6 +383,23 @@ func (p *Pipeline) NeedsBody() bool {
 func (p *Pipeline) WritesRequestBody() bool {
 	for _, plugin := range p.plugins {
 		if plugin.Capabilities().Normalize().WritesRequestBody {
+			return true
+		}
+	}
+	return false
+}
+
+// WritesResponseBody returns true if any plugin in the pipeline declares
+// WritesResponseBody. This is the SSE streaming predicate: a response
+// mutator needs the whole response to rewrite it, so listeners fall back
+// from incremental relay to the buffered path only when this is true.
+//
+// A request-only mutator (tool-prune, context-guru) keeps streaming: the
+// request body is already complete before dispatch, so rewriting it has
+// no bearing on how the response is relayed.
+func (p *Pipeline) WritesResponseBody() bool {
+	for _, plugin := range p.plugins {
+		if plugin.Capabilities().Normalize().WritesResponseBody {
 			return true
 		}
 	}
@@ -553,21 +570,39 @@ func (p *Pipeline) dispatchFinish(parent context.Context, name string, f Finishe
 //   - A body reader (ReadsBody) must not follow a body mutator (WritesRequestBody) —
 //     the reader would silently see mutated bytes instead of the originals.
 func validateCapabilities(plugins []Plugin) error {
-	var mutatorName string
-	var readerAfterMutator string
+	// Each direction admits at most one mutator. The rules are per-direction
+	// because ordering is only ambiguous between two plugins rewriting the
+	// same bytes; a request mutator and a response mutator never collide.
+	var requestMutator, responseMutator string
+	var firstMutator, readerAfterMutator string
 	for _, plugin := range plugins {
 		caps := plugin.Capabilities().Normalize()
 		if caps.WritesRequestBody {
-			if mutatorName != "" {
-				return fmt.Errorf("pipeline: two plugins declare WritesRequestBody: %q and %q — mutation ordering would be ambiguous; at most one body mutator per pipeline is allowed", mutatorName, plugin.Name())
+			if requestMutator != "" {
+				return fmt.Errorf("pipeline: two plugins declare WritesRequestBody: %q and %q — mutation ordering would be ambiguous; at most one request-body mutator per pipeline is allowed", requestMutator, plugin.Name())
 			}
-			mutatorName = plugin.Name()
-		} else if caps.ReadsBody && mutatorName != "" && readerAfterMutator == "" {
+			requestMutator = plugin.Name()
+		}
+		if caps.WritesResponseBody {
+			if responseMutator != "" {
+				return fmt.Errorf("pipeline: two plugins declare WritesResponseBody: %q and %q — mutation ordering would be ambiguous; at most one response-body mutator per pipeline is allowed", responseMutator, plugin.Name())
+			}
+			responseMutator = plugin.Name()
+		}
+		if caps.WritesRequestBody || caps.WritesResponseBody {
+			if firstMutator == "" {
+				firstMutator = plugin.Name()
+			}
+			continue
+		}
+		// Reader-ordering is triggered by either write flag: a reader placed
+		// after any mutator would no longer see the original bytes.
+		if caps.ReadsBody && firstMutator != "" && readerAfterMutator == "" {
 			readerAfterMutator = plugin.Name()
 		}
 	}
 	if readerAfterMutator != "" {
-		return fmt.Errorf("pipeline: plugin %q reads body after mutator %q — body readers must precede the mutator so they see the original bytes", readerAfterMutator, mutatorName)
+		return fmt.Errorf("pipeline: plugin %q reads body after mutator %q — body readers must precede the mutator so they see the original bytes", readerAfterMutator, firstMutator)
 	}
 	return nil
 }

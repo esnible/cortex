@@ -81,11 +81,17 @@ func (h *Holder) RunFinish(ctx context.Context, pctx *Context, outcome Outcome) 
 // that decide whether to buffer the request/response body.
 func (h *Holder) NeedsBody() bool { return h.p.Load().NeedsBody() }
 
-// WritesRequestBody is equivalent to h.Load().WritesRequestBody(). Listeners read this
-// when deciding whether streaming responses are safe — a pipeline with
-// a body mutator can't stream because the proxy can't rewrite a body
-// it has already started forwarding.
+// WritesRequestBody is equivalent to h.Load().WritesRequestBody().
+// Listeners read this when deciding whether to propagate a rewritten
+// request body to the wire.
 func (h *Holder) WritesRequestBody() bool { return h.p.Load().WritesRequestBody() }
+
+// WritesResponseBody is equivalent to h.Load().WritesResponseBody().
+// Listeners read this when deciding whether streaming responses are safe
+// — a pipeline with a response mutator can't stream, because the proxy
+// can't rewrite a body it has already started forwarding. A request-only
+// mutator does not disable streaming.
+func (h *Holder) WritesResponseBody() bool { return h.p.Load().WritesResponseBody() }
 
 // Ready is equivalent to h.Load().Ready().
 func (h *Holder) Ready() bool { return h.p.Load().Ready() }
