@@ -55,9 +55,9 @@ type config struct {
 	Paths []string `json:"paths" description:"Request paths to act on (exact or suffix match)."`
 
 	// Pricing gives per-token rates per model. Rates are per model because they
-	// differ enormously: on one observed gateway claude-opus-5 bills input at
-	// $3.80/Mtok, sonnet at $1.52 and haiku at $0.76 — a 5x spread, so one flat
-	// rate misprices by that factor depending on which model served the request.
+	// differ enormously: across the Claude family the input rate spans roughly
+	// 5x (opus 1.0x, sonnet ~0.4x, haiku ~0.2x), so one flat rate misprices by
+	// that factor depending on which model served the request.
 	// Keys match the model name the parser records
 	// (pctx.Extensions.Inference.Model), matched case-insensitively.
 	Pricing map[string]modelRates `json:"pricing" description:"Per-token rates keyed by model name."`

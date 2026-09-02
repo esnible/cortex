@@ -114,33 +114,29 @@ rather than bundling a tokenizer or assuming a constant.
 ### Costing it
 
 No price is assumed. Rates are keyed **per model**, because they differ far more
-than the tiers do — on one observed gateway:
-
-| model | input | vs opus |
-|---|---|---|
-| `claude-opus-5` | $3.80/Mtok | 1.0x |
-| `aws/claude-sonnet-5` | $1.52/Mtok | 0.4x |
-| `aws/claude-haiku-4-5` | $0.76/Mtok | 0.2x |
-
-A single flat rate misprices by up to 5x depending on which model served the
-request, so each request is priced at its own model's rate and the dollars are
-accumulated — never a blended token total multiplied by one number.
+than the tiers do. On one gateway the input rate varied 5x across the
+Claude family — opus at 1.0x, sonnet at ~0.4x, haiku at ~0.2x — so a single flat
+rate misprices the saving by that factor depending on which model served the
+request. Each request is therefore priced at its own model's rate and the dollars
+accumulated, never a blended token total multiplied by one number.
 
 ```yaml
 - name: tool-prune
   config:
     remove: [CronCreate, NotebookEdit]
     pricing:
+      # Your gateway's rates, in USD per token. The values below are
+      # placeholders — see "Deriving your own rates" below.
       claude-opus-5:
-        input_cost_per_token: 0.0000038
-        cache_write_cost_per_token: 0.00000475
-        cache_read_cost_per_token: 0.00000038
+        input_cost_per_token: 0.0
+        cache_write_cost_per_token: 0.0
+        cache_read_cost_per_token: 0.0
       aws/claude-sonnet-5:
-        input_cost_per_token: 0.00000152
-        cache_write_cost_per_token: 0.0000019
-        cache_read_cost_per_token: 0.000000152
+        input_cost_per_token: 0.0
+        cache_write_cost_per_token: 0.0
+        cache_read_cost_per_token: 0.0
     # optional fallback for models absent from the table
-    input_cost_per_token: 0.0000038
+    input_cost_per_token: 0.0
 ```
 
 Model keys match what the parser records (`Extensions.Inference.Model`) and are
@@ -162,9 +158,9 @@ There is deliberately no output rate: pruning only shrinks the prompt.
 responses (LiteLLM's `x-litellm-response-cost`), send two non-streaming requests
 of different prompt length and difference them: `rate = Δcost / Δinput_tokens`.
 Repeat with a `cache_control` block sent twice to get the write and read rates.
-This is exact and specific to your deployment — it is how the numbers in the
-table above were obtained, and they came out 4x below list because that gateway
-bills negotiated rates.
+This is exact and specific to your deployment. Do not assume list pricing: a
+shared or enterprise gateway commonly bills at negotiated rates well below it,
+and using list would overstate the saving by whatever that discount is.
 
 Why rates rather than the gateway's own number: LiteLLM reports
 `x-litellm-response-cost: 0` for **streaming** responses, because the total is

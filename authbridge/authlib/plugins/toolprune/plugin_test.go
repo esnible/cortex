@@ -386,19 +386,17 @@ func TestMetrics_NoRatesMeansNoDollarFigure(t *testing.T) {
 // published ratios, differ by more than an order of magnitude. A flat rate would
 // be wrong by that factor.
 func TestMetrics_TierRatesDifferBy12x(t *testing.T) {
-	const inputRate = 15.0 / 1e6 // USD per token
 	cfg := func(t *testing.T) *ToolPrune {
 		p := New()
 		raw := []byte(`{"remove":["NotebookEdit"],` +
-			`"input_cost_per_token":1.5e-05,` +
-			`"cache_write_cost_per_token":1.875e-05,` + // 1.25x input
-			`"cache_read_cost_per_token":1.5e-06}`) // 0.1x input
+			`"input_cost_per_token":1e-05,` +
+			`"cache_write_cost_per_token":1.25e-05,` + // 1.25x input
+			`"cache_read_cost_per_token":1e-06}`) // 0.1x input
 		if err := p.Configure(raw); err != nil {
 			t.Fatal(err)
 		}
 		return p
 	}
-	_ = inputRate
 
 	write := cfg(t)
 	finish(t, write, pruneOnce(t, write), 0, 0, 24701)
@@ -650,14 +648,15 @@ func pruneWithModel(t *testing.T, p *ToolPrune, model string) {
 }
 
 const perModelCfg = `{"remove":["NotebookEdit"],"pricing":{
-  "claude-opus-5":       {"input_cost_per_token":3.8e-06,"cache_write_cost_per_token":4.75e-06,"cache_read_cost_per_token":3.8e-07},
-  "aws/claude-sonnet-5": {"input_cost_per_token":1.52e-06,"cache_write_cost_per_token":1.9e-06,"cache_read_cost_per_token":1.52e-07},
-  "aws/claude-haiku-4-5":{"input_cost_per_token":7.6e-07,"cache_write_cost_per_token":9.5e-07,"cache_read_cost_per_token":7.6e-08}}}`
+  "claude-opus-5":       {"input_cost_per_token":1e-05,"cache_write_cost_per_token":1.25e-05,"cache_read_cost_per_token":1e-06},
+  "aws/claude-sonnet-5": {"input_cost_per_token":4e-06,"cache_write_cost_per_token":5e-06,"cache_read_cost_per_token":4e-07},
+  "aws/claude-haiku-4-5":{"input_cost_per_token":2e-06,"cache_write_cost_per_token":2.5e-06,"cache_read_cost_per_token":2e-07}}}`
 
-// TestPricing_PerModelRatesDiffer is why pricing is keyed by model. On one
-// observed gateway opus bills input at $3.80/Mtok, sonnet $1.52 and haiku $0.76
-// — a 5x spread. Charging every request at one rate would misstate the saving by
-// that factor depending on which model happened to serve it.
+// TestPricing_PerModelRatesDiffer is why pricing is keyed by model. Across the
+// Claude family the input rate spans roughly 5x (opus 1.0x, sonnet ~0.4x, haiku
+// ~0.2x). Charging every request at one rate would misstate the saving by that
+// factor depending on which model happened to serve it. The rates below are
+// synthetic, chosen to reproduce those ratios exactly.
 func TestPricing_PerModelRatesDiffer(t *testing.T) {
 	usd := map[string]float64{}
 	for _, model := range []string{"claude-opus-5", "aws/claude-sonnet-5", "aws/claude-haiku-4-5"} {
@@ -705,8 +704,8 @@ func TestPricing_UnknownModelIsCountedNotGuessed(t *testing.T) {
 // TestPricing_FlatRatesActAsFallback keeps the simpler single-model config
 // working: a model absent from the table is priced at the flat rates when set.
 func TestPricing_FlatRatesActAsFallback(t *testing.T) {
-	p := configuredJSON(t, `{"remove":["NotebookEdit"],"input_cost_per_token":3.8e-06,
-	  "pricing":{"aws/claude-haiku-4-5":{"input_cost_per_token":7.6e-07}}}`)
+	p := configuredJSON(t, `{"remove":["NotebookEdit"],"input_cost_per_token":1e-05,
+	  "pricing":{"aws/claude-haiku-4-5":{"input_cost_per_token":2e-06}}}`)
 	pruneWithModel(t, p, "some-other-model")
 	if findMetric(t, p.Metrics(), "$ saved").Value <= 0 {
 		t.Error("a model absent from pricing should fall back to the flat rates")
@@ -721,7 +720,7 @@ func TestPricing_FlatRatesActAsFallback(t *testing.T) {
 // TestPricing_ModelMatchIsCaseInsensitive: gateways vary in how they echo model
 // names, and a case mismatch would silently unprice the traffic.
 func TestPricing_ModelMatchIsCaseInsensitive(t *testing.T) {
-	p := configuredJSON(t, `{"remove":["NotebookEdit"],"pricing":{"Claude-Opus-5":{"input_cost_per_token":3.8e-06}}}`)
+	p := configuredJSON(t, `{"remove":["NotebookEdit"],"pricing":{"Claude-Opus-5":{"input_cost_per_token":1e-05}}}`)
 	pruneWithModel(t, p, "claude-opus-5")
 	if findMetric(t, p.Metrics(), "$ saved").Value <= 0 {
 		t.Error("model lookup should be case-insensitive")
