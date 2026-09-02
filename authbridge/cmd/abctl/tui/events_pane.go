@@ -3,7 +3,6 @@ package tui
 import (
 	"fmt"
 	"net"
-	"sort"
 	"strconv"
 	"strings"
 
@@ -90,17 +89,15 @@ func (m *model) rebuildEventsTable() {
 	// shape as a plaintext call.
 	eventRows := buildEventRows(events)
 
-	// Pair request rows with their response rows. ids drives the # column
-	// (one integer repeated across a request/response exchange); partner
-	// drives the PHASE-column span glyphs (┌/│/└) that visually bracket each
-	// exchange even when other events interleave between request and response.
-	ids, partner := computeEventPairs(eventRows)
-	glyphs := computeSpanGlyphs(partner, len(eventRows))
+	// Pair request rows with their response rows. ids drives the # column: one
+	// integer repeated across a request/response exchange, which is how an
+	// exchange is read off the timeline.
+	ids, _ := computeEventPairs(eventRows)
 
 	rows := make([]table.Row, 0, len(eventRows))
 	m.visibleRows = m.visibleRows[:0]
 	m.hiddenInactive = 0
-	for i, er := range eventRows {
+	for _, er := range eventRows {
 		ev := er.event
 		if m.filter != "" && !matchEventRow(er, m.filter) {
 			continue
@@ -121,15 +118,15 @@ func (m *model) rebuildEventsTable() {
 		if id, ok := ids[ev]; ok {
 			idCell = strconv.Itoa(id)
 		}
-		// Prefix PHASE with the span glyph for this row's exchange. A request
-		// paired with a later response renders ┌; the response renders └;
-		// events nested between them render │ (with a second level when an
-		// inner exchange sits inside an outer one, e.g. inference calls inside
-		// an a2a message/stream). Unpaired rows get no prefix.
+		// PHASE carries no bracket glyphs. They were box-drawing corners
+		// (┌/│/└) meant to visually connect a request to its response, and they
+		// could only ever be correct for exchanges that NEST. Concurrent
+		// requests cross instead: A starts, B starts, A ends, B ends — for
+		// which a tree has no notation, so both rows claimed to contain each
+		// other and the output was actively misleading. The # column pairs
+		// exchanges exactly (by the proxy-stamped RequestID), which is what the
+		// glyphs were a lossy approximation of.
 		phaseCell := shortPhase(ev.Phase)
-		if p := glyphs[i].prefix(); p != "" {
-			phaseCell = p + " " + phaseCell
-		}
 		rows = append(rows, table.Row{
 			idCell,
 			ev.At.Format("15:04:05.00"),
@@ -569,112 +566,6 @@ func computeEventPairs(rows []eventRow) (map[*pipeline.SessionEvent]int, map[int
 		ids[e] = next
 	}
 	return ids, partner
-}
-
-// spanGlyph names which corner / side of a (request, response) exchange a row
-// sits at, for the tree-style bracket in the PHASE column. rune (not byte)
-// because the box-drawing characters are multi-byte in UTF-8.
-type spanGlyph rune
-
-const (
-	glyphNone   spanGlyph = 0
-	glyphStart  spanGlyph = '┌' // request row that pairs with a later response
-	glyphMiddle spanGlyph = '│' // row between a paired request and its response
-	glyphEnd    spanGlyph = '└' // response row paired with an earlier request
-)
-
-// spanLevels holds the box-drawing glyphs for up to two nested exchanges on a
-// single row. outer is the widest exchange containing the row; inner is the
-// next-widest. Deeper nesting is dropped — operators only need the broad
-// shape, and the PHASE column has a finite width budget.
-type spanLevels struct {
-	outer spanGlyph
-	inner spanGlyph
-}
-
-// prefix returns the concatenated rune string for the PHASE-column prefix:
-// e.g. "│┌" when the row is inside an outer exchange and opens an inner one;
-// "└" alone when only an outer endpoint applies; "" when the row is in no
-// exchange span.
-func (s spanLevels) prefix() string {
-	switch {
-	case s.outer == glyphNone:
-		return ""
-	case s.inner == glyphNone:
-		return string(rune(s.outer))
-	default:
-		return string([]rune{rune(s.outer), rune(s.inner)})
-	}
-}
-
-// computeSpanGlyphs assigns each row up to two tree glyphs (outer + inner)
-// from its position relative to all (request, response) exchange spans. The
-// two widest spans containing the row are surfaced; deeper nesting is dropped
-// so the PHASE column doesn't blow its width budget.
-//
-// pairs is the bidirectional map from computeEventPairs: pairs[i]=j AND
-// pairs[j]=i for any matched pair (i, j). Unpaired rows are absent. n is the
-// total row count.
-func computeSpanGlyphs(pairs map[int]int, n int) []spanLevels {
-	out := make([]spanLevels, n)
-	if len(pairs) == 0 {
-		return out
-	}
-	// Collect each pair (a, b) with a < b once; the resp→req mirror entries
-	// are skipped.
-	type span struct{ a, b int }
-	spans := make([]span, 0, len(pairs)/2)
-	for a, b := range pairs {
-		if a < b {
-			spans = append(spans, span{a, b})
-		}
-	}
-
-	glyphAt := func(s span, i int) spanGlyph {
-		switch {
-		case i == s.a:
-			return glyphStart
-		case i == s.b:
-			return glyphEnd
-		case s.a < i && i < s.b:
-			return glyphMiddle
-		}
-		return glyphNone
-	}
-
-	for i := range n {
-		// Find every span this row participates in (endpoint or strictly
-		// inside).
-		var participating []span
-		for _, s := range spans {
-			if s.a <= i && i <= s.b {
-				participating = append(participating, s)
-			}
-		}
-		if len(participating) == 0 {
-			continue
-		}
-		// Sort by width descending — widest first, narrowest last. Stable so
-		// equal-width spans keep declaration order (deterministic tests).
-		sort.SliceStable(participating, func(p, q int) bool {
-			return (participating[p].b - participating[p].a) >
-				(participating[q].b - participating[q].a)
-		})
-		// outer = the widest containing span (the broadest context). inner =
-		// the NARROWEST containing span — the row's own tightest exchange —
-		// NOT the second-widest. A row that is an endpoint of a deeply-nested
-		// pair must still show its ┌/└ corner so its request and response
-		// connect visually; picking the second-widest would let an
-		// intermediate enclosing span's middle bar mask it. Example: a
-		// tools/list pair nested inside both an a2a message/stream span and a
-		// long-lived $transport/stream span would otherwise render "││" on
-		// both rows instead of "│┌" / "│└".
-		out[i].outer = glyphAt(participating[0], i)
-		if len(participating) > 1 {
-			out[i].inner = glyphAt(participating[len(participating)-1], i)
-		}
-	}
-	return out
 }
 
 // matchEventRow does a case-insensitive substring match across every string

@@ -655,121 +655,11 @@ func TestHostOnly(t *testing.T) {
 	}
 }
 
-// TestSpanLevels_Prefix locks the PHASE-column prefix: empty levels render as
-// empty string; one level renders one glyph; two levels render two glyphs.
-func TestSpanLevels_Prefix(t *testing.T) {
-	cases := []struct {
-		name string
-		s    spanLevels
-		want string
-	}{
-		{"none", spanLevels{}, ""},
-		{"outer only — start", spanLevels{outer: glyphStart}, "┌"},
-		{"outer only — middle", spanLevels{outer: glyphMiddle}, "│"},
-		{"outer only — end", spanLevels{outer: glyphEnd}, "└"},
-		{"both — outer middle, inner start", spanLevels{outer: glyphMiddle, inner: glyphStart}, "│┌"},
-		{"both — outer middle, inner end", spanLevels{outer: glyphMiddle, inner: glyphEnd}, "│└"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			if got := tc.s.prefix(); got != tc.want {
-				t.Errorf("prefix() = %q, want %q", got, tc.want)
-			}
-		})
-	}
-}
-
-// TestComputeSpanGlyphs covers per-row tree-glyph assignment for the PHASE
-// column. Up to two levels of (request, response) nesting are surfaced — the
-// widest containing span as outer, the next-widest as inner, deeper dropped.
-func TestComputeSpanGlyphs(t *testing.T) {
-	none := spanLevels{}
-	outer := func(g spanGlyph) spanLevels { return spanLevels{outer: g} }
-	both := func(o, i spanGlyph) spanLevels { return spanLevels{outer: o, inner: i} }
-
-	cases := []struct {
-		name  string
-		pairs map[int]int
-		n     int
-		want  []spanLevels
-	}{
-		{"no pairs", nil, 3, []spanLevels{none, none, none}},
-		{
-			name:  "adjacent pair",
-			pairs: map[int]int{0: 1, 1: 0},
-			n:     2,
-			want:  []spanLevels{outer(glyphStart), outer(glyphEnd)},
-		},
-		{
-			name:  "one row in between",
-			pairs: map[int]int{0: 2, 2: 0},
-			n:     3,
-			want:  []spanLevels{outer(glyphStart), outer(glyphMiddle), outer(glyphEnd)},
-		},
-		{
-			// The real shape: an outer a2a exchange (0,5) bracketing two inner
-			// inference exchanges (1,2) and (3,4).
-			name: "nested exchanges (a2a containing two inference calls)",
-			pairs: map[int]int{
-				0: 5, 5: 0,
-				1: 2, 2: 1,
-				3: 4, 4: 3,
-			},
-			n: 6,
-			want: []spanLevels{
-				outer(glyphStart),
-				both(glyphMiddle, glyphStart),
-				both(glyphMiddle, glyphEnd),
-				both(glyphMiddle, glyphStart),
-				both(glyphMiddle, glyphEnd),
-				outer(glyphEnd),
-			},
-		},
-		{
-			// The #52 case: a pair (2,3) nested THREE deep — inside a middle
-			// span (1,4) inside an outer span (0,5). The innermost pair's
-			// endpoints must still show their ┌/└ corners (so its req/resp
-			// connect) rather than the middle span's bar masking them. inner =
-			// the row's narrowest containing span, not the second-widest.
-			name: "triple-nested innermost pair keeps its corners",
-			pairs: map[int]int{
-				0: 5, 5: 0,
-				1: 4, 4: 1,
-				2: 3, 3: 2,
-			},
-			n: 6,
-			want: []spanLevels{
-				outer(glyphStart),             // 0: outer starts
-				both(glyphMiddle, glyphStart), // 1: outer mid, middle-span starts
-				both(glyphMiddle, glyphStart), // 2: outer mid, innermost STARTS (was masked to middle)
-				both(glyphMiddle, glyphEnd),   // 3: outer mid, innermost ENDS (was masked to middle)
-				both(glyphMiddle, glyphEnd),   // 4: outer mid, middle-span ends
-				outer(glyphEnd),               // 5: outer ends
-			},
-		},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := computeSpanGlyphs(tc.pairs, tc.n)
-			if len(got) != len(tc.want) {
-				t.Fatalf("len = %d, want %d", len(got), len(tc.want))
-			}
-			for i := range tc.want {
-				if got[i] != tc.want[i] {
-					t.Errorf("row %d: got {outer=%q inner=%q}, want {outer=%q inner=%q}",
-						i, string(rune(got[i].outer)), string(rune(got[i].inner)),
-						string(rune(tc.want[i].outer)), string(rune(tc.want[i].inner)))
-				}
-			}
-		})
-	}
-}
-
-// TestComputeEventPairs_NestedExchangeGlyphs is the end-to-end #23 shape: an
+// TestComputeEventPairs_NestedExchanges is the end-to-end #23 shape: an
 // inbound a2a message/stream request, two outbound inference exchanges during
 // processing, then the a2a response. The a2a request/response must pair and
-// bracket (┌ … └) with the inference exchanges nested (│┌ … │└) inside.
-func TestComputeEventPairs_NestedExchangeGlyphs(t *testing.T) {
+// exchange, with the inference exchanges falling inside its window.
+func TestComputeEventPairs_NestedExchanges(t *testing.T) {
 	a2aReq := pipeline.SessionEvent{Direction: pipeline.Inbound, Phase: pipeline.SessionRequest,
 		Host: "claude-agent", A2A: &pipeline.A2AExtension{Method: "message/stream"}}
 	infReq1 := pipeline.SessionEvent{Direction: pipeline.Outbound, Phase: pipeline.SessionRequest,
@@ -795,12 +685,9 @@ func TestComputeEventPairs_NestedExchangeGlyphs(t *testing.T) {
 		t.Errorf("a2a req/resp should share #, got %d vs %d", ids[&events[0]], ids[&events[5]])
 	}
 
-	glyphs := computeSpanGlyphs(partner, len(rows))
-	want := []string{"┌", "│┌", "│└", "│┌", "│└", "└"}
-	for i, w := range want {
-		if got := glyphs[i].prefix(); got != w {
-			t.Errorf("row %d prefix = %q, want %q", i, got, w)
-		}
+	// The inner inference exchanges pair with each other, not across.
+	if partner[1] != 2 || partner[3] != 4 {
+		t.Errorf("inner exchanges should pair 1↔2 and 3↔4, got partner=%v", partner)
 	}
 }
 
