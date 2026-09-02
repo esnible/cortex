@@ -119,6 +119,7 @@ func (p *BudgetTrack) Name() string { return "litellm-budget-track" }
 
 func (p *BudgetTrack) Capabilities() pipeline.PluginCapabilities {
 	return pipeline.PluginCapabilities{
+		Directions: []pipeline.Direction{pipeline.Inbound},
 		// ReadsBody: the plugin parses the response body (streamed usage). It
 		// makes Pipeline.NeedsBody() true so the extproc (envoy-sidecar) listener
 		// buffers the response body and takes its body-phase branch; without it
@@ -129,6 +130,12 @@ func (p *BudgetTrack) Capabilities() pipeline.PluginCapabilities {
 		ReadsBody:   true,
 		Description: "Track LLM cost (response header or streamed usage) and enforce a daily budget.",
 	}
+}
+
+// ConfigSchema implements pipeline.SchemaProvider; surfaces field
+// metadata to abctl edit templates and other config-aware tooling.
+func (p *BudgetTrack) ConfigSchema() []pipeline.FieldSchema {
+	return pipeline.SchemaOf(budgetTrackConfig{})
 }
 
 func (p *BudgetTrack) Configure(raw json.RawMessage) error {

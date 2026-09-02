@@ -167,3 +167,28 @@ func TestSchemaOf_SelfReferentialIsBounded(t *testing.T) {
 		cur = cur.Fields[1]
 	}
 }
+
+// floats is a separate fixture rather than an extension of `primitives`
+// so TestSchemaOf_Primitives' exact-match assertion stays untouched.
+type floats struct {
+	Budget    float64 `json:"budget" required:"true" description:"Daily budget in USD."`
+	Rate32    float32 `json:"rate32" description:"Narrower float still maps to number."`
+	Whole     int     `json:"whole" description:"Integral kinds must NOT become number."`
+	AlsoWhole int64   `json:"also_whole"`
+}
+
+// Float fields report "number", distinct from "int", so a template can
+// tell a per-token cost from a port number. litellm-budget-track is the
+// first plugin to expose float config, which is what motivated the type.
+func TestSchemaOf_Floats(t *testing.T) {
+	got := SchemaOf(floats{})
+	want := []FieldSchema{
+		{Name: "budget", Type: "number", Required: true, Description: "Daily budget in USD."},
+		{Name: "rate32", Type: "number", Description: "Narrower float still maps to number."},
+		{Name: "whole", Type: "int", Description: "Integral kinds must NOT become number."},
+		{Name: "also_whole", Type: "int"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("SchemaOf floats:\n got: %+v\nwant: %+v", got, want)
+	}
+}

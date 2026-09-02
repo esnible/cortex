@@ -89,7 +89,8 @@ The UI has these top-level panes. `Enter` drills in; `Esc` backs out.
   Lists every plugin the running binary knows how to construct,
   including ones not in the active pipeline. Useful for discovering
   what's available before adding to the pipeline. Sourced from
-  `/v1/plugins`.
+  `/v1/plugins`, which also reports each plugin's supported chain(s)
+  as `directions`.
 
 ## Keybindings
 
@@ -130,6 +131,10 @@ and asks `apply this change? (y/N)`. Confirming runs
 edit), then polls the framework's `/reload/status` until the reload
 completes (success or failure).
 
+Each template block in the reference carries a `# chain:` line naming
+the pipeline(s) that plugin declares support for, so you can tell where
+to paste it before you do. Plugins that declare nothing get no line.
+
 The single edit flow covers four operations:
 - **Edit a value** — change a config field of an existing plugin
 - **Reorder** — move a plugin's lines up or down
@@ -159,6 +164,21 @@ discover them at hot-reload:
 The y/N prompt becomes "apply anyway? (y/N)" — abctl's check is
 non-blocking. The framework's own validateRelationships is the
 source of truth and will fire again at reload regardless.
+
+Advisories are reported separately, under their own banner, because
+the framework will *accept* them:
+
+```text
+1 advisory — reload will accept, but check:
+  • [outbound] jwt-validation pos 2: declared for inbound; likely belongs in the inbound chain
+```
+
+Today the only advisory is a plugin placed in a chain it doesn't
+declare support for (the `directions` field on `/v1/plugins`). Such a
+plugin runs, typically as dead code — an inbound validator that never
+sees a token, a parser whose protocol never appears on that side. The
+agent logs the same mismatch as a startup WARN. Advisories alone leave
+the prompt as "apply this change? (y/N)": there is nothing to override.
 
 Validation is silently skipped when the catalog isn't loaded
 (operator hasn't pressed `P` yet). Visit the catalog pane once to

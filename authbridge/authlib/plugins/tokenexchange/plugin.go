@@ -357,6 +357,7 @@ func (p *TokenExchange) Name() string { return "token-exchange" }
 
 func (p *TokenExchange) Capabilities() pipeline.PluginCapabilities {
 	return pipeline.PluginCapabilities{
+		Directions:  []pipeline.Direction{pipeline.Outbound},
 		Description: "RFC 8693 outbound token exchange per route. Supports Keycloak, Entra ID, Okta, and any RFC 8693-compliant IdP.",
 	}
 }

@@ -44,7 +44,7 @@ type mcpConfig struct {
 	// Path-shape detection only fires on body-less requests; body-
 	// having JSON-RPC requests are parsed regardless of path (the
 	// JSON-RPC body itself is the protocol signal).
-	Paths []string `json:"paths"`
+	Paths []string `json:"paths" description:"URL path globs treated as MCP endpoints for body-less request detection." default:"[\"/mcp\"]"`
 }
 
 func (c *mcpConfig) applyDefaults() {
@@ -88,9 +88,16 @@ func (p *MCPParser) Name() string { return "mcp-parser" }
 
 func (p *MCPParser) Capabilities() pipeline.PluginCapabilities {
 	return pipeline.PluginCapabilities{
+		Directions:  []pipeline.Direction{pipeline.Outbound},
 		ReadsBody:   true,
 		Description: "Parses MCP tool calls/results into pctx.Extensions.MCP.",
 	}
+}
+
+// ConfigSchema implements pipeline.SchemaProvider; surfaces field
+// metadata to abctl edit templates and other config-aware tooling.
+func (p *MCPParser) ConfigSchema() []pipeline.FieldSchema {
+	return pipeline.SchemaOf(mcpConfig{})
 }
 
 // Configure decodes the optional `paths` list and compiles a path

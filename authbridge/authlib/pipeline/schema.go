@@ -54,7 +54,10 @@ type FieldSchema struct {
 
 	// Type is a coarse-grained category sufficient to render templates
 	// and pick value placeholders. One of:
-	//   "string", "int", "bool", "[]string", "object", "unknown".
+	//   "string", "int", "number", "bool", "[]string", "object", "unknown".
+	// "number" is a float (per-token costs, budgets); "int" stays
+	// reserved for integral kinds so a template can emit "0" vs "0.0"
+	// appropriately.
 	// "object" indicates a nested struct whose fields populate Fields.
 	// "unknown" covers shapes the helper hasn't been taught (maps,
 	// slice-of-struct, etc.); the field still renders but without a
@@ -174,6 +177,8 @@ func kindOf(t reflect.Type) string {
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
 		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
 		return "int"
+	case reflect.Float32, reflect.Float64:
+		return "number"
 	case reflect.Slice:
 		// Only []string gets a typed tag; other slices are "unknown"
 		// (slice-of-struct, slice-of-map, etc. are rare in plugin

@@ -205,6 +205,7 @@ func (p *SPARC) Name() string { return "sparc" }
 
 func (p *SPARC) Capabilities() pipeline.PluginCapabilities {
 	return pipeline.PluginCapabilities{
+		Directions: []pipeline.Direction{pipeline.Outbound},
 		// Needs a parser to supply SPARC's inputs. inference-parser provides the
 		// conversation + tool specs (both modes); mcp-parser provides the tool
 		// call (mcp mode). RequiresAny is a static "at least one" check; the

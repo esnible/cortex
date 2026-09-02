@@ -1,6 +1,9 @@
 package pipeline
 
-import "context"
+import (
+	"context"
+	"slices"
+)
 
 // Plugin is the interface that all pipeline extensions implement.
 type Plugin interface {
@@ -60,6 +63,25 @@ type PluginCapabilities struct {
 	// of running the guardrail as silent dead code.
 	RequiresAny []string
 
+	// Directions declares which pipeline chains this plugin is designed
+	// to run in. Advisory metadata only: nothing rejects a plugin that
+	// is configured into another chain, because no plugin enforces
+	// direction at runtime (opa, the one plugin that cares, merely
+	// branches on pctx.Direction). A mismatch produces a startup WARN
+	// from plugins.WarnPluginDirections and an advisory in abctl's
+	// pre-apply validator.
+	//
+	// Nil or empty means unconstrained — the plugin makes no claim and
+	// no warning is ever emitted for it. That is the zero value, so
+	// out-of-tree plugins and test stubs need no change.
+	//
+	// This is the machine-readable form of the Direction column in
+	// authbridge/docs/plugin-catalog.md, and it is what lets config
+	// generators place a plugin in the right chain without a
+	// hand-maintained table. Use Supports to test membership rather
+	// than scanning the slice directly.
+	Directions []Direction
+
 	// Description is operator-facing prose, one line, ≤80 chars,
 	// describing what this plugin does. Surfaces in `abctl`'s
 	// plugin-detail and catalog panes, and in /v1/plugins.
@@ -71,15 +93,58 @@ type PluginCapabilities struct {
 	Description string
 }
 
-// Normalize applies WritesBody-implies-ReadsBody promotion.
+// Normalize applies WritesBody-implies-ReadsBody promotion and puts
+// Directions into a canonical form (de-duplicated, ascending).
 // Called by Pipeline.New for every plugin's declared capabilities so the
 // rest of the framework reads a normalized form. Plugins never need to
 // call this themselves.
+//
+// Canonicalizing Directions matters because the catalog is cached and
+// compared: a hand-written literal of {Outbound, Inbound} and one of
+// {Inbound, Outbound} describe the same plugin and must not produce two
+// different wire representations. Normalize copies the slice rather than
+// sorting in place, so a plugin returning a shared backing array from
+// Capabilities() can't have it reordered underneath it.
 func (c PluginCapabilities) Normalize() PluginCapabilities {
 	if c.WritesBody {
 		c.ReadsBody = true
 	}
+	c.Directions = canonicalDirections(c.Directions)
 	return c
+}
+
+// canonicalDirections returns a de-duplicated, ascending copy of in.
+// Returns nil for empty input so the "unconstrained" case stays a nil
+// slice all the way to the wire (where it elides via omitempty).
+func canonicalDirections(in []Direction) []Direction {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]Direction, 0, len(in))
+	for _, d := range in {
+		if !slices.Contains(out, d) {
+			out = append(out, d)
+		}
+	}
+	slices.Sort(out)
+	return out
+}
+
+// Supports reports whether the plugin declares itself usable in the
+// given direction. A plugin with no declared Directions is
+// unconstrained and supports every direction, so this returns true —
+// callers get "no objection" rather than "no support" for the zero
+// value, which is what keeps the field advisory and backward
+// compatible.
+//
+// Every consumer (the startup warning, abctl's validator, the template
+// renderer) goes through this method so the membership rule lives in
+// one place.
+func (c PluginCapabilities) Supports(d Direction) bool {
+	if len(c.Directions) == 0 {
+		return true
+	}
+	return slices.Contains(c.Directions, d)
 }
 
 // Initializer is an optional interface a plugin may implement when it

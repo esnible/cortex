@@ -194,6 +194,7 @@ func (p *TokenBroker) Name() string { return "token-broker" }
 
 func (p *TokenBroker) Capabilities() pipeline.PluginCapabilities {
 	return pipeline.PluginCapabilities{
+		Directions:  []pipeline.Direction{pipeline.Outbound},
 		Description: "Token broker: exchanges incoming tokens against the configured IdP.",
 	}
 }

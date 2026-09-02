@@ -280,6 +280,7 @@ func (p *IBAC) Name() string { return "ibac" }
 
 func (p *IBAC) Capabilities() pipeline.PluginCapabilities {
 	return pipeline.PluginCapabilities{
+		Directions: []pipeline.Direction{pipeline.Outbound},
 		// At least one outbound protocol parser must run before IBAC.
 		// IBAC is a defense-in-depth layer that only fires on traffic
 		// a parser classified — without a parser, IBAC has no way to

@@ -222,6 +222,7 @@ func (p *JWTValidation) Name() string { return "jwt-validation" }
 
 func (p *JWTValidation) Capabilities() pipeline.PluginCapabilities {
 	return pipeline.PluginCapabilities{
+		Directions:  []pipeline.Direction{pipeline.Inbound},
 		Description: "Inbound JWT validation (signature, issuer, audience) against JWKS.",
 	}
 }

@@ -87,20 +87,34 @@ func renderEditOverlay(s editState, width, height int) string {
 		// Validation banner: render BEFORE the diff so operators see
 		// dependency issues at first glance. Non-blocking — apply still
 		// works.
-		if len(s.validationErrs) > 0 {
+		//
+		// Errors and warnings get separate banners because they make
+		// different promises: an error means the framework's reload WILL
+		// reject the pipeline, while a warning (a plugin in a chain it
+		// doesn't declare) reloads fine and merely looks wrong. Folding
+		// the two together would make the "will reject" line false.
+		vErrs, vWarns := splitBySeverity(s.validationErrs)
+		if len(vErrs) > 0 {
 			b.WriteString(styleError.Render(fmt.Sprintf(
 				"⚠ %d validation issue%s — framework reload will reject:",
-				len(s.validationErrs), plural(len(s.validationErrs)))))
+				len(vErrs), plural(len(vErrs)))))
 			b.WriteString("\n")
-			for _, ve := range s.validationErrs {
-				b.WriteString(fmt.Sprintf("  • [%s] %s pos %d: %s\n",
-					ve.Direction, ve.PluginName, ve.Position, ve.Message))
-			}
+			writeValidationLines(&b, vErrs)
+			b.WriteString("\n")
+		}
+		if len(vWarns) > 0 {
+			b.WriteString(styleWarn.Render(fmt.Sprintf(
+				"%d advisory — reload will accept, but check:",
+				len(vWarns))))
+			b.WriteString("\n")
+			writeValidationLines(&b, vWarns)
 			b.WriteString("\n")
 		}
 		b.WriteString(s.diff)
 		b.WriteString("\n")
-		if len(s.validationErrs) > 0 {
+		// "anyway" is warranted only when the framework will actually
+		// reject; an advisory doesn't change what apply does.
+		if len(vErrs) > 0 {
 			b.WriteString(styleHint.Render("apply anyway? (y/N)"))
 		} else {
 			b.WriteString(styleHint.Render("apply this change? (y/N)"))
@@ -127,4 +141,27 @@ func renderEditOverlay(s editState, width, height int) string {
 		b.WriteString(styleHint.Render("[r] re-edit  [Esc] back to Pipeline"))
 	}
 	return box.Render(b.String())
+}
+
+// splitBySeverity partitions validation results into hard errors (the
+// framework will reject) and advisories (it will accept). Order within
+// each group is preserved so the chain/position sequence still reads
+// top-to-bottom.
+func splitBySeverity(in []edit.ValidationError) (errs, warns []edit.ValidationError) {
+	for _, ve := range in {
+		if ve.Severity == edit.SeverityWarning {
+			warns = append(warns, ve)
+		} else {
+			errs = append(errs, ve)
+		}
+	}
+	return errs, warns
+}
+
+// writeValidationLines renders one bullet per validation result.
+func writeValidationLines(b *strings.Builder, in []edit.ValidationError) {
+	for _, ve := range in {
+		b.WriteString(fmt.Sprintf("  • [%s] %s pos %d: %s\n",
+			ve.Direction, ve.PluginName, ve.Position, ve.Message))
+	}
 }

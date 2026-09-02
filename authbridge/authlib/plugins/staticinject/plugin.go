@@ -141,6 +141,7 @@ func (p *StaticInject) Name() string { return "static-inject" }
 
 func (p *StaticInject) Capabilities() pipeline.PluginCapabilities {
 	return pipeline.PluginCapabilities{
+		Directions:  []pipeline.Direction{pipeline.Outbound},
 		Description: "Swaps a placeholder credential for a real static credential on outbound requests.",
 	}
 }

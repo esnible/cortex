@@ -2,10 +2,29 @@ package edit
 
 import (
 	"fmt"
+	"slices"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 
 	"github.com/rossoctl/cortex/authbridge/cmd/abctl/apiclient"
+)
+
+// Severity distinguishes a problem the framework will reject from one
+// that is merely suspicious. The zero value is SeverityError so every
+// existing construction site keeps its original meaning.
+type Severity int
+
+const (
+	// SeverityError: the framework's reload will reject this pipeline.
+	// Unmet Requires, misordered dependencies, unknown plugin names.
+	SeverityError Severity = iota
+	// SeverityWarning: the framework will ACCEPT this pipeline, but it
+	// looks wrong. Today the only case is a plugin placed in a chain it
+	// does not declare support for — it runs, typically as dead code.
+	// Rendered separately from errors so the "reload will reject"
+	// banner stays truthful.
+	SeverityWarning
 )
 
 // ValidationError describes one problem with a proposed pipeline,
@@ -15,6 +34,9 @@ import (
 type ValidationError struct {
 	// Direction is "inbound" or "outbound".
 	Direction string
+	// Severity reports whether the framework will reject this (the
+	// default) or merely that it looks misconfigured.
+	Severity Severity
 	// PluginName is the offending plugin's name.
 	PluginName string
 	// Position is the offending plugin's 1-based position in its chain.
@@ -100,6 +122,22 @@ func validateChain(direction string, chain pipelineChain, byName map[string]apic
 					"catalog may be stale, press P then r to refresh)", p.Name),
 			})
 			continue
+		}
+
+		// Direction: advisory only. The framework accepts a plugin in
+		// either chain (nothing enforces direction at runtime), so a
+		// mismatch is a probable misconfiguration, not a rejection —
+		// hence SeverityWarning. An entry declaring no directions is
+		// unconstrained and never flagged.
+		if len(entry.Directions) > 0 && !slices.Contains(entry.Directions, direction) {
+			errs = append(errs, ValidationError{
+				Direction:  direction,
+				Severity:   SeverityWarning,
+				PluginName: p.Name,
+				Position:   pos,
+				Message: fmt.Sprintf("declared for %s; likely belongs in the %s chain",
+					strings.Join(entry.Directions, "/"), strings.Join(entry.Directions, " or ")),
+			})
 		}
 
 		// Requires: every name MUST appear at strictly-lower position.

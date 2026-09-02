@@ -118,6 +118,7 @@ func (p *CPEX) Name() string { return "cpex" }
 //     surfaces in the catalog.
 func (p *CPEX) Capabilities() pipeline.PluginCapabilities {
 	return pipeline.PluginCapabilities{
+		Directions:  []pipeline.Direction{pipeline.Outbound},
 		ReadsBody:   true,
 		WritesBody:  true,
 		RequiresAny: []string{"mcp-parser", "inference-parser", "a2a-parser"},

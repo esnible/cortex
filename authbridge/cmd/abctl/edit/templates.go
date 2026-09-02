@@ -87,6 +87,17 @@ func renderPluginTemplate(b *strings.Builder, p apiclient.PluginCatalogEntry) {
 		b.WriteString(p.Description)
 		b.WriteString("\n")
 	}
+	// Which chain this template belongs in. Emitted only when the plugin
+	// declares it — an unconstrained plugin gets no line rather than a
+	// misleading "chain: any", so silence keeps its existing meaning.
+	// This is the whole point of the catalog's directions field: the
+	// reference tells the operator WHERE to paste the block, not just
+	// what it does.
+	if len(p.Directions) > 0 {
+		b.WriteString("# chain: ")
+		b.WriteString(strings.Join(p.Directions, ", "))
+		b.WriteString("\n")
+	}
 
 	// Split top-level fields into required vs optional for ordering
 	// (required render first inside the config: block). Object fields
@@ -371,6 +382,10 @@ func placeholderFor(f apiclient.PluginFieldEntry) string {
 	case "string":
 		return `""`
 	case "int":
+		return "0"
+	case "number":
+		// Float-typed field (per-token cost, budget). "0" is valid YAML
+		// for a float, and avoids implying a fixed precision.
 		return "0"
 	case "bool":
 		return "false"

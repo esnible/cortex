@@ -29,13 +29,29 @@ const (
 	pathOutboundResponse = "authbridge/outbound/response"
 )
 
+// opaConfig is the plugin's local config schema.
+//
+// Field tags drive both runtime decoding (json) and operator-facing
+// schema introspection (description / required / default / enum).
+// See pipeline/schema.go for the consumer contract.
 type opaConfig struct {
-	BundleURL       string   `json:"bundle_url"`
-	AgentIDFile     string   `json:"agent_id_file"`
-	AgentID         string   `json:"agent_id"`
-	PollingMinDelay int      `json:"polling_min_delay"`
-	PollingMaxDelay int      `json:"polling_max_delay"`
-	Include         []string `json:"include"`
+	BundleURL string `json:"bundle_url" required:"true" description:"Base URL of the Rossoctl Bundle Server (HTTP, in-cluster)."`
+
+	// AgentIDFile / AgentID are a soft either-or: when both are empty
+	// AgentIDFile defaults to the Rossoctl convention below. A missing
+	// file only WARNs — Init polls for it in the background — so
+	// neither field is `required`.
+	AgentIDFile string `json:"agent_id_file" description:"Path to the file holding the agent's client ID. Defaults only when agent_id is also empty." default:"/shared/client-id.txt"`
+	AgentID     string `json:"agent_id" description:"Inline agent ID. When set, agent_id_file is ignored."`
+
+	PollingMinDelay int `json:"polling_min_delay" description:"Minimum bundle polling interval in seconds." default:"10"`
+	PollingMaxDelay int `json:"polling_max_delay" description:"Maximum bundle polling interval in seconds." default:"120"`
+
+	// Include names optional field groups to add to the OPA input
+	// document. newIncludeSet always enables mcp.params.name and
+	// mcp.params.uri regardless of this list, so the effective default
+	// is not simply empty.
+	Include []string `json:"include" description:"Optional input field groups to expose to policy. mcp.params.name and mcp.params.uri are always included."`
 }
 
 // includeSet is built once at Configure time from the Include config list.
@@ -190,8 +206,15 @@ func (p *OPA) Name() string { return "opa" }
 
 func (p *OPA) Capabilities() pipeline.PluginCapabilities {
 	return pipeline.PluginCapabilities{
+		Directions:  []pipeline.Direction{pipeline.Inbound, pipeline.Outbound},
 		Description: "OPA policy enforcement for inbound and outbound requests.",
 	}
+}
+
+// ConfigSchema implements pipeline.SchemaProvider; surfaces field
+// metadata to abctl edit templates and other config-aware tooling.
+func (p *OPA) ConfigSchema() []pipeline.FieldSchema {
+	return pipeline.SchemaOf(opaConfig{})
 }
 
 func (p *OPA) Configure(raw json.RawMessage) error {

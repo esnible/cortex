@@ -235,6 +235,7 @@ func main() {
 			return nil, nil, nil, err
 		}
 		config.WarnEmptyPipelines(c, slog.Default())
+		plugins.WarnPluginDirections(c, slog.Default())
 		in, err := plugins.BuildWithSPIFFE(c.Pipeline.Inbound.Plugins, provider)
 		if err != nil {
 			return nil, nil, nil, fmt.Errorf("inbound: %w", err)

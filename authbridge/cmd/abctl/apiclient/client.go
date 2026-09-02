@@ -85,6 +85,7 @@ type PipelineView struct {
 type PipelinePlugin struct {
 	Name        string          `json:"name"`
 	Direction   string          `json:"direction"`
+	Directions  []string        `json:"directions,omitempty"`
 	Position    int             `json:"position"`
 	ReadsBody   bool            `json:"readsBody"`
 	Requires    []string        `json:"requires,omitempty"`
@@ -111,8 +112,12 @@ type PluginCatalog struct {
 // Describes a registered plugin's static type-level metadata; the
 // catalog includes plugins not currently in the active pipeline.
 type PluginCatalogEntry struct {
-	Name        string             `json:"name"`
+	Name string `json:"name"`
+	// Direction is positional (which chain one configured instance sits
+	// in) and is empty for catalog entries. Directions below is the
+	// type-level set of chains the plugin declares support for.
 	Direction   string             `json:"direction,omitempty"`
+	Directions  []string           `json:"directions,omitempty"`
 	ReadsBody   bool               `json:"readsBody,omitempty"`
 	Requires    []string           `json:"requires,omitempty"`
 	RequiresAny []string           `json:"requiresAny,omitempty"`

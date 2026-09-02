@@ -53,8 +53,16 @@ type Server struct {
 // that documents bodyAccess as deprecated, so there's no compat cost to
 // emit the right name from day one.
 type CatalogEntry struct {
-	Name        string             `json:"name"`
-	Direction   string             `json:"direction,omitempty"`
+	Name string `json:"name"`
+	// Direction is the POSITIONAL chain of one configured instance. The
+	// catalog describes plugin types, not instances, so PluginsCatalog
+	// leaves it empty; see Directions for the type-level answer.
+	Direction string `json:"direction,omitempty"`
+	// Directions lists the chains this plugin TYPE declares support for
+	// ("inbound" / "outbound"). Empty means unconstrained. Distinct from
+	// Direction above: this is what the plugin supports, not where one
+	// instance sits. Config generators read this to place a plugin.
+	Directions  []string           `json:"directions,omitempty"`
 	ReadsBody   bool               `json:"readsBody,omitempty"`
 	Requires    []string           `json:"requires,omitempty"`
 	RequiresAny []string           `json:"requiresAny,omitempty"`
@@ -163,6 +171,7 @@ func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 type pipelinePluginView struct {
 	Name        string          `json:"name"`
 	Direction   string          `json:"direction"`
+	Directions  []string        `json:"directions,omitempty"`
 	Position    int             `json:"position"` // 1-based order within its direction
 	ReadsBody   bool            `json:"readsBody"`
 	Requires    []string        `json:"requires,omitempty"`
@@ -225,6 +234,7 @@ func describePipeline(h *pipeline.Holder, direction string) []pipelinePluginView
 		view := pipelinePluginView{
 			Name:        pl.Name(),
 			Direction:   direction,
+			Directions:  directionStrings(caps.Directions),
 			Position:    i + 1,
 			ReadsBody:   caps.ReadsBody,
 			Requires:    caps.Requires,

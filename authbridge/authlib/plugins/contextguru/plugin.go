@@ -30,13 +30,13 @@ import (
 	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
 	"github.com/rossoctl/cortex/authbridge/authlib/plugins"
 
+	bschemas "github.com/maximhq/bifrost/core/schemas"
 	"github.com/rossoctl/context-guru/apply"
 	cgcomponents "github.com/rossoctl/context-guru/components"
 	_ "github.com/rossoctl/context-guru/components/offload"  // register offload components
 	_ "github.com/rossoctl/context-guru/components/reformat" // register reformat components
 	cgconfig "github.com/rossoctl/context-guru/config"
 	cgstore "github.com/rossoctl/context-guru/store"
-	bschemas "github.com/maximhq/bifrost/core/schemas"
 )
 
 // sentinelHeader is set on the plugin's own outbound LLM calls (via llmclient) so
@@ -156,6 +156,7 @@ func (p *ContextGuru) Name() string { return "context-guru" }
 
 func (p *ContextGuru) Capabilities() pipeline.PluginCapabilities {
 	return pipeline.PluginCapabilities{
+		Directions:  []pipeline.Direction{pipeline.Outbound},
 		ReadsBody:   true,
 		WritesBody:  true, // single outbound body-writer slot (mutually exclusive with SPARC)
 		RequiresAny: []string{"inference-parser"},

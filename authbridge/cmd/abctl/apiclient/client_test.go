@@ -292,3 +292,55 @@ func TestPipelinePluginDecodesCapabilityMetadata(t *testing.T) {
 		t.Errorf("Description = %q", p.Description)
 	}
 }
+
+// TestGetPluginCatalog_DecodesDirections guards the same server/client
+// tag boundary for the type-level `directions` field. The singular
+// `direction` (positional, empty in the catalog) and the plural
+// `directions` (which chains the plugin type supports) are separate
+// keys with separate meanings; decoding one into the other would make
+// abctl's chain hints and its advisory validation silently wrong.
+func TestGetPluginCatalog_DecodesDirections(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/plugins" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{
+			"plugins": [
+				{"name": "jwt-validation", "directions": ["inbound"]},
+				{"name": "opa", "directions": ["inbound", "outbound"]},
+				{"name": "unconstrained"}
+			]
+		}`))
+	}))
+	defer ts.Close()
+
+	cat, err := New(ts.URL).GetPluginCatalog(context.Background())
+	if err != nil {
+		t.Fatalf("GetPluginCatalog: %v", err)
+	}
+	if len(cat.Plugins) != 3 {
+		t.Fatalf("got %d plugins, want 3", len(cat.Plugins))
+	}
+
+	byName := map[string][]string{}
+	for _, p := range cat.Plugins {
+		byName[p.Name] = p.Directions
+		// The positional field must stay empty for catalog entries — the
+		// server deliberately omits it there.
+		if p.Direction != "" {
+			t.Errorf("%s: singular Direction should be empty for a catalog entry, got %q",
+				p.Name, p.Direction)
+		}
+	}
+	if got := byName["jwt-validation"]; len(got) != 1 || got[0] != "inbound" {
+		t.Errorf(`jwt-validation directions = %v, want ["inbound"]`, got)
+	}
+	if got := byName["opa"]; len(got) != 2 || got[0] != "inbound" || got[1] != "outbound" {
+		t.Errorf(`opa directions = %v, want ["inbound","outbound"]`, got)
+	}
+	if got := byName["unconstrained"]; len(got) != 0 {
+		t.Errorf("a plugin with no directions key should decode to empty, got %v", got)
+	}
+}

@@ -51,9 +51,12 @@ func (m *model) rebuildCatalogTable() {
 }
 
 // selectedCatalogEntry returns the catalog entry under the cursor as
-// a synthetic PipelinePlugin so showPluginDetail can render it. Direction
-// is left blank and Position is 0 — showPluginDetail elides those fields
-// when empty so the detail view degrades gracefully for catalog entries.
+// a synthetic PipelinePlugin so showPluginDetail can render it. The
+// singular Direction is left blank and Position is 0 — showPluginDetail
+// elides those fields when empty so the detail view degrades gracefully
+// for catalog entries. Directions (the type-level supported set) IS
+// carried through: it is exactly the metadata a catalog browser wants,
+// and it is meaningful without a configured instance.
 func (m *model) selectedCatalogEntry() *apiclient.PipelinePlugin {
 	if m.catalog == nil {
 		return nil
@@ -68,6 +71,7 @@ func (m *model) selectedCatalogEntry() *apiclient.PipelinePlugin {
 		if e.Name == name {
 			p := apiclient.PipelinePlugin{
 				Name:        e.Name,
+				Directions:  e.Directions,
 				ReadsBody:   e.ReadsBody,
 				Requires:    e.Requires,
 				RequiresAny: e.RequiresAny,

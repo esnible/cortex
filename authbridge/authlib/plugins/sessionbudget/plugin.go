@@ -118,8 +118,15 @@ func (p *SessionBudget) Name() string { return "session-budget" }
 
 func (p *SessionBudget) Capabilities() pipeline.PluginCapabilities {
 	return pipeline.PluginCapabilities{
+		Directions:  []pipeline.Direction{pipeline.Outbound},
 		Description: "Enforce per-session token, call, and duration budgets via Redis.",
 	}
+}
+
+// ConfigSchema implements pipeline.SchemaProvider; surfaces field
+// metadata to abctl edit templates and other config-aware tooling.
+func (p *SessionBudget) ConfigSchema() []pipeline.FieldSchema {
+	return pipeline.SchemaOf(config{})
 }
 
 func (p *SessionBudget) Configure(raw json.RawMessage) error {

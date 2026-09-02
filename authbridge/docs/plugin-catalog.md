@@ -15,7 +15,13 @@ signal, not a claim about test coverage or operational maturity.
 ## Plugins
 
 "Direction" is inbound (caller → this agent) or outbound (this agent →
-callee); "both" means the plugin evaluates on both pipelines. "Default
+callee); "both" means the plugin evaluates on both pipelines. This column
+is **declared in code** as `Capabilities().Directions` (see
+`authlib/pipeline/plugin.go`), published on `/v1/plugins` as
+`directions`, and asserted by a test — so the table below has a source of
+truth rather than drifting. Placement is advisory: a plugin configured
+into another chain still runs, but logs a startup WARN and shows an
+advisory in `abctl`'s pre-apply validator. "Default
 config?" marks whether the plugin is enabled in Rossoctl's default
 AuthBridge pipeline YAML, not whether it is compiled into the binary
 (see "Production ready?" above for that).

@@ -214,6 +214,7 @@ func cloneCatalog(in []CatalogEntry) []CatalogEntry {
 				Description: caps.Description,
 				Requires:    append([]string(nil), caps.Requires...),
 				RequiresAny: append([]string(nil), caps.RequiresAny...),
+				Directions:  append([]pipeline.Direction(nil), caps.Directions...),
 			},
 			Fields: cloneFieldSchemas(in[i].Fields),
 		}

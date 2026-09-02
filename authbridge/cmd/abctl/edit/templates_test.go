@@ -40,7 +40,7 @@ func TestRenderTemplates_PluginWithFields(t *testing.T) {
 				{Name: "timeout_ms", Type: "int", Default: "5000",
 					Description: "Per-call timeout."},
 				{Name: "unclassified_policy", Type: "string", Default: "passthrough",
-					Enum: []string{"passthrough", "judge"},
+					Enum:        []string{"passthrough", "judge"},
 					Description: "Behavior when no parser claimed the request."},
 			},
 		},
@@ -430,5 +430,54 @@ func TestFetchCmd_NoTemplatesWhenCatalogNil(t *testing.T) {
 	}
 	if strings.Contains(string(body), FenceMarker) {
 		t.Fatalf("tempfile should not contain fence marker when catalog is nil:\n%s", string(body))
+	}
+}
+
+// The rendered reference tells operators WHICH chain a plugin belongs
+// in — the direct payoff of the catalog's directions field, since the
+// templates block is where a plugin gets copied from.
+func TestRenderTemplates_ChainAnnotation(t *testing.T) {
+	out := string(RenderTemplates([]apiclient.PluginCatalogEntry{
+		{Name: "jwt-validation", Description: "Inbound JWT.", Directions: []string{"inbound"}},
+		{Name: "opa", Description: "Policy.", Directions: []string{"inbound", "outbound"}},
+		{Name: "legacy", Description: "Declares nothing."},
+	}))
+
+	if !strings.Contains(out, "# chain: inbound\n") {
+		t.Errorf("single-direction plugin should get a chain line:\n%s", out)
+	}
+	if !strings.Contains(out, "# chain: inbound, outbound\n") {
+		t.Errorf("both-chain plugin should list both:\n%s", out)
+	}
+	// A plugin declaring nothing gets NO chain line — silence keeps its
+	// existing meaning rather than asserting a misleading "any".
+	legacy := out[strings.Index(out, "--- legacy ---"):]
+	if strings.Contains(legacy, "# chain:") {
+		t.Errorf("unconstrained plugin should get no chain line:\n%s", legacy)
+	}
+	// Everything stays a comment; the block must not become live YAML.
+	for _, ln := range strings.Split(out, "\n") {
+		if strings.Contains(ln, "chain:") && !strings.HasPrefix(strings.TrimSpace(ln), "#") {
+			t.Errorf("chain annotation must be commented, got %q", ln)
+		}
+	}
+}
+
+// A float-typed field renders a numeric placeholder rather than falling
+// through to the quoted-empty-string default.
+func TestRenderTemplates_NumberPlaceholder(t *testing.T) {
+	out := string(RenderTemplates([]apiclient.PluginCatalogEntry{{
+		Name:       "litellm-budget-track",
+		Directions: []string{"inbound"},
+		Fields: []apiclient.PluginFieldEntry{
+			{Name: "max_budget", Type: "number", Required: true},
+			{Name: "spend_file", Type: "string", Required: true},
+		},
+	}}))
+	if !strings.Contains(out, "max_budget: 0") {
+		t.Errorf("number field should render a numeric placeholder:\n%s", out)
+	}
+	if strings.Contains(out, `max_budget: ""`) {
+		t.Errorf("number field must not render a quoted empty string:\n%s", out)
 	}
 }
