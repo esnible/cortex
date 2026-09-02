@@ -70,6 +70,10 @@ type Server struct {
 
 	TLSBridge *tlsbridge.Engine // nil = disabled; set by caller after NewServer
 
+	// bufferedFallbackOnce keeps the SSE-buffered-path notice to one line per
+	// process; the condition is a supported chain shape, not an error.
+	bufferedFallbackOnce sync.Once
+
 	// Bridge-health counters. When the TLS bridge is enabled but the client
 	// does not trust its CA, every HTTPS request opens a CONNECT tunnel and
 	// nothing is ever decrypted: the pipeline sees opaque tunnels, every
@@ -267,7 +271,7 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, isBridge 
 		}()
 	}
 
-	if !skipped && s.OutboundPipeline.NeedsBody() && r.Body != nil {
+	if !skipped && s.OutboundPipeline.NeedsRequestBody() && r.Body != nil {
 		r.Body = http.MaxBytesReader(w, r.Body, maxBodySize)
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
@@ -425,7 +429,12 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, isBridge 
 				// it can't stream — fall back to the buffered path with a warning.
 				// A request-only mutator does NOT land here: it never touches
 				// these bytes, so the relay stays incremental.
-				slog.Warn("forward-proxy: text/event-stream response with WritesResponseBody plugin — falling back to buffered path", "host", r.Host)
+				// Once, not per response: a response mutator on an SSE chain is a
+				// supported configuration (cpex, sparc), not a misconfiguration, so
+				// warning every request is log spam at request rate.
+				s.bufferedFallbackOnce.Do(func() {
+					slog.Info("forward-proxy: text/event-stream responses will use the buffered path — a WritesResponseBody plugin is in the chain", "host", r.Host)
+				})
 			} else if s.OutboundPipeline.HasStreamingResponders() {
 				// Streaming-aware plugins (inference-parser, a2a-parser) parse
 				// each SSE frame; handleStreamingResponse re-frames via sseframe.
@@ -446,9 +455,11 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, isBridge 
 				// streamed body should implement StreamingResponder. Warn
 				// (mirroring the WritesRequestBody fallback above) so the
 				// misconfiguration surfaces instead of the plugin silently seeing
-				// no body. WritesRequestBody is already false in this branch, so
-				// NeedsBody() here implies ReadsBody.
-				if s.OutboundPipeline.NeedsBody() {
+				// no body. Reaching this branch only rules out WritesResponseBody and
+				// HasStreamingResponders — a request-only mutator can still be here —
+				// so ask about the response side specifically rather than asserting
+				// what NeedsBody implies.
+				if s.OutboundPipeline.NeedsResponseBody() {
 					slog.Warn("forward-proxy: text/event-stream response with a ReadsBody plugin that is not a StreamingResponder — streaming byte-for-byte; its OnResponse will see an empty body (implement StreamingResponder to inspect a streamed body)", "host", r.Host)
 				}
 				s.streamPassthrough(w, r, resp, pctx)
@@ -456,7 +467,7 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, isBridge 
 			}
 		}
 
-		if s.OutboundPipeline.NeedsBody() && resp.Body != nil {
+		if s.OutboundPipeline.NeedsResponseBody() && resp.Body != nil {
 			respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxBodySize+1))
 			if err != nil {
 				slog.Warn("forward-proxy: response body read error", "host", r.Host, "error", err)

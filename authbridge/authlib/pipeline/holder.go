@@ -81,6 +81,12 @@ func (h *Holder) RunFinish(ctx context.Context, pctx *Context, outcome Outcome) 
 // that decide whether to buffer the request/response body.
 func (h *Holder) NeedsBody() bool { return h.p.Load().NeedsBody() }
 
+// NeedsRequestBody is equivalent to h.Load().NeedsRequestBody().
+func (h *Holder) NeedsRequestBody() bool { return h.p.Load().NeedsRequestBody() }
+
+// NeedsResponseBody is equivalent to h.Load().NeedsResponseBody().
+func (h *Holder) NeedsResponseBody() bool { return h.p.Load().NeedsResponseBody() }
+
 // WritesRequestBody is equivalent to h.Load().WritesRequestBody().
 // Listeners read this when deciding whether to propagate a rewritten
 // request body to the wire.

@@ -968,3 +968,43 @@ func TestPrune_DoesNotDuplicateCacheControl(t *testing.T) {
 		t.Errorf("cache_control appears %d times, want 1: %s", n, pctx.Body)
 	}
 }
+
+// TestNoteDrift_EmptyFirstManifestDoesNotSpendTheOnce: sync.Once marks itself
+// done however the closure returns, so an early return on an empty manifest used
+// to disable the stale-list warning permanently — and an empty first manifest is
+// the norm on dialects whose tool names the plugin cannot read (Gemini
+// functionDeclarations, Bedrock toolSpec nesting). A stale remove list then stayed
+// silent in exactly the deployments most likely to have one.
+func TestNoteDrift_EmptyFirstManifestDoesNotSpendTheOnce(t *testing.T) {
+	p := configured(t, "NeverOffered")
+
+	// Nothing observed: must not consume the guard.
+	p.noteDrift(nil)
+	p.noteDrift([]pipeline.InferenceTool{})
+	if p.driftChecked {
+		t.Fatal("the check claims to have run on an empty manifest")
+	}
+
+	// A real manifest afterwards must still reach the check.
+	p.noteDrift([]pipeline.InferenceTool{{Name: "Read"}})
+	if !p.driftChecked {
+		t.Error("the check never ran on the first non-empty manifest — an empty one had spent the Once")
+	}
+}
+
+// TestMetrics_DollarRowsDiscloseTheyAreGross: changing the remove list changes the
+// cached prefix, so the next request re-writes the whole prefix at ~1.25x input
+// while the recurring saving is ~0.1x on a small delta — tens of requests to break
+// even after each change. Counters also reset on the reload that applies the
+// change, so the re-warm is invisible exactly when it is paid. A figure that does
+// not say it is gross reads as net.
+func TestMetrics_DollarRowsDiscloseTheyAreGross(t *testing.T) {
+	p := configured(t, "NotebookEdit")
+	pruneWithModel(t, p, "claude-opus-5")
+	for _, name := range []string{"$ saved", "$ saved / request"} {
+		m := findMetric(t, p.Metrics(), name)
+		if !strings.Contains(m.Note, "gross") || !strings.Contains(m.Note, "re-warm") {
+			t.Errorf("%s note = %q, want it to disclose the figure is gross of cache re-warm", name, m.Note)
+		}
+	}
+}

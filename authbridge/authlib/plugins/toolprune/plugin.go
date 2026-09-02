@@ -171,6 +171,9 @@ type ToolPrune struct {
 
 	m         metrics
 	driftOnce sync.Once
+	// driftChecked records that the stale-list check actually ran, so a test can
+	// tell "guard consumed" from "guard consumed without checking anything".
+	driftChecked bool
 }
 
 func New() *ToolPrune { return &ToolPrune{} }
@@ -631,10 +634,18 @@ func tierOf(inf *pipeline.InferenceExtension) tier {
 // plugin actually sees. A stale list costs savings rather than correctness, so
 // it surfaces as a warning instead of a failure.
 func (p *ToolPrune) noteDrift(observed []pipeline.InferenceTool) {
+	// Check the precondition BEFORE consuming the Once. sync.Once marks itself
+	// done however the closure returns, so an early return on an empty manifest
+	// used to disable this warning permanently — and an empty first manifest is
+	// the norm on the dialects the plugin already knows it cannot read names
+	// from (Gemini functionDeclarations, Bedrock toolSpec nesting), which is a
+	// live path here. The result was that a stale remove list stayed silent in
+	// exactly the deployments most likely to have one.
+	if len(observed) == 0 {
+		return
+	}
 	p.driftOnce.Do(func() {
-		if len(observed) == 0 {
-			return
-		}
+		p.driftChecked = true
 		present := make(map[string]struct{}, len(observed))
 		for _, t := range observed {
 			present[t.Name] = struct{}{}

@@ -366,9 +366,44 @@ func (p *Pipeline) NotReadyPlugin() string {
 // NeedsBody returns true if any plugin in the pipeline needs the body
 // buffered — either to read it (ReadsBody) or to mutate it (WritesRequestBody).
 func (p *Pipeline) NeedsBody() bool {
+	return p.NeedsRequestBody() || p.NeedsResponseBody()
+}
+
+// NeedsRequestBody reports whether the request body must be buffered.
+//
+// Split from NeedsBody because the undirected version made each write flag force
+// the other direction's buffering: a response-only mutator had the request body
+// buffered for nothing, and a request-only mutator had non-SSE responses
+// buffered for nothing — the mirror image of the waste the directional
+// capabilities exist to remove.
+//
+// ReadsBody still counts toward both, and deliberately: it is itself undirected
+// ("reads pctx.Body and/or pctx.ResponseBody"), so a plugin that only reads
+// responses cannot be distinguished from one that only reads requests. Closing
+// that needs direction-specific READ capabilities — the same prerequisite as the
+// reverse-order reader gap noted in validateCapabilities.
+func (p *Pipeline) NeedsRequestBody() bool {
 	for _, plugin := range p.plugins {
-		caps := plugin.Capabilities().Normalize()
-		if caps.ReadsBody || caps.WritesRequestBody || caps.WritesResponseBody {
+		// RAW capabilities, not Normalize(). The ReadsBody promotion means "you
+		// may read the body you write", which is inherently directional — so
+		// reading it back through the undirected ReadsBody field would let
+		// WritesResponseBody imply a need for the REQUEST body and undo the
+		// split. An explicitly declared ReadsBody still counts for both, because
+		// that field genuinely does not say which body.
+		caps := plugin.Capabilities()
+		if caps.ReadsBody || caps.WritesRequestBody {
+			return true
+		}
+	}
+	return false
+}
+
+// NeedsResponseBody reports whether the response body must be buffered. See
+// NeedsRequestBody for why ReadsBody counts toward both.
+func (p *Pipeline) NeedsResponseBody() bool {
+	for _, plugin := range p.plugins {
+		caps := plugin.Capabilities() // raw — see NeedsRequestBody
+		if caps.ReadsBody || caps.WritesResponseBody {
 			return true
 		}
 	}

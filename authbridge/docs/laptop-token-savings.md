@@ -85,8 +85,20 @@ Then watch what it saved:
 abctl --endpoint http://localhost:47601
 ```
 
-Plugin pane → `tool-prune` → `Metrics`. Expect `bytes removed / request` around
-25–30 KB and a token saving of roughly 20–25% of your prompt.
+Plugin pane → `tool-prune` → `Metrics`.
+
+What to expect, measured over 99 requests of one real session: **4–20% of the
+prompt per turn, median 6%**. Two things move it, and neither is a defect:
+
+- **How much of the manifest is yours to prune.** Requests carrying the full tool
+  set saved 15–20%; most requests in that session offered a reduced set and saved
+  4–6%.
+- **How far into the conversation you are.** The removed bytes are a fixed size,
+  so their share of a growing prompt falls — 13% early in that session, 4% by the
+  end.
+
+A single early turn can read ~24%, which is why a figure quoted from one request
+is not the number to plan with.
 
 Stop it with `pkill -f 'authbridge-proxy --config'`.
 

@@ -199,13 +199,25 @@ func (m *metrics) snapshot() []pipeline.Metric {
 				costNote = note + "; " + costNote
 			}
 		}
-		out = append(out, pipeline.Metric{Name: "$ saved", Value: m.usdSaved, Unit: "usd", Note: costNote})
+		// GROSS, not net. Changing the remove list changes the cached prefix, so
+		// the next request re-writes the whole prefix at the cache-write rate
+		// (~1.25x input) while the recurring saving is at the cache-read rate
+		// (~0.1x) on a small delta — tens of requests to break even after each
+		// change. Counters also reset on the reload that applies the change, so
+		// the re-warm is invisible exactly when it is paid. Say so on the row
+		// rather than presenting a gross figure as a net one.
+		grossNote := costNote
+		if grossNote != "" {
+			grossNote += "; "
+		}
+		grossNote += "gross — excludes cache re-warm after a remove-list change"
+		out = append(out, pipeline.Metric{Name: "$ saved", Value: m.usdSaved, Unit: "usd", Note: grossNote})
 		if priced := m.requestsCosted - m.unpriced; priced > 0 {
 			out = append(out, pipeline.Metric{
 				Name:  "$ saved / request",
 				Value: m.usdSaved / float64(priced),
 				Unit:  "usd",
-				Note:  costNote,
+				Note:  grossNote,
 			})
 		}
 	}

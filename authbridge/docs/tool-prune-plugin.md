@@ -140,6 +140,28 @@ The bytes-to-tokens ratio is calibrated on your own traffic — prompt tokens ov
 request bytes for the same request, both post-pruning so the two sides agree —
 rather than bundling a tokenizer or assuming a constant.
 
+### The figure is gross, not net
+
+Changing the `remove` list changes the cached prompt prefix, so the first request
+after a change re-writes the whole prefix at the cache-**write** rate (~1.25x
+input) while the recurring saving accrues at the cache-**read** rate (~0.1x) on a
+small delta. Order of magnitude: re-warming a ~30k-token prefix costs on the order
+of tens of thousands of input-equivalents against a few hundred saved per
+subsequent cache-read request — **tens of requests to break even after each list
+change.**
+
+Two consequences worth being blunt about:
+
+- **`$ saved` is gross.** It counts what the removed definitions would have cost
+  and subtracts nothing for the re-warm. The row says so.
+- **The re-warm is invisible exactly when it is paid.** Applying a list change
+  hot-reloads the config, which rebuilds the plugin and resets its counters — so
+  the run that incurs the cost starts from zero.
+
+Practical reading: change the list rarely, and treat a figure gathered over a few
+requests immediately after a change as optimistic. Over a long steady session the
+gross figure converges on the net one, because the re-warm is paid once.
+
 ### Costing it
 
 **Dollars work out of the box.** The plugin ships a rate table measured from the

@@ -186,3 +186,38 @@ func TestValidateCapabilities_ResponseAndRequestMutatorsCoexist(t *testing.T) {
 		t.Error("two response mutators must still be rejected")
 	}
 }
+
+// TestNeedsBody_DirectionalDoesNotCrossContaminate: the undirected NeedsBody made
+// each write flag force the other direction's buffering — a response-only mutator
+// had the request body buffered for nothing, and a request-only mutator had
+// non-SSE responses buffered for nothing. That is the mirror image of the waste
+// the directional capabilities exist to remove.
+func TestNeedsBody_DirectionalDoesNotCrossContaminate(t *testing.T) {
+	tests := []struct {
+		name             string
+		caps             PluginCapabilities
+		wantReq, wantRsp bool
+	}{
+		{"request-only mutator", PluginCapabilities{WritesRequestBody: true}, true, false},
+		{"response-only mutator", PluginCapabilities{WritesResponseBody: true}, false, true},
+		{"both", PluginCapabilities{WritesRequestBody: true, WritesResponseBody: true}, true, true},
+		// ReadsBody is itself undirected, so it must still count for both.
+		{"pure reader", PluginCapabilities{ReadsBody: true}, true, true},
+		{"neither", PluginCapabilities{}, false, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			p := mustBuild(t, &stubPlugin{name: "p", caps: tc.caps})
+			if got := p.NeedsRequestBody(); got != tc.wantReq {
+				t.Errorf("NeedsRequestBody() = %v, want %v", got, tc.wantReq)
+			}
+			if got := p.NeedsResponseBody(); got != tc.wantRsp {
+				t.Errorf("NeedsResponseBody() = %v, want %v", got, tc.wantRsp)
+			}
+			// The aggregate stays the OR, for callers that need either.
+			if got := p.NeedsBody(); got != (tc.wantReq || tc.wantRsp) {
+				t.Errorf("NeedsBody() = %v, want %v", got, tc.wantReq || tc.wantRsp)
+			}
+		})
+	}
+}
