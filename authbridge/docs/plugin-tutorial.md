@@ -209,12 +209,12 @@ both stay nil even if you try to read them.
 ### Mutating the body
 
 If your plugin needs to **rewrite** the body — prompt-redaction, output
-filtering, content transformation — declare `WritesBody` and call
+filtering, content transformation — declare `WritesRequestBody` and call
 `pctx.SetBody` / `pctx.SetResponseBody`:
 
 ```go
 func (p *Redactor) Capabilities() pipeline.PluginCapabilities {
-	return pipeline.PluginCapabilities{WritesBody: true} // implies ReadsBody
+	return pipeline.PluginCapabilities{WritesRequestBody: true} // implies ReadsBody
 }
 
 func (p *Redactor) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.Action {
@@ -232,9 +232,9 @@ for `SetResponseBody`) with a correct `Content-Length` and a cleared
 (never the raw body content).
 
 **Rules enforced by `pipeline.New`:**
-- At most one `WritesBody` plugin per pipeline. Two mutators = ambiguous
+- At most one `WritesRequestBody` plugin per pipeline. Two mutators = ambiguous
   ordering → build fails at startup.
-- A `WritesBody` plugin must run **after** any `ReadsBody`-only plugin.
+- A `WritesRequestBody` plugin must run **after** any `ReadsBody`-only plugin.
   Readers see the original bytes; a mutator in front would silently
   feed them post-rewrite content.
 

@@ -142,7 +142,7 @@ func NewServer(inbound *pipeline.Holder, sessions *session.Store, backendURL str
 		}
 		// Strip the client's Accept-Encoding, but only when a plugin will
 		// actually inspect the response body: a StreamingResponder (SSE
-		// re-framing) or any ReadsBody/WritesBody plugin (buffered read into
+		// re-framing) or any ReadsBody/WritesRequestBody plugin (buffered read into
 		// pctx.ResponseBody). Those paths must see plaintext — with no explicit
 		// Accept-Encoding, Go's transport negotiates gzip itself and
 		// transparently decompresses the response (dropping Content-Encoding /
@@ -352,7 +352,7 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// If a WritesBody plugin rewrote pctx.Body, send the new bytes to
+	// If a WritesRequestBody plugin rewrote pctx.Body, send the new bytes to
 	// the backend and clear Content-Encoding (same rationale as the
 	// response path — plugin may have decompressed).
 	if pctx.BodyMutated() {
@@ -440,14 +440,14 @@ func (s *Server) modifyResponse(resp *http.Response) error {
 	// called on this path — streaming-aware plugins finalize via
 	// OnResponseFrame(last=true).
 	//
-	// WritesBody is incompatible with streaming (we can't rewrite a
+	// WritesRequestBody is incompatible with streaming (we can't rewrite a
 	// body we've already started forwarding) — fall back to buffered
 	// with a warning.
 	if isEventStream(resp.Header.Get("Content-Type")) &&
 		s.InboundPipeline.HasStreamingResponders() &&
 		resp.Body != nil {
-		if s.InboundPipeline.WritesBody() {
-			slog.Warn("reverse-proxy: text/event-stream response with WritesBody plugin — falling back to buffered path", "host", pctx.Host)
+		if s.InboundPipeline.WritesRequestBody() {
+			slog.Warn("reverse-proxy: text/event-stream response with WritesRequestBody plugin — falling back to buffered path", "host", pctx.Host)
 		} else {
 			s.installStreamingResponseBody(resp, pctx)
 			// Strip Content-Length — the framing reader doesn't know

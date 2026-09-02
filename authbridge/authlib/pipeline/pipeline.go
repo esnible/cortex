@@ -364,25 +364,25 @@ func (p *Pipeline) NotReadyPlugin() string {
 }
 
 // NeedsBody returns true if any plugin in the pipeline needs the body
-// buffered — either to read it (ReadsBody) or to mutate it (WritesBody).
+// buffered — either to read it (ReadsBody) or to mutate it (WritesRequestBody).
 func (p *Pipeline) NeedsBody() bool {
 	for _, plugin := range p.plugins {
 		caps := plugin.Capabilities().Normalize()
-		if caps.ReadsBody || caps.WritesBody {
+		if caps.ReadsBody || caps.WritesRequestBody {
 			return true
 		}
 	}
 	return false
 }
 
-// WritesBody returns true if any plugin in the pipeline declares
-// WritesBody. Listeners use this to decide whether to diff-and-emit a
-// body mutation on the wire. A pipeline with no WritesBody plugins
+// WritesRequestBody returns true if any plugin in the pipeline declares
+// WritesRequestBody. Listeners use this to decide whether to diff-and-emit a
+// body mutation on the wire. A pipeline with no WritesRequestBody plugins
 // bypasses the mutation path entirely — zero overhead for the common
 // read-only case.
-func (p *Pipeline) WritesBody() bool {
+func (p *Pipeline) WritesRequestBody() bool {
 	for _, plugin := range p.plugins {
-		if plugin.Capabilities().Normalize().WritesBody {
+		if plugin.Capabilities().Normalize().WritesRequestBody {
 			return true
 		}
 	}
@@ -547,19 +547,19 @@ func (p *Pipeline) dispatchFinish(parent context.Context, name string, f Finishe
 }
 
 // validateCapabilities enforces body-mutation ordering rules:
-//   - At most one WritesBody plugin per pipeline — mutation ordering would
+//   - At most one WritesRequestBody plugin per pipeline — mutation ordering would
 //     otherwise be ambiguous; downstream readers can't tell which version
 //     they're seeing.
-//   - A body reader (ReadsBody) must not follow a body mutator (WritesBody) —
+//   - A body reader (ReadsBody) must not follow a body mutator (WritesRequestBody) —
 //     the reader would silently see mutated bytes instead of the originals.
 func validateCapabilities(plugins []Plugin) error {
 	var mutatorName string
 	var readerAfterMutator string
 	for _, plugin := range plugins {
 		caps := plugin.Capabilities().Normalize()
-		if caps.WritesBody {
+		if caps.WritesRequestBody {
 			if mutatorName != "" {
-				return fmt.Errorf("pipeline: two plugins declare WritesBody: %q and %q — mutation ordering would be ambiguous; at most one body mutator per pipeline is allowed", mutatorName, plugin.Name())
+				return fmt.Errorf("pipeline: two plugins declare WritesRequestBody: %q and %q — mutation ordering would be ambiguous; at most one body mutator per pipeline is allowed", mutatorName, plugin.Name())
 			}
 			mutatorName = plugin.Name()
 		} else if caps.ReadsBody && mutatorName != "" && readerAfterMutator == "" {

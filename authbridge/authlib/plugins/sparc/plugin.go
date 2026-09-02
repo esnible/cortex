@@ -209,10 +209,10 @@ func (p *SPARC) Capabilities() pipeline.PluginCapabilities {
 		// conversation + tool specs (both modes); mcp-parser provides the tool
 		// call (mcp mode). RequiresAny is a static "at least one" check; the
 		// per-mode runtime requirements are validated/handled below.
-		RequiresAny: []string{"inference-parser", "mcp-parser"},
-		ReadsBody:   true,
-		WritesBody:  true, // MCP result (mcp mode) / completion rewrite (inference mode)
-		Description: "SPARC pre-tool reflection: blocks ungrounded/hallucinated tool calls.",
+		RequiresAny:       []string{"inference-parser", "mcp-parser"},
+		ReadsBody:         true,
+		WritesRequestBody: true, // MCP result (mcp mode) / completion rewrite (inference mode)
+		Description:       "SPARC pre-tool reflection: blocks ungrounded/hallucinated tool calls.",
 	}
 }
 

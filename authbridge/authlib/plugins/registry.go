@@ -209,11 +209,11 @@ func cloneCatalog(in []CatalogEntry) []CatalogEntry {
 		out[i] = CatalogEntry{
 			Name: in[i].Name,
 			Capabilities: pipeline.PluginCapabilities{
-				ReadsBody:   caps.ReadsBody,
-				WritesBody:  caps.WritesBody,
-				Description: caps.Description,
-				Requires:    append([]string(nil), caps.Requires...),
-				RequiresAny: append([]string(nil), caps.RequiresAny...),
+				ReadsBody:         caps.ReadsBody,
+				WritesRequestBody: caps.WritesRequestBody,
+				Description:       caps.Description,
+				Requires:          append([]string(nil), caps.Requires...),
+				RequiresAny:       append([]string(nil), caps.RequiresAny...),
 			},
 			Fields: cloneFieldSchemas(in[i].Fields),
 		}

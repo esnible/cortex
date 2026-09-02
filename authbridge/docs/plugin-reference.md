@@ -217,7 +217,7 @@ fail loud before serving traffic.
 ```go
 type PluginCapabilities struct {
     ReadsBody   bool
-    WritesBody  bool
+    WritesRequestBody  bool
 
     Requires    []string   // ALL must be present + earlier (hard)
     RequiresAny []string   // AT LEAST ONE must be present + run after it (hard)
@@ -684,7 +684,7 @@ in it.
 ## Body mutation
 
 Plugins that need to rewrite request or response bodies declare
-`WritesBody: true` and call the `pctx.SetBody` / `pctx.SetResponseBody`
+`WritesRequestBody: true` and call the `pctx.SetBody` / `pctx.SetResponseBody`
 helpers. The framework propagates the rewrite to the wire, emits a
 `modify`-action Invocation, and publishes a `body-mutation/event`
 entry in `pctx.Extensions.Custom` with length delta + sha256
@@ -700,25 +700,25 @@ before/after (never the raw body).
 ```go
 type PluginCapabilities struct {
     ReadsBody  bool  // plugin reads pctx.Body / pctx.ResponseBody
-    WritesBody bool  // plugin may call pctx.SetBody / pctx.SetResponseBody
+    WritesRequestBody bool  // plugin may call pctx.SetBody / pctx.SetResponseBody
 }
 ```
 
 - `ReadsBody`: listener buffers the body; plugin sees bytes.
-- `WritesBody`: implies `ReadsBody`. Listener propagates `pctx.SetBody`
+- `WritesRequestBody`: implies `ReadsBody`. Listener propagates `pctx.SetBody`
   rewrites to the upstream (and `pctx.SetResponseBody` to the
   downstream client).
 
 ### Build-time validation (enforced by `pipeline.New`)
 
-- At most **one** `WritesBody` plugin per pipeline. Two mutators in
+- At most **one** `WritesRequestBody` plugin per pipeline. Two mutators in
   the same direction would produce ambiguous ordering; `New` rejects
   with an error naming both plugins.
-- A `WritesBody` plugin cannot precede a `ReadsBody`-only plugin. The
+- A `WritesRequestBody` plugin cannot precede a `ReadsBody`-only plugin. The
   reader must see the original bytes.
 - Waypoint mode (ext_authz listener) cannot propagate body mutations —
   the ext_authz API has no body-mutation field. Do not combine
-  `WritesBody: true` plugins with `mode: waypoint`.
+  `WritesRequestBody: true` plugins with `mode: waypoint`.
 
 ### Mutation helpers
 

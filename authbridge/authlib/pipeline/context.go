@@ -388,9 +388,9 @@ func (c *Context) DenyAndRecord(reason, code, message string) Action {
 }
 
 // SetBody replaces the request body with newBody. Only meaningful when
-// the plugin declares WritesBody: true in its Capabilities — the
+// the plugin declares WritesRequestBody: true in its Capabilities — the
 // listener consults pctx.BodyMutated() after Run to decide whether to
-// emit the new bytes on the wire. Plugins without WritesBody that call
+// emit the new bytes on the wire. Plugins without WritesRequestBody that call
 // SetBody mutate the in-memory Context (readers downstream see the
 // change), but the wire is unchanged.
 //

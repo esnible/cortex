@@ -352,7 +352,7 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, isBridge 
 		r.Header[k] = append([]string(nil), vv...) // set / overwrite
 	}
 
-	// If a WritesBody plugin rewrote pctx.Body, ship the new bytes
+	// If a WritesRequestBody plugin rewrote pctx.Body, ship the new bytes
 	// upstream and clear Content-Encoding (see forwardproxy response
 	// path for the rationale).
 	if pctx.BodyMutated() {
@@ -400,14 +400,14 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, isBridge 
 		// response (the client Accepts both), so the same tool may return
 		// JSON on one call and SSE on the next. Decide here rather than
 		// negotiating, and don't take the streaming path when a plugin
-		// declares WritesBody (mutating a body we've already started
+		// declares WritesRequestBody (mutating a body we've already started
 		// forwarding is incompatible with streaming) — fall back to
 		// buffered with a warning log instead.
 		if isEventStream(resp.Header.Get("Content-Type")) && resp.Body != nil {
-			if s.OutboundPipeline.WritesBody() {
+			if s.OutboundPipeline.WritesRequestBody() {
 				// A body mutator needs the whole body to rewrite it, so it
 				// can't stream — fall back to the buffered path with a warning.
-				slog.Warn("forward-proxy: text/event-stream response with WritesBody plugin — falling back to buffered path", "host", r.Host)
+				slog.Warn("forward-proxy: text/event-stream response with WritesRequestBody plugin — falling back to buffered path", "host", r.Host)
 			} else if s.OutboundPipeline.HasStreamingResponders() {
 				// Streaming-aware plugins (inference-parser, a2a-parser) parse
 				// each SSE frame; handleStreamingResponse re-frames via sseframe.
@@ -419,16 +419,16 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, isBridge 
 				// would drop the event:/id:/retry: lines that generic SSE
 				// clients (e.g. an MCP Streamable HTTP client) depend on. Fixes #642.
 				//
-				// A plugin that declares ReadsBody (but not WritesBody, and is
+				// A plugin that declares ReadsBody (but not WritesRequestBody, and is
 				// not a StreamingResponder) also lands here, and its OnResponse
 				// runs against an empty pctx.ResponseBody: streamPassthrough
 				// forwards the stream without buffering it. We deliberately don't
 				// buffer to satisfy such a plugin — that would reintroduce the
 				// #642 timeout on a live stream. A plugin that must inspect a
 				// streamed body should implement StreamingResponder. Warn
-				// (mirroring the WritesBody fallback above) so the
+				// (mirroring the WritesRequestBody fallback above) so the
 				// misconfiguration surfaces instead of the plugin silently seeing
-				// no body. WritesBody is already false in this branch, so
+				// no body. WritesRequestBody is already false in this branch, so
 				// NeedsBody() here implies ReadsBody.
 				if s.OutboundPipeline.NeedsBody() {
 					slog.Warn("forward-proxy: text/event-stream response with a ReadsBody plugin that is not a StreamingResponder — streaming byte-for-byte; its OnResponse will see an empty body (implement StreamingResponder to inspect a streamed body)", "host", r.Host)

@@ -32,11 +32,11 @@ type streamingProbe struct {
 	caps            pipeline.PluginCapabilities
 }
 
-func newStreamingProbe(writesBody bool) *streamingProbe {
+func newStreamingProbe(writesRequestBody bool) *streamingProbe {
 	return &streamingProbe{
 		caps: pipeline.PluginCapabilities{
-			ReadsBody:  true,
-			WritesBody: writesBody,
+			ReadsBody:         true,
+			WritesRequestBody: writesRequestBody,
 		},
 	}
 }
@@ -158,13 +158,13 @@ func TestForwardProxy_Streaming_FramesFlowThrough(t *testing.T) {
 	}
 }
 
-// TestForwardProxy_Streaming_WritesBodyFallsBackToBuffered asserts the
-// safety guard: a pipeline with a WritesBody plugin can't take the
+// TestForwardProxy_Streaming_WritesRequestBodyFallsBackToBuffered asserts the
+// safety guard: a pipeline with a WritesRequestBody plugin can't take the
 // streaming path (the plugin can't rewrite a body we've already
 // started forwarding). The proxy logs a warning and falls back to
 // buffered, so the response is delivered correctly even though it
 // loses the streaming property.
-func TestForwardProxy_Streaming_WritesBodyFallsBackToBuffered(t *testing.T) {
+func TestForwardProxy_Streaming_WritesRequestBodyFallsBackToBuffered(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
@@ -174,7 +174,7 @@ func TestForwardProxy_Streaming_WritesBodyFallsBackToBuffered(t *testing.T) {
 	}))
 	defer upstream.Close()
 
-	probe := newStreamingProbe(true) // WritesBody=true → buffered fallback
+	probe := newStreamingProbe(true) // WritesRequestBody=true → buffered fallback
 	pipe, err := pipeline.New([]pipeline.Plugin{probe})
 	if err != nil {
 		t.Fatalf("New pipeline: %v", err)

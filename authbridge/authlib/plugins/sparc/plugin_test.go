@@ -337,8 +337,8 @@ func TestInference_MCPModeOnResponseIsNoop(t *testing.T) {
 
 func TestCapabilities(t *testing.T) {
 	caps := NewSPARC().Capabilities()
-	if !caps.WritesBody || !caps.ReadsBody {
-		t.Error("expected ReadsBody+WritesBody")
+	if !caps.WritesRequestBody || !caps.ReadsBody {
+		t.Error("expected ReadsBody+WritesRequestBody")
 	}
 	if len(caps.RequiresAny) == 0 {
 		t.Error("expected RequiresAny parsers")
