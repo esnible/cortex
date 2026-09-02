@@ -3,6 +3,7 @@ package main
 import (
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/rossoctl/cortex/authbridge/authlib/config"
@@ -72,8 +73,31 @@ func TestDemoConfig_WriteLoadsAndValidates(t *testing.T) {
 	for i, p := range cfg.Pipeline.Outbound.Plugins {
 		gotPlugins[i] = p.Name
 	}
-	wantPlugins := []string{"inference-parser", "mcp-parser", "a2a-parser"}
+	// tool-prune must come last: it is the request-body mutator, and the
+	// pipeline refuses to build a chain where a body reader follows it.
+	wantPlugins := []string{"inference-parser", "mcp-parser", "a2a-parser", "tool-prune"}
 	if !slices.Equal(gotPlugins, wantPlugins) {
 		t.Errorf("outbound plugins = %v, want %v", gotPlugins, wantPlugins)
+	}
+
+	// tool-prune ships inert, and that is a property worth pinning: the demo
+	// must never silently start rewriting a user's traffic. Two independent
+	// guards — an empty remove list (nothing to do) and observe policy
+	// (measure only) — so a future edit has to defeat both to enable it.
+	var tp *config.PluginEntry
+	for i := range cfg.Pipeline.Outbound.Plugins {
+		if cfg.Pipeline.Outbound.Plugins[i].Name == "tool-prune" {
+			tp = &cfg.Pipeline.Outbound.Plugins[i]
+		}
+	}
+	if tp == nil {
+		t.Fatal("tool-prune entry not found")
+	}
+	if tp.OnError != "observe" {
+		t.Errorf("tool-prune on_error = %q, want observe so the demo only measures", tp.OnError)
+	}
+	if !strings.Contains(string(tp.Config), "\"remove\":[]") &&
+		!strings.Contains(string(tp.Config), "\"remove\": []") {
+		t.Errorf("tool-prune must ship with an empty remove list, got %s", tp.Config)
 	}
 }

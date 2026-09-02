@@ -11,7 +11,8 @@ binaries with shared auth logic in `authlib/`:
 
 - `cmd/authbridge-proxy/` — proxy-sidecar mode (default). HTTP forward + reverse
   proxies. Compiles in every plugin by default (jwt-validation, token-exchange,
-  a2a-parser, mcp-parser, inference-parser, opa, sparc, ibac, token-broker).
+  a2a-parser, mcp-parser, inference-parser, opa, sparc, ibac, token-broker,
+  tool-prune).
   **Every** plugin is excludable via `-tags exclude_plugin_<name>` — one
   `plugins_<name>.go` file per plugin, gated by `//go:build !exclude_plugin_<name>`;
   `main.go` imports no plugin package directly. **Exception:** `context-guru` is
@@ -153,6 +154,23 @@ wants to register.
 - `authlib/config/` -- Mode presets, YAML config loader, credential-file waiters, top-level (mode + listener + session) validation
 - `authlib/pipeline/` -- Plugin interface + lifecycle (`Configurable`, `Initializer`, `Shutdowner`); see [`docs/framework-architecture.md`](docs/framework-architecture.md)
 - `authlib/plugins/` -- The concrete plugins + registry; see [`docs/plugin-reference.md`](docs/plugin-reference.md) for the per-plugin config convention
+
+**Directional body capabilities.** `PluginCapabilities` declares body writes
+per direction: `WritesRequestBody` (calls `pctx.SetBody`) and
+`WritesResponseBody` (calls `pctx.SetResponseBody`). `WritesResponseBody` is the
+SSE streaming predicate — both proxy listeners fall back from incremental relay
+to the buffered path only when some plugin declares it. A request-only mutator
+(`tool-prune`, `context-guru`) therefore keeps streaming, because requests are
+never streamed in the first place. `pipeline.New` allows at most one mutator per
+direction, and no mutator of either direction may precede a `ReadsBody`-only
+plugin. See [`docs/plugin-reference.md`](docs/plugin-reference.md#capability-fields).
+
+**Plugin metrics.** Plugins that implement `pipeline.MetricsProvider` have their
+counters surfaced on `GET /v1/pipeline` and rendered in abctl's plugin pane.
+Optional interfaces are not promoted through `configuredPlugin`'s embedded
+`Plugin`, so a new one must be forwarded there explicitly or it is invisible for
+every plugin that has config. Counters are per-process and reset on restart
+**and on config hot-reload**.
 
 **Plugin classification.** Protocol parsers (`mcp-parser`, `a2a-parser`, `inference-parser`) populate an `IsAction bool` field on their respective extensions to classify each request as either a user-meaningful action or protocol mechanics. Default-false means "not classified as action" — guardrails treat it as bypass. Parsers explicitly set `IsAction = true` for the small set of action methods (`tools/call` / `prompts/get` / `resources/read` for MCP; `message/send` / `message/stream` for A2A; every populated case for inference). Guardrails (`ibac` today; future rate limiters, audit loggers, etc.) read the aggregated verdict via `pctx.Classification()` which returns `(anyAction, anyBypass)`. A defense-in-depth guardrail skips on `anyBypass`, passes through on `!anyAction` (no parser claimed this traffic), and judges only when `anyAction && !anyBypass`. This puts the protocol-specific bypass-vs-action vocabulary in each parser — adding a new guardrail or new protocol does not multiply work at the guardrail layer. See [`docs/plugin-reference.md` "Classifying requests"](docs/plugin-reference.md#classifying-requests-as-actions-vs-protocol-mechanics) for the contract.
 
@@ -377,7 +395,7 @@ podman build -f cmd/authbridge-proxy/Dockerfile -t authbridge:latest .       # p
 podman build -f cmd/authbridge-envoy/Dockerfile -t authbridge-envoy:latest . # envoy-sidecar
 # authbridge-lite: the proxy Dockerfile built with exclude_plugin_* tags (auth-only)
 podman build -f cmd/authbridge-proxy/Dockerfile \
-  --build-arg GO_BUILD_TAGS="exclude_plugin_a2aparser,exclude_plugin_ibac,exclude_plugin_inferenceparser,exclude_plugin_mcpparser,exclude_plugin_opa,exclude_plugin_sparc,exclude_plugin_tokenbroker" \
+  --build-arg GO_BUILD_TAGS="exclude_plugin_a2aparser,exclude_plugin_ibac,exclude_plugin_inferenceparser,exclude_plugin_mcpparser,exclude_plugin_opa,exclude_plugin_sparc,exclude_plugin_tokenbroker,exclude_plugin_toolprune" \
   -t authbridge-lite:latest .
 kind load docker-image authbridge:latest       --name rossoctl
 kind load docker-image authbridge-envoy:latest --name rossoctl

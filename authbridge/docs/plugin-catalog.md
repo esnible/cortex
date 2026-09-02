@@ -36,6 +36,7 @@ AuthBridge pipeline YAML, not whether it is compiled into the binary
 | [`session-budget`](#session-budget) | Enforces per-session token, call, and duration budgets via Redis. | Alpha | Outbound | No |
 | [`token-broker`](#token-broker) | Exchanges incoming tokens against a configured IdP via a broker service. | Alpha | Outbound | No |
 | [`token-exchange`](#token-exchange) | RFC 8693 outbound token exchange per route. | Ready | Outbound | YES |
+| [`tool-prune`](#tool-prune) | Removes unused tool definitions from inference requests. | Alpha | Outbound | No |
 
 ## `a2a-parser`
 
@@ -225,3 +226,23 @@ ID, Okta, and any RFC 8693-compliant IdP.
 - `routes.rules` (list) — inline route entries (`host`, `target_audience`, `token_scopes`, `token_url`, `action`), combined with file-loaded routes.
 - `audience_from_host` (bool) — derive audience from host for unrouted requests (waypoint mode). Default `false`.
 - `resolve_placeholders` (bool) — resolve an inbound placeholder-prefixed bearer to its real token before exchange; unresolvable placeholders are denied. Default `false`.
+
+## `tool-prune`
+
+Removes unused tool definitions from the outbound inference manifest, so
+the tokens for tools an agent never calls are not billed on every turn.
+The manifest is assembled by the client, so the proxy is the only place to
+trim it without changing every client.
+
+Requires `inference-parser` earlier in the chain, and must sit after any
+body-reading plugin (it rewrites the request body). Declares
+`WritesRequestBody` only, so response streaming is unaffected.
+
+- `remove` (`[]string`) — tool names to delete from the manifest. The complete verdict: no learning, no state, no storage. Names absent from a given request are ignored.
+- `paths` (`[]string`) — request paths to act on, matched exactly or by suffix. Defaults to `/v1/chat/completions`, `/v1/completions`, `/v1/messages`.
+
+Generate the list from local transcripts with `abctl tools scan`, which
+proposes only tools it recognises as Claude Code built-ins and never
+proposes one it has seen called. See
+[`tool-prune-plugin.md`](./tool-prune-plugin.md) for the measure-then-enforce
+rollout, the metrics readout, and what the saving does and does not change.

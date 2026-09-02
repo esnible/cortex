@@ -586,18 +586,30 @@ Always sequential. No priority / mode / fire-and-forget semantics yet. This is t
 
 A plugin that declares `WritesRequestBody: true` may rewrite the request or response body. The framework owns the propagation to the wire; plugins only call `pctx.SetBody(newBytes)` / `pctx.SetResponseBody(newBytes)`.
 
-**Capability model.** Three booleans on `PluginCapabilities`:
+**Capability model.** Body access is declared per direction on `PluginCapabilities`:
 
 | Field | Meaning | Listener effect |
 |---|---|---|
 | `ReadsBody` | plugin reads `pctx.Body` / `pctx.ResponseBody` | buffers the body; plugin sees the bytes |
-| `WritesRequestBody` | plugin may call `pctx.SetBody` / `pctx.SetResponseBody` | implies `ReadsBody`; propagates mutations |
+| `WritesRequestBody` | plugin may call `pctx.SetBody` | implies `ReadsBody`; propagates request mutations |
+| `WritesResponseBody` | plugin may call `pctx.SetResponseBody` | implies `ReadsBody`; propagates response mutations **and forces the buffered response path** |
 | `BodyAccess` (deprecated) | legacy alias for `ReadsBody` | folded by `Normalize()`, removed in a future release |
+
+**Why the directions are separate.** `Pipeline.WritesResponseBody()` is the SSE
+streaming predicate: both proxy listeners consult it to decide whether a
+`text/event-stream` response may be relayed incrementally. It was previously one
+undirected flag, which meant a plugin rewriting only the *request* body disabled
+*response* streaming for bytes it never touched. The cost was latency and feel
+rather than correctness — the buffered path restores the body verbatim — but a
+long completion arriving in one lump after a silent wait is the first thing
+anyone notices. Request bodies are never streamed (they arrive complete with a
+`Content-Length` and are read end to end before dispatch), so a request-only
+mutator now keeps incremental relay.
 
 `pipeline.New` enforces two rules at build time:
 
-1. **At most one `WritesRequestBody` plugin per pipeline.** Multiple mutators would have ambiguous ordering semantics; the error names both plugins so an operator debugging pod logs knows which two to reconcile.
-2. **`WritesRequestBody` cannot precede a `ReadsBody`-only plugin.** A reader expects to see the original bytes; putting a mutator before it would silently feed the reader the post-rewrite content.
+1. **At most one mutator per direction per pipeline.** Multiple mutators writing the same bytes would have ambiguous ordering semantics; the error names both plugins so an operator debugging pod logs knows which two to reconcile. A request mutator and a response mutator coexist fine.
+2. **A mutator of either direction cannot precede a `ReadsBody`-only plugin.** A reader expects to see the original bytes; putting a mutator before it would silently feed the reader the post-rewrite content.
 
 **Mutation helpers.** `SetBody` / `SetResponseBody` replace the byte slice and flip an internal `bodyMutated` / `responseBodyMutated` flag that listeners read via `pctx.BodyMutated()` / `pctx.ResponseBodyMutated()`. They also auto-emit:
 

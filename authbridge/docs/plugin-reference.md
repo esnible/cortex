@@ -616,6 +616,45 @@ separator than against an escape convention.
 `Details`.** The session store has no auth on it; only safe-to-log data
 belongs in Invocations.
 
+### 1b. Operator-facing counters (`MetricsProvider`)
+
+Invocations describe *this* request. For running totals an operator reads while
+debugging — how many requests a plugin acted on, how many bytes it saved —
+implement `pipeline.MetricsProvider`:
+
+```go
+type Metric struct {
+    Name  string  `json:"name"`
+    Value float64 `json:"value"`
+    Unit  string  `json:"unit,omitempty"` // count | bytes | tokens | ratio
+    Note  string  `json:"note,omitempty"` // e.g. "estimate, n=1284"
+}
+
+type MetricsProvider interface { Metrics() []Metric }
+```
+
+`describePipeline` calls `Metrics()` while serving `/v1/pipeline`, so it must be
+safe for concurrent use with the request path and must not block — take a
+mutex, copy, release. Returning `nil` is fine; abctl renders `(none)`.
+
+Rules worth honouring:
+
+- **Label anything derived.** A figure the plugin computed rather than counted
+  goes in with a `Note` naming its sample size. A derived number with no `Note`
+  reads as a measurement.
+- **Report the sample alongside the conclusion.** Counters are per-process and
+  reset on restart *and on config hot-reload* (a reload rebuilds the plugin), so
+  a bare average is uninterpretable without the count behind it.
+- **Don't route counters through `auth.Stats`.** That type is auth-shaped —
+  typed approval/denial enums and a custom `MarshalJSON` — and carrying
+  unrelated totals through it distorts its meaning.
+
+This is an optional interface, so it is **not** promoted through
+`configuredPlugin`'s embedded `Plugin`. The wrapper forwards it explicitly, the
+same way it forwards `Initializer` / `Shutdowner` / `Finisher` / `Readier`; a new
+optional interface must be added there too or it will be invisible for every
+plugin that has config.
+
 ### 2. Named protocol extension (optional, for parsers)
 
 `MCP`, `A2A`, `Inference` are typed slots on `pipeline.Extensions`.
@@ -699,26 +738,53 @@ before/after (never the raw body).
 
 ```go
 type PluginCapabilities struct {
-    ReadsBody  bool  // plugin reads pctx.Body / pctx.ResponseBody
-    WritesRequestBody bool  // plugin may call pctx.SetBody / pctx.SetResponseBody
+    ReadsBody          bool // plugin reads pctx.Body / pctx.ResponseBody
+    WritesRequestBody  bool // plugin may call pctx.SetBody
+    WritesResponseBody bool // plugin may call pctx.SetResponseBody
 }
 ```
 
 - `ReadsBody`: listener buffers the body; plugin sees bytes.
 - `WritesRequestBody`: implies `ReadsBody`. Listener propagates `pctx.SetBody`
-  rewrites to the upstream (and `pctx.SetResponseBody` to the
-  downstream client).
+  rewrites to the upstream.
+- `WritesResponseBody`: implies `ReadsBody`. Listener propagates
+  `pctx.SetResponseBody` rewrites to the downstream client.
+
+**Declare the direction you actually write.** The two flags are not
+interchangeable, and getting this wrong is silent: `WritesResponseBody` is the
+SSE streaming predicate. A plugin that declares it forces every response on
+that chain onto the buffered path, so a long completion arrives in one lump
+after a silent wait instead of appearing incrementally. Declaring
+`WritesRequestBody` costs nothing — requests arrive complete with a
+`Content-Length` and are read end to end before dispatch, so rewriting one says
+nothing about how the response may be relayed.
+
+| Plugin shape | Declares | Streams responses? |
+|---|---|---|
+| request-only mutator (`tool-prune`, `context-guru`) | `WritesRequestBody` | yes |
+| response mutator | `WritesResponseBody` | no — buffered |
+| both (`sparc`, `cpex`) | both | no — buffered |
+| pure reader (parsers) | `ReadsBody` | yes |
 
 ### Build-time validation (enforced by `pipeline.New`)
 
-- At most **one** `WritesRequestBody` plugin per pipeline. Two mutators in
-  the same direction would produce ambiguous ordering; `New` rejects
-  with an error naming both plugins.
-- A `WritesRequestBody` plugin cannot precede a `ReadsBody`-only plugin. The
-  reader must see the original bytes.
+- At most **one** mutator **per direction** per pipeline. Two request mutators
+  (or two response mutators) would produce ambiguous ordering; `New` rejects
+  with an error naming both plugins. One request mutator plus one response
+  mutator is fine — they never rewrite the same bytes.
+- A mutator of **either** direction cannot precede a `ReadsBody`-only plugin.
+  The reader must see the original bytes.
 - Waypoint mode (ext_authz listener) cannot propagate body mutations —
   the ext_authz API has no body-mutation field. Do not combine
-  `WritesRequestBody: true` plugins with `mode: waypoint`.
+  body-mutating plugins with `mode: waypoint`.
+
+> **Declaring is a contract, not an enforcement.** `SetBody` flips
+> `bodyMutated` unconditionally outside observe mode and the listeners gate
+> purely on that flag, so a plugin that calls `SetBody` *without* declaring the
+> capability still reaches the wire. This divergence is documented rather than
+> closed, because adding the check silently would break out-of-tree plugins
+> relying on today's behaviour. Do not read it as a way to keep response
+> streaming — declare `WritesRequestBody`, which costs no streaming anyway.
 
 ### Mutation helpers
 

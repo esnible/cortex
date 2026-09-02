@@ -196,6 +196,19 @@ else
 	info "Cortex demo started (pid ${demo_pid}); couldn't confirm it's listening (install lsof or nc to verify). Logs: ${log}"
 fi
 info ""
+
+# tool-prune ships inert: present in the pipeline with an empty remove list and
+# on_error: observe. Offer the scan that fills the list in. Only patch a config
+# that already exists, so a first run never rewrites a file it just created
+# behind the user's back -- print the command instead and let them look first.
+demo_cfg="${ca_dir}/demo.yaml"
+if [ -f "${demo_cfg}" ]; then
+	info "  Measure tool-manifest waste (writes the remove: list, no restart needed):"
+	info "    ${abctl_cmd} tools scan --write ${demo_cfg}"
+	info "  Then read 'requests projected' in abctl's plugin pane before switching"
+	info "  that entry's on_error to enforce."
+	info ""
+fi
 info "  Watch traffic:   ${abctl_cmd} --endpoint http://localhost:${DEMO_SESSION_PORT}"
 info "  Send traffic through it (e.g. Claude Code):"
 info "    HTTPS_PROXY=http://localhost:${DEMO_FORWARD_PORT} \\"

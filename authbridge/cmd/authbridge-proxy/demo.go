@@ -45,7 +45,23 @@ tls_bridge:
   generate_ca: true
 pipeline:
   outbound:
-    plugins: [inference-parser, mcp-parser, a2a-parser]
+    plugins:
+      - name: inference-parser
+      - name: mcp-parser
+      - name: a2a-parser
+      # tool-prune drops unused tool definitions from the outbound manifest.
+      # It ships inert: the remove list is empty, so it does nothing until you
+      # fill it in, and on_error: observe means even then it only measures --
+      # counting what it *would* remove while the bytes on the wire stay
+      # untouched. Read the projection in abctl's plugin pane, then switch
+      # on_error to enforce once the numbers look right. Fill the list with:
+      #   abctl tools scan --write <this file>
+      # Keep it last: it rewrites the request body, and body readers must
+      # precede the mutator so they see the original bytes.
+      - name: tool-prune
+        on_error: observe
+        config:
+          remove: []
 `
 }
 
