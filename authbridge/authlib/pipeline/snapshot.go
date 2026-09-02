@@ -1,6 +1,8 @@
 package pipeline
 
 import (
+	"github.com/tidwall/gjson"
+
 	"encoding/json"
 	"log/slog"
 	"strconv"
@@ -129,9 +131,49 @@ func DeriveError(pctx *Context) *EventError {
 	}
 	if pctx.StatusCode >= 400 {
 		return &EventError{
-			Kind: "backend_error",
-			Code: strconv.Itoa(pctx.StatusCode),
+			Kind:    "backend_error",
+			Code:    strconv.Itoa(pctx.StatusCode),
+			Message: upstreamErrorKind(pctx.ResponseBody),
 		}
 	}
 	return nil
+}
+
+// upstreamErrorKind extracts the provider's machine-readable error type from an
+// error response body, or "" when there isn't one.
+//
+// A bare `backend_error / 400` tells an operator nothing about why, which turns
+// every upstream rejection into a guessing exercise. The provider already
+// classifies its own failures, and the classification is what an operator acts
+// on: invalid_request_error means fix the request, rate_limit_error means back
+// off, authentication_error means fix credentials.
+//
+// The human-readable error.message is deliberately NOT captured. Provider
+// messages routinely quote the offending part of the request, and the session
+// store is unauthenticated — the same reason body-mutation events carry only
+// length and sha256. The type and code are enum-like: bounded vocabularies
+// chosen by the provider, carrying no request content.
+func upstreamErrorKind(body []byte) string {
+	if len(body) == 0 {
+		return ""
+	}
+	// Bound the parse: an error body is small, and a huge one here means this
+	// isn't an error document at all.
+	if len(body) > 64*1024 {
+		body = body[:64*1024]
+	}
+	if !gjson.ValidBytes(body) {
+		return ""
+	}
+	t := gjson.GetBytes(body, "error.type").String()
+	if t == "" {
+		t = gjson.GetBytes(body, "error.code").String()
+	}
+	if t == "" {
+		return ""
+	}
+	if len(t) > 64 {
+		t = t[:64]
+	}
+	return t
 }
