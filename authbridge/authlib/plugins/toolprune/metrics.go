@@ -191,7 +191,10 @@ func (m *metrics) snapshot() []pipeline.Metric {
 			// Provenance travels with the number. Built-in rates are
 			// gateway-specific and not refreshed, so a figure derived from them
 			// must not read as one measured on this account.
-			costNote = "default rates — set pricing.<model> to use yours"
+			// Name the provenance, not just the fact. "default rates" alone reads
+			// as a rounding caveat; these were measured on a discounted gateway,
+			// so for anyone paying vendor list the figure is several times low.
+			costNote = "built-in rates (discounted gateway; understates list pricing) — set pricing.<model>"
 			if note != "" {
 				costNote = note + "; " + costNote
 			}

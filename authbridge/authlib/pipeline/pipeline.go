@@ -621,8 +621,40 @@ func validateCapabilities(plugins []Plugin) error {
 			readerAfterMutator = plugin.Name()
 		}
 	}
+	warnResponseReaderOrdering(plugins)
 	if readerAfterMutator != "" {
 		return fmt.Errorf("pipeline: plugin %q reads body after mutator %q — body readers must precede the mutator so they see the original bytes", readerAfterMutator, firstMutator)
 	}
 	return nil
+}
+
+// warnResponseReaderOrdering logs the chain shape that the documented
+// reverse-order gap makes unsafe: a non-streaming body reader placed BEFORE a
+// response mutator. RunResponse iterates in reverse, so the mutator runs first
+// and the reader sees rewritten response bytes — for a policy plugin that means
+// authorizing against content it did not receive.
+//
+// A warning rather than a rejection: enforcing it would fail chains that
+// validate today (see the gap comment in validateCapabilities), and this change
+// promised no working configuration starts failing. But the deferral should not
+// be invisible — until now its only record was a code comment, which an operator
+// running the shape would never read.
+func warnResponseReaderOrdering(plugins []Plugin) {
+	var respMutator string
+	for _, p := range plugins {
+		caps := p.Capabilities().Normalize()
+		if caps.WritesResponseBody {
+			respMutator = p.Name()
+			continue
+		}
+		if respMutator != "" || !caps.ReadsBody {
+			continue
+		}
+		if _, streaming := p.(StreamingResponder); streaming {
+			continue // RunResponse skips these entirely
+		}
+		slog.Warn("pipeline: body reader precedes a response mutator — on the response pass the mutator runs first, so this reader sees rewritten bytes",
+			"reader", p.Name(),
+			"hint", "place the reader after the response mutator, or confirm it does not read pctx.ResponseBody")
+	}
 }

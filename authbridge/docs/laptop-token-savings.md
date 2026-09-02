@@ -11,12 +11,17 @@ Four steps, about two minutes.
 ## 1. Install the binaries
 
 ```sh
-AUTHBRIDGE_INSTALL_ONLY=1 \
-  curl -fsSL https://raw.githubusercontent.com/rossoctl/cortex/main/authbridge/install-demo.sh | sh
+curl -fsSL https://raw.githubusercontent.com/rossoctl/cortex/main/authbridge/install-demo.sh \
+  | AUTHBRIDGE_INSTALL_ONLY=1 sh
 ```
 
-Puts `authbridge-proxy` and `abctl` in `~/.local/bin`. `INSTALL_ONLY` skips the
-demo — you want a config that persists, which the next step writes.
+Puts `authbridge-proxy` and `abctl` in `~/.local/bin`. `INSTALL_ONLY` skips
+starting the demo — you want a config that persists, which the next step writes.
+
+The variable goes on `sh`, not on `curl`. Written the other way round
+(`VAR=1 curl … | sh`) it only reaches `curl`, the script runs without it and
+starts the demo — binding 47600-47602 and writing a `cortex-ca/demo.yaml`, so
+step 3 then fails on the port clash.
 
 ## 2. Write a config
 
@@ -87,10 +92,17 @@ Stop it with `pkill -f 'authbridge-proxy --config'`.
 
 ## Seeing the saving in money
 
-`$ saved` and `$ saved / request` appear with no extra configuration — the plugin
-ships rates for the Claude models on the rossoctl gateway. The figure is labelled
-`default rates` to be clear it comes from a built-in table rather than your own
+`$ saved` and `$ saved / request` appear with no extra configuration, labelled
+`default rates` to be clear they come from a built-in table rather than your own
 account.
+
+**Read that figure as a floor, not a measurement.** The built-in rates were
+measured on a shared gateway that bills below vendor list. If your Claude Code
+talks straight to Anthropic — which it does unless you have set
+`ANTHROPIC_BASE_URL` — you are paying list, so the real saving is several times
+what the column shows. Set your own rates to make it accurate; the number is
+useful as-is only for confirming the plugin is working and comparing turns
+against each other.
 
 Token savings are reported per prompt-cache tier, never as one blended number:
 providers charge ~1.25x the input rate for a cache write and ~0.1x for a cache

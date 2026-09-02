@@ -193,3 +193,55 @@ func TestPatchConfig_MissingFileExplainsWhere(t *testing.T) {
 		t.Errorf("should replace the bare os error, not wrap it:\n%s", msg)
 	}
 }
+
+// TestPatchConfig_RefusesBlockStyleList: replacing only the `remove:` line would
+// leave its `- item` children dangling under an inline value — invalid YAML the
+// proxy rejects on reload, leaving the operator with a file this tool broke.
+func TestPatchConfig_RefusesBlockStyleList(t *testing.T) {
+	cfg := `pipeline:
+  outbound:
+    plugins:
+      - name: tool-prune
+        config:
+          remove:
+            - NotebookEdit
+            - WebSearch
+      - name: token-exchange
+`
+	p := writeConfig(t, cfg)
+	_, err := PatchConfig(p, []string{"LSP"})
+	if err == nil {
+		t.Fatal("expected a refusal for the block-list form")
+	}
+	for _, want := range []string{"block form", "remove: []"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error should mention %q: %v", want, err)
+		}
+	}
+	// And it must not have touched the file.
+	got, _ := os.ReadFile(p)
+	if string(got) != cfg {
+		t.Errorf("file was modified despite the refusal:\n%s", got)
+	}
+}
+
+// TestIsBlockList distinguishes the two spellings.
+func TestIsBlockList(t *testing.T) {
+	inline := []string{"          remove: [A, B]"}
+	if isBlockList(inline, 0, 1) {
+		t.Error("inline form misdetected as a block list")
+	}
+	empty := []string{"          remove: []"}
+	if isBlockList(empty, 0, 1) {
+		t.Error("empty inline form misdetected")
+	}
+	block := []string{"          remove:", "            - A", "            - B"}
+	if !isBlockList(block, 0, 3) {
+		t.Error("block form not detected")
+	}
+	// A bare `remove:` with a following key (not a list) is not a block list.
+	bare := []string{"          remove:", "          other: 1"}
+	if isBlockList(bare, 0, 2) {
+		t.Error("bare key followed by another key misdetected as a block list")
+	}
+}

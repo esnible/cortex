@@ -1,6 +1,10 @@
 package toolprune
 
-import "github.com/rossoctl/cortex/authbridge/authlib/pipeline"
+import (
+	"github.com/tidwall/gjson"
+
+	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
+)
 
 // pruneEvent is the per-request record published under "tool-prune/event", so a
 // consumer can show what this one request saved instead of only an aggregate.
@@ -42,4 +46,31 @@ func inferenceModel(pctx *pipeline.Context) string {
 		return ""
 	}
 	return pctx.Extensions.Inference.Model
+}
+
+// toolsCitedByHistory returns the tool names the conversation already used, from
+// tool_use blocks in assistant messages.
+//
+// Those tools must survive pruning: a provider may reject a request whose history
+// references a tool the manifest no longer defines. Enabling the plugin
+// mid-conversation is exactly when this arises, because the config hot-reloads and
+// the scan's window can propose a tool that was used earlier in the same session.
+//
+// Scanned with gjson paths rather than a full unmarshal — a Claude Code body runs
+// to hundreds of KB and this is the request hot path.
+func toolsCitedByHistory(body []byte) map[string]struct{} {
+	out := map[string]struct{}{}
+	gjson.GetBytes(body, "messages").ForEach(func(_, msg gjson.Result) bool {
+		msg.Get("content").ForEach(func(_, block gjson.Result) bool {
+			if block.Get("type").String() != "tool_use" {
+				return true
+			}
+			if n := block.Get("name"); n.Type == gjson.String && n.String() != "" {
+				out[n.String()] = struct{}{}
+			}
+			return true
+		})
+		return true
+	})
+	return out
 }

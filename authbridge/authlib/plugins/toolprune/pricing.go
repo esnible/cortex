@@ -10,9 +10,11 @@ package toolprune
 // between a number an operator sees and one they never get around to enabling.
 // They are a starting point, not a fact about your account:
 //
-//   - Rates are gateway-specific. This gateway bills well below Anthropic list;
-//     a deployment talking straight to the vendor pays more, so these would
-//     understate its saving.
+//   - Rates are gateway-specific. This gateway bills well below vendor list, so
+//     a deployment talking straight to Anthropic pays more and these
+//     UNDERSTATE its saving — by roughly 4x on the input tier at the time of
+//     measurement. That is the common case for a laptop install, so the
+//     caveat travels with every figure rather than living only here.
 //   - Rates change. Nothing here refreshes them.
 //
 // A figure derived from these is therefore labelled as coming from default
@@ -32,6 +34,16 @@ var defaultPricing = map[string]modelRates{
 		InputCostPerToken:      0.0000038,
 		CacheWriteCostPerToken: 0.00000475,
 		CacheReadCostPerToken:  0.00000038,
+	},
+	"claude-sonnet-5": {
+		InputCostPerToken:      0.00000152,
+		CacheWriteCostPerToken: 0.0000019,
+		CacheReadCostPerToken:  0.000000152,
+	},
+	"claude-haiku-4-5": {
+		InputCostPerToken:      0.00000076,
+		CacheWriteCostPerToken: 0.00000095,
+		CacheReadCostPerToken:  0.000000076,
 	},
 	"aws/claude-sonnet-5": {
 		InputCostPerToken:      0.00000152,

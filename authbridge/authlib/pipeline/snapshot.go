@@ -142,6 +142,14 @@ func DeriveError(pctx *Context) *EventError {
 // upstreamErrorKind extracts the provider's machine-readable error type from an
 // error response body, or "" when there isn't one.
 //
+// REQUIRES A BUFFERED BODY. pctx.ResponseBody is only populated when some
+// plugin in the chain declares ReadsBody, so on an auth-only chain — and in
+// the authbridge-lite build, where the parsers are compiled out — this yields
+// "" and the event stays the bare backend_error/<code> it was before. That is
+// precisely where an operator has the fewest other diagnostics; closing it
+// would mean buffering error responses on chains that otherwise never read a
+// body, which is a listener-level decision, not one to make here.
+//
 // A bare `backend_error / 400` tells an operator nothing about why, which turns
 // every upstream rejection into a guessing exercise. The provider already
 // classifies its own failures, and the classification is what an operator acts

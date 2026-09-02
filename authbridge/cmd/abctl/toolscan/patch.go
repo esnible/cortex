@@ -75,6 +75,15 @@ func PatchConfig(path string, candidates []string) (changed bool, err error) {
 		if m == nil {
 			continue
 		}
+		// Refuse the block-list form. Replacing just the `remove:` line would
+		// leave its `- item` children dangling under a now-inline value, which
+		// is invalid YAML — the proxy would reject the config on reload and the
+		// operator would be left with a file this tool broke.
+		if isBlockList(lines, i, end) {
+			return false, fmt.Errorf("%s: the tool-prune `remove:` list is in block form (one `- item` per line);\n"+
+				"  this tool only rewrites the inline form. Replace those lines with `remove: []` and re-run,\n"+
+				"  or paste the block this command prints without --write", path)
+		}
 		replacement := m[1] + want
 		if lines[i] == replacement {
 			return false, nil // already current — idempotent
@@ -137,4 +146,20 @@ func writeFileAtomic(path string, data []byte) error {
 		return err
 	}
 	return os.Rename(tmpName, path)
+}
+
+// isBlockList reports whether the `remove:` at lines[i] is followed by YAML
+// block-sequence items rather than carrying an inline value.
+func isBlockList(lines []string, i, end int) bool {
+	if strings.TrimSpace(strings.SplitN(lines[i], ":", 2)[1]) != "" {
+		return false // has an inline value on the same line
+	}
+	for j := i + 1; j < end && j < len(lines); j++ {
+		t := strings.TrimSpace(lines[j])
+		if t == "" || strings.HasPrefix(t, "#") {
+			continue
+		}
+		return strings.HasPrefix(t, "- ")
+	}
+	return false
 }

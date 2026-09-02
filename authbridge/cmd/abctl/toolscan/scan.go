@@ -65,6 +65,7 @@ func Scan(dir string, days int, keep []string) (*Result, error) {
 			return nil
 		}
 		res.Files++
+		// Propagate: a partial scan silently proposes more tools.
 		return scanFile(path, since, seenIDs, res)
 	})
 	if err != nil {
@@ -147,6 +148,13 @@ func scanFile(path string, since time.Time, seenIDs map[string]struct{}, res *Re
 			}
 			res.CallCounts[c.Name]++
 		}
+	}
+	// A scanner error (a line past the 16MB cap, a read fault) silently stops
+	// iteration. Swallowing it under-reports which tools were CALLED, which
+	// makes the scan propose MORE for removal — failing toward removing a tool
+	// the agent needs, the one direction this must not fail in.
+	if err := sc.Err(); err != nil {
+		return fmt.Errorf("%s: %w (the tool list would be incomplete, so refusing to guess)", path, err)
 	}
 	return nil
 }

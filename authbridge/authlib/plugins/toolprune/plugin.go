@@ -377,6 +377,18 @@ func (p *ToolPrune) OnRequest(_ context.Context, pctx *pipeline.Context) (action
 		})
 		return action
 	}
+	// Tools the conversation already used must stay in the manifest. A provider
+	// may reject a tool_use / tool_result block that references a tool the
+	// request no longer defines, and enabling the plugin mid-conversation (the
+	// config hot-reloads) is exactly when history can cite a tool the scan
+	// proposed — the scan only looks at a rolling window, so a tool used earlier
+	// in this very session can be on the remove list.
+	//
+	// Not reproducible against every provider (one gateway accepts it), but the
+	// cost of the guard is a few unpruned definitions and the cost of being wrong
+	// is a failed request, so it is not a trade worth making.
+	used := toolsCitedByHistory(body)
+
 	var victims []int
 	var anyNameResolved bool
 	names := make([]string, 0, len(raw))
@@ -390,6 +402,10 @@ func (p *ToolPrune) OnRequest(_ context.Context, pctx *pipeline.Context) (action
 			// Removing the tool tool_choice forces would make the request
 			// invalid. Keep it and prune the rest.
 			slog.Debug("tool-prune: keeping tool forced by tool_choice", "tool", name)
+			continue
+		}
+		if _, cited := used[name]; cited {
+			slog.Debug("tool-prune: keeping tool cited by conversation history", "tool", name)
 			continue
 		}
 		if _, ok := p.remove[name]; ok {
@@ -426,6 +442,38 @@ func (p *ToolPrune) OnRequest(_ context.Context, pctx *pipeline.Context) (action
 			}
 		}
 	} else {
+		// A prompt-cache breakpoint rides on one element (Claude Code marks the
+		// last tool). Deleting that element deletes the breakpoint, and losing
+		// it turns every subsequent turn into a full cache write — which costs
+		// far more than the definitions saved. Carry the marker to the last
+		// surviving tool instead.
+		victimSet := make(map[int]bool, len(victims))
+		for _, v := range victims {
+			victimSet[v] = true
+		}
+		var orphanedCacheControl gjson.Result
+		for _, v := range victims {
+			if cc := gjson.GetBytes(body, fmt.Sprintf("tools.%d.cache_control", v)); cc.Exists() {
+				orphanedCacheControl = cc
+			}
+		}
+		lastSurvivor := -1
+		for i := len(raw) - 1; i >= 0; i-- {
+			if !victimSet[i] {
+				lastSurvivor = i
+				break
+			}
+		}
+		if orphanedCacheControl.Exists() && lastSurvivor >= 0 &&
+			!gjson.GetBytes(body, fmt.Sprintf("tools.%d.cache_control", lastSurvivor)).Exists() {
+			if out, err = sjson.SetRawBytes(out,
+				fmt.Sprintf("tools.%d.cache_control", lastSurvivor),
+				[]byte(orphanedCacheControl.Raw)); err != nil {
+				slog.Warn("tool-prune: could not preserve cache_control, forwarding original", "err", err)
+				return action
+			}
+			slog.Debug("tool-prune: moved cache_control to the last surviving tool", "index", lastSurvivor)
+		}
 		// Descending, so an earlier deletion never shifts a later index.
 		for i := len(victims) - 1; i >= 0; i-- {
 			if out, err = sjson.DeleteBytes(out, fmt.Sprintf("tools.%d", victims[i])); err != nil {

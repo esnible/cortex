@@ -22,6 +22,14 @@ type Metric struct {
 // must not block — take a mutex, copy, release. Returning nil is fine and
 // renders as "(none)".
 //
+// CONTRACT ON Name AND Note: these are short operator-facing labels, surfaced on
+// an endpoint with no authentication. They must never carry request or response
+// content — no prompts, no completions, no header or credential values, nothing
+// derived from a body. A caveat naming a sample size or a configuration key is
+// fine; a caveat quoting the traffic is not. The framework caps their length but
+// cannot inspect their meaning, so this is a producer obligation, the same one
+// body-mutation events carry when they publish only lengths and hashes.
+//
 // This is deliberately separate from plugins.StatsSource / auth.Stats, which
 // are auth-shaped: they carry typed approval and denial enums and a custom
 // MarshalJSON, so routing "bytes removed" through them would distort their

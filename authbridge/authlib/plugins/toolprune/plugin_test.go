@@ -380,11 +380,14 @@ func TestPricing_DefaultsPriceKnownModelsWithoutConfig(t *testing.T) {
 	}
 	// Provenance must travel with the number: built-in rates are
 	// gateway-specific and never refreshed, so this must not read as measured.
-	if !strings.Contains(m.Note, "default rates") {
-		t.Errorf("note = %q, want it to disclose that default rates were used", m.Note)
-	}
-	if !strings.Contains(m.Note, "pricing.") {
-		t.Errorf("note = %q, want it to name how to override", m.Note)
+	// The note must disclose three things: that the rates are built in, the
+	// DIRECTION of the error (they came from a discounted gateway, so anyone on
+	// vendor list is under-credited), and how to override. "default rates" alone
+	// reads as a rounding caveat rather than a several-fold one.
+	for _, want := range []string{"built-in rates", "understates", "pricing."} {
+		if !strings.Contains(m.Note, want) {
+			t.Errorf("note = %q, missing %q", m.Note, want)
+		}
 	}
 }
 
@@ -896,7 +899,72 @@ func TestPricing_BuiltInTableBeatsFlatFallback(t *testing.T) {
 	}
 	// And the caveat is still attached, because defaults were used.
 	pruneWithModel(t, p, "claude-opus-5")
-	if m := findMetric(t, p.Metrics(), "$ saved"); !strings.Contains(m.Note, "default rates") {
-		t.Errorf("note = %q, want the default-rates caveat", m.Note)
+	if m := findMetric(t, p.Metrics(), "$ saved"); !strings.Contains(m.Note, "built-in rates") {
+		t.Errorf("note = %q, want the built-in-rates caveat", m.Note)
+	}
+}
+
+// TestPrune_KeepsToolsCitedByHistory: a provider may reject a request whose
+// history references a tool the manifest no longer defines. This arises exactly
+// when the plugin is enabled mid-conversation — the config hot-reloads, and the
+// scan's rolling window can propose a tool used earlier in the same session.
+func TestPrune_KeepsToolsCitedByHistory(t *testing.T) {
+	body := `{"tools":[{"name":"Read"},{"name":"WebSearch"},{"name":"NotebookEdit"}],
+	  "messages":[
+	    {"role":"user","content":"go"},
+	    {"role":"assistant","content":[{"type":"tool_use","id":"t1","name":"WebSearch","input":{}}]},
+	    {"role":"user","content":[{"type":"tool_result","tool_use_id":"t1","content":"ok"}]}]}`
+	p := configured(t, "WebSearch", "NotebookEdit")
+	pctx := inferenceCtx("/v1/messages", body, "Read", "WebSearch", "NotebookEdit")
+	run(t, p, pctx)
+
+	got := string(pctx.Body)
+	if !strings.Contains(got, "WebSearch") {
+		t.Errorf("WebSearch is cited by history and must survive:\n%s", got)
+	}
+	if strings.Contains(got, "NotebookEdit") {
+		t.Errorf("NotebookEdit is uncited and should still be pruned:\n%s", got)
+	}
+}
+
+// TestPrune_PreservesCacheControlBreakpoint: a prompt-cache breakpoint rides on
+// one element — Claude Code marks the last tool. Deleting that element deletes
+// the breakpoint, and losing it turns every later turn into a full cache write,
+// which costs far more than the definitions saved. The marker must move to the
+// last surviving tool.
+func TestPrune_PreservesCacheControlBreakpoint(t *testing.T) {
+	body := `{"tools":[{"name":"Read"},{"name":"Bash"},` +
+		`{"name":"NotebookEdit","cache_control":{"type":"ephemeral"}}]}`
+	p := configured(t, "NotebookEdit")
+	pctx := inferenceCtx("/v1/messages", body, "Read", "Bash", "NotebookEdit")
+	run(t, p, pctx)
+
+	got := string(pctx.Body)
+	if strings.Contains(got, "NotebookEdit") {
+		t.Fatalf("the tool should be pruned: %s", got)
+	}
+	if !strings.Contains(got, "cache_control") {
+		t.Errorf("cache breakpoint was destroyed — every later turn becomes a full cache write:\n%s", got)
+	}
+	// It must land on the LAST surviving tool, where the prefix ends.
+	if !strings.Contains(got, `{"name":"Bash","cache_control":{"type":"ephemeral"}}`) {
+		t.Errorf("marker not on the last survivor:\n%s", got)
+	}
+	var any map[string]any
+	if err := json.Unmarshal(pctx.Body, &any); err != nil {
+		t.Errorf("invalid JSON after the move: %v", err)
+	}
+}
+
+// TestPrune_DoesNotDuplicateCacheControl: when a surviving tool already carries a
+// breakpoint, adding another would exceed the provider's cache_control limit.
+func TestPrune_DoesNotDuplicateCacheControl(t *testing.T) {
+	body := `{"tools":[{"name":"Read","cache_control":{"type":"ephemeral"}},` +
+		`{"name":"NotebookEdit","cache_control":{"type":"ephemeral"}}]}`
+	p := configured(t, "NotebookEdit")
+	pctx := inferenceCtx("/v1/messages", body, "Read", "NotebookEdit")
+	run(t, p, pctx)
+	if n := strings.Count(string(pctx.Body), "cache_control"); n != 1 {
+		t.Errorf("cache_control appears %d times, want 1: %s", n, pctx.Body)
 	}
 }
