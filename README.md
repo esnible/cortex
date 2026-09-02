@@ -37,6 +37,13 @@ Watch an AI agent's traffic — its model, tool, and agent-to-agent calls — de
 
    Its calls stream into `abctl`, decrypted and parsed.
 
+## Cut Claude Code token cost on your laptop
+
+Already using Claude Code? Cortex can strip the tool definitions your agent never
+calls out of every request — typically 20–25% of the prompt you pay for on each
+turn. Four steps, about two minutes:
+**[Cut Claude Code token cost](./authbridge/docs/laptop-token-savings.md)**.
+
 ## Running on Kubernetes
 
 In a cluster, Cortex sidecars are injected automatically by the [operator](https://github.com/rossoctl/operator), with Keycloak + SPIFFE/SPIRE for identity and token exchange. Start with the end-to-end **[Weather Agent walkthrough](./authbridge/demos/weather-agent/demo-ui.md)** (or the [`abctl` version](./authbridge/demos/weather-agent/demo-with-abctl.md)); see the [demos index](./authbridge/demos/README.md) and the [architecture reference](./authbridge/README.md) for all modes and details.
