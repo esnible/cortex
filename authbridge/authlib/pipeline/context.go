@@ -115,6 +115,10 @@ type Context struct {
 	// compute SessionEvent.Duration without walking the event history.
 	StartedAt time.Time
 
+	// requestID backs RequestID(), which generates it on first use. See
+	// requestid.go for why it is lazy rather than a constructor argument.
+	requestID string
+
 	Agent    *AgentIdentity
 	Identity Identity     // nil before an auth plugin runs
 	Session  *SessionView // nil unless session tracking is enabled

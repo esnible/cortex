@@ -477,20 +477,61 @@ func truncStr(s string, n int) string {
 // never gets a response) from stealing a later response that belongs to a
 // different method.
 //
-// Closest-preceding adjacency is sufficient for current traffic, where a
-// response follows its request. Concurrent same-host+method calls could in
-// principle cross-pair, but this is a navigational cue, not a correctness
-// guarantee; a server-side correlation id would be the fix if that ever bites.
+// Pairing prefers SessionEvent.RequestID, which the proxy stamps on both the
+// request and response event of the same exchange. That is exact, including
+// under concurrency.
+//
+// The closest-preceding heuristic below remains for events with no RequestID —
+// an older proxy, or a listener that has not been taught to stamp it. It matches
+// on direction + host (port-normalized) + method, and it cross-pairs when a
+// client has concurrent same-host+method calls in flight. That is not
+// hypothetical: Claude Code fires its session-title request alongside the main
+// one, and the heuristic drew a 400 from the title request under the main
+// request's row, which read as the pipeline plugin on that row having caused it.
 //
 // IDs are keyed by event pointer so the render loop can look one up without
 // knowing the row index. They start at 1 and increment in first-seen row order
 // so adjacent exchanges get adjacent integers.
 func computeEventPairs(rows []eventRow) (map[*pipeline.SessionEvent]int, map[int]int) {
 	partner := make(map[int]int) // row index → matched row index
+
+	// Exact pass: pair by the proxy-stamped RequestID. Indexed by id so a
+	// response finds its request regardless of how much traffic interleaves
+	// between them.
+	reqByID := make(map[string]int)
+	for i := range rows {
+		e := rows[i].event
+		if e.RequestID == "" || e.Phase != pipeline.SessionRequest {
+			continue
+		}
+		if _, dup := reqByID[e.RequestID]; !dup {
+			reqByID[e.RequestID] = i
+		}
+	}
+	for j := range rows {
+		e := rows[j].event
+		if e.RequestID == "" || e.Phase != pipeline.SessionResponse {
+			continue
+		}
+		i, ok := reqByID[e.RequestID]
+		if !ok {
+			continue
+		}
+		if _, taken := partner[i]; taken {
+			continue
+		}
+		partner[i] = j
+		partner[j] = i
+	}
+
+	// Heuristic pass: only for rows the exact pass could not place.
 	for j := range rows {
 		rj := rows[j].event
 		if rj.Phase != pipeline.SessionResponse {
 			continue
+		}
+		if _, done := partner[j]; done {
+			continue // already paired exactly by RequestID
 		}
 		for i := j - 1; i >= 0; i-- {
 			if _, taken := partner[i]; taken {

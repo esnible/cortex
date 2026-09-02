@@ -822,3 +822,62 @@ func TestPlural(t *testing.T) {
 		}
 	}
 }
+
+// TestComputeEventPairs_RequestIDBeatsAdjacency reproduces a real
+// misdiagnosis. Claude Code fires its session-title request concurrently with
+// the main one; both are POSTs to the same host. Interleaved as
+// req(main) req(title) resp(title,400) resp(main,200), the closest-preceding
+// heuristic pairs req(title) with resp(title) — but pairs req(main) with
+// resp(main) only by luck of ordering, and with a different interleaving it
+// draws the title request's 400 under the main request's row.
+//
+// That is exactly what happened: a 400 belonging to a request tool-prune never
+// touched was rendered beneath the row where tool-prune reported a body
+// rewrite, which read as the plugin having broken the request. RequestID makes
+// the pairing exact.
+func TestComputeEventPairs_RequestIDBeatsAdjacency(t *testing.T) {
+	ev := func(phase pipeline.SessionPhase, id string, code int) *pipeline.SessionEvent {
+		return &pipeline.SessionEvent{
+			Direction:  pipeline.Outbound,
+			Phase:      phase,
+			Host:       "litellm.example",
+			RequestID:  id,
+			StatusCode: code,
+		}
+	}
+	// The real interleaving observed in the session store: the title request
+	// is issued first, the main request second, and the title's 400 arrives
+	// before the main response. The heuristic then walks back from the 400 to
+	// the nearest unpaired request — the MAIN one — and brackets them together.
+	title := ev(pipeline.SessionRequest, "bbb", 0)
+	mainReq := ev(pipeline.SessionRequest, "aaa", 0)
+	titleResp := ev(pipeline.SessionResponse, "bbb", 400)
+	mainResp := ev(pipeline.SessionResponse, "aaa", 200)
+	rows := []eventRow{{event: title}, {event: mainReq}, {event: titleResp}, {event: mainResp}}
+
+	_, partner := computeEventPairs(rows)
+
+	if partner[0] != 2 {
+		t.Errorf("title request (row 0) paired with row %d, want 2 (its own 400)", partner[0])
+	}
+	if partner[1] != 3 {
+		t.Errorf("main request (row 1) paired with row %d, want 3 (its own 200)", partner[1])
+	}
+	// The specific failure this fixes: the main request owning the title's 400.
+	if partner[1] == 2 {
+		t.Error("main request paired with the title request's 400 — the misdiagnosis this fixes")
+	}
+}
+
+// TestComputeEventPairs_FallsBackWithoutRequestID keeps the heuristic working
+// for events from a proxy that does not stamp an id, so an older data plane
+// still renders brackets.
+func TestComputeEventPairs_FallsBackWithoutRequestID(t *testing.T) {
+	req := &pipeline.SessionEvent{Direction: pipeline.Outbound, Phase: pipeline.SessionRequest, Host: "h"}
+	resp := &pipeline.SessionEvent{Direction: pipeline.Outbound, Phase: pipeline.SessionResponse, Host: "h", StatusCode: 200}
+	rows := []eventRow{{event: req}, {event: resp}}
+	_, partner := computeEventPairs(rows)
+	if partner[0] != 1 || partner[1] != 0 {
+		t.Errorf("heuristic pairing broke for id-less events: partner=%v", partner)
+	}
+}
