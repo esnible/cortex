@@ -198,8 +198,10 @@ func TestYAMLBlock(t *testing.T) {
 	if !strings.Contains(got, "remove: [NotebookEdit, WebSearch]") {
 		t.Errorf("block missing remove list:\n%s", got)
 	}
-	if !strings.Contains(got, "on_error: observe") {
-		t.Errorf("emitted block must default to observe (measure first):\n%s", got)
+	// on_error is intentionally absent: it defaults to enforce, and the remove
+	// list is the gate. Emitting a policy line would imply it is the switch.
+	if strings.Contains(got, "on_error") {
+		t.Errorf("block should not emit an on_error line:\n%s", got)
 	}
 	empty := (&Result{}).YAMLBlock()
 	if !strings.Contains(empty, "remove: []") {

@@ -81,9 +81,11 @@ func TestDemoConfig_WriteLoadsAndValidates(t *testing.T) {
 	}
 
 	// tool-prune ships inert, and that is a property worth pinning: the demo
-	// must never silently start rewriting a user's traffic. Two independent
-	// guards — an empty remove list (nothing to do) and observe policy
-	// (measure only) — so a future edit has to defeat both to enable it.
+	// must never silently start rewriting a user's traffic. The empty remove
+	// list is the guard — with no tool named there is nothing to remove, whatever
+	// the policy — so filling the list is the single, deliberate act that
+	// enables it. Asserting the policy too would just pin a default that is
+	// meant to be edited.
 	var tp *config.PluginEntry
 	for i := range cfg.Pipeline.Outbound.Plugins {
 		if cfg.Pipeline.Outbound.Plugins[i].Name == "tool-prune" {
@@ -92,9 +94,6 @@ func TestDemoConfig_WriteLoadsAndValidates(t *testing.T) {
 	}
 	if tp == nil {
 		t.Fatal("tool-prune entry not found")
-	}
-	if tp.OnError != "observe" {
-		t.Errorf("tool-prune on_error = %q, want observe so the demo only measures", tp.OnError)
 	}
 	if !strings.Contains(string(tp.Config), "\"remove\":[]") &&
 		!strings.Contains(string(tp.Config), "\"remove\": []") {

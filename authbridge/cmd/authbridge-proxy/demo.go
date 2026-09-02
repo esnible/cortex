@@ -50,16 +50,21 @@ pipeline:
       - name: mcp-parser
       - name: a2a-parser
       # tool-prune drops unused tool definitions from the outbound manifest.
-      # It ships inert: the remove list is empty, so it does nothing until you
-      # fill it in, and on_error: observe means even then it only measures --
-      # counting what it *would* remove while the bytes on the wire stay
-      # untouched. Read the projection in abctl's plugin pane, then switch
-      # on_error to enforce once the numbers look right. Fill the list with:
+      # The empty remove list is the off switch: with nothing named it does
+      # nothing at all. Fill it in and it takes effect immediately --
       #   abctl tools scan --write <this file>
+      # -- and the config is hot-reloaded, so no restart.
+      #
+      # Watch the Metrics section of abctl's plugin pane for what it saved. If
+      # you ever suspect the plugin of breaking a request, set
+      # on_error: observe here: it then counts what it *would* remove while
+      # leaving every byte on the wire untouched, which settles the question
+      # without unconfiguring anything.
+      #
       # Keep it last: it rewrites the request body, and body readers must
       # precede the mutator so they see the original bytes.
       - name: tool-prune
-        on_error: observe
+        on_error: enforce
         config:
           remove: []
 `

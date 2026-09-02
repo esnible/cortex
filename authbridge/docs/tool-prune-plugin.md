@@ -39,24 +39,35 @@ It declares `WritesRequestBody` only, never `WritesResponseBody`, so responses
 still stream incrementally. See
 [`plugin-reference.md`](./plugin-reference.md#capability-fields).
 
-## Measure first, then enforce
+## Turning it on
 
-`on_error: observe` makes the plugin a projection: it computes exactly what it
-would remove and counts it, while the bytes on the wire stay untouched. Nothing
-about the plugin's code differs between the two modes — under observe, `SetBody`
-is a no-op on bytes and leaves `BodyMutated()` false, which is how the plugin
-knows which counter to increment.
-
-So the rollout is: add it in observe, read the projection, then flip one word.
+**The empty `remove` list is the off switch.** With no tool named the plugin does
+nothing, whatever the policy, so filling the list is the single act that enables
+it:
 
 ```sh
-abctl tools scan --write ./cortex-ca/demo.yaml   # fill in remove:
-# read the projection in abctl's plugin pane, then change on_error to enforce
+abctl tools scan --write ./cortex-ca/demo.yaml
 ```
 
-The config is hot-reloaded, so neither step needs a restart. Note that a reload
-rebuilds the plugin and therefore **resets its counters** — the same as a
-process restart.
+The config is hot-reloaded, so no restart. A reload does rebuild the plugin and
+therefore **resets its counters** — the same as a process restart.
+
+### Measure instead of enforce, when you want to
+
+`on_error: observe` turns the plugin into a projection: it computes exactly what
+it would remove and counts it, while every byte on the wire stays untouched.
+Nothing in the plugin differs between the modes — under observe `SetBody` is a
+no-op on bytes and leaves `BodyMutated()` false, which is how it knows which
+counter to increment.
+
+Two occasions worth it:
+
+- **Sizing the change** before it affects anything: read `bytes removed` and
+  `tokens saved / request`, decide, then remove the line.
+- **Clearing the plugin of suspicion.** If requests start failing and you are
+  not sure whether this is the cause, set `observe` and watch: the bytes are then
+  provably unmodified, so a failure that persists is not this plugin. That is
+  faster than reasoning about it, and it costs no configuration.
 
 ## Reading the metrics
 

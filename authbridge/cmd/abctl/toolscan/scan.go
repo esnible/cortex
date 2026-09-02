@@ -151,8 +151,10 @@ func scanFile(path string, since time.Time, seenIDs map[string]struct{}, res *Re
 // pastes (or --write patches) into the tool-prune entry.
 func (r *Result) YAMLBlock() string {
 	var b strings.Builder
+	// on_error is omitted: it defaults to enforce, and the empty remove list
+	// below is what gates the plugin. Set on_error: observe only when you want
+	// a projection instead of a saving.
 	b.WriteString("      - name: tool-prune\n")
-	b.WriteString("        on_error: observe        # measure only; switch to enforce when trusted\n")
 	b.WriteString("        config:\n")
 	if len(r.Candidates) == 0 {
 		b.WriteString("          remove: []\n")

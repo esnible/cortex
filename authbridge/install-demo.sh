@@ -203,10 +203,9 @@ info ""
 # behind the user's back -- print the command instead and let them look first.
 demo_cfg="${ca_dir}/demo.yaml"
 if [ -f "${demo_cfg}" ]; then
-	info "  Measure tool-manifest waste (writes the remove: list, no restart needed):"
+	info "  Cut tool-manifest waste (fills the remove: list; hot-reloaded, no restart):"
 	info "    ${abctl_cmd} tools scan --write ${demo_cfg}"
-	info "  Then read 'requests projected' in abctl's plugin pane before switching"
-	info "  that entry's on_error to enforce."
+	info "  Then watch the Metrics section of tool-prune's pane in abctl."
 	info ""
 fi
 info "  Watch traffic:   ${abctl_cmd} --endpoint http://localhost:${DEMO_SESSION_PORT}"
