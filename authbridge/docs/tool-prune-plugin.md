@@ -113,31 +113,49 @@ rather than bundling a tokenizer or assuming a constant.
 
 ### Costing it
 
-No price is assumed. Rates are keyed **per model**, because they differ far more
-than the tiers do. On one gateway the input rate varied 5x across the
-Claude family — opus at 1.0x, sonnet at ~0.4x, haiku at ~0.2x — so a single flat
-rate misprices the saving by that factor depending on which model served the
-request. Each request is therefore priced at its own model's rate and the dollars
-accumulated, never a blended token total multiplied by one number.
+**Dollars work out of the box.** The plugin ships a rate table measured from the
+rossoctl LiteLLM gateway, so `$ saved` appears with no configuration:
+
+| model | input | cache write (1.25x) | cache read (0.10x) |
+|---|---|---|---|
+| `claude-opus-5`, `aws/claude-opus-5` | $3.80/Mtok | $4.75/Mtok | $0.38/Mtok |
+| `aws/claude-sonnet-5` | $1.52/Mtok | $1.90/Mtok | $0.152/Mtok |
+| `aws/claude-haiku-4-5`, `claude-haiku-4-5-20251001` | $0.76/Mtok | $0.95/Mtok | $0.076/Mtok |
+
+Rates are keyed **per model** because they differ far more than the tiers do —
+5x across this family — so a single flat rate would misprice the saving by that
+factor depending on which model served the request. Each request is priced at its
+own model's rate and the dollars accumulated, never a blended token total
+multiplied by one number.
+
+Any figure derived from these carries `default rates — set pricing.<model> to use
+yours` in its note, because they are a starting point rather than a fact about
+your account: they are specific to that gateway (which bills below vendor list),
+and nothing refreshes them when they change. A model in neither the table nor
+your config is reported in a `requests unpriced` row rather than charged at
+another model's rate.
+
+To use your own, add a `pricing` entry — it overrides the built-in value for that
+model outright:
 
 ```yaml
 - name: tool-prune
   config:
     remove: [CronCreate, NotebookEdit]
     pricing:
-      # Your gateway's rates, in USD per token. The values below are
-      # placeholders — see "Deriving your own rates" below.
       claude-opus-5:
-        input_cost_per_token: 0.0
-        cache_write_cost_per_token: 0.0
-        cache_read_cost_per_token: 0.0
-      aws/claude-sonnet-5:
-        input_cost_per_token: 0.0
-        cache_write_cost_per_token: 0.0
-        cache_read_cost_per_token: 0.0
-    # optional fallback for models absent from the table
-    input_cost_per_token: 0.0
+        input_cost_per_token: 0.0000038
+        cache_write_cost_per_token: 0.00000475
+        cache_read_cost_per_token: 0.00000038
+    # optional flat fallback for models absent from the table above
+    input_cost_per_token: 0.0000038
 ```
+
+**Deriving your own rates.** If your gateway reports cost on non-streaming
+responses (LiteLLM's `x-litellm-response-cost`), send two non-streaming requests
+of different prompt length and difference them: `rate = Δcost / Δinput_tokens`.
+Repeat with a `cache_control` block sent twice for the write and read rates. This
+is how the table above was obtained, and it is exact for your deployment.
 
 Model keys match what the parser records (`Extensions.Inference.Model`) and are
 matched case-insensitively, since gateways vary in how they echo the name and a

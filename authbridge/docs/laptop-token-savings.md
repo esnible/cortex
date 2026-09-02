@@ -87,33 +87,19 @@ Stop it with `pkill -f 'authbridge-proxy --config'`.
 
 ## Seeing the saving in money
 
+`$ saved` and `$ saved / request` appear with no extra configuration — the plugin
+ships rates for the Claude models on the rossoctl gateway. The figure is labelled
+`default rates` to be clear it comes from a built-in table rather than your own
+account.
+
 Token savings are reported per prompt-cache tier, never as one blended number:
 providers charge ~1.25x the input rate for a cache write and ~0.1x for a cache
-read, so the same saved bytes differ by more than 12x depending on cache state.
-Rates also differ per model — often 5x across opus / sonnet / haiku.
+read, so identical saved bytes differ by more than 12x depending on cache state.
 
-To get dollars, add your gateway's rates:
-
-```yaml
-        config:
-          remove: [...]
-          pricing:
-            <model-name>:
-              input_cost_per_token: 0.0
-              cache_write_cost_per_token: 0.0
-              cache_read_cost_per_token: 0.0
-```
-
-Rates are **deployment-specific** — a shared gateway often bills well below list
-— so ask whoever runs yours, or derive them: send two non-streaming requests of
-different prompt length and difference the reported cost,
-`rate = Δcost / Δinput_tokens`. See
-[`tool-prune-plugin.md`](./tool-prune-plugin.md#costing-it) for the full method
-and why the gateway's own per-request cost cannot be used (it reports `0` for
-streaming responses, which is all of Claude Code's traffic).
-
-With no rates set, the token rows still appear and the dollar row says so rather
-than inventing a price.
+If you are on a different gateway, or the rates have moved, override them per
+model — see
+[`tool-prune-plugin.md`](./tool-prune-plugin.md#costing-it), which also has the
+method for measuring your own from the gateway's cost headers.
 
 ## What this does and does not change
 

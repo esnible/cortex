@@ -103,24 +103,42 @@ func (r modelRates) set() bool {
 	return r.InputCostPerToken > 0 || r.CacheWriteCostPerToken > 0 || r.CacheReadCostPerToken > 0
 }
 
-// ratesFor resolves rates for a model: its own entry when present, else the flat
-// fallback. Reports false when neither is configured, so the caller counts the
-// request as unpriced rather than charging it at another model's rate — which on
-// a 5x spread would be worse than reporting nothing.
-func (c *config) ratesFor(model string) (modelRates, bool) {
-	if r, ok := c.pricing[strings.ToLower(model)]; ok && r.set() {
-		return r, true
+// rateSource names where a request's rates came from, so a reported figure can
+// carry its own provenance instead of looking equally authoritative either way.
+type rateSource int
+
+const (
+	rateNone       rateSource = iota // no rates for this model
+	rateConfigured                   // operator-supplied, for this model or via the flat fallback
+	rateDefault                      // built-in table; see pricing.go
+)
+
+// ratesFor resolves rates for a model, most specific first: an explicit pricing
+// entry, then the flat fallback, then the built-in defaults. Explicit config
+// always wins so an operator on a different gateway can correct the defaults
+// per model without deleting anything.
+func (c *config) ratesFor(model string) (modelRates, rateSource) {
+	key := strings.ToLower(model)
+	if r, ok := c.pricing[key]; ok && r.set() {
+		return r, rateConfigured
 	}
 	fallback := modelRates{
 		InputCostPerToken:      c.InputCostPerToken,
 		CacheWriteCostPerToken: c.CacheWriteCostPerToken,
 		CacheReadCostPerToken:  c.CacheReadCostPerToken,
 	}
-	return fallback, fallback.set()
+	if fallback.set() {
+		return fallback, rateConfigured
+	}
+	if r, ok := defaultPricing[key]; ok {
+		return r, rateDefault
+	}
+	return modelRates{}, rateNone
 }
 
-// priced reports whether any pricing is configured at all.
-func (c *config) priced() bool {
+// configuredPricing reports whether the operator supplied any rates of their
+// own, as opposed to relying on the built-in defaults.
+func (c *config) configuredPricing() bool {
 	if c.InputCostPerToken > 0 || c.CacheWriteCostPerToken > 0 || c.CacheReadCostPerToken > 0 {
 		return true
 	}
@@ -458,8 +476,8 @@ func (p *ToolPrune) OnFinish(_ context.Context, pctx *pipeline.Context) {
 		return
 	}
 	t := tierOf(inf)
-	rates, priced := p.cfg.ratesFor(inf.Model)
-	p.m.observeSaving(tokens, t, tokens*rates.rateFor(t), priced, inf.Model)
+	rates, src := p.cfg.ratesFor(inf.Model)
+	p.m.observeSaving(tokens, t, tokens*rates.rateFor(t), src, inf.Model)
 }
 
 // tier names which prompt token tier a request's saving came out of.

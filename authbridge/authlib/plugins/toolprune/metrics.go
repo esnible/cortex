@@ -45,6 +45,12 @@ type metrics struct {
 	// shows up as a gap instead of silently under-reporting the total.
 	unpriced       uint64
 	unpricedModels map[string]uint64
+
+	// usedDefaultRates records that at least one request was priced from the
+	// built-in table rather than operator config, so the readout can say so.
+	// A dollar figure that silently mixes measured and assumed rates invites
+	// being quoted as though it were measured.
+	usedDefaultRates bool
 }
 
 func (m *metrics) seen() {
@@ -81,7 +87,7 @@ func (m *metrics) record(names []string, bytesRemoved int) {
 	}
 }
 
-func (m *metrics) observeSaving(tokens float64, t tier, usd float64, priced bool, model string) {
+func (m *metrics) observeSaving(tokens float64, t tier, usd float64, src rateSource, model string) {
 	m.mu.Lock()
 	switch t {
 	case tierCacheWrite:
@@ -92,8 +98,11 @@ func (m *metrics) observeSaving(tokens float64, t tier, usd float64, priced bool
 		m.savedInput += tokens
 	}
 	m.requestsCosted++
-	if priced {
+	if src != rateNone {
 		m.usdSaved += usd
+		if src == rateDefault {
+			m.usedDefaultRates = true
+		}
 	} else {
 		m.unpriced++
 		if m.unpricedModels == nil {
@@ -176,22 +185,26 @@ func (m *metrics) snapshot(cfg *config) []pipeline.Metric {
 	}
 
 	// Dollars, accumulated per request at that request's model rate.
-	switch {
-	case m.usdSaved > 0:
-		out = append(out, pipeline.Metric{Name: "$ saved", Value: m.usdSaved, Unit: "usd", Note: note})
+	if m.usdSaved > 0 {
+		costNote := note
+		if m.usedDefaultRates {
+			// Provenance travels with the number. Built-in rates are
+			// gateway-specific and not refreshed, so a figure derived from them
+			// must not read as one measured on this account.
+			costNote = "default rates — set pricing.<model> to use yours"
+			if note != "" {
+				costNote = note + "; " + costNote
+			}
+		}
+		out = append(out, pipeline.Metric{Name: "$ saved", Value: m.usdSaved, Unit: "usd", Note: costNote})
 		if priced := m.requestsCosted - m.unpriced; priced > 0 {
 			out = append(out, pipeline.Metric{
 				Name:  "$ saved / request",
 				Value: m.usdSaved / float64(priced),
 				Unit:  "usd",
-				Note:  fmt.Sprintf("estimate, n=%d", priced),
+				Note:  costNote,
 			})
 		}
-	case acted > 0 && !cfg.priced():
-		out = append(out, pipeline.Metric{
-			Name: "$ saved", Value: 0, Unit: "usd",
-			Note: "set pricing.<model>.input_cost_per_token to cost this",
-		})
 	}
 
 	// An incomplete pricing table is a gap in the dollar total, so name it.

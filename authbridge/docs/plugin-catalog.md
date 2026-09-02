@@ -240,8 +240,8 @@ body-reading plugin (it rewrites the request body). Declares
 
 - `remove` (`[]string`) — tool names to delete from the manifest. The complete verdict: no learning, no state, no storage. Names absent from a given request are ignored.
 - `paths` (`[]string`) — request paths to act on, matched exactly or by suffix. Defaults to `/v1/chat/completions`, `/v1/completions`, `/v1/messages`.
-- `pricing` (`map[model]rates`) — per-token rates keyed by model name, each with `input_cost_per_token`, `cache_write_cost_per_token`, `cache_read_cost_per_token` (cache rates fall back to that model's input rate). Per model because rates differ up to 5x across opus/sonnet/haiku, so one flat rate misprices by that factor. Keys matched case-insensitively.
-- `input_cost_per_token`, `cache_write_cost_per_token`, `cache_read_cost_per_token` (`float`) — optional flat fallback for models absent from `pricing`. With no pricing at all, no dollar figure is reported rather than a price being assumed; a model with no rate is counted in a `requests unpriced` row instead of being charged at another model's rate. No output rate: pruning only shrinks the prompt.
+- `pricing` (`map[model]rates`) — per-token rates keyed by model name, each with `input_cost_per_token`, `cache_write_cost_per_token`, `cache_read_cost_per_token`. **Optional**: a built-in table covers the Claude models on the rossoctl gateway, so `$ saved` works unconfigured; any entry here overrides the built-in for that model. Per model because rates differ ~5x across opus/sonnet/haiku. Keys matched case-insensitively.
+- `input_cost_per_token`, `cache_write_cost_per_token`, `cache_read_cost_per_token` (`float`) — optional flat fallback for models absent from `pricing`. A figure from built-in rates is labelled as such; a model in neither the table nor config is counted in a `requests unpriced` row instead of charged at another model's rate. No output rate: pruning only shrinks the prompt.
 
 Generate the list from local transcripts with `abctl tools scan`, which
 proposes only tools it recognises as Claude Code built-ins and never

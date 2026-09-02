@@ -366,18 +366,64 @@ func TestMetrics_AttributesSavingToTheRightTier(t *testing.T) {
 	}
 }
 
-// TestMetrics_NoRatesMeansNoDollarFigure: a price is never assumed. An
-// unconfigured plugin says so instead of inventing one.
-func TestMetrics_NoRatesMeansNoDollarFigure(t *testing.T) {
-	p := configured(t, "NotebookEdit")
-	pctx := pruneOnce(t, p)
-	finish(t, p, pctx, 0, 0, 24701)
+// TestPricing_DefaultsPriceKnownModelsWithoutConfig: the built-in table exists
+// so a dollar figure appears with no configuration at all — the difference
+// between a number an operator sees and one they never get around to enabling.
+func TestPricing_DefaultsPriceKnownModelsWithoutConfig(t *testing.T) {
+	p := configured(t, "NotebookEdit") // no pricing configured whatsoever
+	pruneWithModel(t, p, "claude-opus-5")
+
 	m := findMetric(t, p.Metrics(), "$ saved")
-	if m.Value != 0 {
-		t.Errorf("$ saved = %v with no rates configured, want 0", m.Value)
+	if m.Value <= 0 {
+		t.Errorf("$ saved = %v, want a figure from the built-in rates", m.Value)
 	}
-	if !strings.Contains(m.Note, "input_cost_per_token") {
-		t.Errorf("note = %q, want it to name the field that enables costing", m.Note)
+	// Provenance must travel with the number: built-in rates are
+	// gateway-specific and never refreshed, so this must not read as measured.
+	if !strings.Contains(m.Note, "default rates") {
+		t.Errorf("note = %q, want it to disclose that default rates were used", m.Note)
+	}
+	if !strings.Contains(m.Note, "pricing.") {
+		t.Errorf("note = %q, want it to name how to override", m.Note)
+	}
+}
+
+// TestPricing_ConfigOverridesDefaults: an operator on a different gateway must
+// be able to correct a model without the built-in value leaking through, and the
+// note must stop claiming defaults were used.
+func TestPricing_ConfigOverridesDefaults(t *testing.T) {
+	base := configured(t, "NotebookEdit")
+	pruneWithModel(t, base, "claude-opus-5")
+	fromDefault := findMetric(t, base.Metrics(), "$ saved").Value
+
+	// Ten times the built-in input rate.
+	over := configuredJSON(t, `{"remove":["NotebookEdit"],
+	  "pricing":{"claude-opus-5":{"input_cost_per_token":3.8e-05,"cache_write_cost_per_token":4.75e-05}}}`)
+	pruneWithModel(t, over, "claude-opus-5")
+	m := findMetric(t, over.Metrics(), "$ saved")
+
+	if ratio := m.Value / fromDefault; ratio < 9.5 || ratio > 10.5 {
+		t.Errorf("configured/default cost ratio = %.2f, want ~10 — config must win outright", ratio)
+	}
+	if strings.Contains(m.Note, "default rates") {
+		t.Errorf("note = %q, must not claim defaults when the operator configured the model", m.Note)
+	}
+}
+
+// TestPricing_UnknownModelStillUnpriced: the defaults cover a known set, not
+// everything. A model in neither the table nor the config is counted, not
+// charged at some other model's rate.
+func TestPricing_UnknownModelStillUnpriced(t *testing.T) {
+	p := configured(t, "NotebookEdit")
+	pruneWithModel(t, p, "gcp/gemini-3-pro-preview")
+
+	gap := findMetric(t, p.Metrics(), "requests unpriced")
+	if gap.Value != 1 || !strings.Contains(gap.Note, "gemini") {
+		t.Errorf("unpriced row = %+v, want 1 naming the model", gap)
+	}
+	for _, m := range p.Metrics() {
+		if m.Name == "$ saved" {
+			t.Errorf("$ saved = %v for a model with no rate anywhere, want no row", m.Value)
+		}
 	}
 }
 
