@@ -24,10 +24,14 @@ type metrics struct {
 
 	bytesRemoved uint64
 
-	// Calibration sample for bytes -> tokens, gathered from response usage.
-	promptTokens      uint64
-	requestBytes      uint64
-	requestsWithUsage uint64
+	// Estimated tokens saved, split by the prompt tier the saving came out of.
+	// Kept apart because providers price the tiers very differently: a blended
+	// total cannot be multiplied by any single rate without being wrong by up
+	// to ~12x on cache-heavy traffic.
+	savedInput      float64
+	savedCacheWrite float64
+	savedCacheRead  float64
+	requestsCosted  uint64
 }
 
 func (m *metrics) seen() {
@@ -64,18 +68,24 @@ func (m *metrics) record(names []string, bytesRemoved int) {
 	}
 }
 
-func (m *metrics) observeUsage(promptTokens, requestBytes int) {
+func (m *metrics) observeSaving(tokens float64, t tier) {
 	m.mu.Lock()
-	m.promptTokens += uint64(promptTokens)
-	m.requestBytes += uint64(requestBytes)
-	m.requestsWithUsage++
+	switch t {
+	case tierCacheWrite:
+		m.savedCacheWrite += tokens
+	case tierCacheRead:
+		m.savedCacheRead += tokens
+	default:
+		m.savedInput += tokens
+	}
+	m.requestsCosted++
 	m.mu.Unlock()
 }
 
 // snapshot renders the counters as operator-facing metrics. Every derived row
 // carries the sample it was computed from, so a figure can never be read as
 // more certain than it is.
-func (m *metrics) snapshot() []pipeline.Metric {
+func (m *metrics) snapshot(cfg *config) []pipeline.Metric {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -109,29 +119,64 @@ func (m *metrics) snapshot() []pipeline.Metric {
 
 	acted := m.requestsPruned + m.requestsProjected
 	if acted > 0 {
-		perReq := float64(m.bytesRemoved) / float64(acted)
 		out = append(out, pipeline.Metric{
-			Name: "bytes removed / request", Value: perReq, Unit: "bytes",
+			Name: "bytes removed / request", Value: float64(m.bytesRemoved) / float64(acted), Unit: "bytes",
 		})
-		// Calibrate bytes -> tokens on the operator's own traffic instead of
-		// bundling a tokenizer or assuming a constant. With no usage sample
-		// yet, report zero rather than dividing by zero.
-		if m.requestBytes > 0 && m.promptTokens > 0 {
-			ratio := float64(m.promptTokens) / float64(m.requestBytes)
+	}
+
+	// Tokens saved, per prompt tier. Deliberately not summed: the tiers are
+	// priced differently enough (Anthropic: cache write 1.25x input, cache read
+	// 0.1x) that one total invites a multiplication that is wrong by >12x.
+	note := ""
+	if m.requestsCosted > 0 {
+		note = fmt.Sprintf("estimate, n=%d", m.requestsCosted)
+	}
+	tiers := []struct {
+		name string
+		val  float64
+		rate float64
+	}{
+		{"tokens saved: cache write", m.savedCacheWrite, cfg.cacheWriteRate()},
+		{"tokens saved: cache read", m.savedCacheRead, cfg.cacheReadRate()},
+		{"tokens saved: input", m.savedInput, cfg.InputCostPerToken},
+	}
+	var usd float64
+	for _, t := range tiers {
+		if t.val <= 0 {
+			continue
+		}
+		out = append(out, pipeline.Metric{
+			Name: t.name, Value: t.val, Unit: "tokens", Note: note,
+		})
+		usd += t.val * t.rate
+	}
+	if m.requestsCosted == 0 && acted > 0 {
+		out = append(out, pipeline.Metric{
+			Name: "tokens saved", Value: 0, Unit: "tokens",
+			Note: "no response usage seen yet",
+		})
+	}
+
+	// Cost only when rates are configured. Without them no price is assumed:
+	// a confidently wrong dollar figure is worse than none, because it gets
+	// quoted in decisions.
+	if cfg.priced() && usd > 0 {
+		out = append(out, pipeline.Metric{
+			Name: "$ saved", Value: usd, Unit: "usd", Note: note,
+		})
+		if m.requestsCosted > 0 {
 			out = append(out, pipeline.Metric{
-				Name:  "tokens saved / request",
-				Value: perReq * ratio,
-				Unit:  "tokens",
-				Note:  fmt.Sprintf("estimate, n=%d", m.requestsWithUsage),
-			})
-		} else {
-			out = append(out, pipeline.Metric{
-				Name:  "tokens saved / request",
-				Value: 0,
-				Unit:  "tokens",
-				Note:  "no usage sample yet",
+				Name:  "$ saved / request",
+				Value: usd / float64(m.requestsCosted),
+				Unit:  "usd",
+				Note:  note,
 			})
 		}
+	} else if acted > 0 && !cfg.priced() {
+		out = append(out, pipeline.Metric{
+			Name: "$ saved", Value: 0, Unit: "usd",
+			Note: "set input_cost_per_token to cost this",
+		})
 	}
 
 	// Per-tool attribution, sorted by count then name so the readout is

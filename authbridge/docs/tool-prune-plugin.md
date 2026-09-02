@@ -76,27 +76,62 @@ Two occasions worth it:
 
 ```
 Metrics:
-  requests seen                   3  count
-  requests pruned                 3  count
-  tools removed                   6  count
-  bytes removed                 825  bytes
-  bytes removed / request       275  bytes
-  tokens saved / request     343.75  tokens   estimate, n=3
-  removed: NotebookEdit           3  count
-  removed: ScheduleWakeup         3  count
+  requests seen                      2  count
+  requests pruned                    2  count
+  tools removed                     22  count
+  bytes removed                 57,136  bytes
+  bytes removed / request       28,568  bytes
+  tokens saved: cache write     13,044  tokens   estimate, n=2
+  tokens saved: cache read      13,064  tokens   estimate, n=2
+  $ saved                       0.2642  usd      estimate, n=2
+  $ saved / request             0.1321  usd      estimate, n=2
+  removed: NotebookEdit              2  count
 ```
 
 In observe mode `requests projected` replaces `requests pruned`, so a
 projection is never mistaken for a realised saving.
 
-Byte counts are exact. The token figure is an **estimate**, and labelled as one
-with its sample size: rather than bundling a tokenizer or assuming a
-bytes-per-token constant, the ratio is calibrated on your own traffic from the
-response `usage` block. One approximation to state plainly — under `enforce`,
-`PromptTokens` is already the post-pruning count, so the ratio is measured on
-pruned requests. That is acceptable for a conversion factor, which is a property
-of the tokenizer and content mix rather than of the pruning, but it is why the
-number is an estimate.
+### Why tokens are reported per tier and never summed
+
+Byte counts are exact. Tokens are an estimate, and — more importantly — they
+are **not fungible**. Providers price prompt tiers very differently: Anthropic
+charges 1.25x the input rate for a cache write and 0.1x for a cache read, so the
+same pruned bytes are worth more than **12x** more on a cache miss than on a
+cache hit.
+
+A single "tokens saved" figure would invite multiplying by one rate, which is
+wrong by that factor. So the saving is attributed to the tier it actually came
+out of and reported separately. The tool manifest sits inside the cached prefix
+(Claude Code puts `cache_control` on the tool block), so a cache-miss request
+saves cache-*write* tokens and a hit saves cache-*read* tokens. Traffic that
+alternates shows both rows, and the honest headline is a range rather than a
+point.
+
+The bytes-to-tokens ratio is calibrated on your own traffic — prompt tokens over
+request bytes for the same request, both post-pruning so the two sides agree —
+rather than bundling a tokenizer or assuming a constant.
+
+### Costing it
+
+No price is assumed. Set any of these and the `$` rows appear; leave them and
+the row says so instead of inventing a figure:
+
+| Field | Meaning |
+|---|---|
+| `input_cost_per_token` | USD per uncached input token |
+| `cache_write_cost_per_token` | USD per cache-write token; defaults to the input rate |
+| `cache_read_cost_per_token` | USD per cache-read token; defaults to the input rate |
+
+Field names and semantics match
+[`litellm-budget-track`](./plugin-catalog.md#litellm-budget-track), so rates are
+configured once in a familiar shape. There is deliberately no output rate:
+pruning only ever shrinks the prompt, so attributing output cost to it would be
+false.
+
+If your gateway reports authoritative per-request cost (LiteLLM's
+`x-litellm-response-cost`), `litellm-budget-track` is the plugin that consumes
+it; this one prices from rates because a saving is a counterfactual — the cost
+of a request that was never sent.
 
 Counters are in-memory and per-process. That is the right trade for the
 single-laptop case this targets and what keeps the plugin free of a storage

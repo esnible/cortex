@@ -293,45 +293,129 @@ func TestPrune_EnforceCountsPruned(t *testing.T) {
 	}
 }
 
-// TestMetrics_NoUsageSampleReportsZeroNotNaN: the bytes-to-tokens ratio divides
-// by a sample that starts empty. Report a zero-valued estimate with a note
-// rather than NaN or a panic.
-func TestMetrics_NoUsageSampleReportsZeroNotNaN(t *testing.T) {
-	p := configured(t, "NotebookEdit")
-	pctx := inferenceCtx("/v1/messages", anthropicBody, "Read", "NotebookEdit")
-	run(t, p, pctx)
+// finish drives OnFinish with a given per-tier usage split.
+func finish(t *testing.T, p *ToolPrune, pctx *pipeline.Context, input, cacheRead, cacheWrite int) {
+	t.Helper()
+	pctx.Extensions.Inference.InputTokens = input
+	pctx.Extensions.Inference.CacheReadTokens = cacheRead
+	pctx.Extensions.Inference.CacheWriteTokens = cacheWrite
+	p.OnFinish(context.Background(), pctx)
+}
 
-	m := findMetric(t, p.Metrics(), "tokens saved / request")
-	if m.Value != 0 {
-		t.Errorf("value = %v, want 0 with no usage sample", m.Value)
+func pruneOnce(t *testing.T, p *ToolPrune) *pipeline.Context {
+	t.Helper()
+	pctx := inferenceCtx("/v1/messages", anthropicBody, "Read", "NotebookEdit", "Bash")
+	run(t, p, pctx)
+	if !pctx.BodyMutated() {
+		t.Fatal("expected a prune")
 	}
-	if m.Note != "no usage sample yet" {
-		t.Errorf("note = %q, want the missing-sample caveat", m.Note)
+	return pctx
+}
+
+// TestMetrics_NoUsageYetReportsZero: before any response usage is seen there is
+// no ratio to convert bytes with, so report zero with the reason rather than a
+// number or a NaN.
+func TestMetrics_NoUsageYetReportsZero(t *testing.T) {
+	p := configured(t, "NotebookEdit")
+	pruneOnce(t, p)
+	m := findMetric(t, p.Metrics(), "tokens saved")
+	if m.Value != 0 || m.Note != "no response usage seen yet" {
+		t.Errorf("got %+v, want 0 with the missing-sample reason", m)
 	}
 }
 
-// TestMetrics_TokenEstimateCalibratesOnObservedUsage: once OnFinish has seen a
-// response usage block, the estimate is derived from the operator's own
-// traffic and labelled with its sample size.
-func TestMetrics_TokenEstimateCalibratesOnObservedUsage(t *testing.T) {
+// TestMetrics_AttributesSavingToTheRightTier is the core of the design. The tool
+// manifest lives in the cached prefix, so on a cache-miss request the saving
+// comes out of cache writes and on a hit out of cache reads. Reporting one
+// blended token count would hide which — and the tiers are priced up to 12x
+// apart, so that distinction is the whole number.
+func TestMetrics_AttributesSavingToTheRightTier(t *testing.T) {
+	tests := []struct {
+		name                         string
+		input, cacheRead, cacheWrite int
+		wantRow                      string
+	}{
+		{"cache miss writes the prefix", 8881, 0, 24701, "tokens saved: cache write"},
+		{"cache hit reads the prefix", 26, 24701, 8907, "tokens saved: cache read"},
+		{"no caching at all", 40000, 0, 0, "tokens saved: input"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			p := configured(t, "NotebookEdit")
+			pctx := pruneOnce(t, p)
+			finish(t, p, pctx, tc.input, tc.cacheRead, tc.cacheWrite)
+
+			ms := p.Metrics()
+			got := findMetric(t, ms, tc.wantRow)
+			if got.Value <= 0 {
+				t.Errorf("%s = %v, want positive", tc.wantRow, got.Value)
+			}
+			if !strings.HasPrefix(got.Note, "estimate, n=") {
+				t.Errorf("note = %q, want it labelled an estimate with its sample", got.Note)
+			}
+			// No other tier may be credited, and there must be no blended total.
+			for _, m := range ms {
+				if m.Name == "tokens saved" {
+					t.Error("a blended 'tokens saved' row invites multiplying by one rate")
+				}
+				if strings.HasPrefix(m.Name, "tokens saved: ") && m.Name != tc.wantRow {
+					t.Errorf("saving also credited to %q", m.Name)
+				}
+			}
+		})
+	}
+}
+
+// TestMetrics_NoRatesMeansNoDollarFigure: a price is never assumed. An
+// unconfigured plugin says so instead of inventing one.
+func TestMetrics_NoRatesMeansNoDollarFigure(t *testing.T) {
 	p := configured(t, "NotebookEdit")
-	pctx := inferenceCtx("/v1/messages", anthropicBody, "Read", "NotebookEdit")
-	run(t, p, pctx)
-
-	// 1 prompt token per 4 body bytes.
-	pctx.Extensions.Inference.PromptTokens = len(pctx.Body) / 4
-	p.OnFinish(context.Background(), pctx)
-
-	m := findMetric(t, p.Metrics(), "tokens saved / request")
-	if m.Value <= 0 {
-		t.Errorf("value = %v, want a positive estimate", m.Value)
+	pctx := pruneOnce(t, p)
+	finish(t, p, pctx, 0, 0, 24701)
+	m := findMetric(t, p.Metrics(), "$ saved")
+	if m.Value != 0 {
+		t.Errorf("$ saved = %v with no rates configured, want 0", m.Value)
 	}
-	if !strings.HasPrefix(m.Note, "estimate, n=") {
-		t.Errorf("note = %q, want it labelled an estimate with its sample size", m.Note)
+	if !strings.Contains(m.Note, "input_cost_per_token") {
+		t.Errorf("note = %q, want it to name the field that enables costing", m.Note)
 	}
-	perReq := findMetric(t, p.Metrics(), "bytes removed / request")
-	if want := perReq.Value / 4; m.Value < want*0.9 || m.Value > want*1.1 {
-		t.Errorf("estimate %v not within 10%% of calibrated %v", m.Value, want)
+}
+
+// TestMetrics_TierRatesDifferBy12x pins the reason the tiers are separate. The
+// same pruned bytes, priced as a cache write versus a cache read at Anthropic's
+// published ratios, differ by more than an order of magnitude. A flat rate would
+// be wrong by that factor.
+func TestMetrics_TierRatesDifferBy12x(t *testing.T) {
+	const inputRate = 15.0 / 1e6 // USD per token
+	cfg := func(t *testing.T) *ToolPrune {
+		p := New()
+		raw := []byte(`{"remove":["NotebookEdit"],` +
+			`"input_cost_per_token":1.5e-05,` +
+			`"cache_write_cost_per_token":1.875e-05,` + // 1.25x input
+			`"cache_read_cost_per_token":1.5e-06}`) // 0.1x input
+		if err := p.Configure(raw); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	_ = inputRate
+
+	write := cfg(t)
+	finish(t, write, pruneOnce(t, write), 0, 0, 24701)
+	read := cfg(t)
+	finish(t, read, pruneOnce(t, read), 0, 24701, 0)
+
+	w := findMetric(t, write.Metrics(), "$ saved").Value
+	r := findMetric(t, read.Metrics(), "$ saved").Value
+	if w <= 0 || r <= 0 {
+		t.Fatalf("expected both priced: write=%v read=%v", w, r)
+	}
+	if ratio := w / r; ratio < 12 || ratio > 13 {
+		t.Errorf("cache-write / cache-read cost ratio = %.2f, want ~12.5 (1.25x vs 0.1x input)", ratio)
+	}
+	// And a per-request figure alongside the total.
+	if pr := findMetric(t, write.Metrics(), "$ saved / request"); pr.Value <= 0 {
+		t.Errorf("$ saved / request = %v, want positive", pr.Value)
 	}
 }
 

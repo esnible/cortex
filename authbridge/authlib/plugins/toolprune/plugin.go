@@ -53,6 +53,39 @@ type config struct {
 	// Paths are the request paths this plugin acts on, matched exactly or by
 	// suffix. Defaults to the three inference endpoints.
 	Paths []string `json:"paths" description:"Request paths to act on (exact or suffix match)."`
+
+	// Per-token rates, for costing the saving. Field names and semantics match
+	// litellm-budget-track so an operator configures rates in one familiar
+	// shape. USD per token; all optional. With none set, no cost is reported —
+	// a price is never assumed.
+	//
+	// There is deliberately no output rate: pruning only ever shrinks the
+	// prompt, so attributing any output cost to it would be false.
+	InputCostPerToken      float64 `json:"input_cost_per_token" description:"USD per uncached input token."`
+	CacheWriteCostPerToken float64 `json:"cache_write_cost_per_token" description:"USD per cache-write input token; defaults to input_cost_per_token."`
+	CacheReadCostPerToken  float64 `json:"cache_read_cost_per_token" description:"USD per cache-read input token; defaults to input_cost_per_token."`
+}
+
+// cacheWriteRate / cacheReadRate default to the uncached input rate, matching
+// litellm-budget-track. Flat pricing would misstate cache-heavy traffic badly —
+// Anthropic charges 1.25x input for a cache write and 0.1x for a read, so the
+// same saved bytes differ by more than 12x depending on which tier they land in.
+func (c *config) cacheWriteRate() float64 {
+	if c.CacheWriteCostPerToken > 0 {
+		return c.CacheWriteCostPerToken
+	}
+	return c.InputCostPerToken
+}
+
+func (c *config) cacheReadRate() float64 {
+	if c.CacheReadCostPerToken > 0 {
+		return c.CacheReadCostPerToken
+	}
+	return c.InputCostPerToken
+}
+
+func (c *config) priced() bool {
+	return c.InputCostPerToken > 0 || c.CacheWriteCostPerToken > 0 || c.CacheReadCostPerToken > 0
 }
 
 func (c *config) applyDefaults() {
@@ -312,6 +345,10 @@ func (p *ToolPrune) OnRequest(_ context.Context, pctx *pipeline.Context) (action
 	}
 
 	removedBytes := len(body) - len(out)
+	// Carry the saving to OnFinish, where the response reveals which token tier
+	// it came out of. SetState keeps it private to this plugin, unlike
+	// Extensions.Custom which is shared.
+	pipeline.SetState(pctx, p.Name(), &requestState{bytesRemoved: removedBytes})
 	pctx.SetBody(out)
 	// Under ErrorPolicyObserve, SetBody is a no-op on bytes and leaves
 	// bodyMutated false — so this same code path measures without enforcing,
@@ -328,19 +365,71 @@ func (p *ToolPrune) OnResponse(_ context.Context, _ *pipeline.Context) pipeline.
 	return pipeline.Action{Type: pipeline.Continue}
 }
 
-// OnFinish calibrates the bytes-to-tokens ratio on the operator's own traffic,
-// rather than bundling a tokenizer or hardcoding a constant. inference-parser
-// is a StreamingResponder, so RunResponse skips its OnResponse — OnFinish is
-// the hook where response-derived usage is reliably available.
+// requestState carries the per-request byte saving from OnRequest to OnFinish.
+type requestState struct{ bytesRemoved int }
+
+// OnFinish converts the request's byte saving into tokens and attributes it to
+// the token tier it actually came out of.
+//
+// Two things make a single "tokens saved" number wrong, which is why this is
+// per-tier. First, the ratio: rather than bundling a tokenizer or assuming
+// bytes-per-token, it is calibrated on this request — prompt tokens over request
+// bytes, both post-pruning, so the two sides are consistent. Second, and larger:
+// providers price prompt tiers very differently. Anthropic charges 1.25x the
+// input rate for a cache write and 0.1x for a cache read, so identical saved
+// bytes are worth more than 12x more on a cache miss than on a hit. Reporting
+// one blended figure would hide a factor of twelve.
+//
+// The tool manifest sits inside the cached prefix — Claude Code puts
+// cache_control on the tool block — so on a cache-miss request the saving comes
+// out of cache writes, and on a hit out of cache reads. That is the assumption
+// this attribution rests on; it is stated here because it is the one thing that
+// would need revisiting for a client that lays out its prompt differently.
 func (p *ToolPrune) OnFinish(_ context.Context, pctx *pipeline.Context) {
-	if pctx.Extensions.Inference == nil {
+	st := pipeline.GetState[requestState](pctx, p.Name())
+	if st == nil || st.bytesRemoved <= 0 {
 		return
 	}
-	prompt := pctx.Extensions.Inference.PromptTokens
-	if prompt <= 0 || len(pctx.Body) == 0 {
+	inf := pctx.Extensions.Inference
+	if inf == nil || len(pctx.Body) == 0 {
 		return
 	}
-	p.m.observeUsage(prompt, len(pctx.Body))
+	promptTotal := inf.InputTokens + inf.CacheReadTokens + inf.CacheWriteTokens
+	if promptTotal <= 0 {
+		// Fall back to the aggregate when a provider reports only a total.
+		promptTotal = inf.PromptTokens
+	}
+	if promptTotal <= 0 {
+		return
+	}
+	tokens := float64(st.bytesRemoved) * float64(promptTotal) / float64(len(pctx.Body))
+	if tokens <= 0 {
+		return
+	}
+	p.m.observeSaving(tokens, tierOf(inf))
+}
+
+// tier names which prompt token tier a request's saving came out of.
+type tier int
+
+const (
+	tierInput tier = iota
+	tierCacheWrite
+	tierCacheRead
+)
+
+// tierOf picks the tier the pruned manifest belonged to. The manifest is in the
+// cached prefix, so a write-dominant request wrote it and a read-dominant one
+// read it; with no cache tokens reported at all it was plain input.
+func tierOf(inf *pipeline.InferenceExtension) tier {
+	switch {
+	case inf.CacheWriteTokens > inf.CacheReadTokens && inf.CacheWriteTokens > 0:
+		return tierCacheWrite
+	case inf.CacheReadTokens > 0:
+		return tierCacheRead
+	default:
+		return tierInput
+	}
 }
 
 // noteDrift logs, once, any configured name absent from the first manifest the
@@ -370,4 +459,4 @@ func (p *ToolPrune) noteDrift(observed []pipeline.InferenceTool) {
 }
 
 // Metrics implements pipeline.MetricsProvider.
-func (p *ToolPrune) Metrics() []pipeline.Metric { return p.m.snapshot() }
+func (p *ToolPrune) Metrics() []pipeline.Metric { return p.m.snapshot(&p.cfg) }
