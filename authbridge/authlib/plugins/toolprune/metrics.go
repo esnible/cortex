@@ -3,6 +3,7 @@ package toolprune
 import (
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 
 	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
@@ -32,6 +33,18 @@ type metrics struct {
 	savedCacheWrite float64
 	savedCacheRead  float64
 	requestsCosted  uint64
+
+	// Dollars are accumulated at request time, not derived at snapshot time,
+	// because the rate depends on which model served the request — a 5x spread
+	// across opus/sonnet/haiku on one observed gateway. Multiplying a blended
+	// token total by any single rate would be wrong by that factor.
+	usdSaved float64
+
+	// Requests whose model had no configured rate. Counted and named rather
+	// than charged at another model's rate, so an incomplete pricing table
+	// shows up as a gap instead of silently under-reporting the total.
+	unpriced       uint64
+	unpricedModels map[string]uint64
 }
 
 func (m *metrics) seen() {
@@ -68,7 +81,7 @@ func (m *metrics) record(names []string, bytesRemoved int) {
 	}
 }
 
-func (m *metrics) observeSaving(tokens float64, t tier) {
+func (m *metrics) observeSaving(tokens float64, t tier, usd float64, priced bool, model string) {
 	m.mu.Lock()
 	switch t {
 	case tierCacheWrite:
@@ -79,6 +92,18 @@ func (m *metrics) observeSaving(tokens float64, t tier) {
 		m.savedInput += tokens
 	}
 	m.requestsCosted++
+	if priced {
+		m.usdSaved += usd
+	} else {
+		m.unpriced++
+		if m.unpricedModels == nil {
+			m.unpricedModels = make(map[string]uint64)
+		}
+		if model == "" {
+			model = "(unknown)"
+		}
+		m.unpricedModels[model]++
+	}
 	m.mu.Unlock()
 }
 
@@ -131,24 +156,17 @@ func (m *metrics) snapshot(cfg *config) []pipeline.Metric {
 	if m.requestsCosted > 0 {
 		note = fmt.Sprintf("estimate, n=%d", m.requestsCosted)
 	}
-	tiers := []struct {
+	for _, t := range []struct {
 		name string
 		val  float64
-		rate float64
 	}{
-		{"tokens saved: cache write", m.savedCacheWrite, cfg.cacheWriteRate()},
-		{"tokens saved: cache read", m.savedCacheRead, cfg.cacheReadRate()},
-		{"tokens saved: input", m.savedInput, cfg.InputCostPerToken},
-	}
-	var usd float64
-	for _, t := range tiers {
-		if t.val <= 0 {
-			continue
+		{"tokens saved: cache write", m.savedCacheWrite},
+		{"tokens saved: cache read", m.savedCacheRead},
+		{"tokens saved: input", m.savedInput},
+	} {
+		if t.val > 0 {
+			out = append(out, pipeline.Metric{Name: t.name, Value: t.val, Unit: "tokens", Note: note})
 		}
-		out = append(out, pipeline.Metric{
-			Name: t.name, Value: t.val, Unit: "tokens", Note: note,
-		})
-		usd += t.val * t.rate
 	}
 	if m.requestsCosted == 0 && acted > 0 {
 		out = append(out, pipeline.Metric{
@@ -157,25 +175,37 @@ func (m *metrics) snapshot(cfg *config) []pipeline.Metric {
 		})
 	}
 
-	// Cost only when rates are configured. Without them no price is assumed:
-	// a confidently wrong dollar figure is worse than none, because it gets
-	// quoted in decisions.
-	if cfg.priced() && usd > 0 {
-		out = append(out, pipeline.Metric{
-			Name: "$ saved", Value: usd, Unit: "usd", Note: note,
-		})
-		if m.requestsCosted > 0 {
+	// Dollars, accumulated per request at that request's model rate.
+	switch {
+	case m.usdSaved > 0:
+		out = append(out, pipeline.Metric{Name: "$ saved", Value: m.usdSaved, Unit: "usd", Note: note})
+		if priced := m.requestsCosted - m.unpriced; priced > 0 {
 			out = append(out, pipeline.Metric{
 				Name:  "$ saved / request",
-				Value: usd / float64(m.requestsCosted),
+				Value: m.usdSaved / float64(priced),
 				Unit:  "usd",
-				Note:  note,
+				Note:  fmt.Sprintf("estimate, n=%d", priced),
 			})
 		}
-	} else if acted > 0 && !cfg.priced() {
+	case acted > 0 && !cfg.priced():
 		out = append(out, pipeline.Metric{
 			Name: "$ saved", Value: 0, Unit: "usd",
-			Note: "set input_cost_per_token to cost this",
+			Note: "set pricing.<model>.input_cost_per_token to cost this",
+		})
+	}
+
+	// An incomplete pricing table is a gap in the dollar total, so name it.
+	if m.unpriced > 0 {
+		models := make([]string, 0, len(m.unpricedModels))
+		for k := range m.unpricedModels {
+			models = append(models, k)
+		}
+		sort.Strings(models)
+		out = append(out, pipeline.Metric{
+			Name:  "requests unpriced",
+			Value: float64(m.unpriced),
+			Unit:  "count",
+			Note:  "no rate for: " + strings.Join(models, ", "),
 		})
 	}
 

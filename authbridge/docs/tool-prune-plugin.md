@@ -113,25 +113,68 @@ rather than bundling a tokenizer or assuming a constant.
 
 ### Costing it
 
-No price is assumed. Set any of these and the `$` rows appear; leave them and
-the row says so instead of inventing a figure:
+No price is assumed. Rates are keyed **per model**, because they differ far more
+than the tiers do — on one observed gateway:
 
-| Field | Meaning |
-|---|---|
-| `input_cost_per_token` | USD per uncached input token |
-| `cache_write_cost_per_token` | USD per cache-write token; defaults to the input rate |
-| `cache_read_cost_per_token` | USD per cache-read token; defaults to the input rate |
+| model | input | vs opus |
+|---|---|---|
+| `claude-opus-5` | $3.80/Mtok | 1.0x |
+| `aws/claude-sonnet-5` | $1.52/Mtok | 0.4x |
+| `aws/claude-haiku-4-5` | $0.76/Mtok | 0.2x |
 
-Field names and semantics match
-[`litellm-budget-track`](./plugin-catalog.md#litellm-budget-track), so rates are
-configured once in a familiar shape. There is deliberately no output rate:
-pruning only ever shrinks the prompt, so attributing output cost to it would be
-false.
+A single flat rate misprices by up to 5x depending on which model served the
+request, so each request is priced at its own model's rate and the dollars are
+accumulated — never a blended token total multiplied by one number.
 
-If your gateway reports authoritative per-request cost (LiteLLM's
-`x-litellm-response-cost`), `litellm-budget-track` is the plugin that consumes
-it; this one prices from rates because a saving is a counterfactual — the cost
-of a request that was never sent.
+```yaml
+- name: tool-prune
+  config:
+    remove: [CronCreate, NotebookEdit]
+    pricing:
+      claude-opus-5:
+        input_cost_per_token: 0.0000038
+        cache_write_cost_per_token: 0.00000475
+        cache_read_cost_per_token: 0.00000038
+      aws/claude-sonnet-5:
+        input_cost_per_token: 0.00000152
+        cache_write_cost_per_token: 0.0000019
+        cache_read_cost_per_token: 0.000000152
+    # optional fallback for models absent from the table
+    input_cost_per_token: 0.0000038
+```
+
+Model keys match what the parser records (`Extensions.Inference.Model`) and are
+matched case-insensitively, since gateways vary in how they echo the name and a
+case mismatch would silently unprice the traffic.
+
+A model with no entry and no fallback is **counted, not guessed**: the readout
+grows a `requests unpriced` row naming the models, so an incomplete table shows
+as a visible gap rather than a quietly understated total. Tokens are still
+reported for those requests — only the dollars are withheld.
+
+Field names within each entry match
+[`litellm-budget-track`](./plugin-catalog.md#litellm-budget-track). Cache rates
+fall back to that model's input rate, though on Anthropic-family models that
+fallback is poor — a real cache read is 0.1x input — so set them when known.
+There is deliberately no output rate: pruning only shrinks the prompt.
+
+**Deriving your own rates.** If your gateway reports cost on non-streaming
+responses (LiteLLM's `x-litellm-response-cost`), send two non-streaming requests
+of different prompt length and difference them: `rate = Δcost / Δinput_tokens`.
+Repeat with a `cache_control` block sent twice to get the write and read rates.
+This is exact and specific to your deployment — it is how the numbers in the
+table above were obtained, and they came out 4x below list because that gateway
+bills negotiated rates.
+
+Why rates rather than the gateway's own number: LiteLLM reports
+`x-litellm-response-cost: 0` for **streaming** responses, because the total is
+not known when the headers are sent — and Claude Code streams every
+`/v1/messages`. So the authoritative per-request cost is unavailable for exactly
+the traffic this plugin prunes. `litellm-budget-track` hits the same wall and
+falls back to configured rates for streams.
+
+A saving is also a counterfactual — the cost of a request that was never sent —
+so even with a cost header it could only ever be priced from rates, not measured.
 
 Counters are in-memory and per-process. That is the right trade for the
 single-laptop case this targets and what keeps the plugin free of a storage

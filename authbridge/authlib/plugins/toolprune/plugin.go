@@ -54,43 +54,94 @@ type config struct {
 	// suffix. Defaults to the three inference endpoints.
 	Paths []string `json:"paths" description:"Request paths to act on (exact or suffix match)."`
 
-	// Per-token rates, for costing the saving. Field names and semantics match
-	// litellm-budget-track so an operator configures rates in one familiar
-	// shape. USD per token; all optional. With none set, no cost is reported —
-	// a price is never assumed.
+	// Pricing gives per-token rates per model. Rates are per model because they
+	// differ enormously: on one observed gateway claude-opus-5 bills input at
+	// $3.80/Mtok, sonnet at $1.52 and haiku at $0.76 — a 5x spread, so one flat
+	// rate misprices by that factor depending on which model served the request.
+	// Keys match the model name the parser records
+	// (pctx.Extensions.Inference.Model), matched case-insensitively.
+	Pricing map[string]modelRates `json:"pricing" description:"Per-token rates keyed by model name."`
+
+	// pricing is Pricing with keys lower-cased; built by applyDefaults.
+	pricing map[string]modelRates `json:"-"`
+
+	// The flat fields are the fallback for models absent from Pricing. Names and
+	// semantics match litellm-budget-track. All optional; with nothing set no
+	// cost is reported rather than a price being assumed.
 	//
 	// There is deliberately no output rate: pruning only ever shrinks the
-	// prompt, so attributing any output cost to it would be false.
+	// prompt, so attributing output cost to it would be false.
+	InputCostPerToken      float64 `json:"input_cost_per_token" description:"Fallback USD per uncached input token, for models absent from pricing."`
+	CacheWriteCostPerToken float64 `json:"cache_write_cost_per_token" description:"Fallback USD per cache-write token; defaults to input_cost_per_token."`
+	CacheReadCostPerToken  float64 `json:"cache_read_cost_per_token" description:"Fallback USD per cache-read token; defaults to input_cost_per_token."`
+}
+
+// modelRates is one model's prompt-tier pricing. Cache rates fall back to the
+// input rate, matching litellm-budget-track — though on Anthropic-family models
+// that fallback is poor (a real cache read is 0.1x input), so set them when known.
+type modelRates struct {
 	InputCostPerToken      float64 `json:"input_cost_per_token" description:"USD per uncached input token."`
-	CacheWriteCostPerToken float64 `json:"cache_write_cost_per_token" description:"USD per cache-write input token; defaults to input_cost_per_token."`
-	CacheReadCostPerToken  float64 `json:"cache_read_cost_per_token" description:"USD per cache-read input token; defaults to input_cost_per_token."`
+	CacheWriteCostPerToken float64 `json:"cache_write_cost_per_token" description:"USD per cache-write token; defaults to input_cost_per_token."`
+	CacheReadCostPerToken  float64 `json:"cache_read_cost_per_token" description:"USD per cache-read token; defaults to input_cost_per_token."`
 }
 
-// cacheWriteRate / cacheReadRate default to the uncached input rate, matching
-// litellm-budget-track. Flat pricing would misstate cache-heavy traffic badly —
-// Anthropic charges 1.25x input for a cache write and 0.1x for a read, so the
-// same saved bytes differ by more than 12x depending on which tier they land in.
-func (c *config) cacheWriteRate() float64 {
-	if c.CacheWriteCostPerToken > 0 {
-		return c.CacheWriteCostPerToken
+func (r modelRates) rateFor(t tier) float64 {
+	switch t {
+	case tierCacheWrite:
+		if r.CacheWriteCostPerToken > 0 {
+			return r.CacheWriteCostPerToken
+		}
+	case tierCacheRead:
+		if r.CacheReadCostPerToken > 0 {
+			return r.CacheReadCostPerToken
+		}
 	}
-	return c.InputCostPerToken
+	return r.InputCostPerToken
 }
 
-func (c *config) cacheReadRate() float64 {
-	if c.CacheReadCostPerToken > 0 {
-		return c.CacheReadCostPerToken
+func (r modelRates) set() bool {
+	return r.InputCostPerToken > 0 || r.CacheWriteCostPerToken > 0 || r.CacheReadCostPerToken > 0
+}
+
+// ratesFor resolves rates for a model: its own entry when present, else the flat
+// fallback. Reports false when neither is configured, so the caller counts the
+// request as unpriced rather than charging it at another model's rate — which on
+// a 5x spread would be worse than reporting nothing.
+func (c *config) ratesFor(model string) (modelRates, bool) {
+	if r, ok := c.pricing[strings.ToLower(model)]; ok && r.set() {
+		return r, true
 	}
-	return c.InputCostPerToken
+	fallback := modelRates{
+		InputCostPerToken:      c.InputCostPerToken,
+		CacheWriteCostPerToken: c.CacheWriteCostPerToken,
+		CacheReadCostPerToken:  c.CacheReadCostPerToken,
+	}
+	return fallback, fallback.set()
 }
 
+// priced reports whether any pricing is configured at all.
 func (c *config) priced() bool {
-	return c.InputCostPerToken > 0 || c.CacheWriteCostPerToken > 0 || c.CacheReadCostPerToken > 0
+	if c.InputCostPerToken > 0 || c.CacheWriteCostPerToken > 0 || c.CacheReadCostPerToken > 0 {
+		return true
+	}
+	for _, r := range c.Pricing {
+		if r.set() {
+			return true
+		}
+	}
+	return false
 }
 
 func (c *config) applyDefaults() {
 	if len(c.Paths) == 0 {
 		c.Paths = append([]string(nil), defaultPaths...)
+	}
+	// Fold model keys to lower case once, so lookup is case-insensitive
+	// without allocating per request. Gateways vary in how they echo model
+	// names, and a case mismatch would silently unprice the traffic.
+	c.pricing = make(map[string]modelRates, len(c.Pricing))
+	for k, v := range c.Pricing {
+		c.pricing[strings.ToLower(k)] = v
 	}
 }
 
@@ -406,7 +457,9 @@ func (p *ToolPrune) OnFinish(_ context.Context, pctx *pipeline.Context) {
 	if tokens <= 0 {
 		return
 	}
-	p.m.observeSaving(tokens, tierOf(inf))
+	t := tierOf(inf)
+	rates, priced := p.cfg.ratesFor(inf.Model)
+	p.m.observeSaving(tokens, t, tokens*rates.rateFor(t), priced, inf.Model)
 }
 
 // tier names which prompt token tier a request's saving came out of.

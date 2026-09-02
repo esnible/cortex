@@ -627,3 +627,103 @@ func TestPrune_PathMismatchRecordsThePath(t *testing.T) {
 		t.Errorf("inv = %+v, want path_not_inference with the offending path recorded", inv)
 	}
 }
+
+// configuredJSON builds a plugin from raw config JSON.
+func configuredJSON(t *testing.T, raw string) *ToolPrune {
+	t.Helper()
+	p := New()
+	if err := p.Configure(json.RawMessage(raw)); err != nil {
+		t.Fatalf("Configure: %v", err)
+	}
+	return p
+}
+
+// pruneWithModel runs one prune and finishes it as the named model, with a
+// cache-write split (the cache-miss shape).
+func pruneWithModel(t *testing.T, p *ToolPrune, model string) {
+	t.Helper()
+	pctx := inferenceCtx("/v1/messages", anthropicBody, "Read", "NotebookEdit", "Bash")
+	run(t, p, pctx)
+	pctx.Extensions.Inference.Model = model
+	pctx.Extensions.Inference.CacheWriteTokens = 24701
+	p.OnFinish(context.Background(), pctx)
+}
+
+const perModelCfg = `{"remove":["NotebookEdit"],"pricing":{
+  "claude-opus-5":       {"input_cost_per_token":3.8e-06,"cache_write_cost_per_token":4.75e-06,"cache_read_cost_per_token":3.8e-07},
+  "aws/claude-sonnet-5": {"input_cost_per_token":1.52e-06,"cache_write_cost_per_token":1.9e-06,"cache_read_cost_per_token":1.52e-07},
+  "aws/claude-haiku-4-5":{"input_cost_per_token":7.6e-07,"cache_write_cost_per_token":9.5e-07,"cache_read_cost_per_token":7.6e-08}}}`
+
+// TestPricing_PerModelRatesDiffer is why pricing is keyed by model. On one
+// observed gateway opus bills input at $3.80/Mtok, sonnet $1.52 and haiku $0.76
+// — a 5x spread. Charging every request at one rate would misstate the saving by
+// that factor depending on which model happened to serve it.
+func TestPricing_PerModelRatesDiffer(t *testing.T) {
+	usd := map[string]float64{}
+	for _, model := range []string{"claude-opus-5", "aws/claude-sonnet-5", "aws/claude-haiku-4-5"} {
+		p := configuredJSON(t, perModelCfg)
+		pruneWithModel(t, p, model)
+		usd[model] = findMetric(t, p.Metrics(), "$ saved").Value
+		if usd[model] <= 0 {
+			t.Fatalf("%s: no cost reported", model)
+		}
+	}
+	// Same saved bytes, same tier — cost must track the model's rate ratios.
+	if r := usd["claude-opus-5"] / usd["aws/claude-sonnet-5"]; r < 2.4 || r > 2.6 {
+		t.Errorf("opus/sonnet cost ratio = %.2f, want ~2.5", r)
+	}
+	if r := usd["claude-opus-5"] / usd["aws/claude-haiku-4-5"]; r < 4.9 || r > 5.1 {
+		t.Errorf("opus/haiku cost ratio = %.2f, want ~5.0", r)
+	}
+}
+
+// TestPricing_UnknownModelIsCountedNotGuessed: charging an unpriced model at
+// another model's rate would be wrong by up to 5x, so it is reported as a gap.
+func TestPricing_UnknownModelIsCountedNotGuessed(t *testing.T) {
+	p := configuredJSON(t, perModelCfg)
+	pruneWithModel(t, p, "gcp/gemini-3-pro-preview")
+
+	ms := p.Metrics()
+	gap := findMetric(t, ms, "requests unpriced")
+	if gap.Value != 1 {
+		t.Errorf("requests unpriced = %v, want 1", gap.Value)
+	}
+	if !strings.Contains(gap.Note, "gcp/gemini-3-pro-preview") {
+		t.Errorf("note should name the unpriced model, got %q", gap.Note)
+	}
+	// Tokens are still counted — only the dollars are withheld.
+	if findMetric(t, ms, "tokens saved: cache write").Value <= 0 {
+		t.Error("token saving should still be reported for an unpriced model")
+	}
+	for _, m := range ms {
+		if m.Name == "$ saved" && m.Value != 0 {
+			t.Errorf("$ saved = %v for an unpriced model, want no charge", m.Value)
+		}
+	}
+}
+
+// TestPricing_FlatRatesActAsFallback keeps the simpler single-model config
+// working: a model absent from the table is priced at the flat rates when set.
+func TestPricing_FlatRatesActAsFallback(t *testing.T) {
+	p := configuredJSON(t, `{"remove":["NotebookEdit"],"input_cost_per_token":3.8e-06,
+	  "pricing":{"aws/claude-haiku-4-5":{"input_cost_per_token":7.6e-07}}}`)
+	pruneWithModel(t, p, "some-other-model")
+	if findMetric(t, p.Metrics(), "$ saved").Value <= 0 {
+		t.Error("a model absent from pricing should fall back to the flat rates")
+	}
+	for _, m := range p.Metrics() {
+		if m.Name == "requests unpriced" {
+			t.Error("should not be counted unpriced when a fallback rate exists")
+		}
+	}
+}
+
+// TestPricing_ModelMatchIsCaseInsensitive: gateways vary in how they echo model
+// names, and a case mismatch would silently unprice the traffic.
+func TestPricing_ModelMatchIsCaseInsensitive(t *testing.T) {
+	p := configuredJSON(t, `{"remove":["NotebookEdit"],"pricing":{"Claude-Opus-5":{"input_cost_per_token":3.8e-06}}}`)
+	pruneWithModel(t, p, "claude-opus-5")
+	if findMetric(t, p.Metrics(), "$ saved").Value <= 0 {
+		t.Error("model lookup should be case-insensitive")
+	}
+}

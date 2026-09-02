@@ -240,7 +240,8 @@ body-reading plugin (it rewrites the request body). Declares
 
 - `remove` (`[]string`) — tool names to delete from the manifest. The complete verdict: no learning, no state, no storage. Names absent from a given request are ignored.
 - `paths` (`[]string`) — request paths to act on, matched exactly or by suffix. Defaults to `/v1/chat/completions`, `/v1/completions`, `/v1/messages`.
-- `input_cost_per_token`, `cache_write_cost_per_token`, `cache_read_cost_per_token` (`float`) — USD per token, for costing the saving. Names match `litellm-budget-track`; cache rates default to the input rate. All optional — with none set, no dollar figure is reported rather than a price being assumed. No output rate: pruning only shrinks the prompt.
+- `pricing` (`map[model]rates`) — per-token rates keyed by model name, each with `input_cost_per_token`, `cache_write_cost_per_token`, `cache_read_cost_per_token` (cache rates fall back to that model's input rate). Per model because rates differ up to 5x across opus/sonnet/haiku, so one flat rate misprices by that factor. Keys matched case-insensitively.
+- `input_cost_per_token`, `cache_write_cost_per_token`, `cache_read_cost_per_token` (`float`) — optional flat fallback for models absent from `pricing`. With no pricing at all, no dollar figure is reported rather than a price being assumed; a model with no rate is counted in a `requests unpriced` row instead of being charged at another model's rate. No output rate: pruning only shrinks the prompt.
 
 Generate the list from local transcripts with `abctl tools scan`, which
 proposes only tools it recognises as Claude Code built-ins and never
