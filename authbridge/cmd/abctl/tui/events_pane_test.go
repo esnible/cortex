@@ -881,3 +881,82 @@ func TestComputeEventPairs_FallsBackWithoutRequestID(t *testing.T) {
 		t.Errorf("heuristic pairing broke for id-less events: partner=%v", partner)
 	}
 }
+
+// TestComputeEventPairs_FieldTrace replays a real interleaving captured from a
+// Claude Code session, where the adjacency heuristic mispaired 6 of 15
+// responses — a 3-way rotation (rows 10/11/12) and a straight swap (20/21).
+//
+// The mispairing was not cosmetic. It rendered a 400 beneath every row where
+// tool-prune reported rewriting a body, when each of those 400s belonged to a
+// different concurrent request and every request tool-prune touched returned
+// 200. Ownership here is not guesswork: each response's duration is measured
+// from its own request's start, so subtracting it identifies the true owner
+// independently of the id being tested.
+func TestComputeEventPairs_FieldTrace(t *testing.T) {
+	type spec struct {
+		id    string // true owning request id
+		phase pipeline.SessionPhase
+		host  string
+		code  int
+	}
+	// Order is wall-clock order as observed; ids are the true owners.
+	trace := []spec{
+		{"r07", pipeline.SessionRequest, "mcp.ete", 0},
+		{"r08", pipeline.SessionRequest, "mcp.ete", 0},
+		{"r08", pipeline.SessionResponse, "mcp.ete", 200},
+		{"r09", pipeline.SessionRequest, "litellm", 0},
+		{"r09", pipeline.SessionResponse, "litellm", 200},
+		{"r10", pipeline.SessionRequest, "litellm", 0},
+		{"r11", pipeline.SessionRequest, "litellm", 0}, // tool-prune modified this one
+		{"r10", pipeline.SessionResponse, "litellm", 400},
+		{"r12", pipeline.SessionRequest, "litellm", 0},
+		{"r11", pipeline.SessionResponse, "litellm", 200}, // the modify's real outcome
+		{"r12", pipeline.SessionResponse, "litellm", 400},
+		{"r13", pipeline.SessionRequest, "litellm", 0},
+		{"r14", pipeline.SessionRequest, "litellm", 0}, // tool-prune modified this one
+		{"r07", pipeline.SessionResponse, "mcp.ete", 200},
+		{"r13", pipeline.SessionResponse, "litellm", 400},
+		{"r15", pipeline.SessionRequest, "litellm", 0},
+		{"r16", pipeline.SessionRequest, "mcp.ete", 0},
+		{"r16", pipeline.SessionResponse, "mcp.ete", 400},
+		{"r15", pipeline.SessionResponse, "litellm", 400},
+		{"r14", pipeline.SessionResponse, "litellm", 200}, // the modify's real outcome
+	}
+
+	rows := make([]eventRow, 0, len(trace))
+	for _, s := range trace {
+		rows = append(rows, eventRow{event: &pipeline.SessionEvent{
+			Direction: pipeline.Outbound, Phase: s.phase,
+			Host: s.host, RequestID: s.id, StatusCode: s.code,
+		}})
+	}
+
+	_, partner := computeEventPairs(rows)
+
+	for i, s := range trace {
+		j, ok := partner[i]
+		if !ok {
+			if s.id == "r07" || s.phase == pipeline.SessionRequest {
+				// every request in this trace does get a response
+				t.Errorf("row %d (%s %s) unpaired", i, s.id, s.phase)
+			}
+			continue
+		}
+		if got := rows[j].event.RequestID; got != s.id {
+			t.Errorf("row %d (%s) paired with %s — pairing crossed requests", i, s.id, got)
+		}
+	}
+
+	// The specific regression: no tool-prune-modified request may own a 400.
+	for _, modified := range []string{"r11", "r14"} {
+		for i, s := range trace {
+			if s.phase != pipeline.SessionRequest || s.id != modified {
+				continue
+			}
+			j := partner[i]
+			if code := rows[j].event.StatusCode; code != 200 {
+				t.Errorf("%s (tool-prune modified) paired with a %d; its real response was 200", modified, code)
+			}
+		}
+	}
+}
