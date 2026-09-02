@@ -441,7 +441,7 @@ func (s *Server) modifyResponse(resp *http.Response) error {
 	// called on this path — streaming-aware plugins finalize via
 	// OnResponseFrame(last=true).
 	//
-	// WritesRequestBody is incompatible with streaming (we can't rewrite a
+	// WritesResponseBody is incompatible with streaming (we can't rewrite a
 	// body we've already started forwarding) — fall back to buffered
 	// with a warning.
 	if isEventStream(resp.Header.Get("Content-Type")) &&

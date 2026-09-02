@@ -778,6 +778,17 @@ nothing about how the response may be relayed.
   the ext_authz API has no body-mutation field. Do not combine
   body-mutating plugins with `mode: waypoint`.
 
+> **Reader-ordering is validated in request order only.** `RunResponse` iterates
+> the chain in reverse, so on the response pass the rule inverts — a reader needs
+> to sit *after* a `WritesResponseBody` plugin to see original response bytes.
+> The two rules conflict for a both-direction mutator whenever a body reader is
+> present, so no single ordering satisfies both. In practice this is invisible
+> in-tree: `RunResponse` skips `StreamingResponder`s and every body-reading
+> parser is one. A non-streaming reader (`opa`, `ibac`) placed before a response
+> mutator would see rewritten bytes. Not enforced, because the check would reject
+> chains that validate today; closing it needs direction-specific *read*
+> capabilities.
+
 > **Declaring is a contract, not an enforcement.** `SetBody` flips
 > `bodyMutated` unconditionally outside observe mode and the listeners gate
 > purely on that flag, so a plugin that calls `SetBody` *without* declaring the

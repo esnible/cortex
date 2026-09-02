@@ -597,6 +597,26 @@ func validateCapabilities(plugins []Plugin) error {
 		}
 		// Reader-ordering is triggered by either write flag: a reader placed
 		// after any mutator would no longer see the original bytes.
+		//
+		// KNOWN GAP, response direction. This check is in list order, which is
+		// request order. RunResponse iterates in reverse, so on the response
+		// pass the rule inverts: a reader must appear AFTER a
+		// WritesResponseBody plugin to see original response bytes. The two
+		// rules therefore conflict for a plugin that writes both directions
+		// (sparc, cpex) whenever a body reader is in the chain — no single
+		// ordering satisfies both.
+		//
+		// It does not bite in-tree today because RunResponse skips
+		// StreamingResponders, and every body-reading parser (inference-,
+		// a2a-, mcp-parser) is one. A non-streaming reader (opa, ibac) placed
+		// before a response mutator would genuinely see rewritten bytes.
+		//
+		// Deliberately not enforced here: adding the reverse-order check would
+		// reject chains that validate today (e.g. [opa, sparc]), and the
+		// directional-capability change promised that no working configuration
+		// starts failing. Closing it needs direction-specific READ capabilities
+		// so the two passes can be validated independently, which is its own
+		// compatibility review.
 		if caps.ReadsBody && firstMutator != "" && readerAfterMutator == "" {
 			readerAfterMutator = plugin.Name()
 		}
