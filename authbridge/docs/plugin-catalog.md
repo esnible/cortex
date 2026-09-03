@@ -142,6 +142,10 @@ cost is ever accumulated and the budget never trips.
 
 - `spend_file` (string) — path to the JSON spend ledger file; required. The ledger is a small JSON file the plugin creates and rewrites, holding the current UTC date plus the cumulative spend and call count for that day (it resets automatically at midnight UTC) — see [Ledger Format](./litellm-budgettrack-plugin.md#ledger-format).
 - `max_budget` (float64) — daily budget in USD; required, must be > 0.
+- `input_cost_per_token` (float64) — USD per uncached input token. Optional; used to price **streamed** responses, whose `x-litellm-response-cost` header is 0 because the total isn't known when headers are sent. When every rate is zero, streamed responses contribute 0 to the ledger.
+- `output_cost_per_token` (float64) — USD per output/completion token, same streamed-response path.
+- `cache_write_cost_per_token` (float64) — USD per cache-write (creation) input token. Defaults to `input_cost_per_token` when unset.
+- `cache_read_cost_per_token` (float64) — USD per cache-read input token. Defaults to `input_cost_per_token` when unset. Leaving the two cache tiers unset reproduces a flat rate, which overstates cache-heavy traffic (e.g. Claude Code) by up to ~10x — set them for accurate pricing.
 
 ## `mcp-parser`
 
@@ -217,6 +221,11 @@ Enforces per-session token, call-count, and duration budgets via Redis. Opt-in a
 
 - `redis_url` (string) — Redis/Valkey connection URL; required.
 - `max_tokens` (int64) — cumulative token ceiling per session. `0` = no limit.
+- `max_input_tokens` (int64) — per-kind ceiling for uncached prompt tokens. `0` = no limit.
+- `max_cache_read_tokens` (int64) — per-kind ceiling for prompt tokens served from cache. `0` = no limit.
+- `max_cache_write_tokens` (int64) — per-kind ceiling for prompt tokens written to cache. `0` = no limit.
+- `max_output_tokens` (int64) — per-kind ceiling for generated completion tokens. `0` = no limit.
+- `max_reasoning_tokens` (int64) — per-kind ceiling for reasoning-only output tokens (a subset of output). `0` = no limit.
 - `max_calls` (int64) — max inference calls per session. `0` = no limit.
 - `max_duration_seconds` (int64) — wall-clock session lifetime. `0` = no limit.
 - `on_exceed` (string) — `deny` (default, block), `observe` (log only), or `pause` (HITL webhook approval).
@@ -227,6 +236,10 @@ Enforces per-session token, call-count, and duration budgets via Redis. Opt-in a
 - `session_ttl_seconds` (int) — Redis key TTL; must be ≥ `max_duration_seconds` when the latter is set (enforced at Configure time). Default 7200.
 - `refresh_interval` (string) — how often the local cache syncs from Redis. Default `5s`.
 - `redis_unavailable` (string) — only `fail_open` (default) is implemented; `fail_closed` is rejected at Configure time.
+- `default_session_fallback` (bool) — pool sessionless traffic into a shared `default` bucket. Single-workload only: one caller exhausting the budget denies the rest. Default `false`.
+
+At least one of `max_tokens`, the five per-kind ceilings, `max_calls`, or
+`max_duration_seconds` must be > 0, or Configure fails.
 
 Cold-cache behavior is mode-dependent; see
 [session-budget-plugin.md](session-budget-plugin.md#cold-cache-behavior)
