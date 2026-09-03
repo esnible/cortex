@@ -35,7 +35,8 @@ remembers writing.
 > gives a graceful parsers-only sidecar (the parsers predate the plugin).
 
 **Start here:** [RECIPE.md](RECIPE.md) — six steps, expected output, back
-out. **Why it works and where it stops:** [DESIGN.md](DESIGN.md).
+out. **Why it works and where it stops:** [DESIGN.md](DESIGN.md). **See it
+run:** the [lineage demo](../demos/lineage/README.md) on the Weather Agent pair.
 
 ---
 
