@@ -41,21 +41,24 @@ type patternRates struct {
 //
 // Any `pricing` entry in config overrides the matching model.
 var defaultPatterns = mustCompilePatterns(map[string]modelRates{
-	// input 1.00x / cache write 1.25x / cache read 0.10x
+	// Written in the published unit — dollars per million tokens — and divided by
+	// a CONSTANT, so the compiler folds each one exactly. A runtime division
+	// lands a ulp low (3.7999999999999996e-06), which would make this table
+	// disagree with the documented $3.80/Mtok in the last digit for no reason.
 	"*claude-opus-*": {
-		InputCostPerToken:      0.0000038,
-		CacheWriteCostPerToken: 0.00000475,
-		CacheReadCostPerToken:  0.00000038,
+		InputCostPerToken:      3.80 / tokensPerMillion,
+		CacheWriteCostPerToken: 4.75 / tokensPerMillion, // 1.25x input
+		CacheReadCostPerToken:  0.38 / tokensPerMillion, // 0.10x input
 	},
 	"*claude-sonnet-*": {
-		InputCostPerToken:      0.00000152,
-		CacheWriteCostPerToken: 0.0000019,
-		CacheReadCostPerToken:  0.000000152,
+		InputCostPerToken:      1.52 / tokensPerMillion,
+		CacheWriteCostPerToken: 1.90 / tokensPerMillion,
+		CacheReadCostPerToken:  0.152 / tokensPerMillion,
 	},
 	"*claude-haiku-*": {
-		InputCostPerToken:      0.00000076,
-		CacheWriteCostPerToken: 0.00000095,
-		CacheReadCostPerToken:  0.000000076,
+		InputCostPerToken:      0.76 / tokensPerMillion,
+		CacheWriteCostPerToken: 0.95 / tokensPerMillion,
+		CacheReadCostPerToken:  0.076 / tokensPerMillion,
 	},
 })
 

@@ -208,13 +208,30 @@ model outright:
   config:
     remove: [CronCreate, NotebookEdit]
     pricing:
-      claude-opus-5:
-        input_cost_per_token: 0.0000038
-        cache_write_cost_per_token: 0.00000475
-        cache_read_cost_per_token: 0.00000038
+      "*claude-opus-*":
+        input_cost_per_million: 3.80
+        cache_write_cost_per_million: 4.75
+        cache_read_cost_per_million: 0.38
     # optional flat fallback for models absent from the table above
-    input_cost_per_token: 0.0000038
+    input_cost_per_million: 3.80
 ```
+
+**Rates are stated per million tokens**, because that is the unit every provider
+publishes and the one you already have in hand — `3.80`, copied straight off a
+price list, rather than `0.0000038` arrived at by dividing in your head. That
+difference is not just ergonomics: `0.0000038` is six leading zeros, and
+`0.000038` is a plausible-looking typo that misprices by 10x with nothing in the
+readout to reveal it.
+
+The per-token field names are still accepted (`input_cost_per_token`, …), for
+parity with [`litellm-budget-track`](./litellm-budgettrack-plugin.md) and because
+LiteLLM's own `model_prices_and_context_window.json` is per-token, so rates get
+copied out of it verbatim. Different tiers may use different units.
+
+**Setting both units for the same tier is a startup error**, not a precedence
+question. The two differ by 10<sup>6</sup>: silently honouring one would either
+overstate a saving a millionfold or bury it under rounding, and the readout gives
+you no way to tell which happened. The error names the offending entry and tier.
 
 Model keys match what the parser records (`Extensions.Inference.Model`) and are
 matched case-insensitively, since gateways vary in how they echo the name and a
@@ -228,7 +245,7 @@ so the more specific statement wins:
 2. glob in your `pricing` — **longest pattern first**, so `*claude-opus-4-8*`
    beats `*claude-opus-*` deterministically rather than by map iteration luck
 3. built-in family pattern
-4. the flat `input_cost_per_token` fallback
+4. the flat `input_cost_per_million` fallback
 5. unpriced
 
 An invalid pattern fails startup with the offending key named, rather than

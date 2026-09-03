@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"strings"
 	"sync"
 	"testing"
@@ -1069,8 +1070,8 @@ func TestPricingPatternPrecedence(t *testing.T) {
 		"*claude-opus-4-8*": {InputCostPerToken: 3},
 	}}
 	c.applyDefaults()
-	if c.pricingGlobErr != nil {
-		t.Fatalf("compile: %v", c.pricingGlobErr)
+	if c.pricingErr != nil {
+		t.Fatalf("compile: %v", c.pricingErr)
 	}
 	for _, tc := range []struct {
 		model string
@@ -1111,7 +1112,201 @@ func TestPricingBadPatternRejected(t *testing.T) {
 		"*claude-[opus": {InputCostPerToken: 1},
 	}}
 	c.applyDefaults()
-	if c.pricingGlobErr == nil {
+	if c.pricingErr == nil {
 		t.Fatal("want a compile error for an unterminated character class")
+	}
+}
+
+// TestPricingPerMillionUnits is the natural-units path: an operator copies
+// "$3.80 / Mtok" off a price list and the plugin prices with it, no hand
+// division. Values are compared against the per-token equivalent to prove the
+// conversion, not merely that something non-zero landed.
+func TestPricingPerMillionUnits(t *testing.T) {
+	c := &config{Pricing: map[string]modelRates{
+		"my-model": {
+			InputCostPerMillion:      3.80,
+			CacheWriteCostPerMillion: 4.75,
+			CacheReadCostPerMillion:  0.38,
+		},
+	}}
+	c.applyDefaults()
+	if c.pricingErr != nil {
+		t.Fatalf("unexpected error: %v", c.pricingErr)
+	}
+	rates, src := c.ratesFor("my-model")
+	if src != rateConfigured {
+		t.Fatalf("source = %v, want rateConfigured", src)
+	}
+	// Compared with a tolerance, not for equality: a config value divides at
+	// runtime, so 3.80/1e6 lands one ulp below the 3.8e-06 literal. That is a
+	// 1e-16 relative difference on a dollar figure — not a property worth
+	// pinning, and pinning it would only invite a fragile test.
+	for _, tc := range []struct {
+		tier tier
+		want float64
+	}{
+		{tierInput, 0.0000038},
+		{tierCacheWrite, 0.00000475},
+		{tierCacheRead, 0.00000038},
+	} {
+		got, ok := rates.rateFor(tc.tier)
+		if !ok || math.Abs(got-tc.want) > tc.want*1e-12 {
+			t.Errorf("tier %v: got (%g, %v), want (~%g, true)", tc.tier, got, ok, tc.want)
+		}
+	}
+}
+
+// TestPricingPerMillionGlobAndFlat covers the two other places a rate can be
+// stated, so per-million isn't quietly honoured in only one of the three.
+func TestPricingPerMillionGlobAndFlat(t *testing.T) {
+	c := &config{
+		Pricing: map[string]modelRates{
+			"*my-family-*": {InputCostPerMillion: 2.0},
+		},
+		InputCostPerMillion: 9.0,
+	}
+	c.applyDefaults()
+	if c.pricingErr != nil {
+		t.Fatalf("unexpected error: %v", c.pricingErr)
+	}
+	if r, src := c.ratesFor("my-family-7"); src != rateConfigured || r.InputCostPerToken != 2.0/1e6 {
+		t.Errorf("glob: got (%g, %v), want (%g, configured)", r.InputCostPerToken, src, 2.0/1e6)
+	}
+	// A model no pattern claims falls to the flat rate, also stated per-million.
+	if r, src := c.ratesFor("totally-unknown"); src != rateConfigured || r.InputCostPerToken != 9.0/1e6 {
+		t.Errorf("flat: got (%g, %v), want (%g, configured)", r.InputCostPerToken, src, 9.0/1e6)
+	}
+}
+
+// TestPricingUnitConflictRejected is the important one. The two units differ by
+// 10^6, so silently preferring either would misprice by a millionfold with
+// nothing in the readout to show which was honoured.
+func TestPricingUnitConflictRejected(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		r    modelRates
+		want string
+	}{
+		{"input", modelRates{InputCostPerMillion: 3.8, InputCostPerToken: 0.0000038}, "input"},
+		{"cache_write", modelRates{CacheWriteCostPerMillion: 4.75, CacheWriteCostPerToken: 0.00000475}, "cache_write"},
+		{"cache_read", modelRates{CacheReadCostPerMillion: 0.38, CacheReadCostPerToken: 0.00000038}, "cache_read"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := &config{Pricing: map[string]modelRates{"m": tc.r}}
+			c.applyDefaults()
+			if c.pricingErr == nil {
+				t.Fatal("want an error when both units are set for one tier")
+			}
+			// The message must name the tier, or an operator with three tiers
+			// configured has to bisect to find the one at fault.
+			if !strings.Contains(c.pricingErr.Error(), tc.want) {
+				t.Errorf("error %q does not name tier %q", c.pricingErr, tc.want)
+			}
+		})
+	}
+	// Same rule on the flat fallback.
+	c := &config{InputCostPerMillion: 3.8, InputCostPerToken: 0.0000038}
+	c.applyDefaults()
+	if c.pricingErr == nil {
+		t.Fatal("flat fallback: want an error when both units are set")
+	}
+}
+
+// TestPricingMixedUnitsAcrossTiersAllowed: stating different tiers in different
+// units is odd but unambiguous, so it must not be rejected — the rule is about
+// one tier stated twice, not about tidiness.
+func TestPricingMixedUnitsAcrossTiersAllowed(t *testing.T) {
+	c := &config{Pricing: map[string]modelRates{
+		"m": {InputCostPerMillion: 3.80, CacheReadCostPerToken: 0.00000038},
+	}}
+	c.applyDefaults()
+	if c.pricingErr != nil {
+		t.Fatalf("unexpected error: %v", c.pricingErr)
+	}
+	r, _ := c.ratesFor("m")
+	// per-million tier: runtime division, so tolerance (see TestPricingPerMillionUnits).
+	if got, _ := r.rateFor(tierInput); math.Abs(got-0.0000038) > 1e-18 {
+		t.Errorf("input = %g, want ~0.0000038", got)
+	}
+	// per-token tier: stored verbatim, so exact.
+	if got, _ := r.rateFor(tierCacheRead); got != 0.00000038 {
+		t.Errorf("cache read = %g, want 0.00000038", got)
+	}
+}
+
+// TestPricingConfigureRejectsUnitConflict proves the fault reaches Configure
+// rather than stopping at applyDefaults, since that is what actually fails boot.
+func TestPricingConfigureRejectsUnitConflict(t *testing.T) {
+	p := New()
+	err := p.Configure([]byte(`{"pricing":{"m":{"input_cost_per_million":3.8,"input_cost_per_token":0.0000038}}}`))
+	if err == nil {
+		t.Fatal("Configure accepted a both-units entry")
+	}
+	if !strings.Contains(err.Error(), "input") {
+		t.Errorf("error %q does not name the tier", err)
+	}
+}
+
+// TestPricingPerMillionJSONDecodes guards the wire names an operator types.
+func TestPricingPerMillionJSONDecodes(t *testing.T) {
+	p := New()
+	if err := p.Configure([]byte(`{
+		"remove": ["X"],
+		"pricing": {"*claude-opus-*": {
+			"input_cost_per_million": 3.80,
+			"cache_write_cost_per_million": 4.75,
+			"cache_read_cost_per_million": 0.38
+		}},
+		"input_cost_per_million": 1.0
+	}`)); err != nil {
+		t.Fatalf("Configure: %v", err)
+	}
+	r, src := p.cfg.ratesFor("claude-opus-5")
+	if src != rateConfigured || math.Abs(r.InputCostPerToken-0.0000038) > 1e-18 {
+		t.Errorf("got (%g, %v), want (~0.0000038, configured)", r.InputCostPerToken, src)
+	}
+}
+
+// TestBuiltinRatesMatchDocumentedPerMillion pins the built-in table against the
+// exact per-Mtok figures the docs publish.
+//
+// Each expectation is written as a CONSTANT expression ($3.80 / tokensPerMillion),
+// which the compiler folds exactly — the same way pricing.go does. So this fails
+// both if a documented figure and the table drift apart, and if anyone converts
+// the table with a runtime division instead, which lands a ulp low.
+//
+// It deliberately does not assert rate*1e6 == 3.80: multiplying back is a second
+// rounding that isn't exact for every value (0.076 round-trips to
+// 0.07600000000000001), which would make the test fail for a reason that has
+// nothing to do with the table being right.
+func TestBuiltinRatesMatchDocumentedPerMillion(t *testing.T) {
+	c := &config{}
+	c.applyDefaults()
+	for _, tc := range []struct {
+		model                     string
+		input, cacheWr, cacheRead float64
+	}{
+		{"claude-opus-5", 3.80 / tokensPerMillion, 4.75 / tokensPerMillion, 0.38 / tokensPerMillion},
+		{"claude-sonnet-5", 1.52 / tokensPerMillion, 1.90 / tokensPerMillion, 0.152 / tokensPerMillion},
+		{"claude-haiku-4-5", 0.76 / tokensPerMillion, 0.95 / tokensPerMillion, 0.076 / tokensPerMillion},
+	} {
+		r, src := c.ratesFor(tc.model)
+		if src != rateDefault {
+			t.Errorf("%s: src = %v, want rateDefault", tc.model, src)
+			continue
+		}
+		for _, f := range []struct {
+			name      string
+			got, want float64
+		}{
+			{"input", r.InputCostPerToken, tc.input},
+			{"cache write", r.CacheWriteCostPerToken, tc.cacheWr},
+			{"cache read", r.CacheReadCostPerToken, tc.cacheRead},
+		} {
+			if f.got != f.want {
+				t.Errorf("%s %s: %v, want exactly %v ($%v/Mtok)",
+					tc.model, f.name, f.got, f.want, f.want*tokensPerMillion)
+			}
+		}
 	}
 }

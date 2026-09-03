@@ -30,6 +30,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"sync"
 
@@ -60,15 +61,21 @@ type config struct {
 	// that factor depending on which model served the request.
 	// Keys match the model name the parser records
 	// (pctx.Extensions.Inference.Model), matched case-insensitively.
-	Pricing map[string]modelRates `json:"pricing" description:"Per-token rates keyed by model name."`
+	Pricing map[string]modelRates `json:"pricing" description:"Rates keyed by model name or glob; prefer the per-million fields."`
 
 	// pricing is Pricing with keys lower-cased; built by applyDefaults.
 	pricing map[string]modelRates `json:"-"`
 	// pricingGlobs are the Pricing keys containing glob metacharacters,
 	// compiled in match order — the mechanism that makes a version bump need
 	// no edit anywhere.
-	pricingGlobs   []patternRates `json:"-"`
-	pricingGlobErr error          `json:"-"`
+	pricingGlobs []patternRates `json:"-"`
+	// flat is the normalized flat fallback, so ratesFor doesn't rebuild it per
+	// request and the unit folding happens exactly once.
+	flat modelRates `json:"-"`
+	// pricingErr carries any pricing config fault — bad glob, or both units set
+	// for one tier — for Configure to reject. Faults are not dropped: an unpriced
+	// row from a typo and one from a genuinely unknown model must not look alike.
+	pricingErr error `json:"-"`
 
 	// The flat fields are the fallback for models absent from Pricing. Names and
 	// semantics match litellm-budget-track. All optional; with nothing set no
@@ -76,18 +83,71 @@ type config struct {
 	//
 	// There is deliberately no output rate: pruning only ever shrinks the
 	// prompt, so attributing output cost to it would be false.
-	InputCostPerToken      float64 `json:"input_cost_per_token" description:"Fallback USD per uncached input token, for models absent from pricing."`
-	CacheWriteCostPerToken float64 `json:"cache_write_cost_per_token" description:"Fallback USD per cache-write token; defaults to input_cost_per_token."`
-	CacheReadCostPerToken  float64 `json:"cache_read_cost_per_token" description:"Fallback USD per cache-read token; defaults to input_cost_per_token."`
+	InputCostPerMillion      float64 `json:"input_cost_per_million" description:"Fallback USD per million uncached input tokens, for models absent from pricing."`
+	CacheWriteCostPerMillion float64 `json:"cache_write_cost_per_million" description:"Fallback USD per million cache-write tokens; defaults to input_cost_per_million."`
+	CacheReadCostPerMillion  float64 `json:"cache_read_cost_per_million" description:"Fallback USD per million cache-read tokens; defaults to input_cost_per_million."`
+
+	InputCostPerToken      float64 `json:"input_cost_per_token" description:"Fallback USD per uncached input token. Alternative to input_cost_per_million; set one, not both."`
+	CacheWriteCostPerToken float64 `json:"cache_write_cost_per_token" description:"Fallback USD per cache-write token; defaults to input rate."`
+	CacheReadCostPerToken  float64 `json:"cache_read_cost_per_token" description:"Fallback USD per cache-read token; defaults to input rate."`
 }
 
 // modelRates is one model's prompt-tier pricing. Cache rates fall back to the
 // input rate, matching litellm-budget-track — though on Anthropic-family models
 // that fallback is poor (a real cache read is 0.1x input), so set them when known.
 type modelRates struct {
-	InputCostPerToken      float64 `json:"input_cost_per_token" description:"USD per uncached input token."`
-	CacheWriteCostPerToken float64 `json:"cache_write_cost_per_token" description:"USD per cache-write token; defaults to input_cost_per_token."`
-	CacheReadCostPerToken  float64 `json:"cache_read_cost_per_token" description:"USD per cache-read token; defaults to input_cost_per_token."`
+	// The per-million fields are the ones to reach for. Every provider publishes
+	// prices per million tokens ("$3.80 / Mtok"), so this is the unit an operator
+	// already has in hand — no dividing by a million by hand, and no
+	// 0.0000038-vs-0.000038 typo that misprices by 10x and looks plausible in
+	// either direction.
+	InputCostPerMillion      float64 `json:"input_cost_per_million" description:"USD per million uncached input tokens (the unit providers publish)."`
+	CacheWriteCostPerMillion float64 `json:"cache_write_cost_per_million" description:"USD per million cache-write tokens; defaults to input_cost_per_million."`
+	CacheReadCostPerMillion  float64 `json:"cache_read_cost_per_million" description:"USD per million cache-read tokens; defaults to input_cost_per_million."`
+
+	// The per-token fields remain accepted, for parity with
+	// litellm-budget-track's config and with LiteLLM's own
+	// model_prices_and_context_window.json — both are per-token, and rates get
+	// copied straight out of them. Setting both units for one tier is an error,
+	// not a precedence question: see normalize.
+	InputCostPerToken      float64 `json:"input_cost_per_token" description:"USD per uncached input token. Alternative to input_cost_per_million; set one, not both."`
+	CacheWriteCostPerToken float64 `json:"cache_write_cost_per_token" description:"USD per cache-write token; defaults to input rate."`
+	CacheReadCostPerToken  float64 `json:"cache_read_cost_per_token" description:"USD per cache-read token; defaults to input rate."`
+}
+
+// tokensPerMillion converts the published unit to the per-token one all the
+// downstream arithmetic uses.
+const tokensPerMillion = 1_000_000
+
+// normalize folds the per-million fields into the per-token ones, so everything
+// after Configure deals in a single unit.
+//
+// Setting both units for the same tier is rejected rather than resolved by
+// precedence. The two differ by 10^6, so picking a winner silently would either
+// overstate a saving by a millionfold or bury it below rounding — and the
+// readout gives an operator no way to tell which unit was honoured. A startup
+// error naming the tier is the only outcome that can't be misread. what
+// identifies the offending entry ("pricing[\"claude-opus-5\"]").
+func (r modelRates) normalize(what string) (modelRates, error) {
+	for _, f := range []struct {
+		name    string
+		million float64
+		token   *float64
+	}{
+		{"input", r.InputCostPerMillion, &r.InputCostPerToken},
+		{"cache_write", r.CacheWriteCostPerMillion, &r.CacheWriteCostPerToken},
+		{"cache_read", r.CacheReadCostPerMillion, &r.CacheReadCostPerToken},
+	} {
+		if f.million <= 0 {
+			continue
+		}
+		if *f.token > 0 {
+			return r, fmt.Errorf("%s: %s rate set as both %s_cost_per_million and %s_cost_per_token; set one",
+				what, f.name, f.name, f.name)
+		}
+		*f.token = f.million / tokensPerMillion
+	}
+	return r, nil
 }
 
 // rateFor returns the rate for a tier and whether one is actually available.
@@ -149,13 +209,8 @@ func (c *config) ratesFor(model string) (modelRates, rateSource) {
 	if r, ok := lookupPattern(defaultPatterns, key); ok {
 		return r, rateDefault
 	}
-	fallback := modelRates{
-		InputCostPerToken:      c.InputCostPerToken,
-		CacheWriteCostPerToken: c.CacheWriteCostPerToken,
-		CacheReadCostPerToken:  c.CacheReadCostPerToken,
-	}
-	if fallback.set() {
-		return fallback, rateConfigured
+	if c.flat.set() {
+		return c.flat, rateConfigured
 	}
 	return modelRates{}, rateNone
 }
@@ -169,16 +224,43 @@ func (c *config) applyDefaults() {
 	// names, and a case mismatch would silently unprice the traffic.
 	c.pricing = make(map[string]modelRates, len(c.Pricing))
 	globs := map[string]modelRates{}
-	for k, v := range c.Pricing {
+	// Sorted so that when several entries are malformed the reported one is
+	// stable across restarts, instead of whichever map iteration reached first.
+	keys := make([]string, 0, len(c.Pricing))
+	for k := range c.Pricing {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
 		lk := strings.ToLower(k)
+		v, err := c.Pricing[k].normalize(fmt.Sprintf("pricing[%q]", k))
+		if err != nil && c.pricingErr == nil {
+			c.pricingErr = err
+		}
 		if strings.ContainsAny(lk, "*?[") {
 			globs[lk] = v
 			continue
 		}
 		c.pricing[lk] = v
 	}
-	// A bad glob is surfaced by validate(), not silently dropped.
-	c.pricingGlobs, c.pricingGlobErr = compilePatterns(globs)
+	flat, err := modelRates{
+		InputCostPerMillion:      c.InputCostPerMillion,
+		CacheWriteCostPerMillion: c.CacheWriteCostPerMillion,
+		CacheReadCostPerMillion:  c.CacheReadCostPerMillion,
+		InputCostPerToken:        c.InputCostPerToken,
+		CacheWriteCostPerToken:   c.CacheWriteCostPerToken,
+		CacheReadCostPerToken:    c.CacheReadCostPerToken,
+	}.normalize("config")
+	if err != nil && c.pricingErr == nil {
+		c.pricingErr = err
+	}
+	c.flat = flat
+
+	globsCompiled, err := compilePatterns(globs)
+	if err != nil && c.pricingErr == nil {
+		c.pricingErr = fmt.Errorf("invalid pricing pattern: %w", err)
+	}
+	c.pricingGlobs = globsCompiled
 }
 
 // ToolPrune is the plugin. Counters live in metrics, guarded by its own mutex;
@@ -232,8 +314,8 @@ func (p *ToolPrune) Configure(raw json.RawMessage) error {
 		}
 	}
 	c.applyDefaults()
-	if c.pricingGlobErr != nil {
-		return fmt.Errorf("tool-prune config: invalid pricing pattern: %w", c.pricingGlobErr)
+	if c.pricingErr != nil {
+		return fmt.Errorf("tool-prune config: %w", c.pricingErr)
 	}
 
 	p.cfg = c
