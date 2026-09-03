@@ -19,10 +19,19 @@ import (
 // No body content: the session store is unauthenticated, so this holds counts,
 // tool names the operator themselves configured, and rates.
 type pruneEvent struct {
-	ToolsRemoved   []string `json:"toolsRemoved,omitempty"`
-	BytesRemoved   int      `json:"bytesRemoved"`
-	BodyBytesAfter int      `json:"bodyBytesAfter"`
-	Model          string   `json:"model,omitempty"`
+	ToolsRemoved []string `json:"toolsRemoved,omitempty"`
+	BytesRemoved int      `json:"bytesRemoved"`
+	// BodyBytesAfter is the size of the body actually SENT upstream, which is
+	// not the pruned size under on_error: observe — there SetBody is a no-op and
+	// the original goes out. A consumer divides the response's prompt-token
+	// count by this to get tokens-per-byte, so using the pruned size while the
+	// original was billed would inflate that ratio and overstate the saving.
+	BodyBytesAfter int `json:"bodyBytesAfter"`
+	// Projected marks a saving that was measured but NOT applied — observe mode.
+	// The bytes were not actually removed from the request, so a consumer must
+	// present this as "would have saved", never as money already not spent.
+	Projected bool   `json:"projected,omitempty"`
+	Model     string `json:"model,omitempty"`
 
 	// Rates are USD per token for this request's model, already resolved
 	// through config → flat fallback → built-in defaults.

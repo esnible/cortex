@@ -75,7 +75,7 @@ Two occasions worth it:
 `abctl`'s plugin detail pane shows a `Metrics:` section (source:
 `GET /v1/pipeline`):
 
-```
+```text
 Metrics:
   requests seen                      2  count
   requests pruned                    2  count
@@ -98,11 +98,17 @@ The events pane's `TOKENS / SAVED` column splits the two halves across the rows
 they belong to — the saving on the request that was rewritten, the billed total on
 the response:
 
-```
+```text
 #   PHASE  ACTION   PLUGIN            TOKENS / SAVED     CODE
 12  req    modify   tool-prune        −24.7k  $0.117
 12  resp   observe  inference-parser  34,702             200
 ```
+
+Under `on_error: observe` the saving is **projected**: the plugin measured what it
+would remove but sent the request unchanged, so nothing was actually saved. Those
+figures render with a leading `~` and no `−`, and the aggregate counts them
+separately — an observe-mode run must not be added up as money not spent.
+
 
 The saving is not shown on the response row: nothing about the response was
 reduced, and putting it there reads as though it had been. The two rows share a
@@ -289,7 +295,7 @@ change the plugin.
 
 ## Where the list comes from
 
-```
+```sh
 abctl tools scan [--days 30] [--keep Name,Name] [--dir PATH] [--write CONFIG]
 ```
 
@@ -322,7 +328,7 @@ rather than a silent no-op.
 Every error path forwards the original bytes unmodified: the plugin fails open on
 a malformed or truncated body, an unparseable manifest, a rewrite that does not
 shrink the body, a rewrite that produces invalid JSON, an unexpected tool count
-afterwards, and any panic.
+afterward, and any panic.
 
 **What that does and does not promise.** It means the plugin's own failure modes
 cannot break a request — a bug or a surprising input forwards the original bytes

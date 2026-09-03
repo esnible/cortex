@@ -17,6 +17,9 @@ type pruneSaving struct {
 	RateCacheWrite float64 `json:"rateCacheWrite"`
 	RateCacheRead  float64 `json:"rateCacheRead"`
 	RateSource     string  `json:"rateSource"`
+	// Projected marks observe mode: the saving was measured but the bytes were
+	// not actually removed, so it must not render as money already not spent.
+	Projected bool `json:"projected"`
 }
 
 // decodePruneSaving pulls the tool-prune event off a request event, if present.
@@ -76,11 +79,19 @@ func savedTokensAndCost(ps pruneSaving, resp *pipeline.InferenceExtension) (toke
 // formatSavedOnly renders a request row's saving: what was removed and what it
 // was worth. No total, because a request has no billed token count — that
 // belongs to the response, on its own row.
-func formatSavedOnly(tokens, usd float64, rateSource string) string {
+//
+// A projected saving (on_error: observe, where the bytes were measured but not
+// removed) is prefixed "~" and drops the "−". Rendering it identically to a real
+// saving would invite an operator to add up money that was still spent, and
+// observe mode exists precisely to be trusted while it is not yet enforcing.
+func formatSavedOnly(tokens, usd float64, rateSource string, projected bool) string {
 	if tokens <= 0 {
 		return ""
 	}
 	cell := "−" + formatCompact(tokens)
+	if projected {
+		cell = "~" + formatCompact(tokens)
+	}
 	if usd > 0 && rateSource != "none" {
 		cell += fmt.Sprintf("  $%s", formatUSD(usd))
 	}

@@ -799,5 +799,5 @@ func (m *model) tokensCellWithSaving(rows []eventRow, partner map[int]int, i int
 	if !ok {
 		return ""
 	}
-	return formatSavedOnly(tokens, usd, ps.RateSource)
+	return formatSavedOnly(tokens, usd, ps.RateSource, ps.Projected)
 }

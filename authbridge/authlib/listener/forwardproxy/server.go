@@ -81,6 +81,7 @@ type Server struct {
 	// Nothing errors, so the only symptom is silence. These count the two
 	// outcomes so the listener can say so out loud.
 	tunnelsOpened   atomic.Uint64
+	bridgeAttempts  atomic.Uint64
 	bridgedRequests atomic.Uint64
 	bridgeWarnOnce  sync.Once
 	bridgeWarned    atomic.Bool
@@ -560,6 +561,11 @@ func (s *Server) bridgeServe(client net.Conn, authority, host string) bool {
 	if err != nil {
 		s.TLSBridge.Skip.Add(host) // pinned client → its retry will passthrough
 		slog.Warn("tls-bridge passthrough", "host", host, "reason", "handshake-fail", "error", err)
+		// Proof the client doesn't trust the CA. Warn now with the fix, because
+		// Skip.Add above means this host never reaches noteBridgeAttempt again.
+		if s.bridgedRequests.Load() == 0 {
+			s.noteBridgeHandshakeFailure()
+		}
 		return true // conn is dead post-forge; nothing left to tunnel
 	}
 
@@ -1064,6 +1070,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		key := hostOnly(r.Host)
 		if !s.TLSBridge.Skip.Contains(key) {
 			if v, _ := s.TLSBridge.Decision.Classify(key, portOf(r.Host), first); v == tlsbridge.Terminate {
+				s.noteBridgeAttempt()
 				_ = upstream.Close() // bridgeServe dials its own verified upstream
 				if s.bridgeServe(clientConn, authority, key) {
 					return
@@ -1260,24 +1267,48 @@ func portOf(authority string) int {
 // client is not trusting the CA.
 const tunnelWarnThreshold = 5
 
-// noteTunnel counts a CONNECT tunnel and, once, warns if the bridge is enabled
-// yet has never decrypted anything.
+// noteTunnel counts a CONNECT tunnel. It deliberately does NOT warn: a CONNECT
+// says nothing about bridge health yet, because the destination may be in
+// TLSBridge.Skip or classified as passthrough on purpose. Warning here counted
+// intentional opaque tunnels as evidence of a broken CA — and because the
+// warning is once-only, those false positives then masked the real failure when
+// it happened later. The warning lives on the bridge-eligible path instead.
+func (s *Server) noteTunnel() { s.tunnelsOpened.Add(1) }
+
+// noteBridgeAttempt counts a CONNECT that classification chose to terminate, and
+// warns once if the bridge has been asked to decrypt this many times and never
+// managed it.
 //
 // This is the failure that looks like a bug in whatever plugin you are testing:
 // tool-prune, the parsers and every body reader correctly do nothing, because
-// there is no plaintext to act on. Naming the trust anchor turns a silent
-// dead end into a one-line fix.
-func (s *Server) noteTunnel() {
-	n := s.tunnelsOpened.Add(1)
+// there is no plaintext to act on. Naming the trust anchor turns a silent dead
+// end into a one-line fix.
+func (s *Server) noteBridgeAttempt() {
+	n := s.bridgeAttempts.Add(1)
 	if s.TLSBridge == nil || n < tunnelWarnThreshold || s.bridgedRequests.Load() > 0 {
 		return
 	}
+	s.warnBridgeUnused("bridge_attempts", n, "the client does not trust the bridge CA")
+}
+
+// noteBridgeHandshakeFailure reports the unambiguous case: the client refused the
+// forged certificate. Unlike the attempt threshold this needs no accumulation —
+// one refusal already proves the trust anchor is not installed. It matters that
+// this path warns, because a refusal adds the host to Skip, so later requests
+// never reach noteBridgeAttempt and the threshold alone would never be crossed.
+func (s *Server) noteBridgeHandshakeFailure() {
+	s.warnBridgeUnused("bridge_attempts", s.bridgeAttempts.Load(),
+		"the client rejected the bridge certificate, so it does not trust the bridge CA")
+}
+
+func (s *Server) warnBridgeUnused(countKey string, count uint64, cause string) {
 	s.bridgeWarnOnce.Do(func() {
 		s.bridgeWarned.Store(true)
 		slog.Warn("tls-bridge: enabled but nothing has been decrypted — every request is tunnelling through opaquely, so body-reading plugins (parsers, tool-prune) cannot act",
-			"tunnels_opened", n,
+			countKey, count,
+			"tunnels_opened", s.tunnelsOpened.Load(),
 			"bridged_requests", 0,
-			"likely_cause", "the client does not trust the bridge CA",
+			"likely_cause", cause,
 			"fix", "point the client at the trust anchor, e.g. NODE_EXTRA_CA_CERTS="+s.caFileHint())
 	})
 }

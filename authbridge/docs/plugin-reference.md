@@ -790,7 +790,7 @@ nothing about how the response may be relayed.
 > mutator would see rewritten bytes. Not enforced, because the check would reject
 > chains that validate today; closing it needs direction-specific *read*
 > capabilities.
-
+>
 > **Declaring is a contract, not an enforcement.** `SetBody` flips
 > `bodyMutated` unconditionally outside observe mode and the listeners gate
 > purely on that flag, so a plugin that calls `SetBody` *without* declaring the

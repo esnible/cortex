@@ -8,11 +8,14 @@ import (
 	"github.com/rossoctl/cortex/authbridge/authlib/tlsbridge"
 )
 
-// TestNoteTunnel_WarnsOnlyWhenNothingIsEverDecrypted covers the failure that
-// looks like a plugin bug: the bridge is on, the client does not trust its CA,
-// so every HTTPS request opens an opaque tunnel and every body-reading plugin
-// correctly does nothing. Nothing errors — the only symptom is silence.
-func TestNoteTunnel_WarnsOnlyWhenNothingIsEverDecrypted(t *testing.T) {
+// TestNoteBridgeAttempt_WarnsOnlyWhenNothingIsEverDecrypted covers the failure
+// that looks like a plugin bug: the bridge is on, the client does not trust its
+// CA, so every HTTPS request opens an opaque tunnel and every body-reading
+// plugin correctly does nothing. Nothing errors — the only symptom is silence.
+//
+// Driven through noteBridgeAttempt, not noteTunnel: the trigger is a CONNECT the
+// bridge actually tried to decrypt. See TestNoteTunnel_PassthroughNeverWarns.
+func TestNoteBridgeAttempt_WarnsOnlyWhenNothingIsEverDecrypted(t *testing.T) {
 	tests := []struct {
 		name      string
 		bridge    *tlsbridge.Engine
@@ -27,20 +30,20 @@ func TestNoteTunnel_WarnsOnlyWhenNothingIsEverDecrypted(t *testing.T) {
 			wantWarns: 0,
 		},
 		{
-			name:      "below threshold: a few tunnels are normal (passthrough hosts, startup races)",
+			name:      "below threshold: a few attempts are normal (startup races)",
 			bridge:    &tlsbridge.Engine{},
 			tunnels:   tunnelWarnThreshold - 1,
 			wantWarns: 0,
 		},
 		{
-			name:      "tunnels but something was decrypted: bridge is working",
+			name:      "attempts but something was decrypted: bridge is working",
 			bridge:    &tlsbridge.Engine{},
 			tunnels:   50,
 			bridged:   1,
 			wantWarns: 0,
 		},
 		{
-			name:      "many tunnels, nothing decrypted: warn",
+			name:      "many attempts, nothing decrypted: warn",
 			bridge:    &tlsbridge.Engine{},
 			tunnels:   tunnelWarnThreshold,
 			wantWarns: 1,
@@ -61,7 +64,7 @@ func TestNoteTunnel_WarnsOnlyWhenNothingIsEverDecrypted(t *testing.T) {
 			// the guarded block would run by observing the sync.Once directly.
 			for i := 0; i < tc.tunnels; i++ {
 				before := s.warnFired()
-				s.noteTunnel()
+				s.noteBridgeAttempt()
 				if !before && s.warnFired() {
 					warns++
 				}
@@ -105,5 +108,44 @@ func TestNoteTunnel_ConcurrentIsRaceFree(t *testing.T) {
 	wg.Wait()
 	if got := s.tunnelsOpened.Load(); got != 16*64 {
 		t.Errorf("tunnelsOpened = %d, want %d", got, 16*64)
+	}
+}
+
+// TestNoteTunnel_PassthroughNeverWarns is the regression this split exists for.
+// A CONNECT to a host in TLSBridge.Skip, or one classification chose to pass
+// through, is intentional — it is not evidence of a broken CA. Counting those
+// let a correctly-configured proxy cry wolf, and because the warning is
+// once-only, the false positive then MASKED the real failure if it came later.
+func TestNoteTunnel_PassthroughNeverWarns(t *testing.T) {
+	s := &Server{TLSBridge: &tlsbridge.Engine{}}
+	for i := 0; i < tunnelWarnThreshold*20; i++ {
+		s.noteTunnel()
+	}
+	if s.warnFired() {
+		t.Error("warned about intentional passthrough tunnels")
+	}
+	// The warning must still be available afterwards for a genuine failure —
+	// i.e. the sync.Once was not burned by the passthrough traffic above.
+	for i := 0; i < tunnelWarnThreshold; i++ {
+		s.noteBridgeAttempt()
+	}
+	if !s.warnFired() {
+		t.Error("real bridge failure did not warn after passthrough traffic")
+	}
+}
+
+// TestNoteBridgeHandshakeFailure_WarnsImmediately: a refused forged certificate
+// is proof, so it must not wait for a threshold. It especially must not, because
+// the refusal adds the host to Skip — later requests never reach
+// noteBridgeAttempt, so the threshold alone would never be crossed.
+func TestNoteBridgeHandshakeFailure_WarnsImmediately(t *testing.T) {
+	s := &Server{TLSBridge: &tlsbridge.Engine{}}
+	s.noteBridgeAttempt() // one attempt, well below threshold
+	if s.warnFired() {
+		t.Fatal("warned on a single attempt")
+	}
+	s.noteBridgeHandshakeFailure()
+	if !s.warnFired() {
+		t.Error("a rejected bridge certificate did not warn")
 	}
 }

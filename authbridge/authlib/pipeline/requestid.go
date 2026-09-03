@@ -3,7 +3,12 @@ package pipeline
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"strconv"
+	"sync/atomic"
 )
+
+// requestIDSeq makes ids collision-free within a process by construction.
+var requestIDSeq atomic.Uint64
 
 // newRequestID returns a short, unique-per-process request identifier.
 //
@@ -11,12 +16,25 @@ import (
 // event in a session timeline, so it needs to be unique among in-flight
 // requests and short enough to read in a terminal — not globally unique or
 // cryptographically meaningful.
+//
+// A monotonic counter carries the uniqueness rather than randomness alone.
+// Random-only was 48 bits, which sounds ample but is birthday-bounded: about a
+// 0.2% chance of at least one collision within a million ids. A collision is not
+// cosmetic here — the consumer pairs a response to a request BY this id, so two
+// requests sharing one puts a response under the wrong request, which is exactly
+// the misattribution this field was added to eliminate. A counter cannot collide
+// with itself, so the failure mode is gone rather than made unlikely.
+//
+// The random suffix stays for cross-process distinction: a consumer can merge
+// streams from two authbridge instances (the advanced demo runs an agent-side
+// and a tool-side proxy), where both counters start at 1.
 func newRequestID() string {
-	var b [6]byte
+	n := requestIDSeq.Add(1)
+	var b [3]byte
 	// crypto/rand.Read never returns an error as of Go 1.24 — it panics on an
 	// unusable system source instead — so there is no failure branch to write.
 	_, _ = rand.Read(b[:])
-	return hex.EncodeToString(b[:])
+	return strconv.FormatUint(n, 36) + "-" + hex.EncodeToString(b[:])
 }
 
 // RequestID returns a stable identifier for this request, generated on first

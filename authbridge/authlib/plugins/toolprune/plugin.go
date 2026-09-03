@@ -126,8 +126,10 @@ const tokensPerMillion = 1_000_000
 // precedence. The two differ by 10^6, so picking a winner silently would either
 // overstate a saving by a millionfold or bury it below rounding — and the
 // readout gives an operator no way to tell which unit was honoured. A startup
-// error naming the tier is the only outcome that can't be misread. what
-// identifies the offending entry ("pricing[\"claude-opus-5\"]").
+// error naming the tier is the only outcome that can't be misread.
+//
+// what names the entry being normalized, so the error can point at it —
+// `pricing["claude-opus-5"]` for a map entry, "config" for the flat fallback.
 func (r modelRates) normalize(what string) (modelRates, error) {
 	for _, f := range []struct {
 		name    string
@@ -558,6 +560,10 @@ func (p *ToolPrune) OnRequest(_ context.Context, pctx *pipeline.Context) (action
 		for _, v := range victims {
 			victimSet[v] = true
 		}
+		// Last marker wins: if two pruned tools each carried a breakpoint, only
+		// one can move to the single last survivor. Claude Code marks exactly one
+		// tool, so this is not a shape seen in practice — but a future reader
+		// should know the overwrite is deliberate, not an oversight.
 		var orphanedCacheControl gjson.Result
 		for _, v := range victims {
 			if cc := gjson.GetBytes(body, fmt.Sprintf("tools.%d.cache_control", v)); cc.Exists() {
@@ -629,10 +635,22 @@ func (p *ToolPrune) OnRequest(_ context.Context, pctx *pipeline.Context) (action
 	if !okR {
 		rateRead = 0
 	}
+	// SetBody BEFORE publishing, so the event can report what was actually sent.
+	// Under ErrorPolicyObserve it is a no-op on bytes and leaves bodyMutated
+	// false — this same code path measures without enforcing.
+	pctx.SetBody(out)
+	applied := pctx.BodyMutated()
+	// The body upstream actually sees: the rewrite when it was applied, the
+	// original when it was only measured.
+	bodySent := len(out)
+	if !applied {
+		bodySent = len(body)
+	}
 	p.publish(pctx, pruneEvent{
 		ToolsRemoved:   names,
 		BytesRemoved:   removedBytes,
-		BodyBytesAfter: len(out),
+		BodyBytesAfter: bodySent,
+		Projected:      !applied,
 		Model:          inferenceModel(pctx),
 		RateInput:      rateInput,
 		RateCacheWrite: rateWrite,
@@ -643,11 +661,7 @@ func (p *ToolPrune) OnRequest(_ context.Context, pctx *pipeline.Context) (action
 	// it came out of. SetState keeps it private to this plugin, unlike
 	// Extensions.Custom which is shared.
 	pipeline.SetState(pctx, p.Name(), &requestState{bytesRemoved: removedBytes})
-	pctx.SetBody(out)
-	// Under ErrorPolicyObserve, SetBody is a no-op on bytes and leaves
-	// bodyMutated false — so this same code path measures without enforcing,
-	// and the counter it lands in is what distinguishes the two.
-	if pctx.BodyMutated() {
+	if applied {
 		p.m.pruned(names, removedBytes)
 	} else {
 		p.m.projected(names, removedBytes)

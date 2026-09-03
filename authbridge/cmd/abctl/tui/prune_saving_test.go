@@ -93,7 +93,7 @@ func TestSavedTokensAndCost_TierDecidesTheValue(t *testing.T) {
 // beside a response total read as though the response had shrunk, which it had
 // not.
 func TestFormatSavedOnly(t *testing.T) {
-	got := formatSavedOnly(10577.5, 0.05024, "default")
+	got := formatSavedOnly(10577.5, 0.05024, "default", false)
 	for _, want := range []string{"−10.6k", "$0.050"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("cell %q missing %q", got, want)
@@ -103,11 +103,11 @@ func TestFormatSavedOnly(t *testing.T) {
 		t.Errorf("cell %q should carry no billed total", got)
 	}
 	// Nothing saved: an empty cell, so unrelated request rows stay blank.
-	if got := formatSavedOnly(0, 0, "default"); got != "" {
+	if got := formatSavedOnly(0, 0, "default", false); got != "" {
 		t.Errorf("no-saving cell = %q, want empty", got)
 	}
 	// Unpriced model: tokens shown, no dollar figure invented.
-	got = formatSavedOnly(10577.5, 0, "none")
+	got = formatSavedOnly(10577.5, 0, "none", false)
 	if strings.Contains(got, "$") {
 		t.Errorf("cell %q shows a price for an unpriced model", got)
 	}
@@ -180,5 +180,32 @@ func TestTokensCellWithSaving_RequiresAnIDMatch(t *testing.T) {
 	resp.RequestID = "aaa"
 	if got := m.tokensCellWithSaving(rows, map[int]int{0: 1, 1: 0}, 0, req); got == "" {
 		t.Error("an id-matched pair should price")
+	}
+}
+
+// TestFormatSavedOnlyProjected: an observe-mode figure must be visually distinct
+// from a realized one, or an operator adds up money that was still spent.
+func TestFormatSavedOnlyProjected(t *testing.T) {
+	real := formatSavedOnly(10577.5, 0.05024, "default", false)
+	proj := formatSavedOnly(10577.5, 0.05024, "default", true)
+	if real == proj {
+		t.Fatalf("projected renders identically to realized: %q", real)
+	}
+	if !strings.HasPrefix(proj, "~") {
+		t.Errorf("projected = %q, want a leading ~", proj)
+	}
+	if strings.Contains(proj, "−") {
+		t.Errorf("projected = %q, must not claim bytes were removed", proj)
+	}
+}
+
+// TestPruneSavingProjectedDecodes guards the wire tag.
+func TestPruneSavingProjectedDecodes(t *testing.T) {
+	ps, ok := decodePruneSaving(reqEvent(t, `{"bytesRemoved":100,"bodyBytesAfter":1000,"projected":true}`))
+	if !ok {
+		t.Fatal("decode failed")
+	}
+	if !ps.Projected {
+		t.Error("projected did not decode")
 	}
 }

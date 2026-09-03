@@ -293,7 +293,7 @@ its 814 lines) into Go:
 launches the terminal UI. The change checks for a non-flag first argument before
 `flag.Parse()` and dispatches, falling through to the UI otherwise.
 
-```
+```sh
 abctl tools scan [--days 30] [--keep Name,Name] [--write <config.yaml>]
 ```
 
@@ -464,7 +464,7 @@ Roughly 20 lines in the pane, 3 in `describePipeline`, 2 struct fields, and abou
 
 The operator reads something like:
 
-```
+```text
 Metrics:
   requests seen              1284  count
   requests pruned            1284  count

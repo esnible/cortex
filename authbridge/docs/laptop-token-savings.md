@@ -66,9 +66,23 @@ abctl tools scan --write ~/.cortex/config.yaml
 
 `tools scan` reads your own `~/.claude/projects/*.jsonl` transcripts and proposes
 the built-in tools you have not called in 30 days. It only ever proposes tools it
-recognises, and never one it has seen you call — removing a tool the model needs
-is the harmful direction of failure, so drift costs savings rather than
-correctness. The config is hot-reloaded; no restart.
+recognises, and never one it has seen you call. The config is hot-reloaded; no
+restart.
+
+**What the scan cannot know is the future.** It reports what you have not used,
+not what you will not need. If you start a kind of work that needs a pruned tool,
+its definition is gone from the request and the model cannot call it — that is a
+functional failure, not merely a smaller saving. Two things keep it cheap:
+
+- **Rescan occasionally** (say monthly, or after your work changes shape) so the
+  list tracks what you actually use. The list is only ever as current as the last
+  scan.
+- **Reach for `on_error: observe` when in doubt.** It measures the saving and
+  changes nothing, so you can see what a list would be worth before trusting it.
+  abctl marks those figures with `~`.
+
+If a tool goes missing, the fix is to delete its name from `remove:` — the config
+hot-reloads, so it comes back without a restart.
 
 ## 4. Point Claude Code at it
 
