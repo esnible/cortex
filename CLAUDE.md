@@ -254,7 +254,7 @@ cd authbridge && podman build -f cmd/authbridge-proxy/Dockerfile -t authbridge:l
 cd authbridge && podman build -f cmd/authbridge-envoy/Dockerfile -t authbridge-envoy:latest .
 # authbridge-lite: same proxy Dockerfile, built with exclude_plugin_* tags (auth-only)
 cd authbridge && podman build -f cmd/authbridge-proxy/Dockerfile \
-  --build-arg GO_BUILD_TAGS="exclude_plugin_a2aparser,exclude_plugin_ibac,exclude_plugin_inferenceparser,exclude_plugin_mcpparser,exclude_plugin_opa,exclude_plugin_sparc,exclude_plugin_tokenbroker" \
+  --build-arg GO_BUILD_TAGS="exclude_plugin_a2aparser,exclude_plugin_ibac,exclude_plugin_inferenceparser,exclude_plugin_mcpparser,exclude_plugin_opa,exclude_plugin_sparc,exclude_plugin_tokenbroker,exclude_plugin_toolprune" \
   -t authbridge-lite:latest .
 ```
 

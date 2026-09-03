@@ -1,8 +1,10 @@
 package main
 
 import (
+	"os"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/rossoctl/cortex/authbridge/authlib/config"
@@ -72,8 +74,62 @@ func TestDemoConfig_WriteLoadsAndValidates(t *testing.T) {
 	for i, p := range cfg.Pipeline.Outbound.Plugins {
 		gotPlugins[i] = p.Name
 	}
-	wantPlugins := []string{"inference-parser", "mcp-parser", "a2a-parser"}
+	// tool-prune must come last: it is the request-body mutator, and the
+	// pipeline refuses to build a chain where a body reader follows it.
+	wantPlugins := []string{"inference-parser", "mcp-parser", "a2a-parser", "tool-prune"}
 	if !slices.Equal(gotPlugins, wantPlugins) {
 		t.Errorf("outbound plugins = %v, want %v", gotPlugins, wantPlugins)
+	}
+
+	// tool-prune ships inert, and that is a property worth pinning: the demo
+	// must never silently start rewriting a user's traffic. The empty remove
+	// list is the guard — with no tool named there is nothing to remove, whatever
+	// the policy — so filling the list is the single, deliberate act that
+	// enables it. Asserting the policy too would just pin a default that is
+	// meant to be edited.
+	var tp *config.PluginEntry
+	for i := range cfg.Pipeline.Outbound.Plugins {
+		if cfg.Pipeline.Outbound.Plugins[i].Name == "tool-prune" {
+			tp = &cfg.Pipeline.Outbound.Plugins[i]
+		}
+	}
+	if tp == nil {
+		t.Fatal("tool-prune entry not found")
+	}
+	if !strings.Contains(string(tp.Config), "\"remove\":[]") &&
+		!strings.Contains(string(tp.Config), "\"remove\": []") {
+		t.Errorf("tool-prune must ship with an empty remove list, got %s", tp.Config)
+	}
+}
+
+// TestWriteDemoConfig_PreservesAnExistingFile: the config's own header invites
+// editing it, and `abctl tools scan --write` writes a prune list into it. This
+// function also runs before any port is bound, so an unconditional overwrite
+// meant a --demo start that then failed on a port clash silently destroyed those
+// edits — which is exactly how a populated remove list was lost in practice.
+func TestWriteDemoConfig_PreservesAnExistingFile(t *testing.T) {
+	caDir := t.TempDir()
+	p, err := writeDemoConfig(caDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	edited := "# operator edit\nmode: proxy-sidecar\n"
+	if err := os.WriteFile(p, []byte(edited), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A second call — a restart — must not clobber it.
+	p2, err := writeDemoConfig(caDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p2 != p {
+		t.Errorf("path changed: %q vs %q", p2, p)
+	}
+	got, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != edited {
+		t.Errorf("edits were overwritten:\n%s", got)
 	}
 }

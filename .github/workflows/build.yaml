@@ -56,7 +56,7 @@ jobs:
             context: ./authbridge
             dockerfile: cmd/authbridge-proxy/Dockerfile
             build_args: |
-              GO_BUILD_TAGS=exclude_plugin_a2aparser,exclude_plugin_ibac,exclude_plugin_inferenceparser,exclude_plugin_mcpparser,exclude_plugin_opa,exclude_plugin_sparc,exclude_plugin_tokenbroker
+              GO_BUILD_TAGS=exclude_plugin_a2aparser,exclude_plugin_ibac,exclude_plugin_inferenceparser,exclude_plugin_mcpparser,exclude_plugin_opa,exclude_plugin_sparc,exclude_plugin_tokenbroker,exclude_plugin_toolprune
 
           # AuthBridge proxy-sidecar CPEX image — authbridge-proxy built
           # with -tags cpex (links libcpex_ffi.a from a pinned CPEX

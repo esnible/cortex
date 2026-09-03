@@ -36,6 +36,7 @@ AuthBridge pipeline YAML, not whether it is compiled into the binary
 | [`session-budget`](#session-budget) | Enforces per-session token, call, and duration budgets via Redis. | Alpha | Outbound | No |
 | [`token-broker`](#token-broker) | Exchanges incoming tokens against a configured IdP via a broker service. | Alpha | Outbound | No |
 | [`token-exchange`](#token-exchange) | RFC 8693 outbound token exchange per route. | Ready | Outbound | YES |
+| [`tool-prune`](#tool-prune) | Removes unused tool definitions from inference requests. | Alpha | Outbound | No |
 
 ## `a2a-parser`
 
@@ -271,3 +272,25 @@ interface each IdP implements, see
 - `routes.rules` (list) — inline route entries (`host`, `target_audience`, `token_scopes`, `token_url`, `action`), combined with file-loaded routes.
 - `audience_from_host` (bool) — derive audience from host for unrouted requests (waypoint mode). Default `false`.
 - `resolve_placeholders` (bool) — resolve an inbound placeholder-prefixed bearer to its real token before exchange; unresolvable placeholders are denied. Default `false`.
+
+## `tool-prune`
+
+Removes unused tool definitions from the outbound inference manifest, so
+the tokens for tools an agent never calls are not billed on every turn.
+The manifest is assembled by the client, so the proxy is the only place to
+trim it without changing every client.
+
+Requires `inference-parser` earlier in the chain, and must sit after any
+body-reading plugin (it rewrites the request body). Declares
+`WritesRequestBody` only, so response streaming is unaffected.
+
+- `remove` (`[]string`) — tool names to delete from the manifest. The complete verdict: no learning, no state, no storage. Names absent from a given request are ignored.
+- `paths` (`[]string`) — request paths to act on, matched exactly or by suffix. Defaults to `/v1/chat/completions`, `/v1/completions`, `/v1/messages`.
+- `pricing` (`map[model]rates`) — rates keyed by model name **or glob** (`*claude-opus-*`), each with `input_cost_per_million`, `cache_write_cost_per_million`, `cache_read_cost_per_million` (per-million: the unit providers publish, so `3.80` not `0.0000038`). The per-token names are also accepted for `litellm-budget-track` parity; setting both units for one tier fails startup, since they differ by 10^6 and picking a winner silently would misprice by that factor. **Optional**: built-in patterns cover the Claude families on the rossoctl gateway, so `$ saved` works unconfigured; any entry here overrides the built-in. Per model because rates differ ~5x across opus/sonnet/haiku. Built-ins are keyed by *family*, not version, so an opus 4.8 → 5 rename needs no code change. Resolution: exact key → longest matching glob → built-in pattern → flat fallback → unpriced; keys matched case-insensitively. An invalid glob fails startup with the key named.
+- `input_cost_per_million`, `cache_write_cost_per_million`, `cache_read_cost_per_million` (`float`) — optional flat fallback for models absent from `pricing` (per-token variants also accepted). A figure from built-in rates is labelled as such; a model in neither the table nor config is counted in a `requests unpriced` row instead of charged at another model's rate. No output rate: pruning only shrinks the prompt.
+
+Generate the list from local transcripts with `abctl tools scan`, which
+proposes only tools it recognises as Claude Code built-ins and never
+proposes one it has seen called. See
+[`tool-prune-plugin.md`](./tool-prune-plugin.md) for the measure-then-enforce
+rollout, the metrics readout, and what the saving does and does not change.

@@ -249,6 +249,10 @@ type model struct {
 	// until then.
 	pipeline *apiclient.PipelineView
 
+	// pipelineFetching is set while a /v1/pipeline request is outstanding, so
+	// the 2s refresh tick cannot stack fetches against a slow endpoint.
+	pipelineFetching bool
+
 	// helpVisible toggles the [?] key-help overlay. Deliberately a flag
 	// rather than a paneID: the overlay must be openable over ANY pane
 	// (picker included) without disturbing m.pane / m.previousPane, which
@@ -440,13 +444,18 @@ func (m *model) Init() tea.Cmd {
 	return m.initSessionView()
 }
 
-// loadPipelineCmd fetches /v1/pipeline once at startup. The pipeline is
-// static for the duration of a process so there's no periodic refresh.
+// loadPipelineCmd fetches /v1/pipeline. The plugin composition is static for
+// the life of a process, but the view also carries each plugin's live
+// Metrics counters — so a single fetch at startup would freeze them at zero,
+// which on a fresh proxy is every number a user ever sees. It is refetched
+// when a metrics-bearing pane is open; see refreshTickMsg.
 func (m *model) loadPipelineCmd() tea.Cmd {
 	return func() tea.Msg {
 		pv, err := m.client.GetPipeline(m.ctx)
 		if err != nil {
-			return errMsg{where: "get pipeline", err: err}
+			// Report as a load with no view so the in-flight flag clears; a
+			// failure that left it set would wedge refresh for the session.
+			return pipelineLoadedMsg(nil)
 		}
 		return pipelineLoadedMsg(pv)
 	}
@@ -583,11 +592,35 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.pane == paneNamespaces || m.pane == panePods {
 			return m, refreshTickCmd()
 		}
+		// Refresh the pipeline view too while a pane that displays plugin
+		// Metrics is open, so counters tick rather than sitting at whatever
+		// they were when the session was first opened. Skipped elsewhere:
+		// the composition itself does not change, so polling it while nobody
+		// is looking at metrics would be pure overhead.
+		// Guard against stacking fetches: the tick is 2s and the HTTP timeout is
+		// 10s, so a stalled endpoint would otherwise accumulate ~5 concurrent
+		// requests and keep adding one every tick.
+		if (m.pane == panePluginDetail || m.pane == panePipeline) && !m.pipelineFetching {
+			m.pipelineFetching = true
+			return m, tea.Batch(m.loadSessionsCmd(), m.loadPipelineCmd(), refreshTickCmd())
+		}
 		return m, tea.Batch(m.loadSessionsCmd(), refreshTickCmd())
 
 	case pipelineLoadedMsg:
+		m.pipelineFetching = false
+		if msg == nil {
+			return m, nil // fetch failed; keep the view we have
+		}
 		m.pipeline = (*apiclient.PipelineView)(msg)
 		m.rebuildPipelineTable()
+		// Re-render an open plugin detail pane against the new view. Without
+		// this the pane keeps showing the snapshot it was opened with, so
+		// Metrics would still read (none) however long traffic ran.
+		if m.pane == panePluginDetail && m.detailPlugin != nil {
+			if p := m.livePipelinePlugin(m.detailPlugin); p != nil {
+				m.showPluginDetail(p)
+			}
+		}
 		return m, nil
 
 	case catalogLoadedMsg:

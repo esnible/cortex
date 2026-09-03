@@ -196,6 +196,19 @@ else
 	info "Cortex demo started (pid ${demo_pid}); couldn't confirm it's listening (install lsof or nc to verify). Logs: ${log}"
 fi
 info ""
+
+# tool-prune ships inert: the remove list is empty, so it does nothing until a
+# name is added. That empty list is the guard — on_error is enforce, because the
+# list is what gates the plugin. Offer the scan that fills it in. Only patch a config
+# that already exists, so a first run never rewrites a file it just created
+# behind the user's back -- print the command instead and let them look first.
+demo_cfg="${ca_dir}/demo.yaml"
+if [ -f "${demo_cfg}" ]; then
+	info "  Cut tool-manifest waste (fills the remove: list; hot-reloaded, no restart):"
+	info "    ${abctl_cmd} tools scan --write ${demo_cfg}"
+	info "  Then watch the Metrics section of tool-prune's pane in abctl."
+	info ""
+fi
 info "  Watch traffic:   ${abctl_cmd} --endpoint http://localhost:${DEMO_SESSION_PORT}"
 info "  Send traffic through it (e.g. Claude Code):"
 info "    HTTPS_PROXY=http://localhost:${DEMO_FORWARD_PORT} \\"

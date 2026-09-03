@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	"github.com/rossoctl/cortex/authbridge/cmd/abctl/cluster"
@@ -25,6 +26,19 @@ import (
 var version = "dev"
 
 func main() {
+	// Subcommand dispatch happens before flag.Parse: a non-flag first
+	// argument selects a subcommand, and anything else falls through to the
+	// terminal UI, preserving the original flags-only invocation.
+	if len(os.Args) > 1 && !strings.HasPrefix(os.Args[1], "-") {
+		switch os.Args[1] {
+		case "tools":
+			os.Exit(runTools(os.Args[2:], os.Stdout, os.Stderr))
+		default:
+			fmt.Fprintf(os.Stderr, "abctl: unknown subcommand %q (known: tools)\n", os.Args[1])
+			os.Exit(2)
+		}
+	}
+
 	endpoint := flag.String("endpoint", "",
 		"AuthBridge session API URL (e.g. http://localhost:9094). When omitted, abctl opens a Namespaces → Pods picker.")
 	showVersion := flag.Bool("version", false, "print version and exit")

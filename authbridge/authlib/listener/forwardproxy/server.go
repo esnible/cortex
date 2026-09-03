@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/rossoctl/cortex/authbridge/authlib/listener/httpx"
@@ -68,6 +69,22 @@ type Server struct {
 	SkipHosts *skiphost.Matcher
 
 	TLSBridge *tlsbridge.Engine // nil = disabled; set by caller after NewServer
+
+	// bufferedFallbackOnce keeps the SSE-buffered-path notice to one line per
+	// process; the condition is a supported chain shape, not an error.
+	bufferedFallbackOnce sync.Once
+
+	// Bridge-health counters. When the TLS bridge is enabled but the client
+	// does not trust its CA, every HTTPS request opens a CONNECT tunnel and
+	// nothing is ever decrypted: the pipeline sees opaque tunnels, every
+	// body-reading plugin no-ops, and the proxy looks configured but inert.
+	// Nothing errors, so the only symptom is silence. These count the two
+	// outcomes so the listener can say so out loud.
+	tunnelsOpened   atomic.Uint64
+	bridgeAttempts  atomic.Uint64
+	bridgedRequests atomic.Uint64
+	bridgeWarnOnce  sync.Once
+	bridgeWarned    atomic.Bool
 }
 
 // MTLSOptions configures outbound mTLS for the forward proxy. When
@@ -211,6 +228,9 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 // they are origin-form (the caller sets r.URL.Scheme/Host) and must re-originate
 // via the dedicated upstream client, never the mesh-mTLS s.Client.
 func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, isBridge bool) {
+	if isBridge {
+		s.bridgedRequests.Add(1)
+	}
 	pctx := &pipeline.Context{
 		Direction: pipeline.Outbound,
 		Method:    r.Method,
@@ -252,7 +272,7 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, isBridge 
 		}()
 	}
 
-	if !skipped && s.OutboundPipeline.NeedsBody() && r.Body != nil {
+	if !skipped && s.OutboundPipeline.NeedsRequestBody() && r.Body != nil {
 		r.Body = http.MaxBytesReader(w, r.Body, maxBodySize)
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
@@ -305,6 +325,7 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, isBridge 
 			At:          time.Now(),
 			Direction:   pipeline.Outbound,
 			Phase:       pipeline.SessionRequest,
+			RequestID:   pctx.RequestID(),
 			MCP:         pipeline.SnapshotMCP(pctx.Extensions.MCP),
 			Inference:   pipeline.SnapshotInference(pctx.Extensions.Inference),
 			Invocations: pipeline.SnapshotInvocations(pctx.Extensions.Invocations, pipeline.InvocationPhaseRequest),
@@ -352,7 +373,7 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, isBridge 
 		r.Header[k] = append([]string(nil), vv...) // set / overwrite
 	}
 
-	// If a WritesBody plugin rewrote pctx.Body, ship the new bytes
+	// If a WritesRequestBody plugin rewrote pctx.Body, ship the new bytes
 	// upstream and clear Content-Encoding (see forwardproxy response
 	// path for the rationale).
 	if pctx.BodyMutated() {
@@ -400,14 +421,21 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, isBridge 
 		// response (the client Accepts both), so the same tool may return
 		// JSON on one call and SSE on the next. Decide here rather than
 		// negotiating, and don't take the streaming path when a plugin
-		// declares WritesBody (mutating a body we've already started
+		// declares WritesRequestBody (mutating a body we've already started
 		// forwarding is incompatible with streaming) — fall back to
 		// buffered with a warning log instead.
 		if isEventStream(resp.Header.Get("Content-Type")) && resp.Body != nil {
-			if s.OutboundPipeline.WritesBody() {
-				// A body mutator needs the whole body to rewrite it, so it
-				// can't stream — fall back to the buffered path with a warning.
-				slog.Warn("forward-proxy: text/event-stream response with WritesBody plugin — falling back to buffered path", "host", r.Host)
+			if s.OutboundPipeline.WritesResponseBody() {
+				// A response mutator needs the whole response to rewrite it, so
+				// it can't stream — fall back to the buffered path with a warning.
+				// A request-only mutator does NOT land here: it never touches
+				// these bytes, so the relay stays incremental.
+				// Once, not per response: a response mutator on an SSE chain is a
+				// supported configuration (cpex, sparc), not a misconfiguration, so
+				// warning every request is log spam at request rate.
+				s.bufferedFallbackOnce.Do(func() {
+					slog.Info("forward-proxy: text/event-stream responses will use the buffered path — a WritesResponseBody plugin is in the chain", "host", r.Host)
+				})
 			} else if s.OutboundPipeline.HasStreamingResponders() {
 				// Streaming-aware plugins (inference-parser, a2a-parser) parse
 				// each SSE frame; handleStreamingResponse re-frames via sseframe.
@@ -419,18 +447,20 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, isBridge 
 				// would drop the event:/id:/retry: lines that generic SSE
 				// clients (e.g. an MCP Streamable HTTP client) depend on. Fixes #642.
 				//
-				// A plugin that declares ReadsBody (but not WritesBody, and is
+				// A plugin that declares ReadsBody (but not WritesRequestBody, and is
 				// not a StreamingResponder) also lands here, and its OnResponse
 				// runs against an empty pctx.ResponseBody: streamPassthrough
 				// forwards the stream without buffering it. We deliberately don't
 				// buffer to satisfy such a plugin — that would reintroduce the
 				// #642 timeout on a live stream. A plugin that must inspect a
 				// streamed body should implement StreamingResponder. Warn
-				// (mirroring the WritesBody fallback above) so the
+				// (mirroring the WritesRequestBody fallback above) so the
 				// misconfiguration surfaces instead of the plugin silently seeing
-				// no body. WritesBody is already false in this branch, so
-				// NeedsBody() here implies ReadsBody.
-				if s.OutboundPipeline.NeedsBody() {
+				// no body. Reaching this branch only rules out WritesResponseBody and
+				// HasStreamingResponders — a request-only mutator can still be here —
+				// so ask about the response side specifically rather than asserting
+				// what NeedsBody implies.
+				if s.OutboundPipeline.NeedsResponseBody() {
 					slog.Warn("forward-proxy: text/event-stream response with a ReadsBody plugin that is not a StreamingResponder — streaming byte-for-byte; its OnResponse will see an empty body (implement StreamingResponder to inspect a streamed body)", "host", r.Host)
 				}
 				s.streamPassthrough(w, r, resp, pctx)
@@ -438,7 +468,7 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, isBridge 
 			}
 		}
 
-		if s.OutboundPipeline.NeedsBody() && resp.Body != nil {
+		if s.OutboundPipeline.NeedsResponseBody() && resp.Body != nil {
 			respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxBodySize+1))
 			if err != nil {
 				slog.Warn("forward-proxy: response body read error", "host", r.Host, "error", err)
@@ -531,6 +561,11 @@ func (s *Server) bridgeServe(client net.Conn, authority, host string) bool {
 	if err != nil {
 		s.TLSBridge.Skip.Add(host) // pinned client → its retry will passthrough
 		slog.Warn("tls-bridge passthrough", "host", host, "reason", "handshake-fail", "error", err)
+		// Proof the client doesn't trust the CA. Warn now with the fix, because
+		// Skip.Add above means this host never reaches noteBridgeAttempt again.
+		if s.bridgedRequests.Load() == 0 {
+			s.noteBridgeHandshakeFailure()
+		}
 		return true // conn is dead post-forge; nothing left to tunnel
 	}
 
@@ -568,6 +603,7 @@ func (s *Server) recordOutboundResponseEvent(pctx *pipeline.Context, statusCode 
 		At:          time.Now(),
 		Direction:   pipeline.Outbound,
 		Phase:       pipeline.SessionResponse,
+		RequestID:   pctx.RequestID(),
 		MCP:         pipeline.SnapshotMCP(pctx.Extensions.MCP),
 		Inference:   pipeline.SnapshotInference(pctx.Extensions.Inference),
 		Invocations: pipeline.SnapshotInvocations(pctx.Extensions.Invocations, pipeline.InvocationPhaseResponse),
@@ -880,6 +916,7 @@ func (s *Server) recordOutboundReject(pctx *pipeline.Context, action pipeline.Ac
 		At:          time.Now(),
 		Direction:   pipeline.Outbound,
 		Phase:       pipeline.SessionDenied,
+		RequestID:   pctx.RequestID(),
 		Invocations: pipeline.SnapshotInvocations(pctx.Extensions.Invocations, pipeline.InvocationPhaseRequest),
 		Host:        pctx.Host,
 		StatusCode:  status,
@@ -911,6 +948,7 @@ const connectDialTimeout = 30 * time.Second
 // trust path. CONNECT targets are opaque externals (LiteMaaS, Bedrock,
 // GitHub API, etc.) where the agent's existing TLS is the right answer.
 func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
+	s.noteTunnel()
 	pctx := &pipeline.Context{
 		Direction: pipeline.Outbound,
 		Method:    r.Method, // always "CONNECT" here, but populated for parity with handleRequest
@@ -1032,6 +1070,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		key := hostOnly(r.Host)
 		if !s.TLSBridge.Skip.Contains(key) {
 			if v, _ := s.TLSBridge.Decision.Classify(key, portOf(r.Host), first); v == tlsbridge.Terminate {
+				s.noteBridgeAttempt()
 				_ = upstream.Close() // bridgeServe dials its own verified upstream
 				if s.bridgeServe(clientConn, authority, key) {
 					return
@@ -1220,3 +1259,68 @@ func portOf(authority string) int {
 	}
 	return 443
 }
+
+// tunnelWarnThreshold is how many tunnels may open with nothing decrypted
+// before the listener speaks up. A handful is normal — passthrough hosts, a
+// non-HTTPS CONNECT, the first request racing startup — so warning on the
+// first one would cry wolf. By this many, with zero bridged requests, the
+// client is not trusting the CA.
+const tunnelWarnThreshold = 5
+
+// noteTunnel counts a CONNECT tunnel. It deliberately does NOT warn: a CONNECT
+// says nothing about bridge health yet, because the destination may be in
+// TLSBridge.Skip or classified as passthrough on purpose. Warning here counted
+// intentional opaque tunnels as evidence of a broken CA — and because the
+// warning is once-only, those false positives then masked the real failure when
+// it happened later. The warning lives on the bridge-eligible path instead.
+func (s *Server) noteTunnel() { s.tunnelsOpened.Add(1) }
+
+// noteBridgeAttempt counts a CONNECT that classification chose to terminate, and
+// warns once if the bridge has been asked to decrypt this many times and never
+// managed it.
+//
+// This is the failure that looks like a bug in whatever plugin you are testing:
+// tool-prune, the parsers and every body reader correctly do nothing, because
+// there is no plaintext to act on. Naming the trust anchor turns a silent dead
+// end into a one-line fix.
+func (s *Server) noteBridgeAttempt() {
+	n := s.bridgeAttempts.Add(1)
+	if s.TLSBridge == nil || n < tunnelWarnThreshold || s.bridgedRequests.Load() > 0 {
+		return
+	}
+	s.warnBridgeUnused("bridge_attempts", n, "the client does not trust the bridge CA")
+}
+
+// noteBridgeHandshakeFailure reports the unambiguous case: the client refused the
+// forged certificate. Unlike the attempt threshold this needs no accumulation —
+// one refusal already proves the trust anchor is not installed. It matters that
+// this path warns, because a refusal adds the host to Skip, so later requests
+// never reach noteBridgeAttempt and the threshold alone would never be crossed.
+func (s *Server) noteBridgeHandshakeFailure() {
+	s.warnBridgeUnused("bridge_attempts", s.bridgeAttempts.Load(),
+		"the client rejected the bridge certificate, so it does not trust the bridge CA")
+}
+
+func (s *Server) warnBridgeUnused(countKey string, count uint64, cause string) {
+	s.bridgeWarnOnce.Do(func() {
+		s.bridgeWarned.Store(true)
+		slog.Warn("tls-bridge: enabled but nothing has been decrypted — every request is tunnelling through opaquely, so body-reading plugins (parsers, tool-prune) cannot act",
+			countKey, count,
+			"tunnels_opened", s.tunnelsOpened.Load(),
+			"bridged_requests", 0,
+			"likely_cause", cause,
+			"fix", "point the client at the trust anchor, e.g. NODE_EXTRA_CA_CERTS="+s.caFileHint())
+	})
+}
+
+func (s *Server) caFileHint() string {
+	if s.TLSBridge != nil && s.TLSBridge.CAFile != "" {
+		return s.TLSBridge.CAFile
+	}
+	return "<ca_dir>/ca.crt"
+}
+
+// warnFired reports whether the bridge-health warning has already been emitted.
+// Exists for tests: sync.Once has no public "has it run" query, and asserting
+// on log output would couple the test to the message text.
+func (s *Server) warnFired() bool { return s.bridgeWarned.Load() }
