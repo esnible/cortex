@@ -167,17 +167,31 @@ gross figure converges on the net one, because the re-warm is paid once.
 **Dollars work out of the box.** The plugin ships a rate table measured from the
 rossoctl LiteLLM gateway, so `$ saved` appears with no configuration:
 
-| model | input | cache write (1.25x) | cache read (0.10x) |
+| pattern | input | cache write (1.25x) | cache read (0.10x) |
 |---|---|---|---|
-| `claude-opus-5`, `aws/claude-opus-5` | $3.80/Mtok | $4.75/Mtok | $0.38/Mtok |
-| `aws/claude-sonnet-5` | $1.52/Mtok | $1.90/Mtok | $0.152/Mtok |
-| `aws/claude-haiku-4-5`, `claude-haiku-4-5-20251001` | $0.76/Mtok | $0.95/Mtok | $0.076/Mtok |
+| `*claude-opus-*` | $3.80/Mtok | $4.75/Mtok | $0.38/Mtok |
+| `*claude-sonnet-*` | $1.52/Mtok | $1.90/Mtok | $0.152/Mtok |
+| `*claude-haiku-*` | $0.76/Mtok | $0.95/Mtok | $0.076/Mtok |
 
 Rates are keyed **per model** because they differ far more than the tiers do —
 5x across this family — so a single flat rate would misprice the saving by that
 factor depending on which model served the request. Each request is priced at its
 own model's rate and the dollars accumulated, never a blended token total
 multiplied by one number.
+
+Keys are **globs, and the built-ins are keyed by family rather than by version**,
+which is what stops a model rename from becoming a code change. Model names churn
+— opus 4.6, 4.7, 4.8, 5 — and a table of exact versions would go stale on every
+release and need a rebuild to fix, which is not something an operator can be
+asked to do. One pattern per family absorbs the churn and also covers provider
+prefixes (`aws/claude-opus-5`) and dated suffixes
+(`claude-haiku-4-5-20251001`) without separate entries.
+
+The tradeoff, stated plainly: this assumes a family bills at one rate. That has
+held across the Claude versions measured. If a future version differs, pin it —
+an exact key always beats a pattern, so `claude-opus-6:` overrides
+`*claude-opus-*` for that one model and leaves the family default doing its job
+for the rest.
 
 Any figure derived from these carries `default rates — set pricing.<model> to use
 yours` in its note, because they are a starting point rather than a fact about
@@ -205,6 +219,21 @@ model outright:
 Model keys match what the parser records (`Extensions.Inference.Model`) and are
 matched case-insensitively, since gateways vary in how they echo the name and a
 case mismatch would silently unprice the traffic.
+
+Config keys may be globs too (`*`, `?`, `[...]` — `gobwas/glob` with no separator,
+so `*` spans the `-` and `/` in a model name). Resolution is deliberately ordered
+so the more specific statement wins:
+
+1. exact key in your `pricing`
+2. glob in your `pricing` — **longest pattern first**, so `*claude-opus-4-8*`
+   beats `*claude-opus-*` deterministically rather than by map iteration luck
+3. built-in family pattern
+4. the flat `input_cost_per_token` fallback
+5. unpriced
+
+An invalid pattern fails startup with the offending key named, rather than
+silently dropping to unpriced — a typo'd glob and a genuinely unknown model
+should not look the same in the readout.
 
 A model with no entry and no fallback is **counted, not guessed**: the readout
 grows a `requests unpriced` row naming the models, so an incomplete table shows

@@ -64,6 +64,11 @@ type config struct {
 
 	// pricing is Pricing with keys lower-cased; built by applyDefaults.
 	pricing map[string]modelRates `json:"-"`
+	// pricingGlobs are the Pricing keys containing glob metacharacters,
+	// compiled in match order — the mechanism that makes a version bump need
+	// no edit anywhere.
+	pricingGlobs   []patternRates `json:"-"`
+	pricingGlobErr error          `json:"-"`
 
 	// The flat fields are the fallback for models absent from Pricing. Names and
 	// semantics match litellm-budget-track. All optional; with nothing set no
@@ -126,16 +131,22 @@ const (
 // per model without deleting anything.
 func (c *config) ratesFor(model string) (modelRates, rateSource) {
 	key := strings.ToLower(model)
+	// Exact config key first, so an operator can pin one version even when a
+	// broader pattern would also match it.
 	if r, ok := c.pricing[key]; ok && r.set() {
 		return r, rateConfigured
 	}
-	// The built-in table comes BEFORE the flat fallback. The flat fields are
-	// documented as covering "models absent from pricing", and a model in the
-	// built-in table is not absent — letting one flat input rate shadow every
-	// per-model default would reintroduce exactly the flat-rate mispricing the
-	// per-model table exists to avoid, and silently, since the figure would then
-	// claim to be configured.
-	if r, ok := defaultPricing[key]; ok {
+	// Then a config glob. This is what lets a model version bump need no edit at
+	// all: one "*claude-opus-*" entry covers every opus release.
+	if r, ok := lookupPattern(c.pricingGlobs, key); ok {
+		return r, rateConfigured
+	}
+	// Then the built-in family patterns — before the flat fallback, because the
+	// flat fields are documented as covering models "absent from pricing", and a
+	// model the built-in table knows is not absent. Letting one flat rate shadow
+	// every family default would reintroduce flat-rate mispricing, silently, and
+	// the figure would claim to be operator-configured.
+	if r, ok := lookupPattern(defaultPatterns, key); ok {
 		return r, rateDefault
 	}
 	fallback := modelRates{
@@ -157,9 +168,17 @@ func (c *config) applyDefaults() {
 	// without allocating per request. Gateways vary in how they echo model
 	// names, and a case mismatch would silently unprice the traffic.
 	c.pricing = make(map[string]modelRates, len(c.Pricing))
+	globs := map[string]modelRates{}
 	for k, v := range c.Pricing {
-		c.pricing[strings.ToLower(k)] = v
+		lk := strings.ToLower(k)
+		if strings.ContainsAny(lk, "*?[") {
+			globs[lk] = v
+			continue
+		}
+		c.pricing[lk] = v
 	}
+	// A bad glob is surfaced by validate(), not silently dropped.
+	c.pricingGlobs, c.pricingGlobErr = compilePatterns(globs)
 }
 
 // ToolPrune is the plugin. Counters live in metrics, guarded by its own mutex;
@@ -213,6 +232,9 @@ func (p *ToolPrune) Configure(raw json.RawMessage) error {
 		}
 	}
 	c.applyDefaults()
+	if c.pricingGlobErr != nil {
+		return fmt.Errorf("tool-prune config: invalid pricing pattern: %w", c.pricingGlobErr)
+	}
 
 	p.cfg = c
 	p.raw = raw

@@ -1,65 +1,104 @@
 package toolprune
 
-// defaultPricing holds per-token rates for the models seen on the rossoctl
-// LiteLLM gateway, measured from its own x-litellm-response-cost headers:
-// send two non-streaming requests of differing prompt length and difference
-// them, rate = Δcost / Δinput_tokens; the cache tiers were obtained the same
-// way with a cache_control block sent twice.
+import (
+	"sort"
+
+	"github.com/gobwas/glob"
+)
+
+// patternRates is one pricing entry whose key may be a glob.
+type patternRates struct {
+	pattern string
+	glob    glob.Glob
+	rates   modelRates
+}
+
+// defaultPatterns holds per-token rates for the Claude families seen on the
+// rossoctl LiteLLM gateway, measured from its own x-litellm-response-cost
+// headers: send two non-streaming requests of differing prompt length and
+// difference them, rate = Δcost / Δinput_tokens; the cache tiers were obtained
+// the same way with a cache_control block sent twice.
 //
-// These exist so `$ saved` works with no configuration, which is the difference
-// between a number an operator sees and one they never get around to enabling.
-// They are a starting point, not a fact about your account:
+// Keyed by FAMILY, not by version. Model names churn — opus 4.6, 4.7, 4.8, 5 —
+// and a table of exact versions means a code change and a rebuild every time a
+// provider ships one, which is not a thing an operator can be asked to do. One
+// pattern per family survives version bumps, and matches provider prefixes
+// (aws/, azure/) and dated suffixes (-20251001) alike.
+//
+// The tradeoff is stated plainly: this assumes a family bills at one rate. That
+// has held across the Claude versions measured, but if a version ever differs,
+// pin it with an exact `pricing:` key in config — exact always beats a pattern.
+//
+// These exist so `$ saved` works with no configuration. They are a starting
+// point, not a fact about your account:
 //
 //   - Rates are gateway-specific. This gateway bills well below vendor list, so
 //     a deployment talking straight to Anthropic pays more and these
 //     UNDERSTATE its saving — by roughly 4x on the input tier at the time of
-//     measurement. That is the common case for a laptop install, so the
-//     caveat travels with every figure rather than living only here.
+//     measurement. That is the common case for a laptop install, so the caveat
+//     travels with every figure rather than living only here.
 //   - Rates change. Nothing here refreshes them.
 //
-// A figure derived from these is therefore labelled as coming from default
-// rates wherever it is reported, so it cannot be mistaken for one measured on
-// the operator's own account. Any `pricing` entry in config overrides the
-// matching model outright.
-//
-// Keys are lower-case; lookup folds the observed model name the same way.
-var defaultPricing = map[string]modelRates{
+// Any `pricing` entry in config overrides the matching model.
+var defaultPatterns = mustCompilePatterns(map[string]modelRates{
 	// input 1.00x / cache write 1.25x / cache read 0.10x
-	"claude-opus-5": {
+	"*claude-opus-*": {
 		InputCostPerToken:      0.0000038,
 		CacheWriteCostPerToken: 0.00000475,
 		CacheReadCostPerToken:  0.00000038,
 	},
-	"aws/claude-opus-5": {
-		InputCostPerToken:      0.0000038,
-		CacheWriteCostPerToken: 0.00000475,
-		CacheReadCostPerToken:  0.00000038,
-	},
-	"claude-sonnet-5": {
+	"*claude-sonnet-*": {
 		InputCostPerToken:      0.00000152,
 		CacheWriteCostPerToken: 0.0000019,
 		CacheReadCostPerToken:  0.000000152,
 	},
-	"claude-haiku-4-5": {
+	"*claude-haiku-*": {
 		InputCostPerToken:      0.00000076,
 		CacheWriteCostPerToken: 0.00000095,
 		CacheReadCostPerToken:  0.000000076,
 	},
-	"aws/claude-sonnet-5": {
-		InputCostPerToken:      0.00000152,
-		CacheWriteCostPerToken: 0.0000019,
-		CacheReadCostPerToken:  0.000000152,
-	},
-	"aws/claude-haiku-4-5": {
-		InputCostPerToken:      0.00000076,
-		CacheWriteCostPerToken: 0.00000095,
-		CacheReadCostPerToken:  0.000000076,
-	},
-	"claude-haiku-4-5-20251001": {
-		InputCostPerToken:      0.00000076,
-		CacheWriteCostPerToken: 0.00000095,
-		CacheReadCostPerToken:  0.000000076,
-	},
+})
+
+// compilePatterns compiles glob keys into match order. No separator is passed to
+// glob.Compile: model names are delimited by "-" and "/", so "*" must span both
+// — unlike the host globs elsewhere in authlib, which are "."-delimited.
+//
+// Sorted longest-pattern-first so the most specific glob wins deterministically
+// when two match: "*claude-opus-4-8*" beats "*claude-opus-*".
+func compilePatterns(in map[string]modelRates) ([]patternRates, error) {
+	out := make([]patternRates, 0, len(in))
+	for pat, r := range in {
+		g, err := glob.Compile(pat)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, patternRates{pattern: pat, glob: g, rates: r})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if len(out[i].pattern) != len(out[j].pattern) {
+			return len(out[i].pattern) > len(out[j].pattern)
+		}
+		return out[i].pattern < out[j].pattern
+	})
+	return out, nil
+}
+
+func mustCompilePatterns(in map[string]modelRates) []patternRates {
+	out, err := compilePatterns(in)
+	if err != nil {
+		panic("toolprune: invalid built-in pricing pattern: " + err.Error())
+	}
+	return out
+}
+
+// lookupPattern returns the rates for the first pattern matching model.
+func lookupPattern(pats []patternRates, model string) (modelRates, bool) {
+	for _, p := range pats {
+		if p.glob.Match(model) && p.rates.set() {
+			return p.rates, true
+		}
+	}
+	return modelRates{}, false
 }
 
 func (s rateSource) String() string {

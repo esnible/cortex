@@ -1008,3 +1008,110 @@ func TestMetrics_DollarRowsDiscloseTheyAreGross(t *testing.T) {
 		}
 	}
 }
+
+// TestPricingPatternsCoverRealModels pins the pattern keys against the actual
+// model list the rossoctl LiteLLM gateway serves, including provider prefixes
+// and dated suffixes. The point of this test is the regression it prevents: a
+// provider version bump must not silently drop a family to unpriced.
+func TestPricingPatternsCoverRealModels(t *testing.T) {
+	cases := []struct {
+		model string
+		want  float64 // input rate
+	}{
+		// opus family, across versions and prefixes
+		{"claude-opus-5", 0.0000038},
+		{"claude-opus-4-8", 0.0000038},
+		{"claude-opus-4-7", 0.0000038},
+		{"claude-opus-4-6", 0.0000038},
+		{"aws/claude-opus-5", 0.0000038},
+		{"aws/claude-opus-4-7", 0.0000038},
+		// a version that does not exist yet must still price
+		{"claude-opus-9", 0.0000038},
+		{"claude-opus-5-20260901", 0.0000038},
+		// sonnet
+		{"claude-sonnet-5", 0.00000152},
+		{"claude-sonnet-4-6", 0.00000152},
+		{"aws/claude-sonnet-4-5", 0.00000152},
+		{"claude-sonnet-4-5-20250929", 0.00000152},
+		// haiku
+		{"claude-haiku-4-5", 0.00000076},
+		{"aws/claude-haiku-4-5", 0.00000076},
+		{"claude-haiku-4-5-20251001", 0.00000076},
+	}
+	c := &config{}
+	c.applyDefaults()
+	for _, tc := range cases {
+		rates, src := c.ratesFor(tc.model)
+		if src != rateDefault {
+			t.Errorf("%s: source = %v, want rateDefault", tc.model, src)
+			continue
+		}
+		if rates.InputCostPerToken != tc.want {
+			t.Errorf("%s: input rate = %g, want %g", tc.model, rates.InputCostPerToken, tc.want)
+		}
+	}
+	// A non-Claude model has no built-in rate and must report so rather than
+	// borrowing a Claude family's numbers.
+	if _, src := c.ratesFor("gpt-4o"); src != rateNone {
+		t.Errorf("gpt-4o: source = %v, want rateNone", src)
+	}
+}
+
+// TestPricingPatternPrecedence covers the resolution order that lets an operator
+// pin one version without giving up family coverage.
+func TestPricingPatternPrecedence(t *testing.T) {
+	c := &config{Pricing: map[string]modelRates{
+		// exact key: must win over both globs below
+		"claude-opus-5": {InputCostPerToken: 1},
+		// broad glob
+		"*claude-opus-*": {InputCostPerToken: 2},
+		// narrower glob: longer pattern wins among globs
+		"*claude-opus-4-8*": {InputCostPerToken: 3},
+	}}
+	c.applyDefaults()
+	if c.pricingGlobErr != nil {
+		t.Fatalf("compile: %v", c.pricingGlobErr)
+	}
+	for _, tc := range []struct {
+		model string
+		want  float64
+		src   rateSource
+	}{
+		{"claude-opus-5", 1, rateConfigured},   // exact beats glob
+		{"claude-opus-4-8", 3, rateConfigured}, // longest glob wins
+		{"claude-opus-4-6", 2, rateConfigured}, // broad glob
+		// built-in pattern still covers a family the operator said nothing about
+		{"claude-haiku-4-5", 0.00000076, rateDefault},
+	} {
+		rates, src := c.ratesFor(tc.model)
+		if src != tc.src || rates.InputCostPerToken != tc.want {
+			t.Errorf("%s: got (%g, %v), want (%g, %v)",
+				tc.model, rates.InputCostPerToken, src, tc.want, tc.src)
+		}
+	}
+}
+
+// TestPricingPatternMatchesCase guards the lowercasing on both sides: config
+// keys and the model name off the wire.
+func TestPricingPatternMatchesCase(t *testing.T) {
+	c := &config{Pricing: map[string]modelRates{
+		"*CLAUDE-OPUS-*": {InputCostPerToken: 7},
+	}}
+	c.applyDefaults()
+	rates, src := c.ratesFor("AWS/Claude-Opus-5")
+	if src != rateConfigured || rates.InputCostPerToken != 7 {
+		t.Errorf("got (%g, %v), want (7, configured)", rates.InputCostPerToken, src)
+	}
+}
+
+// TestPricingBadPatternRejected: a malformed glob must fail Configure loudly,
+// not degrade to unpriced with no explanation.
+func TestPricingBadPatternRejected(t *testing.T) {
+	c := &config{Pricing: map[string]modelRates{
+		"*claude-[opus": {InputCostPerToken: 1},
+	}}
+	c.applyDefaults()
+	if c.pricingGlobErr == nil {
+		t.Fatal("want a compile error for an unterminated character class")
+	}
+}
