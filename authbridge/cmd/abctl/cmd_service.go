@@ -30,6 +30,10 @@ const (
 	// maxLogBytes bounds one generation of proxy.log; rotateLog keeps one previous
 	// file, so the pair tops out near twice this.
 	maxLogBytes = 8 << 20
+	// exitNoSupervisor means this environment cannot manage services at all — a
+	// restricted sandbox, or a shell without a usable launchd session. Distinct from a
+	// failure, so install.sh can offer the unsupervised path instead of a dead end.
+	exitNoSupervisor = 4
 	// serviceBootoutTimeout bounds the wait for a previous job to leave the domain.
 	// Longer than the supervisor's own teardown: it SIGTERMs the proxy, allows its 15s
 	// graceful shutdown, then insists at 20s.
@@ -262,7 +266,9 @@ func serviceInstall(p servicePaths, yes bool, stdout, stderr io.Writer) int {
 	// supervised one would lose the race and crash-loop while the hand-started one
 	// kept serving — a break that only surfaces at the next reboot.
 	adopt := runningPID(p.pidFile)
-	if adopt > 0 {
+	if adopt > 0 && !yes {
+		// Preview only. The connection count is printed once, at the point of action
+		// below, so it cannot be announced for a run that turns out to change nothing.
 		fmt.Fprintf(stdout, "A Cortex you started by hand is running (pid %d). It will be stopped\n"+
 			"so the supervised one can take the ports.\n\n", adopt)
 	}
@@ -274,10 +280,35 @@ func serviceInstall(p servicePaths, yes bool, stdout, stderr io.Writer) int {
 		return exitDeclined
 	}
 
+	// Probed before anything is written. Without this the first sign of trouble was
+	// launchctl's "Bootstrap failed: 5: Input/output error" after the unit was already on
+	// disk — a message that names neither the cause nor a way forward. Reported from a
+	// restricted sandbox environment.
+	if ok, why := launchdUsable(); !ok {
+		fmt.Fprintf(stderr, "abctl: this environment cannot manage %ss (%s).\n\n"+
+			"  Cortex still runs, just not supervised — start it yourself:\n"+
+			"    %s --local\n\n"+
+			"  It will not restart after a crash or come back at login while running that\n"+
+			"  way. To stop it: kill that process.\n", supervisorName(), why, p.binary)
+		return exitNoSupervisor
+	}
+
 	if _, serr := os.Stat(p.binary); serr != nil {
 		fmt.Fprintf(stderr, "abctl: authbridge-proxy not found at %s; install it first\n", p.binary)
 		return 1
 	}
+	// launchd loads the LOGIN home's ~/Library/LaunchAgents, taken from the user
+	// record — not $HOME. With $HOME pointed at a project directory (sandboxes do this)
+	// the unit is written somewhere launchd will never scan, so bootstrap succeeds and
+	// "comes back at login" is quietly false. Warn rather than refuse: it is a real way
+	// to run, just not a persistent one.
+	if lh := loginHome(); lh != "" && lh != p.home {
+		fmt.Fprintf(stderr, "abctl: $HOME is %s but your login home is %s.\n"+
+			"  The unit goes to $HOME/Library/LaunchAgents, which launchd does not scan at\n"+
+			"  login, so Cortex will NOT come back after a logout. Crash recovery still\n"+
+			"  works while you are logged in.\n\n", p.home, lh)
+	}
+
 	if p.configErr != nil {
 		fmt.Fprintf(stderr, "abctl: %s will not load, so a supervised proxy could not start:\n  %v\n"+
 			"  Fix it (or delete it and run: authbridge-proxy --local --write-config), then re-run.\n",
@@ -289,6 +320,7 @@ func serviceInstall(p servicePaths, yes bool, stdout, stderr io.Writer) int {
 	// older config up to date: the service starts it with --config, which honours
 	// listeners that --local skipped, so an unpinned transparent_proxy_addr would
 	// start binding every interface precisely now.
+	configChanged := false
 	if changed, mErr := migrateConfig(p.configFile, stdout); mErr != nil {
 		// Refuse only if continuing would actually expose something. A migration that
 		// fails on a config already bound to loopback costs nothing to skip; one that
@@ -305,11 +337,39 @@ func serviceInstall(p servicePaths, yes bool, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "abctl: could not update %s (%v); it already binds loopback only, continuing\n",
 			p.configFile, mErr)
 	} else if changed {
+		configChanged = true
 		// The paths were resolved from the pre-migration config, so anything the
 		// migration added — health_addr above all — is not in them yet. Without this
 		// the probe below is skipped for precisely the configs that were just fixed.
 		p.healthURL = resolveHealthURL(p.configFile)
 	}
+
+	// Nothing to do is a valid outcome, and the common one: this command is what the
+	// one-liner runs every time, including when everything is already current. Without
+	// this it went ahead with bootout + bootstrap, which restarts the proxy and cuts
+	// every attached Claude Code session — for no change at all. Re-running an installer
+	// should be free.
+	//
+	// Deliberately AFTER the migration: a config that still needs pins is a change, so
+	// it must not be short-circuited. `changed` above is false only when the config was
+	// already up to date.
+	if !configChanged && serviceIsCurrent(p) {
+		fmt.Fprintf(stdout, "Already current: %s is running under %s and healthy.\n"+
+			"  Nothing to change. Use `abctl service restart` to restart it anyway.\n",
+			filepath.Base(p.binary), supervisorName())
+		return 0
+	}
+
+	// Warned HERE, not earlier: past the no-op check we know a restart is really going
+	// to happen. Announcing "connections will be cut" and then changing nothing would be
+	// its own small lie, and it printed on every re-run.
+	//
+	// Replacing a running Cortex cuts whatever is talking to it and nothing on this side
+	// can soften that: HTTPS_PROXY is fixed in each Claude Code process's environment at
+	// startup, so a session cannot fall back to a direct connection and simply starts
+	// failing. That looked like a Cortex bug twice during development, to me, on my own
+	// machine.
+	reportSessionInterruption(p, stdout)
 
 	if adopt > 0 {
 		fmt.Fprintf(stdout, "Stopping pid %d...\n", adopt)
@@ -596,4 +656,81 @@ func isLoopbackHost(host string) bool {
 func fileExists(p string) bool {
 	fi, err := os.Stat(p)
 	return err == nil && !fi.IsDir()
+}
+
+// loginHome returns the home directory from the user record, or "" if it cannot be
+// determined. Deliberately not os.UserHomeDir, which returns $HOME — the value whose
+// trustworthiness is the question.
+func loginHome() string {
+	if runtime.GOOS != "darwin" {
+		return ""
+	}
+	u := os.Getenv("USER")
+	if u == "" {
+		out, err := exec.Command("id", "-un").Output()
+		if err != nil {
+			return ""
+		}
+		u = strings.TrimSpace(string(out))
+	}
+	out, err := exec.Command("dscl", ".", "-read", "/Users/"+u, "NFSHomeDirectory").Output()
+	if err != nil {
+		return ""
+	}
+	fields := strings.Fields(string(out))
+	if len(fields) < 2 {
+		return ""
+	}
+	return fields[len(fields)-1]
+}
+
+// reportSessionInterruption names how many clients a restart will disconnect.
+//
+// Nothing on this side can make it graceful: HTTPS_PROXY is baked into each client's
+// environment when it starts, so a running Claude Code has no way back to a direct
+// connection and just begins failing to connect. Saying "3 connections" turns that into
+// a five-second diagnosis instead of a bug report. Silent when there is nothing attached,
+// or when we cannot tell — a confident "0" would be worse than no number.
+func reportSessionInterruption(p servicePaths, stdout io.Writer) {
+	if n := establishedConns(p.forwardAddr); n > 0 {
+		fmt.Fprintf(stdout, "  %d connection(s) are attached and will be cut. A running Claude Code\n"+
+			"  cannot reconnect on its own — restart any session that starts failing.\n", n)
+	}
+}
+
+// serviceIsCurrent reports whether the installed service already matches what
+// serviceInstall would write, and is actually serving.
+//
+// Every clause is necessary, because each one is a way for "installed" to be a lie:
+// a unit written by a different abctl pins whatever binary THAT one chose; a unit naming
+// a different binary or config is stale; a job the supervisor does not report running is
+// the installed-but-dead state; and "loaded" is not "serving", which is where a bad
+// config hides.
+func serviceIsCurrent(p servicePaths) bool {
+	if !serviceInstalled(p) {
+		return false
+	}
+	if unitWriterVersion(p.unitFile) != version {
+		return false
+	}
+	unit, err := os.ReadFile(p.unitFile) //nolint:gosec // path we wrote
+	if err != nil {
+		return false
+	}
+	body := string(unit)
+	if !strings.Contains(body, p.binary) || !strings.Contains(body, p.configFile) {
+		return false
+	}
+	// On macOS the proxy must be supervised; a unit that lost --supervise would leave
+	// crashes unrecovered, which is the whole point of the feature.
+	if runtime.GOOS == "darwin" && !strings.Contains(body, "--supervise") {
+		return false
+	}
+	if running, _ := supervisorRunning(p); !running {
+		return false
+	}
+	if p.healthURL == "" {
+		return false // cannot confirm it is serving, so do not claim it is
+	}
+	return waitHealthy(p.healthURL, 2*time.Second)
 }

@@ -582,9 +582,59 @@ func waitBootedOut(target string, d time.Duration) bool {
 // teardown — the common case — stays silent.
 func waitBootedOutf(target string, d time.Duration, progress io.Writer) bool {
 	return waitGone(d, progress, func() bool {
-		// A non-zero exit from `launchctl print` means the label is no longer there.
-		return exec.Command("launchctl", "print", target).Run() != nil
+		gone, _ := labelGone(target)
+		return gone
 	})
+}
+
+// labelGone reports whether target is absent from its domain, and whether we could
+// tell at all.
+//
+// "Any non-zero exit means gone" was wrong, and wrong in the direction that hurts:
+// launchctl print exits 113 with "Could not find service" when the label really is
+// absent, but 125 ("Domain does not support specified action"), 64, or a permission
+// denial when it cannot see the domain — which happens in restricted sandboxes. Reading
+// those as "gone" made the code march into a bootstrap that then failed with a bare
+// EIO, and report the one state we had actually ruled out.
+func labelGone(target string) (gone, known bool) {
+	out, err := exec.Command("launchctl", "print", target).CombinedOutput()
+	if err == nil {
+		return false, true // present
+	}
+	if strings.Contains(string(out), "Could not find service") {
+		return true, true
+	}
+	var ee *exec.ExitError
+	if errors.As(err, &ee) && ee.ExitCode() == 113 {
+		return true, true
+	}
+	// Anything else: launchctl could not answer. Not gone, and not known.
+	return false, false
+}
+
+// launchdUsable reports whether this process can manage launchd jobs at all.
+//
+// Restricted environments — sandboxes, some CI, a shell without a full user session —
+// deny the launchd IPC that bootstrap needs. Probing the DOMAIN rather than our label
+// separates "cannot talk to launchd" from "our job is not loaded", so the failure can be
+// explained instead of surfacing as "Bootstrap failed: 5: Input/output error", which
+// names neither cause nor remedy.
+func launchdUsable() (bool, string) {
+	if runtime.GOOS != "darwin" {
+		return true, ""
+	}
+	if _, err := exec.LookPath("launchctl"); err != nil {
+		return false, "launchctl is not on PATH"
+	}
+	out, err := exec.Command("launchctl", "print", "gui/"+strconv.Itoa(os.Getuid())).CombinedOutput()
+	if err == nil {
+		return true, ""
+	}
+	first := strings.TrimSpace(strings.SplitN(string(out), "\n", 2)[0])
+	if first == "" {
+		first = err.Error()
+	}
+	return false, first
 }
 
 // waitGone polls gone() until it reports true, or d elapses.

@@ -58,6 +58,21 @@ BIN_DIR="${HOME}/.local/bin"
 # Every file Cortex writes for this user lives here: config, CA, keys, logs,
 # pidfiles. One directory to inspect, back up, or delete.
 CORTEX_DIR="${HOME}/.cortex"
+# PATH_MARKER identifies our block in a shell profile, so a re-run does not add a
+# second copy and a person can find what to delete.
+PATH_MARKER="# added by Cortex (rossoctl/cortex) — delete these two lines to undo"
+
+# installed_version prints the version of an already-installed binary, or nothing.
+#
+# Both binaries print "<name> vX.Y.Z"; the tag is the last field. Anything unexpected —
+# missing binary, a build that does not know --version, a quarantined binary that will
+# not run — prints nothing, which reads as "not this version" and re-installs. Erring
+# toward re-installing is right: a wrong skip leaves someone on an old build believing
+# they upgraded.
+installed_version() {
+	[ -x "${BIN_DIR}/$1" ] || return 0
+	"${BIN_DIR}/$1" --version 2>/dev/null | awk 'NR==1{print $NF}'
+}
 case "$(uname -s)" in
 	Darwin) SUPERVISOR_NAME="launchd user agent" ;;
 	*) SUPERVISOR_NAME="systemd user unit" ;;
@@ -311,6 +326,7 @@ if [ "${AUTHBRIDGE_SKIP_DOWNLOAD:-}" = "1" ]; then
 		[ -x "${BIN_DIR}/${b}" ] || die "AUTHBRIDGE_SKIP_DOWNLOAD=1 but ${BIN_DIR}/${b} is missing"
 	done
 	version="already installed"
+	skip_install=1
 	info "Using the binaries already in ${BIN_DIR}"
 else
 
@@ -337,6 +353,18 @@ base="https://github.com/${REPO}/releases/download/${version}"
 abctl_tgz="abctl_${version}_${os}_${arch}.tar.gz"
 proxy_tgz="authbridge-proxy_${version}_${os}_${arch}.tar.gz"
 
+# Already at this version? Then there is nothing to download, and nothing to
+# overwrite. Re-running the one-liner is how people upgrade, so it runs constantly
+# against installs that are already current — it should cost nothing and change
+# nothing. Both binaries must match: replacing one and not the other is the version
+# skew that put an older proxy in the launchd unit.
+if installed_version abctl | grep -qx "${version}" &&
+	installed_version authbridge-proxy | grep -qx "${version}"; then
+	info "Already at ${version} — not re-downloading."
+	skip_install=1
+fi
+
+if [ -z "${skip_install:-}" ]; then
 info "Downloading ${version} for ${os}/${arch}..."
 curl -fsSL "${base}/${abctl_tgz}" -o "${tmp}/${abctl_tgz}" || die "download failed: ${abctl_tgz}"
 curl -fsSL "${base}/${proxy_tgz}" -o "${tmp}/${proxy_tgz}" || die "download failed: ${proxy_tgz}"
@@ -403,7 +431,82 @@ fi
 
 rm -rf "$tmp"
 trap - EXIT
+fi # end of the skip-if-already-at-this-version guard
 fi # end of download block
+
+# offer_path_setup adds BIN_DIR to the shell profile, with consent.
+#
+# Warning and printing a line to paste was not enough: the first thing a real user hit
+# was `abctl: command not found`, before any of the actual bugs. An install that
+# succeeds and then cannot run the command it just told you to run is the worst first
+# impression available, and the most common one.
+#
+# Consent, a backup, and a guarded block, matching what `abctl claude-code enable` does
+# to settings.json — same pattern, no new concept. Declining keeps the old advice.
+offer_path_setup() {
+	_profile=""
+	case "$(basename "${SHELL:-}")" in
+		zsh) _profile="${HOME}/.zshrc" ;;
+		bash)
+			# bash reads .bash_profile for login shells on macOS and .bashrc elsewhere;
+			# .profile is read by both when the others are absent, so prefer whichever
+			# already exists rather than creating a file the shell may never read.
+			for _c in "${HOME}/.bash_profile" "${HOME}/.bashrc" "${HOME}/.profile"; do
+				[ -f "$_c" ] && _profile="$_c" && break
+			done
+			[ -n "${_profile}" ] || _profile="${HOME}/.bash_profile"
+			;;
+	esac
+
+	if [ -z "${_profile}" ]; then
+		# An unknown shell: we do not know which file it reads, and guessing would edit
+		# the wrong one.
+		warn "${BIN_DIR} is not on your PATH."
+		warn "Add it for future sessions:  export PATH=\"${BIN_DIR}:\$PATH\""
+		return 0
+	fi
+
+	# Already done by an earlier run.
+	if [ -f "${_profile}" ] && grep -q "${PATH_MARKER}" "${_profile}" 2>/dev/null; then
+		info "${BIN_DIR} is in ${_profile} but not in this shell yet. For this terminal:"
+		info "  export PATH=\"${BIN_DIR}:\$PATH\""
+		return 0
+	fi
+
+	info ""
+	info "${BIN_DIR} is not on your PATH, so \`abctl\` will not be found."
+	info "This adds two lines to ${_profile}:"
+	info "  ${PATH_MARKER}"
+	info "  export PATH=\"${BIN_DIR}:\$PATH\""
+	if [ -z "${ASSUME_YES}" ]; then
+		if [ ! -r /dev/tty ]; then
+			warn "no terminal to ask on; add it yourself:  export PATH=\"${BIN_DIR}:\$PATH\""
+			return 0
+		fi
+		printf 'Apply? [y/N] ' > /dev/tty
+		read -r _ans < /dev/tty || _ans=""
+		case "${_ans}" in
+			y | Y | yes | YES) ;;
+			*)
+				info "Not changed. For this terminal:  export PATH=\"${BIN_DIR}:\$PATH\""
+				return 0
+				;;
+		esac
+	fi
+
+	[ -f "${_profile}" ] && cp "${_profile}" "${_profile}.bak"
+	{
+		printf '\n%s\n' "${PATH_MARKER}"
+		# shellcheck disable=SC2016 # $PATH must stay literal: it is expanded by the
+		# shell at startup, not by this script now.
+		printf 'export PATH="%s:$PATH"\n' "${BIN_DIR}"
+	} >> "${_profile}" || {
+		warn "could not write ${_profile}; add it yourself:  export PATH=\"${BIN_DIR}:\$PATH\""
+		return 0
+	}
+	info "Added to ${_profile}. It applies to new terminals; for this one:"
+	info "  export PATH=\"${BIN_DIR}:\$PATH\""
+}
 
 # --- report ---
 proxy="${BIN_DIR}/authbridge-proxy"
@@ -413,13 +516,17 @@ case ":${PATH}:" in
 	*) abctl_cmd="${BIN_DIR}/abctl" proxy_cmd="$proxy" ;;
 esac
 
-info ""
-info "Installed abctl and authbridge-proxy to ${BIN_DIR}"
+# Both skip paths have already said what they did ("Already at <v>" or "Using the
+# binaries already in ..."), so saying "Installed" after them would be both redundant
+# and untrue.
+if [ -z "${skip_install:-}" ]; then
+	info ""
+	info "Installed abctl and authbridge-proxy to ${BIN_DIR}"
+fi
 case ":${PATH}:" in
 	*":${BIN_DIR}:"*) ;;
 	*)
-		warn "${BIN_DIR} is not on your PATH."
-		warn "Add it for future sessions:  export PATH=\"${BIN_DIR}:\$PATH\""
+		offer_path_setup
 		;;
 esac
 
@@ -489,12 +596,21 @@ set +e
 "${BIN_DIR}/abctl" service install --yes --proxy "${BIN_DIR}/authbridge-proxy"
 svc_status=$?
 set -e
-if [ "${svc_status}" != "0" ]; then
+# Exit 4 means the environment cannot manage services — a restricted sandbox, or a
+# shell without a usable launchd session. That is not a broken install, so it does not
+# get an error: abctl has already explained it and printed the command to run instead.
+# Reported from a real sandbox, where the only sign of trouble was launchctl's EIO.
+if [ "${svc_status}" = "4" ]; then
+	info ""
+	info "  Continuing without a service. Start Cortex in another terminal with the"
+	info "  command above, then come back and run \"${abctl_cmd}\"."
+	info ""
+elif [ "${svc_status}" != "0" ]; then
 	die "could not set up the service (exit ${svc_status}).
   Cortex is NOT running. Inspect the unit it would install with:
     \"${abctl_cmd}\" service install --print-unit
   or run the proxy in the foreground to see what it says:
-    \"${proxy_cmd}\" --local"
+    \"${BIN_DIR}/authbridge-proxy\" --local"
 fi
 
 # tool-prune is in the config but INERT: its remove list is empty, so it does
@@ -534,7 +650,14 @@ if [ -n "${WIRE_CLAUDE_CODE:-}" ]; then
 			info ""
 			info "  \"${abctl_cmd}\"                         watch traffic"
 			info "  \"${abctl_cmd}\" tools scan              propose unused tools to prune"
-			info "  \"${abctl_cmd}\" service stop            stop Cortex"
+			# `service stop` is meaningless where no service could be installed, so do
+			# not offer it there — the whole point of catching exit 4 is to stop handing
+			# people commands their environment cannot run.
+			if [ "${svc_status}" = "4" ]; then
+				info "  kill \$(pgrep -f authbridge-proxy)   stop Cortex (unsupervised)"
+			else
+				info "  \"${abctl_cmd}\" service stop            stop Cortex"
+			fi
 			info "  \"${abctl_cmd}\" claude-code disable     undo"
 			info ""
 			exit 0
