@@ -61,6 +61,7 @@ import (
 	"path"
 	"strings"
 	"sync/atomic"
+	"time"
 	"unicode/utf8"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -75,6 +76,7 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 
 	"github.com/rossoctl/cortex/authbridge/authlib/bypass"
+	"github.com/rossoctl/cortex/authbridge/authlib/config"
 	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
 	"github.com/rossoctl/cortex/authbridge/authlib/plugins"
 )
@@ -154,7 +156,13 @@ type LineageTelemetry struct {
 	conn        *grpc.ClientConn // OTLP gRPC connection; owned by us, closed on Shutdown
 	ready       atomic.Bool
 	propagator  propagation.TextMapPropagator
-	selfID      string // agent's own client ID for the lineage.self.id fact
+	// selfID is this workload's identity for the lineage.self.id fact. Written
+	// once, by Init or by the self_id_file poller it starts, and always before
+	// ready is stored; OnRequest reads it only after loading ready.
+	selfID string
+	// bgCancel stops the self_id_file poller Init starts when the file is not
+	// readable yet. Same shape as jwt-validation's audience_file poller.
+	bgCancel atomic.Pointer[context.CancelFunc]
 	// exportFailures counts batches the collector refused or never received.
 	// Export is asynchronous and the dial is lazy, so this — with the WARN
 	// exportObserver logs — is how an unreachable collector or a TLS chain
@@ -216,30 +224,43 @@ func (p *LineageTelemetry) Configure(raw json.RawMessage) error {
 }
 
 func (p *LineageTelemetry) Init(ctx context.Context) error {
-	// Resolve self identity for the lineage.self.id fact FIRST, before any
-	// exporter or tracer resource is allocated. Every span this plugin emits is
-	// a claim of the form "X did Y"; with no X there is no claim to make, so an
-	// unresolvable identity refuses to start rather than serving traffic under a
-	// plausible-but-wrong label ("no mechanism may guess", contract v1.3). Note
-	// the asymmetry with this file's other unknowns: a missing status, payload
-	// or parent anchor is a missing PART of a fact and degrades honestly
-	// (abandoned / NULL / parent.source=wire or none). Identity is the fact's subject —
-	// it has no degraded form, and a shared placeholder would collapse every
-	// unidentified pod onto one entity row (entity id = uuid5("{kind}:{self.id}"),
-	// and entities is upsert-only). Resolving it up front also means a refused
-	// identity leaks nothing: the gRPC client and batch-span-processor goroutine
-	// below are never created on that path.
-	if p.cfg.SelfID != "" {
+	// Resolve self identity for the lineage.self.id fact. Every span this
+	// plugin emits is a claim of the form "X did Y"; with no X there is no
+	// claim to make, so no span is ever emitted under an unresolved identity
+	// rather than under a plausible-but-wrong label ("no mechanism may guess",
+	// contract v1.3). Note the asymmetry with this file's other unknowns: a
+	// missing status, payload or parent anchor is a missing PART of a fact and
+	// degrades honestly (abandoned / NULL / parent.source=wire or none).
+	// Identity is the fact's subject — it has no degraded form, and a shared
+	// placeholder would collapse every unidentified pod onto one entity row
+	// (entity id = uuid5("{kind}:{self.id}"), and entities is upsert-only).
+	//
+	// Failing closed is scoped to the span, not the process. An Init error
+	// fails Pipeline.Start and the binary exits, every plugin in the chain
+	// with it — and self_id_file defaults to the operator-mounted Secret,
+	// which can land after the pod starts (the race jwt-validation polls
+	// through for its audience_file, the same path). So a file that is not
+	// readable yet, or is present but blank, leaves the plugin NOT ready:
+	// OnRequest skips every exchange — no span, no header written — while a
+	// goroutine re-reads the file and flips readiness once an identity
+	// appears. Only the unrecoverable shape is fatal: no identity source
+	// configured at all, which no amount of waiting fixes; that path returns
+	// before the gRPC client and batch-span-processor goroutine below exist,
+	// so a refused start leaks nothing.
+	var pending string // self_id_file left for the poller to resolve
+	switch {
+	case p.cfg.SelfID != "":
 		p.selfID = p.cfg.SelfID
-	} else if p.cfg.SelfIDFile != "" {
-		raw, err := os.ReadFile(p.cfg.SelfIDFile)
+	case p.cfg.SelfIDFile != "":
+		id, err := readIdentityFile(p.cfg.SelfIDFile)
 		if err != nil {
-			return fmt.Errorf("lineage-telemetry: no inline self_id and self_id_file unreadable: %w", err)
+			slog.Warn("lineage-telemetry: self_id_file not readable yet; every exchange is skipped until it is, Init polls in background",
+				"path", p.cfg.SelfIDFile, "error", err)
+			pending = p.cfg.SelfIDFile
 		}
-		p.selfID = strings.TrimSpace(string(raw))
-	}
-	if p.selfID == "" {
-		return fmt.Errorf("lineage-telemetry: self identity unresolved (empty self_id and self_id_file %q)", p.cfg.SelfIDFile)
+		p.selfID = id
+	default:
+		return errors.New("lineage-telemetry: no identity source: self_id and self_id_file are both empty")
 	}
 
 	endpoint := p.cfg.OTelEndpoint
@@ -317,9 +338,66 @@ func (p *LineageTelemetry) Init(ctx context.Context) error {
 	p.tp = newTracerProvider(&exportObserver{SpanExporter: exporter, failures: &p.exportFailures}, res)
 	p.tracer = p.tp.Tracer("authbridge/" + pluginName)
 
+	if pending != "" {
+		// Process-lifetime context, not Init's: Pipeline.Start's init budget
+		// bounds synchronous work, and the file may take longer than that.
+		bgCtx, cancel := context.WithCancel(context.Background())
+		p.bgCancel.Store(&cancel)
+		go p.awaitIdentity(bgCtx, pending, identityPollInterval)
+		slog.Info("lineage-telemetry: initialized, not ready until self_id_file resolves", "endpoint", endpoint, "self_id_file", pending)
+		return nil
+	}
 	p.ready.Store(true)
 	slog.Info("lineage-telemetry: initialized", "endpoint", endpoint, "self_id", p.selfID)
 	return nil
+}
+
+// identityPollInterval paces awaitIdentity. Package-scoped so tests can
+// shorten it; Init reads it once and hands the value to the goroutine.
+var identityPollInterval = 2 * time.Second
+
+// awaitIdentity is the background half of Init's identity resolution: it
+// re-reads self_id_file every interval until it yields an identity, then
+// flips readiness. The WARN is throttled to the 1st, 2nd, 4th, 8th… attempt
+// on the export-failure WARN's schedule (logExportFailure): a missing mount
+// is a long, steady condition, and the running attempt count is in every
+// line. Shutdown cancels ctx.
+func (p *LineageTelemetry) awaitIdentity(ctx context.Context, path string, every time.Duration) {
+	var attempts uint64
+	for {
+		select {
+		case <-ctx.Done():
+			slog.Debug("lineage-telemetry: self_id_file wait stopped", "path", path, "error", ctx.Err())
+			return
+		case <-time.After(every):
+		}
+		id, err := readIdentityFile(path)
+		if err == nil {
+			p.selfID = id
+			p.ready.Store(true)
+			slog.Info("lineage-telemetry: identity loaded from self_id_file; recording spans", "path", path, "self_id", id)
+			return
+		}
+		if attempts++; logExportFailure(attempts) {
+			slog.Warn("lineage-telemetry: self_id_file still not readable; every exchange is skipped until it is",
+				"path", path, "attempts", attempts, "error", err)
+		}
+	}
+}
+
+// readIdentityFile reads self_id_file the way the platform's other credential
+// files are read (config.ReadCredentialFile: absent or zero-length is an
+// error) and additionally treats a blank file as carrying no identity — the
+// likeliest shape of a bad mount.
+func readIdentityFile(path string) (string, error) {
+	raw, err := config.ReadCredentialFile(path)
+	if err != nil {
+		return "", err
+	}
+	if id := strings.TrimSpace(raw); id != "" {
+		return id, nil
+	}
+	return "", fmt.Errorf("file %s carries no identity", path)
 }
 
 // newTracerProvider builds the provider Init installs. AlwaysSample is
@@ -361,9 +439,14 @@ func isLoopback(endpoint string) bool {
 // Readiness is cleared first, unconditionally: after Shutdown the plugin is no
 // longer ready even if tp/conn are nil (post-failed-Init) or their shutdown
 // errors, so a pipeline orchestrator checking Ready() before routing sees the
-// lifecycle transition. This mirrors the p.ready.Store(true) in Init.
+// lifecycle transition. This mirrors the p.ready.Store(true) in Init. The
+// self_id_file poller, if Init started one, is cancelled so it cannot flip
+// readiness back on after the tracer is gone.
 func (p *LineageTelemetry) Shutdown(ctx context.Context) error {
 	p.ready.Store(false)
+	if cancel := p.bgCancel.Swap(nil); cancel != nil {
+		(*cancel)()
+	}
 	var tpErr error
 	if p.tp != nil {
 		tpErr = p.tp.Shutdown(ctx)
@@ -376,7 +459,10 @@ func (p *LineageTelemetry) Shutdown(ctx context.Context) error {
 }
 
 // Ready reports that the plugin is configured, has an identity and can
-// record spans — not that the collector is reachable. grpc.NewClient dials
+// record spans — not that the collector is reachable. It is false from Init
+// until self_id_file resolves (see Init): an unready plugin skips every
+// exchange, which is the fail-closed shape for a missing subject, and is not a
+// fatal state — the process and its other plugins keep serving. grpc.NewClient dials
 // lazily and the batch processor exports asynchronously, so no point in Init
 // can prove the collector or its TLS chain; and readiness must not follow the
 // collector anyway: an unready plugin skips OnRequest, which is where the
@@ -943,9 +1029,10 @@ func mcpTool(pctx *pipeline.Context) string {
 //	"spiffe://trust-domain/ns/team1/sa/weather-service" → "weather-service"
 //	"weather-service" → "weather-service"
 //
-// selfID is never empty at the only call site: Init refuses to start without
-// a resolved identity (v1.3). There is deliberately no empty-string fallback —
-// inventing a label is the guess that rule exists to forbid.
+// selfID is never empty at the only call site: OnRequest runs only once ready,
+// and readiness is stored only after an identity resolved (Init or its
+// poller). There is deliberately no empty-string fallback — inventing a label
+// is the guess the "no mechanism may guess" rule (v1.3) exists to forbid.
 func serviceLabel(selfID string) string {
 	parts := strings.Split(selfID, "/")
 	for i := len(parts) - 1; i >= 0; i-- {

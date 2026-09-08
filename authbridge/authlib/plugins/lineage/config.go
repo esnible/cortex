@@ -164,9 +164,11 @@ type Config struct {
 	SelfID string `json:"self_id" description:"This workload identity, emitted as lineage.self.id; a SPIFFE ID is reduced to its last path segment."`
 
 	// SelfIDFile is the path to a file containing the agent's own client ID.
-	// Defaults to /shared/client-id.txt (the operator-mounted credential).
-	// Ignored when SelfID is set.
-	SelfIDFile string `json:"self_id_file" description:"Read when self_id is empty; the plugin refuses to start if neither yields an identity." default:"/shared/client-id.txt"`
+	// Defaults to /shared/client-id.txt (the operator-mounted credential),
+	// which can land after the pod starts: until it is readable the plugin is
+	// not ready and skips every exchange, polling the file in background (see
+	// Init). Ignored when SelfID is set.
+	SelfIDFile string `json:"self_id_file" description:"Read when self_id is empty; until it is readable the plugin is not ready and emits nothing. Refused at start only when self_id is also empty." default:"/shared/client-id.txt"`
 }
 
 func defaultConfig() Config {

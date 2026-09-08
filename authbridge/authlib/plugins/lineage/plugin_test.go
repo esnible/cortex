@@ -1246,7 +1246,6 @@ func TestInit_RefusesToStartWithoutIdentity(t *testing.T) {
 		wantErr bool
 	}{
 		{"inline self_id starts", Config{OTelEndpoint: "localhost:4317", SelfID: "weather-service"}, false},
-		{"missing self_id_file refuses", Config{OTelEndpoint: "localhost:4317", SelfIDFile: t.TempDir() + "/absent.txt"}, true},
 		{"no identity source refuses", Config{OTelEndpoint: "localhost:4317"}, true},
 	}
 	for _, tc := range cases {
@@ -1269,6 +1268,105 @@ func TestInit_RefusesToStartWithoutIdentity(t *testing.T) {
 				t.Error("plugin reports Ready after a refused Init")
 			}
 		})
+	}
+}
+
+// TestInit_MissingSelfIDFileIsNotFatal: the default self_id_file is the
+// operator-mounted Secret, which can land after the pod starts. An Init error
+// fails Pipeline.Start and takes every other plugin in the chain down with it,
+// so the race is handled the way jwt-validation handles the same file: not
+// ready, every exchange skipped (no span, no header), background poll, ready
+// once the identity appears.
+func TestInit_MissingSelfIDFileIsNotFatal(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		initial []byte // nil = the file does not exist yet
+	}{
+		{"absent", nil},
+		{"present but blank", []byte(" \n\t\n")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := t.TempDir() + "/client-id.txt"
+			if tc.initial != nil {
+				if err := os.WriteFile(path, tc.initial, 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			p := initPolling(t, path)
+			if p.Ready() {
+				t.Fatal("Ready() before the identity file carries an identity")
+			}
+			// Traffic while unready is skipped — not served under a guessed
+			// identity, and no header is written either.
+			pctx := fakeContext(pipeline.Inbound, traceparent("4bf92f3577b34da6a3ce929d0e0e4736", "00f067aa0ba902b7"))
+			p.OnRequest(context.Background(), pctx)
+			if pipeline.GetState[exchangeState](pctx, pluginName) != nil {
+				t.Error("exchange recorded while the identity is unresolved")
+			}
+			if got := pctx.Headers.Get("tracestate"); got != "" {
+				t.Errorf("tracestate %q written while the identity is unresolved", got)
+			}
+
+			// The Secret lands.
+			if err := os.WriteFile(path, []byte("spiffe://td/ns/team1/sa/weather-service\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			waitReady(t, p)
+			if p.selfID != "spiffe://td/ns/team1/sa/weather-service" {
+				t.Errorf("selfID = %q after the file appeared", p.selfID)
+			}
+		})
+	}
+}
+
+// TestShutdown_StopsIdentityPoll: a poller must not flip readiness back on
+// after the tracer it would record with is gone.
+func TestShutdown_StopsIdentityPoll(t *testing.T) {
+	path := t.TempDir() + "/client-id.txt"
+	p := initPolling(t, path)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := p.Shutdown(ctx); err != nil {
+		t.Fatalf("Shutdown: %v", err)
+	}
+	if err := os.WriteFile(path, []byte("weather-service\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(20 * identityPollInterval)
+	if p.Ready() {
+		t.Fatal("the identity poller outlived Shutdown and made the plugin ready again")
+	}
+}
+
+// initPolling runs Init against a self_id_file that does not (yet) carry an
+// identity, with the poll interval shortened, and registers Shutdown.
+func initPolling(t *testing.T, path string) *LineageTelemetry {
+	t.Helper()
+	restore := identityPollInterval
+	identityPollInterval = 5 * time.Millisecond
+	t.Cleanup(func() { identityPollInterval = restore })
+	p := NewLineageTelemetry()
+	p.cfg = Config{OTelEndpoint: "localhost:4317", SelfIDFile: path}
+	if err := p.Init(context.Background()); err != nil {
+		t.Fatalf("Init with an unreadable self_id_file must not fail the process: %v", err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = p.Shutdown(ctx)
+	})
+	return p
+}
+
+// waitReady blocks until the poller flips readiness, or fails the test.
+func waitReady(t *testing.T, p *LineageTelemetry) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for !p.Ready() {
+		if time.Now().After(deadline) {
+			t.Fatal("plugin never became ready after the identity file appeared")
+		}
+		time.Sleep(identityPollInterval)
 	}
 }
 

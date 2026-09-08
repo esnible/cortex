@@ -1,4 +1,4 @@
-# Lineage wire contract — two-span sidecar lineage (v1.6.2)
+# Lineage wire contract — two-span sidecar lineage (v1.6.3)
 
 What the AuthBridge `lineage-telemetry` plugin emits, what it writes onto the wire, and what the
 data-governance `sidecar` interactions algorithm (ADR-0030) commits to when consuming it.
@@ -174,7 +174,7 @@ handles `openinference.span.kind`.
 | `lineage.exchange.id` | both | `00f067aa0ba902b7` | the request span id, hex |
 | `lineage.role` | both | `request` \| `response` | which half this span is |
 | `lineage.direction` | both | `inbound` \| `outbound` | |
-| `lineage.self.id` | both | `weather-service` | this workload's identity, from `self_id` or `self_id_file`, **reduced to its last non-empty `/`-segment**: a SPIFFE ID `spiffe://td/ns/team1/sa/agent` emits `agent`, and two identities that differ only above that segment emit the same value — the consumer keys entity identity on it (§7). The producer refuses to start without an identity |
+| `lineage.self.id` | both | `weather-service` | this workload's identity, from `self_id` or `self_id_file`, **reduced to its last non-empty `/`-segment**: a SPIFFE ID `spiffe://td/ns/team1/sa/agent` emits `agent`, and two identities that differ only above that segment emit the same value — the consumer keys entity identity on it (§7). The producer emits nothing without one: with no identity source configured it refuses to start, and while `self_id_file` is not yet readable it is not ready and skips every exchange (no span, no header) until the file resolves |
 | `lineage.peer.host` | both, when present | `weather-tool-mcp.team1.svc:8000` | the Host/authority header. Outbound: the service being called. Inbound: the address this workload was reached on |
 | `lineage.protocol` | both | `a2a` \| `mcp` \| `inference` \| `http` | which parser matched, at fixed precedence `a2a` > `mcp` > `inference`; `http` = none. The precedence is load-bearing: the parsers are not mutually exclusive — `mcp-parser` attaches to any JSON-RPC body, including every a2a exchange — so an a2a hop is labeled `a2a`, never `mcp`. The payload reduction (§5) is keyed by this label, reading the same protocol's parser |
 | `lineage.parent.source` | request | `tracestate` \| `wire` \| `none` | which precedence in §3.2 chose the parent. An audit fact; the consumer derives nothing from it |
@@ -242,7 +242,7 @@ construction.
 | `bypass_paths` | `/.well-known/*`, `/healthz`, `/readyz`, `/health` | path globs (`path.Match`; `*` does not cross `/`) that produce no spans, matched by the shared bypass package (query stripped, path normalized) — the same key and semantics as `jwt-validation` and `sparc` |
 | `bypass_hosts` | `otel-collector`, `otel-collector.*`, `jaeger`, `jaeger.*`, `zipkin`, `zipkin.*`, `prometheus`, `prometheus.*` | outbound host globs that produce no spans |
 | `self_id` | — | this workload's identity (§4: reduced to its last `/`-segment) |
-| `self_id_file` | `/shared/client-id.txt` | read when `self_id` is empty; the producer refuses to start if neither yields an identity |
+| `self_id_file` | `/shared/client-id.txt` | read when `self_id` is empty. Until it is readable and carries an identity the producer is not ready — every exchange skipped, nothing written to the wire — and it re-reads the file in the background; the process starts regardless, so the plugin never takes the sidecar's other plugins down over a late mount. Refused at start only when `self_id` is also empty |
 
 Setting `bypass_paths` or `bypass_hosts` **replaces** the default list rather than extending it —
 the convention the `ibac`, `sparc` and `cpex` plugins use for their keys of the same name. An
@@ -300,6 +300,11 @@ The producer must not emit these, and the consumer reads nothing from them.
 Version ladder, newest first. Each line is what changed on the wire or in the vocabulary; the
 mechanisms named as removed are not to be reintroduced.
 
+- **v1.6.3** — an unreadable or blank `self_id_file` no longer refuses to start: the producer starts
+  not-ready, skips every exchange (no span, no header) and re-reads the file until an identity
+  appears. Until now the refusal failed the whole sidecar — every plugin in its chain — over a
+  Secret that the platform mounts after the pod starts. Refusal remains for a missing identity
+  source (neither `self_id` nor `self_id_file`). Nothing on the wire changes.
 - **v1.6.2** — `url.path` and the span-name fallback derived from it are query-free: the producer
   strips anything from `?` on before emission. Until now the envoy-sidecar listener's raw `:path`
   pseudo-header put the query string on the wire regardless of `capture_io`; the proxy listeners
