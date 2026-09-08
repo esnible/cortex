@@ -1370,6 +1370,25 @@ func waitReady(t *testing.T, p *LineageTelemetry) {
 	}
 }
 
+// TestServiceLabel pins the reduction the contract makes normative (§4): the
+// consumer keys entity identity on the emitted lineage.self.id, so a change
+// that stopped reducing, or reduced differently, would move every entity.
+// The collision property — two SPIFFE IDs differing only above the last
+// segment emit the same label — is stated there and asserted here.
+func TestServiceLabel(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"spiffe://td/ns/team1/sa/weather-service", "weather-service"},
+		{"spiffe://td/ns/team2/sa/weather-service", "weather-service"}, // collides by design
+		{"weather-service", "weather-service"},
+		{"spiffe://td/ns/team1/sa/agent/", "agent"}, // trailing separator skipped
+		{"/", "/"}, // no non-empty segment: returned as-is
+	} {
+		if got := serviceLabel(tc.in); got != tc.want {
+			t.Errorf("serviceLabel(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
 // TestInit_ReadsSelfIDFile covers the operator-injected path (file, not inline).
 func TestInit_ReadsSelfIDFile(t *testing.T) {
 	dir := t.TempDir()

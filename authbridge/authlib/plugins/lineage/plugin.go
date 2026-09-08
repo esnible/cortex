@@ -1022,12 +1022,16 @@ func mcpTool(pctx *pipeline.Context) string {
 	return ""
 }
 
-// serviceLabel reduces a SPIFFE ID to its last path segment, or returns
-// selfID as-is if it is not a SPIFFE URI. Used for the lineage.self.id fact
-// and span names.
+// serviceLabel reduces a SPIFFE ID to its last non-empty path segment, or
+// returns selfID as-is if it is not a SPIFFE URI. Used for the lineage.self.id
+// fact and span names. The reduction is normative (contract §4): the consumer
+// keys entity identity on the emitted value, so two identities that differ
+// only above the last segment emit the same label.
 //
 //	"spiffe://trust-domain/ns/team1/sa/weather-service" → "weather-service"
 //	"weather-service" → "weather-service"
+//	"spiffe://trust-domain/ns/team1/sa/agent/" → "agent"   (trailing separator skipped)
+//	"/" → "/"   (no non-empty segment: the input is returned unchanged)
 //
 // selfID is never empty at the only call site: OnRequest runs only once ready,
 // and readiness is stored only after an identity resolved (Init or its
