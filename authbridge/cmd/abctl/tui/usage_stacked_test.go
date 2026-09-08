@@ -384,7 +384,7 @@ func TestFoldTailSeries_PreservesTotals(t *testing.T) {
 	buckets := mkSeriesBuckets([]map[string]int64{labels})
 	series := collectSeries(buckets, metricRequests)
 
-	kept, folded := foldTailSeries(buckets, metricRequests, series, 4)
+	kept, folded := foldTailSeries(buckets, series, 4)
 	if len(kept) != 5 { // 4 named + the fold
 		t.Errorf("kept %d series, want 4 named plus the fold", len(kept))
 	}
@@ -401,7 +401,7 @@ func TestFoldTailSeries_PreservesTotals(t *testing.T) {
 		"a": 100, "b": 90, "c": 80, "d": 70, "e": 60, tailLabel: 50,
 	}})
 	s2 := collectSeries(withOther, metricRequests)
-	kept2, _ := foldTailSeries(withOther, metricRequests, s2, 3)
+	kept2, _ := foldTailSeries(withOther, s2, 3)
 	seen := 0
 	for _, k := range kept2 {
 		if k.label == tailLabel {
@@ -539,7 +539,7 @@ func TestRenderLegend_KeepsTheFoldedBand(t *testing.T) {
 	for i := 0; i < 12; i++ {
 		series = append(series, seriesKey{fmt.Sprintf("series-%c", 'a'+i), int64(100 - i*5)})
 	}
-	kept, _ := foldTailSeries(nil, metricRequests, series, maxNamedSeries)
+	kept, _ := foldTailSeries(nil, series, maxNamedSeries)
 	if len(kept) != maxNamedSeries+1 {
 		t.Fatalf("foldTailSeries kept %d, want %d named plus the fold", len(kept), maxNamedSeries)
 	}
@@ -618,5 +618,74 @@ func TestUnlabelledTotal_OnlyCountsDrawnBands(t *testing.T) {
 	s2 := collectSeries([]usage.Bucket{b2}, metricRequests)
 	if got := unlabelledTotal([]usage.Bucket{b2}, metricRequests, s2, b2.Requests); got != 900 {
 		t.Errorf("unlabelledTotal = %d, want 900", got)
+	}
+}
+
+// A bucket with traffic but NO labelled series at all must draw the remainder,
+// not fall through to painting every row as the largest series.
+//
+// The existing unlabelled test covers the partially-labelled case (seriesSum > 0),
+// which is why the suite passed straight through this one: an early return on
+// seriesSum == 0 gave the bucket no allotment, stackedCell exhausted its empty
+// loop and hit the series[0] fallback, and unlabelledTotal counted the bucket
+// anyway — so the legend keyed an (unlabelled) band the chart never drew.
+//
+// Reachable in the by-plugin view by any bucket whose turns invoked no plugin.
+func TestAllotRows_FullyUnlabelledBucketDrawsTheRemainder(t *testing.T) {
+	b := usage.Bucket{Counts: usage.Counts{Requests: 900}} // no Series at all
+	labelled := mkSeriesBuckets([]map[string]int64{{"plugin-x": 800, "plugin-y": 200}})[0]
+	series := collectSeries([]usage.Bucket{labelled, b}, metricRequests)
+
+	got := allotRows(b, metricRequests, series, 9, b.Requests)
+	if len(got) == 0 {
+		t.Fatal("no allotment for a bucket with traffic — every row would paint as series[0]")
+	}
+	var sum int64
+	for _, a := range got {
+		if a.label != unlabelledLabel {
+			t.Errorf("allotted rows to %q, which claims none of this bucket", a.label)
+		}
+		sum += a.rows
+	}
+	if sum != 9 {
+		t.Errorf("allotted %d rows, bar is 9 tall", sum)
+	}
+}
+
+// The chart and the legend must agree on a fully unlabelled bucket: it draws the
+// remainder mark, and no named series appears in a bucket that has none.
+func TestRenderStacked_FullyUnlabelledBucketMatchesItsLegend(t *testing.T) {
+	base := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
+	labelled := usage.Bucket{At: base, Counts: usage.Counts{Requests: 1000},
+		Series: map[string]usage.Counts{
+			"plugin-x": {Requests: 800}, "plugin-y": {Requests: 200},
+		}}
+	unlabelled := usage.Bucket{At: base.Add(time.Minute), Counts: usage.Counts{Requests: 900}}
+
+	lines := renderStackedBars([]usage.Bucket{labelled, unlabelled}, metricRequests, usage.GroupPlugin, 80)
+
+	// The second bar's column: axisLabel + 1*barStride.
+	col := axisLabel + barStride
+	var secondBar string
+	for _, l := range lines[:plotRows] {
+		r := []rune(stripANSI(l))
+		if len(r) > col && r[col] != ' ' {
+			secondBar += string(r[col])
+		}
+	}
+	if secondBar == "" {
+		t.Fatal("the fully unlabelled bucket drew nothing")
+	}
+	for _, r := range secondBar {
+		if r != unlabelledMark {
+			t.Errorf("unlabelled bucket drew %q, want only %q — a named series was misattributed",
+				secondBar, string(unlabelledMark))
+			break
+		}
+	}
+	// And the legend keys exactly what was drawn.
+	joined := stripANSI(strings.Join(lines, "\n"))
+	if !strings.Contains(joined, unlabelledLabel) {
+		t.Error("legend does not name the remainder band that is drawn")
 	}
 }

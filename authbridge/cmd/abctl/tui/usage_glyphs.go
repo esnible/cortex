@@ -45,17 +45,17 @@ var vendorPrefixes = map[string]bool{
 	"mistral": true, "cohere": true, "ollama": true, "litellm": true,
 }
 
+// unlabelledMark is the band for traffic no series claims. A middle dot rather
+// than a letter: there is no name to abbreviate, and it should not read as one
+// more model.
+const unlabelledMark = '·'
+
 // seriesLetter derives a one-character mark from a label.
 //
 // The rules, in order: skip a vendor prefix so sibling models differ; prefer a
 // letter over a digit so "claude-sonnet-5" is `s` and not `5`; fall back to the
 // first usable character; and use '?' when nothing qualifies. Callers dedupe the
 // result — see assignLetters.
-// unlabelledMark is the band for traffic no series claims. A middle dot rather
-// than a letter: there is no name to abbreviate, and it should not read as one
-// more model.
-const unlabelledMark = '·'
-
 func seriesLetter(label string) rune {
 	if label == unlabelledLabel {
 		return unlabelledMark

@@ -251,6 +251,15 @@ func (a *Aggregator) Record(sessionID string, e *pipeline.SessionEvent) {
 		return
 	}
 
+	// A request event with nothing to hold is the common case — Invocations is nil
+	// on any plain proxied request — and this runs synchronously inside
+	// Store.Append on the request hot path. Checked before the lock so that path
+	// stays lock-free: neither guard touches aggregator state, so there is nothing
+	// to protect.
+	if e.Phase == pipeline.SessionRequest && (e.RequestID == "" || e.Invocations == nil) {
+		return
+	}
+
 	at := e.At
 	if at.IsZero() {
 		at = a.now()
@@ -312,6 +321,10 @@ func (a *Aggregator) holdRequestPluginsLocked(e *pipeline.SessionEvent, at time.
 		// Without an id there is nothing to pair against, and pairing positionally
 		// misattributes as soon as two requests are in flight — the reason
 		// SessionEvent carries RequestID at all.
+		//
+		// Record checks the same two conditions before taking the lock, so this is
+		// normally unreachable; kept so the helper is correct on its own terms
+		// rather than relying on its only caller.
 		return
 	}
 	names := invocationPlugins(e.Invocations)

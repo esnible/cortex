@@ -14,8 +14,15 @@ import (
 const unlabelledLabel = "(unlabelled)"
 
 // maxNamedSeries is how many series get their own mark and legend entry before
-// the rest fold together. Bounded by the palette so no two named series share a
+// the rest fold together. Bounded by the palette so no two NAMED series share a
 // colour.
+//
+// The two synthetic bands are outside that bound: renderStackedBars appends
+// "(unlabelled)" and foldTailSeries can add "(other)", so with the palette full
+// their ranks wrap onto the first two named colours. Harmless by the design in
+// usage_glyphs.go — the letter is the encoding, and `·` and `o` still tell them
+// apart from any model — but the colour alone does not distinguish them, which is
+// why this says "named" rather than "every".
 var maxNamedSeries = len(seriesPalette)
 
 // seriesKey is one label's total across the window, used to decide segment order
@@ -39,7 +46,7 @@ const tailLabel = "(other)"
 // seventh series could draw with the same mark as the first while the legend
 // named neither. Returns the buckets unchanged when nothing needs folding, so the
 // common case allocates nothing.
-func foldTailSeries(buckets []usage.Bucket, m usageMetric, series []seriesKey, keep int) ([]seriesKey, []usage.Bucket) {
+func foldTailSeries(buckets []usage.Bucket, series []seriesKey, keep int) ([]seriesKey, []usage.Bucket) {
 	if len(series) <= keep {
 		return series, buckets
 	}
@@ -227,7 +234,7 @@ func renderStackedBars(buckets []usage.Bucket, m usageMetric, group usage.Group,
 	// while the legend named only the first few left bands nothing could decode —
 	// the marks repeat once the palette wraps, so two unrelated series could even
 	// share one.
-	series, buckets = foldTailSeries(buckets, m, series, maxNamedSeries)
+	series, buckets = foldTailSeries(buckets, series, maxNamedSeries)
 
 	var peak int64
 	for _, b := range buckets {
@@ -337,14 +344,20 @@ func allotRows(b usage.Bucket, m usageMetric, series []seriesKey, barRows, total
 			seriesSum += v
 		}
 	}
-	if len(present) == 0 || seriesSum == 0 {
-		return nil
-	}
 	// Traffic no label claims gets its own band rather than being absorbed by the
 	// named series. The bar's height comes from the bucket total, so silently
 	// sharing the unlabelled remainder out drew a bucket that is 10%
 	// claude-sonnet-5 as a solid `s` bar — the height said "lots of traffic" and
 	// every row of it claimed to be sonnet.
+	//
+	// Considered BEFORE the empty check below, not after. Returning early on
+	// seriesSum == 0 reached the same misattribution by another route: a bucket
+	// with traffic but no labelled series got no allotment at all, stackedCell
+	// exhausted its empty loop and fell through to painting every row as
+	// series[0], while unlabelledTotal counted that bucket and keyed an
+	// (unlabelled) band the chart never drew. That is the chart/legend divergence
+	// drawsRemainderBand exists to prevent, inverted. Reachable in the by-plugin
+	// view by any bucket whose turns invoked no plugin.
 	//
 	// Only when the shortfall is large enough to occupy a row: rounding noise does
 	// not deserve a band, and a one-row remainder on every bar would be more
@@ -352,6 +365,10 @@ func allotRows(b usage.Bucket, m usageMetric, series []seriesKey, barRows, total
 	if unlabelled := total - seriesSum; drawsRemainderBand(unlabelled, total, barRows) {
 		present = append(present, rowAlloc{label: unlabelledLabel, value: unlabelled})
 		seriesSum += unlabelled
+	}
+	// Nothing to draw: neither a labelled series nor a remainder worth a row.
+	if len(present) == 0 || seriesSum == 0 {
+		return nil
 	}
 	// More series than rows: the bar cannot show them all, so give a row each to
 	// as many as fit, largest first (series is already sorted). The legend still
@@ -535,22 +552,4 @@ func truncateLegendText(text string, max int) string {
 		return "…"
 	}
 	return string(r[:max-1]) + "…"
-}
-
-// stripANSIWidth returns text with escape sequences removed, for measuring how
-// many columns a styled string occupies.
-func stripANSIWidth(s string) string {
-	var b strings.Builder
-	for i := 0; i < len(s); {
-		if s[i] == 0x1b {
-			for i < len(s) && s[i] != 'm' {
-				i++
-			}
-			i++
-			continue
-		}
-		b.WriteByte(s[i])
-		i++
-	}
-	return b.String()
 }
