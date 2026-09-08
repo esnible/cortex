@@ -991,8 +991,13 @@ func requestSpanName(self, protocol, op string) string {
 	return self + " " + protocol + " " + op
 }
 
-// spanOp picks the operation label for the span name per protocol:
-// mcp.tool / a2a.method / inference.model, falling back to url.path.
+// spanOp picks the operation label for the span name per protocol: mcp.tool
+// (else mcp.method), a2a.method or inference.model — each a bounded
+// vocabulary. There is deliberately no url.path fallback: OTel treats the span
+// name as low-cardinality (Jaeger and Tempo build operation lists from it,
+// Phoenix groups on it), and a REST surface like /tasks/{uuid} would mint a
+// name per request. An exchange no parser claimed is named "{self} http";
+// url.path is one attribute away on the same span.
 func spanOp(pctx *pipeline.Context, protocol string) string {
 	var op string
 	switch protocol {
@@ -1010,18 +1015,14 @@ func spanOp(pctx *pipeline.Context, protocol string) string {
 			op = pctx.Extensions.Inference.Model
 		}
 	}
-	if op == "" {
-		op = urlPath(pctx)
-	}
 	return op
 }
 
 // urlPath returns pctx.Path without any query string. The extproc listener
 // populates Path from the raw :path pseudo-header, query included; the proxy
 // listeners use the parsed r.URL.Path, which excludes it. Stripping here keeps
-// url.path and the span-name fallback query-free under every listener — a
-// query can carry secrets that must not reach the trace store even with
-// capture_io off.
+// url.path query-free under every listener — a query can carry secrets that
+// must not reach the trace store even with capture_io off.
 func urlPath(pctx *pipeline.Context) string {
 	path, _, _ := strings.Cut(pctx.Path, "?")
 	return path

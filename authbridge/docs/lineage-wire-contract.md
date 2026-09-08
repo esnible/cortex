@@ -196,8 +196,10 @@ deliberately: this producer's vocabulary is `lineage.*` plus these two well-know
 interoperability with generic OpenTelemetry tooling is not a goal.
 
 Span names: request = `{self.id} {protocol} {op}`, where op is `mcp.tool` (else `mcp.method`),
-`a2a.method`, or `inference.model`, falling back to `url.path`, and is omitted when empty;
-response = the request name + ` response`.
+`a2a.method`, or `inference.model`, and is omitted when the protocol's parser yielded none — so an
+exchange no parser claimed is named `{self.id} http`; response = the request name + ` response`.
+The name is a bounded vocabulary by construction (backends build operation lists and group on it);
+it never carries `url.path`, which is its own attribute on the request span.
 
 Every variable-content string attribute above, and the request span name, is capped at
 `max_attr_bytes` (default 256), cut on a UTF-8 boundary and suffixed `…[truncated]` — several of
@@ -304,7 +306,10 @@ mechanisms named as removed are not to be reintroduced.
   not-ready, skips every exchange (no span, no header) and re-reads the file until an identity
   appears. Until now the refusal failed the whole sidecar — every plugin in its chain — over a
   Secret that the platform mounts after the pod starts. Refusal remains for a missing identity
-  source (neither `self_id` nor `self_id_file`). Nothing on the wire changes.
+  source (neither `self_id` nor `self_id_file`). And the span name no longer falls back to `url.path`
+  when no parser named an operation: an unparsed exchange is `{self.id} http`, so the set of
+  span names stays bounded (a `/tasks/{id}` surface minted one name per request); `url.path` is
+  unchanged as an attribute. Nothing else on the wire changes.
 - **v1.6.2** — `url.path` and the span-name fallback derived from it are query-free: the producer
   strips anything from `?` on before emission. Until now the envoy-sidecar listener's raw `:path`
   pseudo-header put the query string on the wire regardless of `capture_io`; the proxy listeners

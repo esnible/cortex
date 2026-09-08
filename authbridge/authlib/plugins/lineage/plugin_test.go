@@ -1064,8 +1064,31 @@ func TestQueryStringNeverEmitted(t *testing.T) {
 	req, _ := roleSplit(t, exp.GetSpans())
 
 	checkAttr(t, req, "url.path", "/api/search")
-	if req.Name != "weather-service http /api/search" {
-		t.Errorf("request span name = %q, want query-free", req.Name)
+	if strings.Contains(req.Name, "sekret") {
+		t.Errorf("request span name = %q carries the query", req.Name)
+	}
+}
+
+// TestSpanName_UnparsedHTTPIsBounded: the span name is a low-cardinality
+// operation label (Jaeger/Tempo operation lists, Phoenix grouping), so an
+// exchange no parser claimed is named "{self} http" — never the path, which
+// on a /tasks/{id}-shaped surface would mint a name per request. The path is
+// still one attribute away on the same span.
+func TestSpanName_UnparsedHTTPIsBounded(t *testing.T) {
+	p, exp := newTestPlugin(t)
+	for _, path := range []string{"/tasks/1c0b2e7e-4f1a-4b1e-9c3e-7a1d2f3e4b5c", "/tasks/9f8e7d6c-5b4a-3c2d-1e0f-a9b8c7d6e5f4", "/v1/sessions/42"} {
+		exp.Reset()
+		pctx := fakeContext(pipeline.Outbound, http.Header{})
+		pctx.Path = path
+		run(t, p, pctx, allow(200))
+		req, resp := roleSplit(t, exp.GetSpans())
+		if req.Name != "weather-service http" {
+			t.Errorf("request span name = %q for path %s, want the bounded %q", req.Name, path, "weather-service http")
+		}
+		if resp.Name != "weather-service http response" {
+			t.Errorf("response span name = %q, want %q", resp.Name, "weather-service http response")
+		}
+		checkAttr(t, req, "url.path", path)
 	}
 }
 
