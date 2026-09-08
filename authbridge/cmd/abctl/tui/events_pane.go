@@ -22,7 +22,7 @@ func newEventsTable() table.Model {
 			{Title: "TIME", Width: 12},
 			{Title: "DIR", Width: 4},
 			{Title: "PHASE", Width: 7},
-			{Title: "ACTION", Width: 8},
+			{Title: "ACTION", Width: actionColWidth},
 			{Title: "PLUGIN", Width: 18},
 			{Title: "METHOD", Width: 22},
 			{Title: "STATUS", Width: 7},
@@ -115,7 +115,7 @@ func (m *model) rebuildEventsTable() {
 			continue
 		}
 
-		action, plugin := eventAction(invs)
+		action, plugin := rowAction(er, invs)
 		var idCell string
 		if id, ok := ids[ev]; ok {
 			idCell = strconv.Itoa(id)
@@ -314,6 +314,46 @@ func shadowFlagged(invs []pipeline.Invocation) bool {
 		}
 	}
 	return false
+}
+
+// actionColWidth is the ACTION column's width. Named rather than inlined in the
+// column literal so a test can assert against the real value: transcribing it
+// into the test gave two independent 8s, and narrowing the column left the test
+// passing while the label overflowed.
+const actionColWidth = 8
+
+// tunnelAction is the ACTION cell for an opaque CONNECT that no plugin acted on.
+//
+// It must fit actionColWidth. Truncation matters more here than on other rows:
+// METHOD and STATUS are both empty for an unbridged CONNECT, so a clipped
+// "tunne" would take the row back to unreadable — the state this label exists to
+// fix.
+const tunnelAction = "tunnel"
+
+// rowAction is the ACTION + PLUGIN pair for one display row.
+//
+// It wraps eventAction to name an unbridged CONNECT. Such a row carries TLS bytes,
+// so no plugin ran, no protocol was parsed and there is no status — left as "— —"
+// it reads as a request that failed or that the pipeline ignored, which is how a
+// routine egress tunnel came to look like a bug.
+//
+// The label applies only when nothing acted: a gate CAN deny a CONNECT on the
+// tunnel-open itself, and that deny must keep the headline. A BRIDGED tunnel never
+// reaches this branch — buildEventRows folds it into the decrypted inner request,
+// whose own action is the interesting one.
+//
+// invs is passed in rather than derived from er, so the headline is computed from
+// the same set the caller's visibility decision used. Deriving it again would make
+// that relationship implicit and silently divergent: were the call site ever to
+// filter invs — to honour a plugin-name filter in the hide logic, say — the ACTION
+// cell would keep using the unfiltered set and disagree with the row's own reason
+// for being visible.
+func rowAction(er eventRow, invs []pipeline.Invocation) (action, plugin string) {
+	action, plugin = eventAction(invs)
+	if er.event != nil && er.event.Tunnel && action == "—" {
+		return tunnelAction, "—"
+	}
+	return action, plugin
 }
 
 // eventAction folds a message's per-plugin invocations into the single ACTION +
