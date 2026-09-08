@@ -30,6 +30,10 @@ const (
 	// maxLogBytes bounds one generation of proxy.log; rotateLog keeps one previous
 	// file, so the pair tops out near twice this.
 	maxLogBytes = 8 << 20
+	// exitNoSupervisor means this environment cannot manage services at all — a
+	// restricted sandbox, or a shell without a usable launchd session. Distinct from a
+	// failure, so install.sh can offer the unsupervised path instead of a dead end.
+	exitNoSupervisor = 4
 	// serviceBootoutTimeout bounds the wait for a previous job to leave the domain.
 	// Longer than the supervisor's own teardown: it SIGTERMs the proxy, allows its 15s
 	// graceful shutdown, then insists at 20s.
@@ -274,10 +278,35 @@ func serviceInstall(p servicePaths, yes bool, stdout, stderr io.Writer) int {
 		return exitDeclined
 	}
 
+	// Probed before anything is written. Without this the first sign of trouble was
+	// launchctl's "Bootstrap failed: 5: Input/output error" after the unit was already on
+	// disk — a message that names neither the cause nor a way forward. Reported from a
+	// restricted sandbox environment.
+	if ok, why := launchdUsable(); !ok {
+		fmt.Fprintf(stderr, "abctl: this environment cannot manage %ss (%s).\n\n"+
+			"  Cortex still runs, just not supervised — start it yourself:\n"+
+			"    %s --local\n\n"+
+			"  It will not restart after a crash or come back at login while running that\n"+
+			"  way. To stop it: kill that process.\n", supervisorName(), why, p.binary)
+		return exitNoSupervisor
+	}
+
 	if _, serr := os.Stat(p.binary); serr != nil {
 		fmt.Fprintf(stderr, "abctl: authbridge-proxy not found at %s; install it first\n", p.binary)
 		return 1
 	}
+	// launchd loads the LOGIN home's ~/Library/LaunchAgents, taken from the user
+	// record — not $HOME. With $HOME pointed at a project directory (sandboxes do this)
+	// the unit is written somewhere launchd will never scan, so bootstrap succeeds and
+	// "comes back at login" is quietly false. Warn rather than refuse: it is a real way
+	// to run, just not a persistent one.
+	if lh := loginHome(); lh != "" && lh != p.home {
+		fmt.Fprintf(stderr, "abctl: $HOME is %s but your login home is %s.\n"+
+			"  The unit goes to $HOME/Library/LaunchAgents, which launchd does not scan at\n"+
+			"  login, so Cortex will NOT come back after a logout. Crash recovery still\n"+
+			"  works while you are logged in.\n\n", p.home, lh)
+	}
+
 	if p.configErr != nil {
 		fmt.Fprintf(stderr, "abctl: %s will not load, so a supervised proxy could not start:\n  %v\n"+
 			"  Fix it (or delete it and run: authbridge-proxy --local --write-config), then re-run.\n",
@@ -596,4 +625,30 @@ func isLoopbackHost(host string) bool {
 func fileExists(p string) bool {
 	fi, err := os.Stat(p)
 	return err == nil && !fi.IsDir()
+}
+
+// loginHome returns the home directory from the user record, or "" if it cannot be
+// determined. Deliberately not os.UserHomeDir, which returns $HOME — the value whose
+// trustworthiness is the question.
+func loginHome() string {
+	if runtime.GOOS != "darwin" {
+		return ""
+	}
+	u := os.Getenv("USER")
+	if u == "" {
+		out, err := exec.Command("id", "-un").Output()
+		if err != nil {
+			return ""
+		}
+		u = strings.TrimSpace(string(out))
+	}
+	out, err := exec.Command("dscl", ".", "-read", "/Users/"+u, "NFSHomeDirectory").Output()
+	if err != nil {
+		return ""
+	}
+	fields := strings.Fields(string(out))
+	if len(fields) < 2 {
+		return ""
+	}
+	return fields[len(fields)-1]
 }

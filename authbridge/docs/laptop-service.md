@@ -30,6 +30,30 @@ agents added mid-session — verified across `KeepAlive`, `StartInterval` and
 `RunAtLoad` — so the supervisor is what makes crash recovery work. On Linux there is
 one process; systemd handles it.
 
+## Restricted environments (sandboxes, no launchd session)
+
+Some environments cannot manage services at all — a sandboxed shell, a session without
+a usable launchd domain, CI. `abctl service install` detects this before writing
+anything and tells you so, rather than failing at `launchctl bootstrap` with
+`Input/output error`.
+
+Cortex still runs there; it just is not supervised:
+
+```sh
+authbridge-proxy --local     # in its own terminal, or backgrounded
+abctl                        # the viewer, as usual
+```
+
+What you give up: no restart after a crash, and nothing brings it back at login. Stop
+it with `kill $(pgrep -f authbridge-proxy)` — there is no service to stop.
+
+Two assumptions that do not hold in such environments, and what happens:
+
+| Assumption | If it does not hold |
+|---|---|
+| `launchctl` can manage the user domain | `service install` stops early and prints the command above |
+| `$HOME` is your login home | launchd never scans `$HOME/Library/LaunchAgents`, so the service cannot start at login. `service install` warns and continues; crash recovery still works while you are logged in |
+
 ## Is it working?
 
 ```sh

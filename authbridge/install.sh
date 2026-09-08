@@ -489,12 +489,21 @@ set +e
 "${BIN_DIR}/abctl" service install --yes --proxy "${BIN_DIR}/authbridge-proxy"
 svc_status=$?
 set -e
-if [ "${svc_status}" != "0" ]; then
+# Exit 4 means the environment cannot manage services — a restricted sandbox, or a
+# shell without a usable launchd session. That is not a broken install, so it does not
+# get an error: abctl has already explained it and printed the command to run instead.
+# Reported from a real sandbox, where the only sign of trouble was launchctl's EIO.
+if [ "${svc_status}" = "4" ]; then
+	info ""
+	info "  Continuing without a service. Start Cortex in another terminal with the"
+	info "  command above, then come back and run \"${abctl_cmd}\"."
+	info ""
+elif [ "${svc_status}" != "0" ]; then
 	die "could not set up the service (exit ${svc_status}).
   Cortex is NOT running. Inspect the unit it would install with:
     \"${abctl_cmd}\" service install --print-unit
   or run the proxy in the foreground to see what it says:
-    \"${proxy_cmd}\" --local"
+    \"${BIN_DIR}/authbridge-proxy\" --local"
 fi
 
 # tool-prune is in the config but INERT: its remove list is empty, so it does
@@ -534,7 +543,14 @@ if [ -n "${WIRE_CLAUDE_CODE:-}" ]; then
 			info ""
 			info "  \"${abctl_cmd}\"                         watch traffic"
 			info "  \"${abctl_cmd}\" tools scan              propose unused tools to prune"
-			info "  \"${abctl_cmd}\" service stop            stop Cortex"
+			# `service stop` is meaningless where no service could be installed, so do
+			# not offer it there — the whole point of catching exit 4 is to stop handing
+			# people commands their environment cannot run.
+			if [ "${svc_status}" = "4" ]; then
+				info "  kill \$(pgrep -f authbridge-proxy)   stop Cortex (unsupervised)"
+			else
+				info "  \"${abctl_cmd}\" service stop            stop Cortex"
+			fi
 			info "  \"${abctl_cmd}\" claude-code disable     undo"
 			info ""
 			exit 0
