@@ -139,9 +139,9 @@ func formatUSDWithSaving(total float64, saved float64, projected bool) string {
 	if total <= 0 {
 		return ""
 	}
-	cell := "$" + formatUSD4(total)
+	cell := formatUSDCell(total)
 	if saved <= 0 {
 		return cell
 	}
-	return cell + "(" + savingSign(projected) + "$" + formatUSD4(saved) + ")"
+	return cell + "(" + savingSign(projected) + formatUSDCell(saved) + ")"
 }

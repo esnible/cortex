@@ -35,8 +35,10 @@ func newEventsTable() table.Model {
 			// at the column width, so 15 rendered "1,048,576(−1…" — dropping the
 			// saving, which is the half of this cell that appears nowhere else.
 			{Title: "TOKENS", Width: 17},
-			// Wide enough for "$0.2546(−$0.0037)".
-			{Title: "COST", Width: 18},
+			// 19 fits the widest cell the formatter can produce:
+			// "<$0.0001(−<$0.0001)", where both halves fell under the
+			// four-decimal floor. The ordinary shape is "$0.2546(−$0.0037)" at 17.
+			{Title: "COST", Width: 19},
 			{Title: "HOST", Width: 20},
 		}),
 		table.WithFocused(true),
@@ -331,10 +333,17 @@ func shadowFlagged(invs []pipeline.Invocation) bool {
 const actionColWidth = 8
 
 // methodColWidth is the METHOD column's width, shared with eventMethod for the
-// same reason: it holds a model name ("claude-opus-5"), and two independent
-// numbers drifted apart the moment the column was narrowed to pay for the
-// TOKENS/COST split.
-const methodColWidth = 14
+// same reason actionColWidth is named: two independent numbers drifted apart the
+// moment the column was narrowed to pay for the TOKENS/COST split.
+//
+// 18 rather than 14. The values reaching it are wider than a short model alias:
+// eventMethodValue also returns A2A and MCP method names
+// ("notifications/initialized", 25) and dated provider model IDs
+// ("claude-sonnet-4-5-20250929", 26). At 14 both "claude-sonnet-4-5-20250929"
+// and "claude-sonnet-4-20250514" render as "claude-sonnet…", which makes the
+// column unable to say which model the COST cell beside it is reporting — the
+// one thing it most needs to disambiguate now that costs are per-row.
+const methodColWidth = 18
 
 // tunnelAction is the ACTION cell for an opaque CONNECT that no plugin acted on.
 //
@@ -918,7 +927,7 @@ func (m *model) costCell(rows []eventRow, partner map[int]int, i int, ev *pipeli
 		if !ok {
 			return ""
 		}
-		return "$" + formatUSD4(ce.CostUSD)
+		return formatUSDCell(ce.CostUSD)
 	case pipeline.SessionRequest:
 		resp := pairedResponse(rows, partner, i, ev)
 		if resp == nil {

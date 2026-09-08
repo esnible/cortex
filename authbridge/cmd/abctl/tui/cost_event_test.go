@@ -300,3 +300,57 @@ func TestEventMethodSharesTheColumnWidth(t *testing.T) {
 		t.Errorf("eventMethod = %q, want it untouched", got)
 	}
 }
+
+// TestFormatUSDCellNeverRendersAFreeCall: %.4f turns anything under $0.00005 into
+// "$0.0000", which reads as a call that cost nothing. decodeCostEvent declines a
+// zero cost and promptCost declines an unpriced model precisely so that reading
+// never appears, and rounding at the formatting layer would undo both.
+//
+// Reachable: 100 cache-read tokens at a typical rate is $0.000038.
+func TestFormatUSDCellNeverRendersAFreeCall(t *testing.T) {
+	tiny := 100 * 3.8e-7 // $0.000038
+	if got := formatUSDCell(tiny); got != "<$0.0001" {
+		t.Errorf("formatUSDCell(%v) = %q, want %q", tiny, got, "<$0.0001")
+	}
+	// Zero is genuinely zero and keeps its plain rendering: callers already
+	// decline to show a cell at all in that case.
+	if got := formatUSDCell(0); got != "$0.0000" {
+		t.Errorf("formatUSDCell(0) = %q, want %q", got, "$0.0000")
+	}
+	// At and above the floor, exact figures are unchanged.
+	for v, want := range map[float64]string{0.0001: "$0.0001", 0.2633: "$0.2633", 12.5: "$12.5000"} {
+		if got := formatUSDCell(v); got != want {
+			t.Errorf("formatUSDCell(%v) = %q, want %q", v, got, want)
+		}
+	}
+	// A sub-floor saving beside a normal total must not read as "saved nothing".
+	cell := formatUSDWithSaving(0.2633, tiny, false)
+	if !strings.Contains(cell, "(−<$0.0001)") {
+		t.Errorf("cell = %q, want the saving marked as below the floor", cell)
+	}
+	if strings.Contains(cell, "$0.0000") {
+		t.Errorf("cell = %q still rounds a real amount to zero", cell)
+	}
+	// The widest cell the formatter can produce must fit the column.
+	widest := formatUSDWithSaving(tiny, tiny/2, false)
+	if n := len([]rune(widest)); n > columnWidth(t, "COST") {
+		t.Errorf("widest COST cell %q is %d cols but the column is %d",
+			widest, n, columnWidth(t, "COST"))
+	}
+}
+
+// TestMethodColumnDistinguishesDatedModelIDs: the COST column reports a per-row
+// cost, so METHOD has to be able to say which model it belongs to. At 14 the two
+// dated Sonnet IDs both rendered "claude-sonnet…", making the pair unreadable.
+func TestMethodColumnDistinguishesDatedModelIDs(t *testing.T) {
+	a := &pipeline.SessionEvent{Inference: &pipeline.InferenceExtension{Model: "claude-sonnet-4-5-20250929"}}
+	b := &pipeline.SessionEvent{Inference: &pipeline.InferenceExtension{Model: "claude-sonnet-4-20250514"}}
+	if eventMethod(*a) == eventMethod(*b) {
+		t.Errorf("both models render as %q; METHOD cannot say which the COST cell is for", eventMethod(*a))
+	}
+	// A long MCP method name still truncates rather than overflowing.
+	mcp := &pipeline.SessionEvent{MCP: &pipeline.MCPExtension{Method: "notifications/initialized"}}
+	if n := len([]rune(eventMethod(*mcp))); n > methodColWidth {
+		t.Errorf("eventMethod = %d cols, want <= %d", n, methodColWidth)
+	}
+}

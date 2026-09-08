@@ -107,3 +107,23 @@ func formatUSD(v float64) string {
 // Neither returns a "$" — the caller places it, since a saving needs it inside
 // the parentheses.
 func formatUSD4(v float64) string { return fmt.Sprintf("%.4f", v) }
+
+// usdFloor is the smallest amount four decimal places can state. Anything
+// positive below half of it rounds to "0.0000".
+const usdFloor = 0.0001
+
+// formatUSDCell renders a dollar amount for a table cell, with the "$" attached
+// and a floor below which it says so rather than rounding to zero.
+//
+// The floor exists because %.4f renders anything under $0.00005 as "$0.0000",
+// which reads as "this was free" — the exact reading decodeCostEvent (declining a
+// cost of 0) and promptCost (declining an unpriced model rather than showing
+// $0.00) both go out of their way to avoid. Reintroducing it at the formatting
+// layer would undo both. Reachable on a small cache-read-only request: 100
+// cache-read tokens at a typical rate is $0.000038.
+func formatUSDCell(v float64) string {
+	if v > 0 && v < usdFloor/2 {
+		return "<$" + formatUSD4(usdFloor)
+	}
+	return "$" + formatUSD4(v)
+}
