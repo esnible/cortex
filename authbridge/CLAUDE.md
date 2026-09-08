@@ -465,6 +465,7 @@ When `session.enabled` is true (default) and `listener.session_api_addr` is non-
 | `GET /v1/events` | `text/event-stream` | SSE stream of new events. Optional `?session=<id>` filters to one session. Heartbeat every 30s. |
 | `GET /v1/pipeline` | `application/json` | Active pipeline composition: `{inbound: [...], outbound: [...]}`. Each plugin entry carries `name`, `direction`, `position`, `readsBody`, plus the static metadata (`requires`, `requiresAny`, `description`) and runtime `config` when present. abctl renders this as the Pipeline pane. |
 | `GET /v1/plugins` | `application/json` | Catalog of every registered plugin (whether or not in the active pipeline): `{plugins: [{name, requires, requiresAny, description, ...}]}`. abctl renders this as the Catalog pane (`P` key). 404s when the binary's session API was constructed without `WithCatalog`. |
+| `GET /v1/usage` | `application/json` | Time-bucketed aggregates for charting: volume, errors, latency and cost. abctl renders this as the Usage pane (`u` key). 404s when the binary's session API was constructed without `WithUsage`. See below. |
 | `GET /healthz` | text | Liveness probe. |
 
 ### Quick examples
@@ -517,6 +518,63 @@ Every plugin emits one of these 5 action values per invocation, so operators can
 Use `reason` to discriminate within an action — e.g. `skip/path_bypass` vs `skip/no_matching_route` tell different stories at the detail-pane level but both scan as "skip" in the at-a-glance timeline.
 
 > **Producer-side contract:** the authoritative definition of the 5-value vocabulary, the `Invocation` struct fields, and which diagnostic fields each plugin type populates lives in [`docs/plugin-reference.md`](docs/plugin-reference.md#emitting-session-events). Edit that file when the vocabulary changes; this table is the consumer-side summary.
+
+### Usage aggregates (`/v1/usage`)
+
+Time-bucketed counts for charting, so a client can plot volume and performance
+over wall-clock time without replaying the event list itself.
+
+Aggregation is server-side on purpose: an aggregate built inside a client would
+start empty when that client connected, so two operators watching one pod would
+see different histories of the same traffic — and neither would see anything
+from before they attached.
+
+| Parameter | Values | Default |
+|---|---|---|
+| `window` | any multiple of the 1m bucket width, up to 6h | `10m` |
+| `resolution` | returned bucket width, e.g. `5m` for a 1h window as 12 bars | `1m` |
+| `session` | session ID; omit for all sessions combined | all |
+| `group` | `none`, `method` (model), `status`, `plugin` | `none` |
+
+```jsonc
+{
+  "window": "10m", "bucketSeconds": 60, "group": "status", "priced": false,
+  "buckets": [
+    {"at": "...", "requests": 12, "errors": 0, "tokens": 4100,
+     "latMeanMs": 1840, "latStdDevMs": 620, "latSamples": 12,
+     "series": {"200": {"requests": 12, "tokens": 4100}}},
+    {"at": "...", "requests": 0}
+  ],
+  "totals": {"requests": 12, "tokens": 4100}
+}
+```
+
+Notes that matter to a consumer:
+
+- **Idle buckets are present with zeroed counts**, never omitted, so a client can
+  tell "no traffic" from "fell off the end of the ring" without inferring gaps
+  from timestamps.
+- **Folding to a coarser `resolution` happens here**, not in the client, so every
+  consumer gets the same arithmetic. Latency in particular cannot be folded
+  naively — averaging per-bucket means weights a minute with one request the same
+  as a minute with five hundred — which is why `latSamples` is on the wire.
+- **`latSamples` is not `requests`**: a response with no measured duration counts
+  as traffic but not as a latency sample, so the mean divides by `latSamples`.
+- **Per-plugin sub-totals intentionally exceed the bucket total.** One request is
+  counted once per plugin that ran, because there is no defensible way to split a
+  response's tokens between the plugins that observed it.
+- **`costMicros` and `priced` are reserved but unpopulated.** No pricer is wired,
+  so `priced` is `false` and cost fields are absent — a client should render "cost
+  unavailable" rather than `$0.00`, which would read as free traffic.
+
+Retention is a fixed ring of 360 one-minute buckets (6h) for all sessions plus
+one ring per tracked session, capped at the store's `session.max_sessions`. It is
+independent of `session.max_events`: a bucket counter keeps counting after the
+events it counted have aged out of the event list.
+
+Same trust model as the rest of the listener — unauthenticated. The response
+carries no message content, but `group=method` exposes model names and
+`group=plugin` the pipeline composition, and cost figures disclose spend.
 
 ### Gotcha: denied requests
 
