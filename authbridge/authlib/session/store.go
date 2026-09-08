@@ -139,7 +139,11 @@ func New(ttl time.Duration, maxEvents int, maxSessions int) *Store {
 		maxSessions: maxSessions,
 		stop:        make(chan struct{}),
 	}
-	go s.backgroundCleanup()
+	// No reaper when nothing can expire: with ttl <= 0 the interval below clamps to one
+	// second and Cleanup would wake every second forever to find nothing.
+	if ttl > 0 {
+		go s.backgroundCleanup()
+	}
 	return s
 }
 
@@ -489,6 +493,16 @@ func (s *Store) evictOldestLocked() {
 }
 
 func (s *Store) isExpired(sess *entry, now time.Time) bool {
+	// ttl <= 0 means sessions never expire on time, which is the default. Time-based
+	// expiry read as data loss: traffic you were looking at vanished because you
+	// stepped away, not because anything overflowed. Nothing about it was load-bearing
+	// either — memory is bounded by maxSessions x maxEvents, and a session that stops
+	// being used is evicted by the oldest-first rule once maxSessions is exceeded. What
+	// it bought was hygiene (raw prompts not lingering in memory), which is still
+	// available by setting session.ttl explicitly.
+	if s.ttl <= 0 {
+		return false
+	}
 	return now.Sub(sess.UpdatedAt) > s.ttl
 }
 
