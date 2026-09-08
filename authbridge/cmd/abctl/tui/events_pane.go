@@ -24,12 +24,21 @@ func newEventsTable() table.Model {
 			{Title: "PHASE", Width: 7},
 			{Title: "ACTION", Width: actionColWidth},
 			{Title: "PLUGIN", Width: 18},
-			{Title: "METHOD", Width: 22},
+			// methodColWidth rather than 22: the widest realistic value is a model
+			// name ("claude-opus-5"), and the columns freed pay for splitting
+			// TOKENS and COST apart below.
+			{Title: "METHOD", Width: methodColWidth},
 			{Title: "STATUS", Width: 7},
 			{Title: "DURATION", Width: 10},
-			// Wide enough for "33,650  −10.6k  $0.1289": the request total, what
-			// tool-prune removed from it, and what that was worth.
-			{Title: "TOKENS / SAVED", Width: 24},
+			// 17, not 15: sized for a SEVEN-digit prompt, "1,048,576(−12.3k)".
+			// Million-token contexts are in service, and bubbles truncates a cell
+			// at the column width, so 15 rendered "1,048,576(−1…" — dropping the
+			// saving, which is the half of this cell that appears nowhere else.
+			{Title: "TOKENS", Width: 17},
+			// 19 fits the widest cell the formatter can produce:
+			// "<$0.0001(−<$0.0001)", where both halves fell under the
+			// four-decimal floor. The ordinary shape is "$0.2546(−$0.0037)" at 17.
+			{Title: "COST", Width: 19},
 			{Title: "HOST", Width: 20},
 		}),
 		table.WithFocused(true),
@@ -139,7 +148,8 @@ func (m *model) rebuildEventsTable() {
 			eventMethod(*ev),
 			statusCell(*ev),
 			durationCell(*ev),
-			m.tokensCellWithSaving(eventRows, partner, i, ev),
+			m.tokensCell(eventRows, partner, i, ev),
+			m.costCell(eventRows, partner, i, ev),
 			truncStr(ev.Host, 20),
 		})
 		m.visibleRows = append(m.visibleRows, er)
@@ -322,6 +332,19 @@ func shadowFlagged(invs []pipeline.Invocation) bool {
 // passing while the label overflowed.
 const actionColWidth = 8
 
+// methodColWidth is the METHOD column's width, shared with eventMethod for the
+// same reason actionColWidth is named: two independent numbers drifted apart the
+// moment the column was narrowed to pay for the TOKENS/COST split.
+//
+// 18 rather than 14. The values reaching it are wider than a short model alias:
+// eventMethodValue also returns A2A and MCP method names
+// ("notifications/initialized", 25) and dated provider model IDs
+// ("claude-sonnet-4-5-20250929", 26). At 14 both "claude-sonnet-4-5-20250929"
+// and "claude-sonnet-4-20250514" render as "claude-sonnet…", which makes the
+// column unable to say which model the COST cell beside it is reporting — the
+// one thing it most needs to disambiguate now that costs are per-row.
+const methodColWidth = 18
+
 // tunnelAction is the ACTION cell for an opaque CONNECT that no plugin acted on.
 //
 // It must fit actionColWidth. Truncation matters more here than on other rows:
@@ -459,8 +482,13 @@ func eventMethodValue(e pipeline.SessionEvent) string {
 
 // eventMethod is the display form of the method/model — truncated to the
 // METHOD column width. Render-only; never compare or search on it.
+//
+// Shares methodColWidth with the column definition rather than repeating the
+// number, the same drift guard actionColWidth provides for ACTION: the two were
+// already 22 and 14 after the column shrank, which bubbles hid by re-truncating
+// each cell at the column width anyway.
 func eventMethod(e pipeline.SessionEvent) string {
-	return truncStr(eventMethodValue(e), 22)
+	return truncStr(eventMethodValue(e), methodColWidth)
 }
 
 func statusCell(e pipeline.SessionEvent) string {
@@ -470,15 +498,32 @@ func statusCell(e pipeline.SessionEvent) string {
 	return fmt.Sprintf("%d", e.StatusCode)
 }
 
-// tokensCell shows the total token count for inference response rows so
-// operators can spot expensive calls while scrolling. Blank for every
-// other event type (a2a, mcp, inference *request*). Uses the same
-// thousands-separator formatter as the sessions-pane totals.
-func tokensCell(e pipeline.SessionEvent) string {
-	if e.Phase != pipeline.SessionResponse || e.Inference == nil || e.Inference.TotalTokens == 0 {
+// generatedTokensCell shows what a response generated. Deliberately the output
+// count and not TotalTokens: for a long-running agent the prompt dominates the
+// aggregate so completely (cache reads in the hundreds of thousands) that
+// TotalTokens barely moves between turns, hiding the one component that actually
+// varies. The prompt side is on the request row, so between them the two rows
+// account for the whole exchange without either repeating the other.
+//
+// They usually also ADD UP to TotalTokens, but that is not guaranteed and is not
+// relied on: TokenUsage.Fill prefers the provider's own reported total when it
+// sends one, which need not equal the parts. Each row reports its own measured
+// half, so the display stays honest either way.
+//
+// The CompletionTokens fallback cannot currently fire — Fill sets it from the
+// same Output value read above — and is kept only for symmetry with promptTokens.
+func generatedTokensCell(e *pipeline.SessionEvent) string {
+	if e.Inference == nil {
 		return ""
 	}
-	return formatCount(e.Inference.TotalTokens)
+	n := e.Inference.OutputTokens
+	if n == 0 {
+		n = e.Inference.CompletionTokens
+	}
+	if n <= 0 {
+		return ""
+	}
+	return formatCount(n)
 }
 
 func durationCell(e pipeline.SessionEvent) string {
@@ -795,49 +840,110 @@ func truncateScopes(scopes []string, n int) string {
 	return strings.Join(scopes[:n], ", ") + fmt.Sprintf(" +%d more", len(scopes)-n)
 }
 
-// tokensCellWithSaving renders the TOKENS / SAVED cell, splitting the two halves
-// across the rows they actually belong to:
+// pairedResponse resolves the response row belonging to a request row, or nil
+// when there isn't one yet.
 //
-//   - a REQUEST row that tool-prune rewrote shows what was removed from it,
-//     which is where the plugin's own `modify` invocation already sits;
-//   - a RESPONSE row shows the token total the provider billed.
-//
-// The saving deliberately does NOT go on the response row. Nothing about the
-// response was reduced, and showing it there reads as though it were — the
-// pruning happened on the way out. The two rows share a # so they are read
-// together anyway.
-//
-// The response is still what makes the request-side figure computable: it
-// supplies the prompt token total behind the bytes-to-tokens ratio and the tier
-// that sets the rate. So a request row looks forward to its paired response.
-func (m *model) tokensCellWithSaving(rows []eventRow, partner map[int]int, i int, ev *pipeline.SessionEvent) string {
-	if ev.Phase == pipeline.SessionResponse {
-		return tokensCell(*ev)
-	}
-	if ev.Phase != pipeline.SessionRequest {
-		return ""
-	}
-	ps, ok := decodePruneSaving(ev)
-	if !ok {
-		return ""
-	}
+// Extracted because the TOKENS and COST cells both need it and the id guard must
+// not drift between them: only a response that pairs by RequestID may be used. A
+// heuristically-matched response can belong to a different request, and its cache
+// tier would then pick the wrong rate — a 12.5x error presented as a measurement.
+func pairedResponse(rows []eventRow, partner map[int]int, i int, ev *pipeline.SessionEvent) *pipeline.SessionEvent {
 	j, ok := partner[i]
 	if !ok || j < 0 || j >= len(rows) {
-		return "" // no response yet: the ratio and tier are not known
+		return nil // no response yet: the ratio and tier are not known
 	}
 	resp := rows[j].event
 	if resp == nil || resp.Phase != pipeline.SessionResponse {
-		return ""
+		return nil
 	}
-	// Only price against a response that pairs by id. A heuristically-matched
-	// response may belong to a different request, and its cache tier would
-	// then pick the wrong rate — a 12.5x error presented as a measurement.
 	if ev.RequestID == "" || resp.RequestID != ev.RequestID {
+		return nil
+	}
+	return resp
+}
+
+// tokensCell renders the TOKENS column, split so the two rows of an exchange sum
+// to the billed total rather than one repeating the other:
+//
+//   - a REQUEST row shows the prompt tokens it sent, with what tool-prune kept
+//     off them in parentheses — which is where the plugin's `modify` invocation
+//     already sits;
+//   - a RESPONSE row shows the tokens generated.
+//
+// The prompt count lives on the response event because the provider is the only
+// party that tokenizes, but it is a request-side quantity — which is what lets a
+// request row show a total at all. So a request row looks forward to its pair.
+func (m *model) tokensCell(rows []eventRow, partner map[int]int, i int, ev *pipeline.SessionEvent) string {
+	switch ev.Phase {
+	case pipeline.SessionResponse:
+		return generatedTokensCell(ev)
+	case pipeline.SessionRequest:
+		resp := pairedResponse(rows, partner, i, ev)
+		if resp == nil {
+			return ""
+		}
+		var saved float64
+		var projected bool
+		if ps, ok := decodePruneSaving(ev); ok {
+			saved, _, _ = savedTokensAndCost(ps, resp.Inference)
+			projected = ps.Projected
+		}
+		return formatTokensWithSaving(promptTokens(resp.Inference), saved, projected)
+	default:
 		return ""
 	}
-	tokens, usd, ok := savedTokensAndCost(ps, resp.Inference)
-	if !ok {
+}
+
+// costCell renders the COST column.
+//
+// The two rows are NOT two halves of one sum, unlike TOKENS:
+//
+//   - a REQUEST row shows what its prompt cost, modelled per-tier from the rates
+//     tool-prune published, with the saving in parentheses. Blank without
+//     tool-prune, which is the only plugin that puts rates on the wire.
+//   - a RESPONSE row shows what the whole exchange cost, as reported by
+//     litellm-budget-track: the gateway's own post-discount figure when it
+//     stamped one, otherwise the plugin's own per-token pricing. A streamed
+//     response always reports 0 in the header, so for a streaming agent the
+//     modelled path is the common case rather than the exception.
+//
+// Both figures in this column can therefore be models, and neither is marked as
+// one. That is deliberate: marking the response cost while leaving the request
+// cost — which is always modelled — unmarked would imply a distinction the column
+// does not actually draw. costEvent.Source carries the provenance for anyone who
+// needs it.
+//
+// The response figure *includes* the request figure. It is not the generated-token
+// cost, because no plugin publishes an output rate: tool-prune deliberately omits
+// one (it only ever shrinks the prompt, so attributing output cost to it would be
+// false) and budget-track emits a finished total rather than its rates. Deriving
+// the completion cost by subtraction would concentrate all of the prompt model's
+// error into it and can go negative, so the reported total is shown instead of a
+// computed delta.
+func (m *model) costCell(rows []eventRow, partner map[int]int, i int, ev *pipeline.SessionEvent) string {
+	switch ev.Phase {
+	case pipeline.SessionResponse:
+		ce, ok := decodeCostEvent(ev)
+		if !ok {
+			return ""
+		}
+		return formatUSDCell(ce.CostUSD)
+	case pipeline.SessionRequest:
+		resp := pairedResponse(rows, partner, i, ev)
+		if resp == nil {
+			return ""
+		}
+		ps, ok := decodePruneSaving(ev)
+		if !ok {
+			return ""
+		}
+		total, ok := promptCost(ps, resp.Inference)
+		if !ok {
+			return ""
+		}
+		_, savedUSD, _ := savedTokensAndCost(ps, resp.Inference)
+		return formatUSDWithSaving(total, savedUSD, ps.Projected)
+	default:
 		return ""
 	}
-	return formatSavedOnly(tokens, usd, ps.RateSource, ps.Projected)
 }

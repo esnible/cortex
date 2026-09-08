@@ -76,28 +76,6 @@ func savedTokensAndCost(ps pruneSaving, resp *pipeline.InferenceExtension) (toke
 	return tokens, tokens * rate, true
 }
 
-// formatSavedOnly renders a request row's saving: what was removed and what it
-// was worth. No total, because a request has no billed token count — that
-// belongs to the response, on its own row.
-//
-// A projected saving (on_error: observe, where the bytes were measured but not
-// removed) is prefixed "~" and drops the "−". Rendering it identically to a real
-// saving would invite an operator to add up money that was still spent, and
-// observe mode exists precisely to be trusted while it is not yet enforcing.
-func formatSavedOnly(tokens, usd float64, rateSource string, projected bool) string {
-	if tokens <= 0 {
-		return ""
-	}
-	cell := "−" + formatCompact(tokens)
-	if projected {
-		cell = "~" + formatCompact(tokens)
-	}
-	if usd > 0 && rateSource != "none" {
-		cell += fmt.Sprintf("  $%s", formatUSD(usd))
-	}
-	return cell
-}
-
 // formatCompact renders a token count tersely enough for a table cell: 10577
 // becomes "10.6k". Exact below 1000, where the extra digits still fit.
 func formatCompact(v float64) string {
@@ -122,4 +100,30 @@ func formatUSD(v float64) string {
 	default:
 		return fmt.Sprintf("%.4f", v)
 	}
+}
+
+// formatUSD4 is formatUSD at fixed precision, for the case where two amounts of
+// different magnitude share one column and their decimal points must line up.
+// Neither returns a "$" — the caller places it, since a saving needs it inside
+// the parentheses.
+func formatUSD4(v float64) string { return fmt.Sprintf("%.4f", v) }
+
+// usdFloor is the smallest amount four decimal places can state. Anything
+// positive below half of it rounds to "0.0000".
+const usdFloor = 0.0001
+
+// formatUSDCell renders a dollar amount for a table cell, with the "$" attached
+// and a floor below which it says so rather than rounding to zero.
+//
+// The floor exists because %.4f renders anything under $0.00005 as "$0.0000",
+// which reads as "this was free" — the exact reading decodeCostEvent (declining a
+// cost of 0) and promptCost (declining an unpriced model rather than showing
+// $0.00) both go out of their way to avoid. Reintroducing it at the formatting
+// layer would undo both. Reachable on a small cache-read-only request: 100
+// cache-read tokens at a typical rate is $0.000038.
+func formatUSDCell(v float64) string {
+	if v > 0 && v < usdFloor/2 {
+		return "<$" + formatUSD4(usdFloor)
+	}
+	return "$" + formatUSD4(v)
 }

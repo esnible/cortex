@@ -88,31 +88,79 @@ func TestSavedTokensAndCost_TierDecidesTheValue(t *testing.T) {
 	}
 }
 
-// TestFormatSavedOnly: a request row carries the saving, not a total — the
-// billed token count belongs to the response, on its own row. Showing a saving
-// beside a response total read as though the response had shrunk, which it had
-// not.
-func TestFormatSavedOnly(t *testing.T) {
-	got := formatSavedOnly(10577.5, 0.05024, "default", false)
-	for _, want := range []string{"−10.6k", "$0.050"} {
+// TestFormatTokensWithSaving: a request row carries its prompt total with the
+// saving in parentheses. The total is exact-with-commas (a measured count) and
+// the saving compact (a derived estimate), so the two are not read as equally
+// precise.
+func TestFormatTokensWithSaving(t *testing.T) {
+	got := formatTokensWithSaving(681300, 10577.5, false)
+	for _, want := range []string{"681,300", "(−10.6k)"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("cell %q missing %q", got, want)
 		}
 	}
-	if strings.Contains(got, ",") {
-		t.Errorf("cell %q should carry no billed total", got)
+	// Nothing saved: a bare total, no empty parentheses.
+	if got := formatTokensWithSaving(681300, 0, false); got != "681,300" {
+		t.Errorf("no-saving cell = %q, want %q", got, "681,300")
 	}
-	// Nothing saved: an empty cell, so unrelated request rows stay blank.
-	if got := formatSavedOnly(0, 0, "default", false); got != "" {
-		t.Errorf("no-saving cell = %q, want empty", got)
+	// No total: blank, so rows without a paired response stay empty rather than
+	// rendering a lone "0".
+	if got := formatTokensWithSaving(0, 10577.5, false); got != "" {
+		t.Errorf("no-total cell = %q, want empty", got)
 	}
-	// Unpriced model: tokens shown, no dollar figure invented.
-	got = formatSavedOnly(10577.5, 0, "none", false)
-	if strings.Contains(got, "$") {
-		t.Errorf("cell %q shows a price for an unpriced model", got)
+}
+
+// TestFormatUSDWithSaving: both halves at fixed 4dp. formatUSD's variable
+// precision would render the total at 3dp and the saving at 4dp, misaligning the
+// decimal point in a single column and implying different accuracy.
+func TestFormatUSDWithSaving(t *testing.T) {
+	got := formatUSDWithSaving(0.2546, 0.0037, false)
+	if got != "$0.2546(−$0.0037)" {
+		t.Errorf("cell = %q, want %q", got, "$0.2546(−$0.0037)")
 	}
-	if !strings.Contains(got, "−10.6k") {
-		t.Errorf("cell %q should still show the token saving", got)
+	if got := formatUSDWithSaving(0.2546, 0, false); got != "$0.2546" {
+		t.Errorf("no-saving cell = %q, want %q", got, "$0.2546")
+	}
+	if got := formatUSDWithSaving(0, 0.0037, false); got != "" {
+		t.Errorf("no-total cell = %q, want empty", got)
+	}
+}
+
+// TestSavingSignProjected: an observe-mode figure must be visually distinct from
+// a realized one, or an operator adds up money that was still spent.
+func TestSavingSignProjected(t *testing.T) {
+	real := formatTokensWithSaving(681300, 10577.5, false)
+	proj := formatTokensWithSaving(681300, 10577.5, true)
+	if real == proj {
+		t.Fatalf("projected renders identically to realized: %q", real)
+	}
+	if !strings.Contains(proj, "(~") {
+		t.Errorf("projected cell %q should mark the saving with ~", proj)
+	}
+	if strings.Contains(proj, "−") {
+		t.Errorf("projected = %q, must not claim bytes were removed", proj)
+	}
+	realUSD := formatUSDWithSaving(0.2546, 0.0037, false)
+	projUSD := formatUSDWithSaving(0.2546, 0.0037, true)
+	if realUSD == projUSD {
+		t.Fatalf("projected cost renders identically to realized: %q", realUSD)
+	}
+	if strings.Contains(projUSD, "−") {
+		t.Errorf("projected cost = %q, must not claim money was not spent", projUSD)
+	}
+}
+
+// TestUnpricedModelShowsNoCost: RateSource "none" means no rate was resolvable,
+// so the COST cell must stay blank rather than invent a $0.00 that reads as a
+// free prompt. The tokens cell is unaffected — the count is still real.
+func TestUnpricedModelShowsNoCost(t *testing.T) {
+	resp := &pipeline.InferenceExtension{InputTokens: 100, CacheReadTokens: 500}
+	if _, ok := promptCost(pruneSaving{RateSource: "none", RateInput: 1e-6}, resp); ok {
+		t.Error("an unpriced model produced a cost figure")
+	}
+	// A resolved rate does price.
+	if _, ok := promptCost(pruneSaving{RateSource: "default", RateInput: 1e-6, RateCacheRead: 1e-7}, resp); !ok {
+		t.Error("a priced model produced no cost figure")
 	}
 }
 
@@ -161,10 +209,11 @@ func TestComputeEventPairs_DuplicateResponseStaysUnpaired(t *testing.T) {
 	}
 }
 
-// TestTokensCellWithSaving_RequiresAnIDMatch: pricing against a heuristically
-// matched response could take its cache tier from a different request, and the
-// tiers are ~12.5x apart — a wrong figure presented as a measurement.
-func TestTokensCellWithSaving_RequiresAnIDMatch(t *testing.T) {
+// TestRequestCells_RequireAnIDMatch: pricing against a heuristically matched
+// response could take its cache tier from a different request, and the tiers are
+// ~12.5x apart — a wrong figure presented as a measurement. Both request-side
+// cells must enforce it, since both read the paired response.
+func TestRequestCells_RequireAnIDMatch(t *testing.T) {
 	req := reqEvent(t, wire)
 	req.RequestID = "aaa"
 	resp := &pipeline.SessionEvent{
@@ -172,30 +221,21 @@ func TestTokensCellWithSaving_RequiresAnIDMatch(t *testing.T) {
 		Inference: &pipeline.InferenceExtension{CacheWriteTokens: 24701, TotalTokens: 33582},
 	}
 	rows := []eventRow{{event: req}, {event: resp}}
+	partner := map[int]int{0: 1, 1: 0}
 	m := &model{}
-	if got := m.tokensCellWithSaving(rows, map[int]int{0: 1, 1: 0}, 0, req); got != "" {
-		t.Errorf("priced against a mismatched response: %q", got)
+	if got := m.tokensCell(rows, partner, 0, req); got != "" {
+		t.Errorf("tokens priced against a mismatched response: %q", got)
+	}
+	if got := m.costCell(rows, partner, 0, req); got != "" {
+		t.Errorf("cost priced against a mismatched response: %q", got)
 	}
 	// Matching ids do price.
 	resp.RequestID = "aaa"
-	if got := m.tokensCellWithSaving(rows, map[int]int{0: 1, 1: 0}, 0, req); got == "" {
-		t.Error("an id-matched pair should price")
+	if got := m.tokensCell(rows, partner, 0, req); got == "" {
+		t.Error("an id-matched pair should show tokens")
 	}
-}
-
-// TestFormatSavedOnlyProjected: an observe-mode figure must be visually distinct
-// from a realized one, or an operator adds up money that was still spent.
-func TestFormatSavedOnlyProjected(t *testing.T) {
-	real := formatSavedOnly(10577.5, 0.05024, "default", false)
-	proj := formatSavedOnly(10577.5, 0.05024, "default", true)
-	if real == proj {
-		t.Fatalf("projected renders identically to realized: %q", real)
-	}
-	if !strings.HasPrefix(proj, "~") {
-		t.Errorf("projected = %q, want a leading ~", proj)
-	}
-	if strings.Contains(proj, "−") {
-		t.Errorf("projected = %q, must not claim bytes were removed", proj)
+	if got := m.costCell(rows, partner, 0, req); got == "" {
+		t.Error("an id-matched pair should show a cost")
 	}
 }
 
