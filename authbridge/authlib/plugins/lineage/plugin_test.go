@@ -1066,8 +1066,7 @@ func TestPrincipalFacts_OutboundNeverEmitsPrincipal(t *testing.T) {
 }
 
 // The extproc listener populates pctx.Path from the raw :path pseudo-header,
-// query string included; url.path and the span-name fallback must never
-// carry it.
+// query string included; url.path must never carry it.
 func TestQueryStringNeverEmitted(t *testing.T) {
 	p, exp := newTestPlugin(t)
 	pctx := fakeContext(pipeline.Outbound, http.Header{})
@@ -1490,9 +1489,11 @@ func headersEqual(a, b http.Header) bool {
 }
 
 // TestInit_RefusesToStartWithoutIdentity locks the v1.3 rule at the identity
-// boundary: a pod whose self identity cannot be resolved must fail at boot,
-// never serve traffic under a plausible-but-wrong label (the old behavior
-// emitted lineage.self.id="agent" from the empty-string serviceLabel).
+// boundary: a pod with no identity source, or a blank inline one, must fail
+// at boot rather than serve traffic under a plausible-but-wrong label (the
+// old behavior emitted lineage.self.id="agent" from the empty-string
+// serviceLabel). The recoverable shape — a self_id_file not readable yet — is
+// TestInit_MissingSelfIDFileIsNotFatal.
 func TestInit_RefusesToStartWithoutIdentity(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -1500,6 +1501,7 @@ func TestInit_RefusesToStartWithoutIdentity(t *testing.T) {
 		wantErr bool
 	}{
 		{"inline self_id starts", Config{OTelEndpoint: "localhost:4317", SelfID: "weather-service"}, false},
+		{"blank inline self_id refuses", Config{OTelEndpoint: "localhost:4317", SelfID: " \n"}, true},
 		{"no identity source refuses", Config{OTelEndpoint: "localhost:4317"}, true},
 	}
 	for _, tc := range cases {
@@ -1574,21 +1576,39 @@ func TestInit_MissingSelfIDFileIsNotFatal(t *testing.T) {
 }
 
 // TestShutdown_StopsIdentityPoll: a poller must not flip readiness back on
-// after the tracer it would record with is gone.
+// after the tracer it would record with is gone — including when the file
+// lands in the same instant Shutdown runs, which is why the file is written
+// BEFORE Shutdown here and the loop is tight: the read-then-store window in
+// the poller races Shutdown's cancel, and only the ordering awaitIdentity
+// documents closes it.
 func TestShutdown_StopsIdentityPoll(t *testing.T) {
-	path := t.TempDir() + "/client-id.txt"
-	p := initPolling(t, path)
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	if err := p.Shutdown(ctx); err != nil {
-		t.Fatalf("Shutdown: %v", err)
+	restore := identityPollInterval
+	identityPollInterval = 50 * time.Microsecond
+	t.Cleanup(func() { identityPollInterval = restore })
+	dir := t.TempDir()
+	var plugins []*LineageTelemetry
+	for i := 0; i < 300; i++ {
+		path := fmt.Sprintf("%s/client-id-%d.txt", dir, i)
+		p := NewLineageTelemetry()
+		p.cfg = Config{OTelEndpoint: "localhost:4317", SelfIDFile: path}
+		if err := p.Init(context.Background()); err != nil {
+			t.Fatalf("Init: %v", err)
+		}
+		if err := os.WriteFile(path, []byte("weather-service\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		if err := p.Shutdown(ctx); err != nil {
+			t.Fatalf("Shutdown: %v", err)
+		}
+		cancel()
+		plugins = append(plugins, p)
 	}
-	if err := os.WriteFile(path, []byte("weather-service\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	time.Sleep(20 * identityPollInterval)
-	if p.Ready() {
-		t.Fatal("the identity poller outlived Shutdown and made the plugin ready again")
+	time.Sleep(200 * identityPollInterval)
+	for i, p := range plugins {
+		if p.Ready() {
+			t.Fatalf("plugin %d: the identity poller outlived Shutdown and made the plugin ready again", i)
+		}
 	}
 }
 

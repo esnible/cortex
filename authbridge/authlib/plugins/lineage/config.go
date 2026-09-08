@@ -167,7 +167,7 @@ type Config struct {
 	// Defaults to /shared/client-id.txt (the operator-mounted credential),
 	// which can land after the pod starts: until it is readable the plugin is
 	// not ready and skips every exchange, polling the file in background (see
-	// Init). Ignored when SelfID is set.
+	// Init), and /readyz names it meanwhile. Ignored when SelfID is set.
 	SelfIDFile string `json:"self_id_file" description:"Read when self_id is empty; until it is readable the plugin is not ready and emits nothing. Refused at start only when self_id is also empty." default:"/shared/client-id.txt"`
 }
 

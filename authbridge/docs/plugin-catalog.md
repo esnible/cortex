@@ -152,8 +152,8 @@ denial by a plugin ordered before it emits no spans.
 - `mint_traceparent` (bool) — forward a `traceparent` naming this request span when the request carried no valid one; `false` = a pure observer that writes no `traceparent`. Default `true`.
 - `bypass_paths` (`[]string`) — path globs (`path.Match`, query stripped, path normalized — the shared bypass matcher `jwt-validation` and `sparc` use) that produce no spans. Default `/.well-known/*`, `/healthz`, `/readyz`, `/health`. Setting either bypass key replaces its default list rather than extending it, as in `ibac` / `sparc` / `cpex`; an entry matching everything is refused at start.
 - `bypass_hosts` (`[]string`) — outbound host globs (`path.Match`, port stripped, case folded) that produce no spans; ignored inbound, where `Host` is caller-controlled. Default `otel-collector`, `otel-collector.*`, `jaeger`, `jaeger.*`, `zipkin`, `zipkin.*`, `prometheus`, `prometheus.*`.
-- `self_id` (string) — this workload's identity, emitted as `lineage.self.id`.
-- `self_id_file` (string) — read when `self_id` is empty. Until it is readable and carries an identity the plugin is not ready and skips every exchange (no span, no header), re-reading the file in the background — the same handling `jwt-validation` gives this path, so a late Secret mount never fails the sidecar. Refused at start only when `self_id` is also empty. Default `/shared/client-id.txt`.
+- `self_id` (string) — this workload's identity, emitted as `lineage.self.id`; a blank value is refused at start.
+- `self_id_file` (string) — read when `self_id` is empty. Until it is readable and carries an identity the plugin is not ready and skips every exchange (no span, no header), re-reading the file in the background while `/readyz` names it — the same handling `jwt-validation` gives this path, so a late Secret mount never fails the sidecar (a pod probing `/readyz` stays out of rotation until the file lands). Refused at start only when `self_id` is also empty. Default `/shared/client-id.txt`.
 
 ## `litellm-budget-track`
 

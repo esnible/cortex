@@ -247,14 +247,22 @@ func (p *LineageTelemetry) Init(ctx context.Context) error {
 	// readable yet, or is present but blank, leaves the plugin NOT ready:
 	// OnRequest skips every exchange — no span, no header written — while a
 	// goroutine re-reads the file and flips readiness once an identity
-	// appears. Only the unrecoverable shape is fatal: no identity source
-	// configured at all, which no amount of waiting fixes; that path returns
-	// before the gRPC client and batch-span-processor goroutine below exist,
-	// so a refused start leaks nothing.
+	// appears; /readyz names the plugin meanwhile (the Readier contract for a
+	// plugin waiting on a mounted credential — in the stock chain jwt-validation
+	// already holds readiness on this same file). Only the unrecoverable shapes
+	// are fatal: no identity source configured at all, or a blank inline
+	// self_id, which no amount of waiting fixes; both return before the gRPC
+	// client and batch-span-processor goroutine below exist, so a refused
+	// start leaks nothing.
 	var pending string // self_id_file left for the poller to resolve
 	switch {
 	case p.cfg.SelfID != "":
-		p.selfID = p.cfg.SelfID
+		// Same reading as the file path: a blank value carries no identity
+		// and would key an entity on whitespace at the consumer.
+		p.selfID = strings.TrimSpace(p.cfg.SelfID)
+		if p.selfID == "" {
+			return fmt.Errorf("lineage-telemetry: self_id %q carries no identity", p.cfg.SelfID)
+		}
 	case p.cfg.SelfIDFile != "":
 		id, err := readIdentityFile(p.cfg.SelfIDFile)
 		if err != nil {
@@ -362,10 +370,18 @@ var identityPollInterval = 2 * time.Second
 
 // awaitIdentity is the background half of Init's identity resolution: it
 // re-reads self_id_file every interval until it yields an identity, then
-// flips readiness. The WARN is throttled to the 1st, 2nd, 4th, 8th… attempt
-// on the export-failure WARN's schedule (logExportFailure): a missing mount
-// is a long, steady condition, and the running attempt count is in every
-// line. Shutdown cancels ctx.
+// flips readiness. It is its own loop rather than config.WaitForCredentialFile
+// because that helper returns on any non-empty file, and a blank file must
+// keep waiting, not spin. The WARN is throttled to the 1st, 2nd, 4th, 8th…
+// attempt on the export-failure WARN's schedule (logExportFailure) and then
+// goes quiet — a missing mount is a long, steady condition, the running
+// attempt count is in every line, and /readyz keeps naming the plugin.
+//
+// Shutdown cancels ctx, and the two are ordered so a poller that resolves the
+// file during Shutdown cannot leave the plugin ready: Shutdown cancels BEFORE
+// it clears readiness, and the poller re-checks ctx AFTER it sets readiness.
+// If the poller sees the cancel it undoes its own store; if it does not, the
+// cancel — and Shutdown's clear — have not happened yet and will land after.
 func (p *LineageTelemetry) awaitIdentity(ctx context.Context, path string, every time.Duration) {
 	var attempts uint64
 	for {
@@ -379,6 +395,11 @@ func (p *LineageTelemetry) awaitIdentity(ctx context.Context, path string, every
 		if err == nil {
 			p.selfID = id
 			p.ready.Store(true)
+			if ctx.Err() != nil {
+				// Shutdown raced the read; see the ordering note above.
+				p.ready.Store(false)
+				return
+			}
 			slog.Info("lineage-telemetry: identity loaded from self_id_file; recording spans", "path", path, "self_id", id)
 			return
 		}
@@ -444,13 +465,14 @@ func isLoopback(endpoint string) bool {
 // longer ready even if tp/conn are nil (post-failed-Init) or their shutdown
 // errors, so a pipeline orchestrator checking Ready() before routing sees the
 // lifecycle transition. This mirrors the p.ready.Store(true) in Init. The
-// self_id_file poller, if Init started one, is cancelled so it cannot flip
-// readiness back on after the tracer is gone.
+// self_id_file poller, if Init started one, is cancelled FIRST, so it cannot
+// flip readiness back on after the tracer is gone — see awaitIdentity for
+// why the order of the cancel and the clear matters.
 func (p *LineageTelemetry) Shutdown(ctx context.Context) error {
-	p.ready.Store(false)
 	if cancel := p.bgCancel.Swap(nil); cancel != nil {
 		(*cancel)()
 	}
+	p.ready.Store(false)
 	var tpErr error
 	if p.tp != nil {
 		tpErr = p.tp.Shutdown(ctx)

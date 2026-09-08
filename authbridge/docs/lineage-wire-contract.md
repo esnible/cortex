@@ -137,7 +137,7 @@ parent at the trace edge, by design.
 
 | header | when | value |
 |---|---|---|
-| `tracestate` | both directions, whenever a valid context exists after §3.3 — except a bypassed exchange (§6), a not-yet-ready producer, or an inbound `tracestate` that refuses the insert (malformed member; skipped with a WARN) | the caller's members with `lineage-parent` set to this request span id |
+| `tracestate` | both directions, whenever a valid context exists after §3.3 — except a bypassed exchange (§6) or a not-yet-ready producer. A malformed or over-long (more than 32 members) inbound `tracestate` is dropped whole by the extractor before the stamp, per W3C, and the stamp is written as the only member; a list at exactly 32 members loses its right-most member to make room | the caller's members with `lineage-parent` set to this request span id |
 | `traceparent` | only when the request carried no valid one and `mint_traceparent` is on | `00-<trace id>-<this request span id>-<flags>` |
 
 Nothing else is written. The listener is responsible for carrying these header mutations to the
@@ -243,8 +243,8 @@ construction.
 | `mint_traceparent` | `true` | §3.3; `false` = a pure observer that never writes a `traceparent` |
 | `bypass_paths` | `/.well-known/*`, `/healthz`, `/readyz`, `/health` | path globs (`path.Match`; `*` does not cross `/`) that produce no spans, matched by the shared bypass package (query stripped, path normalized) — the same key and semantics as `jwt-validation` and `sparc` |
 | `bypass_hosts` | `otel-collector`, `otel-collector.*`, `jaeger`, `jaeger.*`, `zipkin`, `zipkin.*`, `prometheus`, `prometheus.*` | outbound host globs that produce no spans |
-| `self_id` | — | this workload's identity (§4: reduced to its last `/`-segment) |
-| `self_id_file` | `/shared/client-id.txt` | read when `self_id` is empty. Until it is readable and carries an identity the producer is not ready — every exchange skipped, nothing written to the wire — and it re-reads the file in the background; the process starts regardless, so the plugin never takes the sidecar's other plugins down over a late mount. Refused at start only when `self_id` is also empty |
+| `self_id` | — | this workload's identity (§4: reduced to its last `/`-segment); a blank value is refused at start |
+| `self_id_file` | `/shared/client-id.txt` | read when `self_id` is empty. Until it is readable and carries an identity the producer is not ready — every exchange skipped, nothing written to the wire — and it re-reads the file in the background, the sidecar's `/readyz` naming it meanwhile (a pod whose readiness probe uses `/readyz` stays out of rotation until the file lands — the `Readier` contract for a mounted credential, and in the stock chain `jwt-validation` already holds readiness on this same file); the process starts regardless, so the plugin never takes the sidecar's other plugins down over a late mount. Refused at start only when `self_id` is also empty |
 
 Setting `bypass_paths` or `bypass_hosts` **replaces** the default list rather than extending it —
 the convention the `ibac`, `sparc` and `cpex` plugins use for their keys of the same name. An
@@ -306,10 +306,12 @@ mechanisms named as removed are not to be reintroduced.
   not-ready, skips every exchange (no span, no header) and re-reads the file until an identity
   appears. Until now the refusal failed the whole sidecar — every plugin in its chain — over a
   Secret that the platform mounts after the pod starts. Refusal remains for a missing identity
-  source (neither `self_id` nor `self_id_file`). And the span name no longer falls back to `url.path`
+  source (neither `self_id` nor `self_id_file`) and for a blank `self_id`. And the span name no longer falls back to `url.path`
   when no parser named an operation: an unparsed exchange is `{self.id} http`, so the set of
   span names stays bounded (a `/tasks/{id}` surface minted one name per request); `url.path` is
-  unchanged as an attribute. Nothing else on the wire changes.
+  unchanged as an attribute. Prose: §3.4 no longer describes a refused stamp on a malformed inbound
+  `tracestate` — the extractor drops such a list before the stamp, which is then written alone.
+  Nothing else on the wire changes.
 - **v1.6.2** — `url.path` and the span-name fallback derived from it are query-free: the producer
   strips anything from `?` on before emission. Until now the envoy-sidecar listener's raw `:path`
   pseudo-header put the query string on the wire regardless of `capture_io`; the proxy listeners
