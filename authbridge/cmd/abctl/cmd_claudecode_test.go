@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/rossoctl/cortex/authbridge/authlib/tlsbridge"
 )
 
 // settingsWithSecret is shaped like a real settings.json: unrelated top-level
@@ -380,15 +382,25 @@ func TestClaudeCodeEnable_SilentWhenCAPresent(t *testing.T) {
 	if code := claudeCodeEnable(settings, cfg, true, &out, &errb); code != 0 {
 		t.Fatalf("first pass: %s", errb.String())
 	}
-	caPath := readEnv(t, settings)[envCACerts]
+	envAfter := readEnv(t, settings)
+	caPath := envAfter[envCACerts]
 	if caPath == "" {
 		t.Fatal("no CA path was written")
 	}
 	if err := os.MkdirAll(filepath.Dir(caPath), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(caPath, []byte("-----BEGIN CERTIFICATE-----\n"), 0o600); err != nil {
-		t.Fatal(err)
+	// Both trust files must exist to silence the notes: ca.crt for Node, and the
+	// bundle for the tools whose CA variable replaces their trust store. They are
+	// written by different steps, so each gets its own note and each must be
+	// created here.
+	for _, p := range []string{caPath, envAfter[envSSLCert]} {
+		if p == "" {
+			t.Fatal("no trust path was written")
+		}
+		if err := os.WriteFile(p, []byte("-----BEGIN CERTIFICATE-----\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	// Re-run against a clean settings file, same config, now that the CA exists.
@@ -648,5 +660,62 @@ func TestWriteState_RefusesToOverwriteAnUnreadableRecord(t *testing.T) {
 	b, _ := os.ReadFile(path)
 	if string(b) != `{"settings":"` {
 		t.Errorf("the unreadable record was modified: %q", b)
+	}
+}
+
+// TestClaudeCodeEnable_ReplacingVarsGetTheBundleNotTheCA is the regression guard
+// for the bug this set of keys exists to fix. NODE_EXTRA_CA_CERTS EXTENDS Node's
+// trust store, so ca.crt is right for it. Every other CA variable REPLACES the
+// trust store, so ca.crt would leave that tool trusting one private CA and
+// nothing else — breaking all unproxied TLS. The failure is platform-split
+// (macOS keeps working via root_darwin.go, Linux and CI break), so a human is
+// unlikely to catch a regression here by running it locally.
+func TestClaudeCodeEnable_ReplacingVarsGetTheBundleNotTheCA(t *testing.T) {
+	settings, cfg := fixture(t, "{}")
+	var out, errb bytes.Buffer
+	if code := claudeCodeEnable(settings, cfg, true, &out, &errb); code != 0 {
+		t.Fatalf("enable: %s", errb.String())
+	}
+	env := readEnv(t, settings)
+
+	if got := filepath.Base(env[envCACerts]); got != "ca.crt" {
+		t.Errorf("%s = %q, want ca.crt (Node's setting is additive)", envCACerts, got)
+	}
+	for _, k := range bundleKeys {
+		got := env[k]
+		if got == "" {
+			t.Errorf("%s was not written", k)
+			continue
+		}
+		if filepath.Base(got) != tlsbridge.TrustBundleName {
+			t.Errorf("%s = %q, want %s — this variable replaces the trust store, so "+
+				"the bare CA would break every direct TLS call", k, got, tlsbridge.TrustBundleName)
+		}
+	}
+	// All four must agree; a split would trust different sets per tool.
+	for _, k := range bundleKeys[1:] {
+		if env[k] != env[bundleKeys[0]] {
+			t.Errorf("%s = %q disagrees with %s = %q", k, env[k], bundleKeys[0], env[bundleKeys[0]])
+		}
+	}
+}
+
+// TestClaudeCodeDisable_RestoresNewCAKeys: adding keys to managedKeys is only
+// safe if disable's restore bookkeeping covers them too. A user who had their own
+// SSL_CERT_FILE (corporate CA) must get it back, not lose it.
+func TestClaudeCodeDisable_RestoresNewCAKeys(t *testing.T) {
+	const prior = `{"env":{"SSL_CERT_FILE":"/corp/ca.pem"}}`
+	settings, cfg := fixture(t, prior)
+	var out, errb bytes.Buffer
+
+	// A foreign value must not be silently replaced in the first place.
+	if code := claudeCodeEnable(settings, cfg, true, &out, &errb); code == 0 {
+		t.Fatalf("enable overwrote a user-set %s; stdout:\n%s", envSSLCert, out.String())
+	}
+	if !strings.Contains(errb.String(), envSSLCert) {
+		t.Errorf("refusal did not name %s: %s", envSSLCert, errb.String())
+	}
+	if env := readEnv(t, settings); env[envSSLCert] != "/corp/ca.pem" {
+		t.Errorf("%s = %q, want the user's value untouched", envSSLCert, env[envSSLCert])
 	}
 }

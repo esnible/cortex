@@ -428,6 +428,24 @@ func main() {
 				"ca_dir", cfg.TLSBridge.CADir,
 				"hint", "clients must trust it, e.g. NODE_EXTRA_CA_CERTS="+cfg.TLSBridge.CADir+"/ca.crt")
 		}
+		// Assemble the CA + platform-roots bundle for tools whose CA setting
+		// REPLACES their trust store rather than extending it (Go's SSL_CERT_FILE,
+		// GIT_SSL_CAINFO, REQUESTS_CA_BUNDLE, CURL_CA_BUNDLE). Pointing those at
+		// ca.crt alone leaves the process trusting this CA and nothing else, which
+		// breaks every unproxied TLS connection it makes. Refreshed on each boot so
+		// a rotated CA or an updated system store is picked up.
+		//
+		// Non-fatal: the bridge works without the bundle — only a client's ability
+		// to verify it is affected — so a host with no locatable root store warns
+		// and carries on rather than failing to start.
+		if bundlePath, berr := tlsbridge.EnsureTrustBundle(cfg.TLSBridge.CADir); berr != nil {
+			slog.Warn("tls-bridge: no CA trust bundle written; tools whose CA setting replaces the "+
+				"trust store (SSL_CERT_FILE, GIT_SSL_CAINFO, REQUESTS_CA_BUNDLE, CURL_CA_BUNDLE) "+
+				"have no safe file to point at",
+				"ca_dir", cfg.TLSBridge.CADir, "error", berr)
+		} else {
+			slog.Info("tls-bridge: CA trust bundle ready", "path", bundlePath)
+		}
 		var extra []byte
 		if cfg.TLSBridge.UpstreamCABundle != "" {
 			if extra, err = os.ReadFile(cfg.TLSBridge.UpstreamCABundle); err != nil {

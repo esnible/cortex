@@ -135,10 +135,19 @@ process within seconds, which looks like it refusing to die.
 abctl claude-code disable
 ```
 
-This removes only the three keys Cortex added to `~/.claude/settings.json`
-(`HTTPS_PROXY`, `NODE_EXTRA_CA_CERTS`, `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`)
-and leaves anything else in that file alone. Claude Code goes straight to the API
-again. Restart `claude` to pick it up.
+This removes only the keys Cortex added to `~/.claude/settings.json`
+(`HTTPS_PROXY`, `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`, and the CA variables
+`NODE_EXTRA_CA_CERTS` / `SSL_CERT_FILE` / `GIT_SSL_CAINFO` / `REQUESTS_CA_BUNDLE` /
+`CURL_CA_BUNDLE`) and leaves anything else in that file alone. Claude Code goes
+straight to the API again. Restart `claude` to pick it up.
+
+There are several CA variables because anything Claude Code spawns inherits
+`HTTPS_PROXY` and so must also be able to verify the bridge. They do not all get
+the same file: `NODE_EXTRA_CA_CERTS` **extends** Node's trust store, so it gets
+`ca.crt`, while the rest **replace** the trust store and get `bundle.crt` — the CA
+followed by this machine's public roots. Pointing a replacing variable at `ca.crt`
+would leave that tool trusting one private CA and nothing else, which breaks every
+direct TLS call it makes.
 
 Cortex keeps running; nothing sends traffic to it. `abctl claude-code enable` puts it
 back.
@@ -163,9 +172,11 @@ pgrep -fl authbridge-prox                   # should print nothing
 ls ~/.cortex 2>/dev/null                    # should print nothing
 ```
 
-The CA that step 3 removes was only ever trusted through `NODE_EXTRA_CA_CERTS` in
+The CA that step 3 removes was only ever trusted through the CA variables in
 `~/.claude/settings.json` — Cortex never adds it to the system or login keychain, so
-there is nothing to clean up there.
+there is nothing to clean up there. `bundle.crt` lives in the same directory and is
+derived from `ca.crt` plus a copy of the public roots, so removing `~/.cortex` takes
+it with them; it holds no private key and grants nothing on its own.
 
 #### If `abctl` is already gone
 
