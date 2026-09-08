@@ -146,3 +146,34 @@ func TestLoginHome(t *testing.T) {
 	}
 	_ = strconv.Itoa(os.Getuid())
 }
+
+// TestReportSessionInterruption: replacing a running Cortex cuts whatever is attached,
+// and nothing on this side can make that graceful — HTTPS_PROXY is fixed in each
+// client's environment at startup. A count turns the resulting "connection refused" into
+// a five-second diagnosis. Silence when there is nothing to say matters just as much:
+// a confident "0 connections" when we could not look would be worse than no number.
+func TestReportSessionInterruption(t *testing.T) {
+	t.Run("silent when the address is unknown", func(t *testing.T) {
+		var out strings.Builder
+		reportSessionInterruption(servicePaths{forwardAddr: ""}, &out)
+		if out.Len() != 0 {
+			t.Errorf("said something with nothing to go on: %q", out.String())
+		}
+	})
+	t.Run("silent when the address is unparseable", func(t *testing.T) {
+		var out strings.Builder
+		reportSessionInterruption(servicePaths{forwardAddr: "not-an-address"}, &out)
+		if out.Len() != 0 {
+			t.Errorf("guessed at a count: %q", out.String())
+		}
+	})
+	t.Run("silent on a port nothing is connected to", func(t *testing.T) {
+		var out strings.Builder
+		// A port in the ephemeral range that is almost certainly idle. If something is
+		// attached the assertion would be wrong rather than the code, so tolerate it.
+		reportSessionInterruption(servicePaths{forwardAddr: "127.0.0.1:59999"}, &out)
+		if strings.Contains(out.String(), "0 connection") {
+			t.Errorf("reported a zero count instead of staying quiet: %q", out.String())
+		}
+	})
+}

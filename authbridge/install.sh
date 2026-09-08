@@ -58,6 +58,9 @@ BIN_DIR="${HOME}/.local/bin"
 # Every file Cortex writes for this user lives here: config, CA, keys, logs,
 # pidfiles. One directory to inspect, back up, or delete.
 CORTEX_DIR="${HOME}/.cortex"
+# PATH_MARKER identifies our block in a shell profile, so a re-run does not add a
+# second copy and a person can find what to delete.
+PATH_MARKER="# added by Cortex (rossoctl/cortex) — delete these two lines to undo"
 case "$(uname -s)" in
 	Darwin) SUPERVISOR_NAME="launchd user agent" ;;
 	*) SUPERVISOR_NAME="systemd user unit" ;;
@@ -405,6 +408,80 @@ rm -rf "$tmp"
 trap - EXIT
 fi # end of download block
 
+# offer_path_setup adds BIN_DIR to the shell profile, with consent.
+#
+# Warning and printing a line to paste was not enough: the first thing a real user hit
+# was `abctl: command not found`, before any of the actual bugs. An install that
+# succeeds and then cannot run the command it just told you to run is the worst first
+# impression available, and the most common one.
+#
+# Consent, a backup, and a guarded block, matching what `abctl claude-code enable` does
+# to settings.json — same pattern, no new concept. Declining keeps the old advice.
+offer_path_setup() {
+	_profile=""
+	case "$(basename "${SHELL:-}")" in
+		zsh) _profile="${HOME}/.zshrc" ;;
+		bash)
+			# bash reads .bash_profile for login shells on macOS and .bashrc elsewhere;
+			# .profile is read by both when the others are absent, so prefer whichever
+			# already exists rather than creating a file the shell may never read.
+			for _c in "${HOME}/.bash_profile" "${HOME}/.bashrc" "${HOME}/.profile"; do
+				[ -f "$_c" ] && _profile="$_c" && break
+			done
+			[ -n "${_profile}" ] || _profile="${HOME}/.bash_profile"
+			;;
+	esac
+
+	if [ -z "${_profile}" ]; then
+		# An unknown shell: we do not know which file it reads, and guessing would edit
+		# the wrong one.
+		warn "${BIN_DIR} is not on your PATH."
+		warn "Add it for future sessions:  export PATH=\"${BIN_DIR}:\$PATH\""
+		return 0
+	fi
+
+	# Already done by an earlier run.
+	if [ -f "${_profile}" ] && grep -q "${PATH_MARKER}" "${_profile}" 2>/dev/null; then
+		info "${BIN_DIR} is in ${_profile} but not in this shell yet. For this terminal:"
+		info "  export PATH=\"${BIN_DIR}:\$PATH\""
+		return 0
+	fi
+
+	info ""
+	info "${BIN_DIR} is not on your PATH, so \`abctl\` will not be found."
+	info "This adds two lines to ${_profile}:"
+	info "  ${PATH_MARKER}"
+	info "  export PATH=\"${BIN_DIR}:\$PATH\""
+	if [ -z "${ASSUME_YES}" ]; then
+		if [ ! -r /dev/tty ]; then
+			warn "no terminal to ask on; add it yourself:  export PATH=\"${BIN_DIR}:\$PATH\""
+			return 0
+		fi
+		printf 'Apply? [y/N] ' > /dev/tty
+		read -r _ans < /dev/tty || _ans=""
+		case "${_ans}" in
+			y | Y | yes | YES) ;;
+			*)
+				info "Not changed. For this terminal:  export PATH=\"${BIN_DIR}:\$PATH\""
+				return 0
+				;;
+		esac
+	fi
+
+	[ -f "${_profile}" ] && cp "${_profile}" "${_profile}.bak"
+	{
+		printf '\n%s\n' "${PATH_MARKER}"
+		# shellcheck disable=SC2016 # $PATH must stay literal: it is expanded by the
+		# shell at startup, not by this script now.
+		printf 'export PATH="%s:$PATH"\n' "${BIN_DIR}"
+	} >> "${_profile}" || {
+		warn "could not write ${_profile}; add it yourself:  export PATH=\"${BIN_DIR}:\$PATH\""
+		return 0
+	}
+	info "Added to ${_profile}. It applies to new terminals; for this one:"
+	info "  export PATH=\"${BIN_DIR}:\$PATH\""
+}
+
 # --- report ---
 proxy="${BIN_DIR}/authbridge-proxy"
 ca_dir="${CORTEX_DIR}/ca" # matches defaultCortexDir()+caDirName in local.go
@@ -418,8 +495,7 @@ info "Installed abctl and authbridge-proxy to ${BIN_DIR}"
 case ":${PATH}:" in
 	*":${BIN_DIR}:"*) ;;
 	*)
-		warn "${BIN_DIR} is not on your PATH."
-		warn "Add it for future sessions:  export PATH=\"${BIN_DIR}:\$PATH\""
+		offer_path_setup
 		;;
 esac
 

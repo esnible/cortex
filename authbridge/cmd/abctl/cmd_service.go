@@ -268,7 +268,9 @@ func serviceInstall(p servicePaths, yes bool, stdout, stderr io.Writer) int {
 	adopt := runningPID(p.pidFile)
 	if adopt > 0 {
 		fmt.Fprintf(stdout, "A Cortex you started by hand is running (pid %d). It will be stopped\n"+
-			"so the supervised one can take the ports.\n\n", adopt)
+			"so the supervised one can take the ports.\n", adopt)
+		reportSessionInterruption(p, stdout)
+		fmt.Fprintln(stdout)
 	}
 	if !yes {
 		fmt.Fprintf(stdout, "Undo with: abctl service uninstall\n\n")
@@ -276,6 +278,15 @@ func serviceInstall(p servicePaths, yes bool, stdout, stderr io.Writer) int {
 	if !yes && !confirm(stdout) {
 		fmt.Fprintln(stdout, "Not changed.")
 		return exitDeclined
+	}
+
+	// Replacing a running Cortex — supervised or not — cuts whatever is talking to it.
+	// Said before the work starts, not after: HTTPS_PROXY is fixed in each Claude Code
+	// process's environment at startup, so a session cannot fall back to a direct
+	// connection and simply starts failing. That looked like a Cortex bug twice during
+	// development, to me, on my own machine.
+	if adopt == 0 {
+		reportSessionInterruption(p, stdout)
 	}
 
 	// Probed before anything is written. Without this the first sign of trouble was
@@ -651,4 +662,18 @@ func loginHome() string {
 		return ""
 	}
 	return fields[len(fields)-1]
+}
+
+// reportSessionInterruption names how many clients a restart will disconnect.
+//
+// Nothing on this side can make it graceful: HTTPS_PROXY is baked into each client's
+// environment when it starts, so a running Claude Code has no way back to a direct
+// connection and just begins failing to connect. Saying "3 connections" turns that into
+// a five-second diagnosis instead of a bug report. Silent when there is nothing attached,
+// or when we cannot tell — a confident "0" would be worse than no number.
+func reportSessionInterruption(p servicePaths, stdout io.Writer) {
+	if n := establishedConns(p.forwardAddr); n > 0 {
+		fmt.Fprintf(stdout, "  %d connection(s) are attached and will be cut. A running Claude Code\n"+
+			"  cannot reconnect on its own — restart any session that starts failing.\n", n)
+	}
 }

@@ -30,6 +30,18 @@ agents added mid-session — verified across `KeepAlive`, `StartInterval` and
 `RunAtLoad` — so the supervisor is what makes crash recovery work. On Linux there is
 one process; systemd handles it.
 
+## `abctl: command not found`
+
+The installer puts both binaries in `~/.local/bin`. If that is not on your PATH it
+offers to add it to your shell profile; new terminals pick it up, and for the one you
+are in:
+
+```sh
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+To undo, delete the two lines the installer marked in your profile.
+
 ## Restricted environments (sandboxes, no launchd session)
 
 Some environments cannot manage services at all — a sandboxed shell, a session without
