@@ -512,17 +512,22 @@ func TestConfig_MintTraceparent(t *testing.T) {
 	}
 }
 
-// TestStamp_OutboundPrefersStampOverMap is the same-trace fan-in case in
-// miniature: two concurrent inbound exchanges on ONE trace (the trace-keyed
-// map can only hold the later one), then an outbound whose tracestate stamp
-// names the EARLIER inbound. Without the stamp this outbound would collapse
-// onto the map entry — the 1/N misattribution the fanin-test.sh e2e proves.
+// TestStamp_OutboundUsesTheStampedInbound is the same-trace fan-in case in
+// miniature, and the test that documents why the tracestate stamp exists:
+// two inbound exchanges on ONE trace, then an outbound whose stamp names the
+// EARLIER one. The trace-keyed inbound map this mechanism replaced (contract
+// v1.3; plugin.go records its removal) could only hold the later inbound, so
+// this outbound would have collapsed onto it — the 1/N misattribution the
+// fan-in e2e proved. With no per-trace state left in the plugin the stamp is
+// the only way to reach in1, so the assertion is on the mechanism, not on a
+// structure that could come back. The two inbounds run one after the other;
+// in production they overlap, which is what the old map could not see.
 func TestStamp_OutboundUsesTheStampedInbound(t *testing.T) {
 	p, exp := newTestPlugin(t)
 	const traceID = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 
-	// Two concurrent inbounds on the SAME trace — the case no trace-keyed
-	// structure can disambiguate, and the reason the stamp exists.
+	// Two inbounds on the SAME trace — the case no trace-keyed structure can
+	// disambiguate, and the reason the stamp exists.
 	run(t, p, fakeContext(pipeline.Inbound, traceparent(traceID, "1111111111111111")), allow(200))
 	in1, _ := roleSplit(t, exp.GetSpans())
 	exp.Reset()
@@ -566,7 +571,7 @@ func TestStamp_MalformedFallsBackToWire(t *testing.T) {
 		t.Errorf("parent = %s, want wire parent %s", got, wireParent)
 	}
 	if outReq.Parent.SpanID() == in1.SpanContext.SpanID() {
-		t.Error("malformed stamp silently inherited this pod's inbound span")
+		t.Error("malformed stamp resolved to this pod's inbound span — a malformed stamp must mean unknown, never a guess")
 	}
 	if got := attrStr(outReq, "lineage.parent.source"); got != "wire" {
 		t.Errorf("lineage.parent.source = %q, want wire", got)
@@ -583,12 +588,14 @@ func TestStamp_ParentSourceWireWhenUnstamped(t *testing.T) {
 	}
 }
 
-// TestStamp_UnstampedOutboundNeverInheritsInbound is the regression guard for
-// the removal of the trace-keyed map. An outbound with no stamp must fall to the
-// wire parent EVEN WHEN this pod has an inbound span for the same trace. The old
-// map answered such cases from "the last inbound seen", which is correct only
-// while exactly one inbound is in flight — a precondition it never checked. A
-// missing edge is recoverable; a confidently wrong one is not.
+// TestStamp_UnstampedOutboundNeverInheritsInbound documents the rule the
+// removal of the trace-keyed map established: an outbound with no stamp falls
+// to the wire parent EVEN WHEN this pod has an inbound span for the same
+// trace. The old map answered such cases from "the last inbound seen", which
+// is correct only while exactly one inbound is in flight — a precondition it
+// never checked. A missing edge is recoverable; a confidently wrong one is
+// not. With no per-trace state in the plugin the inheritance cannot happen,
+// so this is documentation of the contract, not a tripwire that can trip.
 func TestStamp_UnstampedOutboundNeverInheritsInbound(t *testing.T) {
 	p, exp := newTestPlugin(t)
 	const traceID = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -602,7 +609,7 @@ func TestStamp_UnstampedOutboundNeverInheritsInbound(t *testing.T) {
 	outReq, _ := roleSplit(t, exp.GetSpans())
 
 	if outReq.Parent.SpanID() == inReq.SpanContext.SpanID() {
-		t.Fatal("un-stamped outbound inherited this pod's inbound span — the map is back")
+		t.Fatal("un-stamped outbound inherited this pod's inbound span — per-trace state has been reintroduced")
 	}
 	if got := outReq.Parent.SpanID().String(); got != wireParent {
 		t.Errorf("parent = %s, want wire parent %s", got, wireParent)
@@ -612,7 +619,13 @@ func TestStamp_UnstampedOutboundNeverInheritsInbound(t *testing.T) {
 	}
 }
 
-func TestStamp_ConcurrentTracesNeverCross(t *testing.T) {
+// TestStamp_InterleavedTracesNeverCross: two traces through one pod, each
+// outbound couriering its own trace's stamp, parent under their own inbound.
+// The exchanges run sequentially; the point is that nothing in the plugin
+// carries state from one to the next, so interleaving cannot cross them
+// either (per-exchange state lives in pctx; see TestStamp_UnstampedOutbound…
+// for the same reasoning).
+func TestStamp_InterleavedTracesNeverCross(t *testing.T) {
 	p, exp := newTestPlugin(t)
 	const traceA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 	const traceB = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
@@ -634,7 +647,7 @@ func TestStamp_ConcurrentTracesNeverCross(t *testing.T) {
 		t.Errorf("outbound A parent = %s, want inbound A %s", outA.Parent.SpanID(), inA.SpanContext.SpanID())
 	}
 	if outA.Parent.SpanID() == inB.SpanContext.SpanID() {
-		t.Error("outbound A crossed into inbound B's span")
+		t.Error("outbound A parented under inbound B — a stamp naming A resolved to another trace's span")
 	}
 	if outA.SpanContext.TraceID().String() != traceA {
 		t.Errorf("outbound A trace = %s, want %s", outA.SpanContext.TraceID(), traceA)
