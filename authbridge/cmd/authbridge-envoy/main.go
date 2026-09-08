@@ -166,7 +166,11 @@ func main() {
 
 	var sessions *session.Store
 	if cfg.Session.SessionEnabled() {
-		ttl := 30 * time.Minute
+		// 0 = never expire on time. This was 30m, and it meant sessions disappeared
+		// while someone was reading them — they had only stepped away. Size caps below
+		// still bound memory, so nothing here was protecting the process. Set
+		// session.ttl to restore a time limit where that is wanted for hygiene.
+		var ttl time.Duration
 		if cfg.Session.TTL != "" {
 			if d, err := time.ParseDuration(cfg.Session.TTL); err == nil {
 				ttl = d
@@ -183,7 +187,13 @@ func main() {
 			maxSessions = cfg.Session.MaxSessions
 		}
 		sessions = session.New(ttl, maxEvents, maxSessions)
-		slog.Info("session tracking enabled", "ttl", ttl, "maxEvents", maxEvents, "maxSessions", maxSessions)
+		// "ttl=0s" would read like a misconfiguration rather than the default.
+		ttlDesc := "never"
+		if ttl > 0 {
+			ttlDesc = ttl.String()
+		}
+		slog.Info("session tracking enabled",
+			"expiry", ttlDesc, "maxEvents", maxEvents, "maxSessions", maxSessions)
 	} else {
 		slog.Info("session tracking disabled")
 	}

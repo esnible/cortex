@@ -205,10 +205,16 @@ type SessionConfig struct {
 	// Enabled: nil means "unset → default on". Explicit `false` opts out.
 	// Do not change to a plain bool — losing the nil sentinel would collapse
 	// "user didn't say" with "user said false" and silently flip the default.
-	Enabled     *bool  `yaml:"enabled" json:"enabled"`
-	TTL         string `yaml:"ttl" json:"ttl"`                   // duration string; default: 30m
-	MaxEvents   int    `yaml:"max_events" json:"max_events"`     // max events per session; default: 500
-	MaxSessions int    `yaml:"max_sessions" json:"max_sessions"` // max concurrent sessions; default: 100 (0 = unlimited)
+	Enabled *bool `yaml:"enabled" json:"enabled"`
+	// TTL bounds how long an IDLE session is kept. Empty or "0" means never, which is
+	// the default: time-based expiry read as data loss — traffic vanished because
+	// someone stepped away, not because anything overflowed — and it was never what
+	// bounded memory. MaxEvents and MaxSessions do that. Set it to a duration
+	// ("30m") where limiting how long raw prompts sit in memory is worth the surprise.
+	TTL string `yaml:"ttl" json:"ttl"` // duration string; default: never
+
+	MaxEvents   int `yaml:"max_events" json:"max_events"`     // max events per session; default: 500
+	MaxSessions int `yaml:"max_sessions" json:"max_sessions"` // max concurrent sessions; default: 100 (0 = unlimited)
 }
 
 // SessionEnabled returns true when session tracking should run. Defaults to true

@@ -44,6 +44,23 @@ it is about to cut.
 
 To restart deliberately: `abctl service restart`.
 
+## Why traffic disappears from `abctl`
+
+Two limits, and neither is a clock:
+
+| Limit | Default | Effect |
+|---|---|---|
+| `session.max_events` | 500 per session | oldest events drop, the session stays |
+| `session.max_sessions` | 100 | whole sessions evicted, least-recently-used first |
+
+Sessions do **not** expire on time. They used to, after 30 minutes idle, which read as
+data loss — traffic vanished because you stepped away, not because anything overflowed.
+Set `session.ttl` (e.g. `30m`) if you would rather raw prompts not sit in memory
+indefinitely.
+
+The store is in memory only, so a restart clears it regardless. Both `session.*` limits
+need a restart to change — they are not hot-reloaded.
+
 ## `abctl: command not found`
 
 The installer puts both binaries in `~/.local/bin`. If that is not on your PATH it
