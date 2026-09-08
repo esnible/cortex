@@ -144,7 +144,32 @@ type Aggregator struct {
 	maxSess  int
 	pricer   Pricer
 	now      func() time.Time
+
+	// pending holds request-phase plugin names awaiting their response event,
+	// keyed by RequestID. See Record.
+	pending map[string]*pendingRequest
 }
+
+// pendingRequest is the request half of one turn: the plugins that ran before the
+// response existed, held until the response arrives so they can be attributed to
+// the same bucket with the same tokens and latency.
+type pendingRequest struct {
+	plugins []string
+	at      time.Time // for expiry when no response ever arrives
+}
+
+// maxPendingRequests bounds the pending map. A request whose response never
+// arrives — client disconnect, upstream hang, a proxy restart mid-turn — would
+// otherwise leak an entry per turn forever.
+//
+// Generous relative to real in-flight concurrency for one sidecar, so eviction is
+// a backstop rather than something the steady state relies on.
+const maxPendingRequests = 4096
+
+// pendingTTL bounds how long a request half waits for its response. Matched to the
+// streaming read timeout in the forward proxy: a turn quiet for longer than that
+// has been abandoned by the listener too, so its plugins will never be paired.
+const pendingTTL = 5 * time.Minute
 
 // sessionRing is one session's buckets plus the last time it was written.
 //
@@ -191,6 +216,7 @@ func New(opts ...Option) *Aggregator {
 	a := &Aggregator{
 		all:      make([]bucket, NumBuckets),
 		sessions: make(map[string]*sessionRing),
+		pending:  make(map[string]*pendingRequest),
 		maxSess:  defaultMaxSessions,
 		now:      time.Now,
 	}
@@ -202,16 +228,35 @@ func New(opts ...Option) *Aggregator {
 
 // Record folds one event into the aggregate.
 //
-// Response events only: a request event carries no status, no duration and no
-// usage, so counting it would double every request and pull the latency mean
-// toward zero. Denials (phase "denied") are counted as errors — they are
-// requests that happened and failed, and omitting them would make an
-// authentication outage look like a traffic drop.
+// Counts and timings come from the response event only: a request event carries no
+// status, no duration and no usage, so counting it as traffic would double every
+// request and pull the latency mean toward zero. Denials (phase "denied") are
+// counted as errors — they are requests that happened and failed, and omitting
+// them would make an authentication outage look like a traffic drop.
+//
+// A request event is not ignored, though. The listener splits plugin invocations
+// by phase — the request event carries InvocationPhaseRequest, the response event
+// InvocationPhaseResponse — so a plugin that only acts on the request appears in
+// neither the response event nor, previously, the by-plugin breakdown. context-guru
+// and tool-prune are exactly that shape (WritesRequestBody with a stub OnResponse),
+// so `by plugin` silently meant "plugins that ran on the response".
+//
+// Request-phase plugin names are therefore held by RequestID — the field that
+// exists for this pairing — and merged when the paired response arrives, so each
+// gets the response's own tokens and latency and one turn counts once. Pairing on
+// the id rather than positionally matters because a client can have several
+// requests in flight at a time.
 func (a *Aggregator) Record(sessionID string, e *pipeline.SessionEvent) {
 	if e == nil {
 		return
 	}
-	if e.Phase != pipeline.SessionResponse && e.Phase != pipeline.SessionDenied {
+
+	// A request event with nothing to hold is the common case — Invocations is nil
+	// on any plain proxied request — and this runs synchronously inside
+	// Store.Append on the request hot path. Checked before the lock so that path
+	// stays lock-free: neither guard touches aggregator state, so there is nothing
+	// to protect.
+	if e.Phase == pipeline.SessionRequest && (e.RequestID == "" || e.Invocations == nil) {
 		return
 	}
 
@@ -219,16 +264,33 @@ func (a *Aggregator) Record(sessionID string, e *pipeline.SessionEvent) {
 	if at.IsZero() {
 		at = a.now()
 	}
-	t := at.Truncate(BucketWidth)
 
 	a.mu.Lock()
 	defer a.mu.Unlock()
 
-	a.foldInto(a.all, t, e)
+	if e.Phase == pipeline.SessionRequest {
+		a.holdRequestPluginsLocked(e, at)
+		return
+	}
+	if e.Phase != pipeline.SessionResponse && e.Phase != pipeline.SessionDenied {
+		return
+	}
+
+	// Claim the request half, if it is still waiting.
+	var requestPlugins []string
+	if e.RequestID != "" {
+		if p, ok := a.pending[e.RequestID]; ok {
+			requestPlugins = p.plugins
+			delete(a.pending, e.RequestID)
+		}
+	}
+
+	t := at.Truncate(BucketWidth)
+	a.foldInto(a.all, t, e, requestPlugins)
 
 	if ring, ok := a.sessions[sessionID]; ok {
 		ring.lastSeen = at
-		a.foldInto(ring.buckets, t, e)
+		a.foldInto(ring.buckets, t, e, requestPlugins)
 		return
 	}
 	// maxSess == 0 means no per-session rings at all — see WithMaxSessions. The
@@ -246,7 +308,74 @@ func (a *Aggregator) Record(sessionID string, e *pipeline.SessionEvent) {
 	}
 	ring := &sessionRing{buckets: make([]bucket, NumBuckets), lastSeen: at}
 	a.sessions[sessionID] = ring
-	a.foldInto(ring.buckets, t, e)
+	a.foldInto(ring.buckets, t, e, requestPlugins)
+}
+
+// holdRequestPluginsLocked stashes a request event's plugin names until its
+// response arrives. Caller holds mu.
+//
+// Nothing is counted here — no requests, no tokens, no latency. The request event
+// contributes only the LABELS its plugins need in order to be attributed later.
+func (a *Aggregator) holdRequestPluginsLocked(e *pipeline.SessionEvent, at time.Time) {
+	if e.RequestID == "" || e.Invocations == nil {
+		// Without an id there is nothing to pair against, and pairing positionally
+		// misattributes as soon as two requests are in flight — the reason
+		// SessionEvent carries RequestID at all.
+		//
+		// Record checks the same two conditions before taking the lock, so this is
+		// normally unreachable; kept so the helper is correct on its own terms
+		// rather than relying on its only caller.
+		return
+	}
+	names := invocationPlugins(e.Invocations)
+	if len(names) == 0 {
+		return
+	}
+	// Sweep before inserting so a burst of abandoned turns cannot push the map
+	// past its bound between sweeps.
+	if len(a.pending) >= maxPendingRequests {
+		a.expirePendingLocked(at)
+	}
+	if len(a.pending) >= maxPendingRequests {
+		// Still full of live requests: drop this one's labels rather than grow
+		// without bound. The response will still be counted, just without its
+		// request-phase plugins — losing a label is preferable to unbounded memory
+		// on the synchronous append path.
+		return
+	}
+	a.pending[e.RequestID] = &pendingRequest{plugins: names, at: at}
+}
+
+// expirePendingLocked drops request halves whose response never arrived. Caller
+// holds mu.
+func (a *Aggregator) expirePendingLocked(now time.Time) {
+	for id, p := range a.pending {
+		if now.Sub(p.at) > pendingTTL {
+			delete(a.pending, id)
+		}
+	}
+}
+
+// invocationPlugins returns the distinct plugin names in an Invocations set.
+//
+// Deduped because one plugin can append several invocations to a single pass, and
+// counting it twice would inflate its share of a stacked bar.
+func invocationPlugins(inv *pipeline.Invocations) []string {
+	if inv == nil {
+		return nil
+	}
+	seen := make(map[string]bool, len(inv.Outbound)+len(inv.Inbound))
+	var out []string
+	for _, list := range [][]pipeline.Invocation{inv.Outbound, inv.Inbound} {
+		for _, iv := range list {
+			if iv.Plugin == "" || seen[iv.Plugin] {
+				continue
+			}
+			seen[iv.Plugin] = true
+			out = append(out, iv.Plugin)
+		}
+	}
+	return out
 }
 
 // evictColdestLocked drops the ring with the oldest lastSeen. Caller holds mu.
@@ -267,7 +396,7 @@ func (a *Aggregator) evictColdestLocked() {
 	}
 }
 
-func (a *Aggregator) foldInto(ring []bucket, t time.Time, e *pipeline.SessionEvent) {
+func (a *Aggregator) foldInto(ring []bucket, t time.Time, e *pipeline.SessionEvent, requestPlugins []string) {
 	b := &ring[slot(t)]
 	if !b.start.Equal(t) {
 		*b = bucket{start: t} // stale lap: reset rather than accumulate onto old data
@@ -313,17 +442,19 @@ func (a *Aggregator) foldInto(ring []bucket, t time.Time, e *pipeline.SessionEve
 	// Invocations is a POINTER and is nil whenever no plugin appended a record —
 	// which is the common case for a plain proxied response. Dereferencing it
 	// unguarded panics inside Store.Append, i.e. on the request hot path.
-	if e.Invocations != nil {
-		for _, inv := range e.Invocations.Outbound {
-			if inv.Plugin != "" {
-				addLabel(&b.byPlugin, inv.Plugin, one)
-			}
+	// Response-phase plugins from this event, plus the request-phase plugins held
+	// from its paired request event. Deduped across the two halves: a plugin that
+	// ran in both phases is still one plugin that touched one turn.
+	seen := make(map[string]bool, 4)
+	for _, name := range invocationPlugins(e.Invocations) {
+		seen[name] = true
+		addLabel(&b.byPlugin, name, one)
+	}
+	for _, name := range requestPlugins {
+		if seen[name] {
+			continue
 		}
-		for _, inv := range e.Invocations.Inbound {
-			if inv.Plugin != "" {
-				addLabel(&b.byPlugin, inv.Plugin, one)
-			}
-		}
+		addLabel(&b.byPlugin, name, one)
 	}
 }
 

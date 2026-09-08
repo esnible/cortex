@@ -101,6 +101,29 @@ The UI has these top-level panes. `Enter` drills in; `Esc` backs out.
 - **Plugin detail**: drill-into-row for Pipeline or Catalog. Shows
   description, position, reads/writes, body access, plugin config, and
   per-dependency satisfaction status against the active chain.
+- **Usage**: time-bucketed charts of volume, errors, latency and cost,
+  opened by `u` from Sessions (all sessions) or Events/Detail (the
+  selected session). Sourced from `/v1/usage`, which the proxy
+  aggregates server-side — so every operator watching a pod sees the
+  same history, including traffic from before they attached. Refetches
+  every 20s while in view.
+
+  `m` cycles the metric. Counts (tokens/requests/errors) render as bars;
+  latency renders as mean-with-whiskers (`┼` mean, `┬`/`┴` ±1σ), because
+  a bar encodes magnitude from a zero baseline and mean latency has no
+  meaningful zero. `b` cycles the breakdown, which stacks each bar by
+  status, model or plugin — each series marked with a letter derived
+  from its name (`s` for claude-sonnet-5) on a coloured ground, so the
+  chart reads without colour too. Statuses ≥400 render red. `b` is not
+  offered for latency: the aggregator holds no per-label latency, so
+  there is no per-status mean to plot.
+
+  An idle bucket shows `0` rather than an empty column, so a gap in
+  traffic is distinguishable from traffic too small to plot. A bucket
+  carrying traffic no label claims shows an `(unlabelled)` band, and
+  series past the palette fold into `(other)` — every band drawn has a
+  legend entry.
+
 - **Catalog**: registered-plugin browser, opened by `P` from any
   session-view pane. Lists every plugin the running binary knows how to
   construct, including ones not in the active pipeline. Useful for
@@ -148,6 +171,12 @@ Layered on top of all of them:
 | `p` | any | pause/resume stream |
 | `y` | detail | yank event JSON to `/tmp` |
 | `g` / `G` | lists | jump to top / bottom |
+| `u` | sessions, events, detail | open the usage charts (sessions: all sessions; events/detail: the selected session) |
+| `m` | usage | cycle metric: tokens / requests / errors / latency |
+| `w` | usage | cycle window: 10m / 1h / 6h |
+| `b` | usage | cycle breakdown: none / status / method / plugin (not offered for latency — there is no per-label latency) |
+| `s` | usage | toggle between this session and all sessions |
+| `Esc` | usage | back to the pane it was opened from |
 | `P` | any session-view pane (not the picker) | open the registered-plugin catalog |
 | `r` | catalog | refresh the catalog from `/v1/plugins` |
 | `e` | pipeline | edit pipeline subtree in `$EDITOR` |
