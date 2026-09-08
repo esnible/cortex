@@ -11,7 +11,11 @@ the app's own outbound calls *in this trace*. An entry alone is not a good
 shape: it means the app's calls went to traces of their own, and those are
 counted too.
 
-Usage: ./show-trace.py <trace-id> [--since 10m]
+Usage: ./show-trace.py <trace-id> [--since 10m] [--namespace rossoctl-system]
+
+Exit status: 0 the good shape (one root, the app's calls inside), 1 no sidecar
+spans for that id in the window (or the collector log could not be read), 2
+the wrong shape (ENTRY ONLY or FRAGMENTED).
 """
 
 import argparse
@@ -24,8 +28,39 @@ ATTR = re.compile(r"-> ([\w.]+): Str\((.*)\)$", re.M)
 TRACE = re.compile(r"Trace ID\s*:\s*(\w+)")
 START = re.compile(r"Start time\s*:\s*(\S+ \S+)")
 
+# Blocks the parser could not trust, reported once at the end: no parseable
+# start time, or a lineage.* key seen twice with different values.
+skipped_no_start = 0
+ambiguous = 0
+
+
+def facts(block: str) -> dict:
+    """The block's attributes, robust to captured content.
+
+    With capture_io on, input.value / output.value hold user content printed
+    verbatim, newlines included; a line of it shaped like `-> lineage.role:
+    Str(response)` would otherwise be read as a fact. The plugin emits every
+    fact except lineage.parent.source BEFORE the captured value, and
+    lineage.parent.source after it, so the first occurrence wins for the
+    former and the last for the latter; a key seen twice with different
+    values is counted as ambiguous."""
+    global ambiguous
+    attrs: dict = {}
+    seen_twice = False
+    for key, value in ATTR.findall(block):
+        if key in attrs and attrs[key] != value:
+            seen_twice = True
+        if key == "lineage.parent.source":
+            attrs[key] = value
+        else:
+            attrs.setdefault(key, value)
+    if seen_twice:
+        ambiguous += 1
+    return attrs
+
 
 def sidecar_blocks(log: str):
+    """Yield the debug-exporter span blocks that carry a `lineage.*` attribute."""
     for block in re.split(r"\n(?=Span #\d+)", log):
         if "lineage.role" in block:
             yield block
@@ -38,7 +73,7 @@ def stray_outbound_traces(log: str, trace_id: str, first: str, last: str) -> int
     last span)."""
     strays = set()
     for block in sidecar_blocks(log):
-        attrs = dict(ATTR.findall(block))
+        attrs = facts(block)
         tid = TRACE.search(block)
         start = START.search(block)
         if (
@@ -55,16 +90,25 @@ def stray_outbound_traces(log: str, trace_id: str, first: str, last: str) -> int
 
 
 def spans_for(log: str, trace_id: str):
+    """The sidecar spans of one trace as rows, in start-time order.
+
+    A block whose start time does not parse is skipped (and counted) rather
+    than sorted first as an empty string: the first and last timestamps bound
+    the stray window, and an empty one would open it to the start of the log."""
+    global skipped_no_start
     rows = []
     for block in sidecar_blocks(log):
         tid = TRACE.search(block)
         if not tid or tid.group(1) != trace_id:
             continue
-        attrs = dict(ATTR.findall(block))
         start = START.search(block)
+        if not start:
+            skipped_no_start += 1
+            continue
+        attrs = facts(block)
         rows.append(
             (
-                start.group(1) if start else "",  # full timestamp: sorts across midnight
+                start.group(1),  # full timestamp: sorts across midnight
                 attrs.get("lineage.self.id", ""),
                 attrs.get("lineage.direction", ""),
                 attrs.get("lineage.protocol", ""),
@@ -79,18 +123,27 @@ def spans_for(log: str, trace_id: str):
 
 
 def main() -> int:
+    """Read the collector log, print the trace's rows and totals, judge the shape."""
     ap = argparse.ArgumentParser()
     ap.add_argument("trace_id")
     ap.add_argument("--since", default="10m", help="collector log window (kubectl --since)")
     ap.add_argument("--namespace", default="rossoctl-system")
     args = ap.parse_args()
-    log = subprocess.run(  # noqa: S603 — fixed argv, no shell
-        ["kubectl", "-n", args.namespace, "logs", "deploy/otel-collector", "--since", args.since],
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout
+    try:
+        log = subprocess.run(  # nosec B603 B607 — fixed argv, no shell
+            ["kubectl", "-n", args.namespace, "logs", "deploy/otel-collector", "--since", args.since],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+    except subprocess.CalledProcessError as exc:
+        # kubectl's own message is the useful one (no such deployment, no
+        # pods/log permission, no such namespace) — show it, not a traceback.
+        print(f"kubectl logs failed (exit {exc.returncode}): {exc.stderr.strip()}", file=sys.stderr)
+        return 1
     rows = spans_for(log, args.trace_id)
+    if skipped_no_start:
+        print(f"warning: {skipped_no_start} span block(s) of this trace had no start time; skipped", file=sys.stderr)
     if not rows:
         print(f"no sidecar spans for {args.trace_id} in the last {args.since}", file=sys.stderr)
         return 1
@@ -101,6 +154,12 @@ def main() -> int:
     parents = collections.Counter(r[5] for r in requests)
     by_proto = collections.Counter(f"{r[2]} {r[3]}" for r in requests)
     strays = stray_outbound_traces(log, args.trace_id, rows[0][0], rows[-1][0])
+    if ambiguous:
+        print(
+            f"warning: {ambiguous} span block(s) repeated a lineage.* key with different values;"
+            " captured content may hold a fact-shaped line (first occurrence used, last for parent.source)",
+            file=sys.stderr,
+        )
     print()
     mix = ", ".join(f"{n} {k}" for k, n in sorted(by_proto.items()))
     print(f"{len(rows)} sidecar spans, {len(requests)} exchanges: {mix}")
@@ -118,7 +177,7 @@ def main() -> int:
     if not has_outbound:
         print("shape: ENTRY ONLY — nothing the app called landed here; its calls are the stray traces above")
     else:
-        print("shape: FRAGMENTED — an unstamped non-entry hop, or stray traces, mark un-propagated calls")
+        print("shape: FRAGMENTED — an unstamped non-entry hop, an outbound root or strays mark un-propagated calls")
     return 2
 
 

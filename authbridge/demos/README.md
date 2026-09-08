@@ -135,8 +135,8 @@ Cluster-backed demos (everything above except the session-budget local
 walkthrough) require:
 - A Kubernetes cluster with the Rossoctl platform installed
   ([Installation Guide](https://github.com/rossoctl/rossoctl/blob/main/docs/getting-started/install.md))
-- Keycloak deployed in the `keycloak` namespace
-- SPIRE deployed (for demos using SPIFFE identity)
+- Keycloak deployed in the `keycloak` namespace (not used by the Lineage demo)
+- SPIRE deployed (for demos using SPIFFE identity; not used by the Lineage demo)
 
 UI-based demos additionally require:
 - The Rossoctl UI running at `http://rossoctl-ui.localtest.me:8080`

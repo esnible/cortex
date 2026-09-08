@@ -389,7 +389,7 @@ The easiest way to get all prerequisites is to use the [Rossoctl Quickstart](htt
 - **[Token-Exchange Routes](./demos/token-exchange-routes/README.md)** - Configuration reference for the `authproxy-routes` ConfigMap; covers single-target (one route) and multi-target (one agent → many tools) patterns
 - **[Lineage Demo](./demos/lineage/README.md)** - Per-request data lineage from the sidecar on the Weather Agent pair, attached to the running Deployments with the [lineage attach kit](./lineage-attach/README.md); shows the same turn fragmented and then as one trace (no Keycloak involved)
 
-All demos cover configuring Keycloak, deploying, and testing.
+All demos except the Lineage Demo cover configuring Keycloak, deploying, and testing.
 
 ### Route-Based Configuration
 

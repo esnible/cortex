@@ -17,6 +17,9 @@ data:
   # docker-backed kind as host.docker.internal. OpenAI: https://api.openai.com/v1
   # (an HTTPS LLM is TLS passthrough — the sidecar records no hop for it).
   LLM_API_BASE: "http://host.containers.internal:11434/v1"
+  # "ollama" is a placeholder, not a credential. A real key belongs in a Secret
+  # (kubectl create secret generic weather-llm-key --from-literal=LLM_API_KEY=…)
+  # referenced from the agent's envFrom as secretRef, not in this ConfigMap.
   LLM_API_KEY: "ollama"
   LLM_MODEL: "qwen2.5:7b"
 ---
@@ -156,6 +159,11 @@ spec:
               value: "0.0.0.0"
             - name: UV_NO_CACHE
               value: "1"
+            # The tool's own OTel export. Its code defaults to exactly this
+            # value when the variable is absent; stated here so the reader can
+            # see where the tool's spans go without opening the image.
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: "http://otel-collector.rossoctl-system.svc.cluster.local:8335"
           volumeMounts:
             - name: cache
               mountPath: /app/.cache

@@ -10,6 +10,8 @@
 #
 # Usage: ./ask.sh ["What is the weather in Paris?"]
 #        NS=team1 SVC=weather-service PORT=8080 override the target.
+#        A turn is given --max-time 300 (curl); the trace exists even if the
+#        answer arrives later than that.
 set -euo pipefail
 NS="${NS:-team1}"; SVC="${SVC:-weather-service}"; PORT="${PORT:-8080}"
 question="${1:-What is the weather in Paris?}"
@@ -23,7 +25,13 @@ kubectl -n "$NS" run "ask-${trace_id:0:12}" --rm -i --quiet --restart=Never --im
   -H "traceparent: 00-${trace_id}-0000000000000001-01" \
   -d "$body" "http://${SVC}:${PORT}/" \
   | python3 -c 'import json, sys
-r = json.load(sys.stdin)
+raw = sys.stdin.read()
+try:
+    r = json.loads(raw)
+except ValueError:
+    # curl failed (nothing came back) or the agent answered with non-JSON:
+    # show what arrived, not a traceback; kubectl/curl said why above.
+    sys.exit("no answer: " + (raw.strip()[:300] or "empty response — see the error above"))
 res = r.get("result", r)
 parts = (res.get("status", {}).get("message", {}).get("parts", [])
          or [p for a in res.get("artifacts", []) for p in a.get("parts", [])]
