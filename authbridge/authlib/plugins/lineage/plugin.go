@@ -169,6 +169,10 @@ type LineageTelemetry struct {
 	// that does not verify becomes visible; see Ready for why readiness
 	// deliberately does not follow it.
 	exportFailures atomic.Uint64
+	// stampRefusals counts tracestate stamps the SDK refused to insert. Not
+	// reachable with the pinned SDK (see restampTracestate); kept so the WARN
+	// on that branch is throttled and countable if an SDK change makes it so.
+	stampRefusals atomic.Uint64
 }
 
 // NewLineageTelemetry constructs an unconfigured plugin. Configure + Init must
@@ -569,7 +573,7 @@ func (p *LineageTelemetry) OnRequest(ctx context.Context, pctx *pipeline.Context
 	reqCtx := p.emitRequestSpan(parent, spanName, spanKind, reqAttrs)
 	exchangeID := reqCtx.SpanID().String()
 	remoteCtx = p.mintTraceparent(ctx, pctx, remoteCtx, reqCtx)
-	stamped := restampTracestate(pctx, remoteCtx, exchangeID)
+	stamped := p.restampTracestate(pctx, remoteCtx, exchangeID)
 
 	common := make([]attribute.KeyValue, 0, len(base)+1)
 	common = append(common, base...)
@@ -680,18 +684,31 @@ func (p *LineageTelemetry) mintTraceparent(ctx context.Context, pctx *pipeline.C
 // forwarded message: whenever mintTraceparent wrote, the restamp that follows
 // succeeds too (a minted context's TraceState is empty, so Insert cannot
 // fail), so a false here means no header of either kind was written.
-func restampTracestate(pctx *pipeline.Context, remoteCtx context.Context, exchangeID string) bool {
+//
+// A caller cannot make Insert fail. The W3C limits are enforced upstream of
+// this call: a tracestate with more than 32 members, or a malformed one, fails
+// to parse and the propagator's Extract drops it whole — the traceparent still
+// counts, and the stamp lands on an empty list. A list at exactly 32 members
+// is handled by the SDK's Insert (otel v1.44) by evicting the right-most
+// member to make room, per the W3C guidance for an intermediary adding its
+// own member, not by refusing. Insert errors only on an invalid key or value,
+// and ours are a constant and a span id. The branch below therefore guards an
+// SDK contract change, not a wire shape — and because the trigger, if one
+// ever existed, would be a remote header, it is throttled on the export
+// WARN's schedule (logExportFailure) and counted rather than logged per request.
+func (p *LineageTelemetry) restampTracestate(pctx *pipeline.Context, remoteCtx context.Context, exchangeID string) bool {
 	rsc := trace.SpanContextFromContext(remoteCtx)
 	if !rsc.IsValid() {
 		return false
 	}
 	ts, err := rsc.TraceState().Insert(tracestateStampKey, exchangeID)
 	if err != nil {
-		// Stamp attempted and refused (tracestate full or a member malformed,
-		// W3C caps at 32 members / 512 bytes). Without this line the outcome
-		// is indistinguishable from "app has no shim".
-		slog.Warn("lineage-telemetry: tracestate stamp rejected; the next element will attribute as wire",
-			"exchange_id", exchangeID, "error", err)
+		// Stamp attempted and refused. Without this line the outcome is
+		// indistinguishable from "app has no shim".
+		if n := p.stampRefusals.Add(1); logExportFailure(n) {
+			slog.Warn("lineage-telemetry: tracestate stamp rejected; the next element will attribute as wire",
+				"exchange_id", exchangeID, "refusals", n, "error", err)
+		}
 		return false
 	}
 	pctx.Headers.Set("tracestate", ts.String())

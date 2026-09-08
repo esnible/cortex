@@ -281,6 +281,70 @@ func TestStamp_PreservesForeignTracestateMembers(t *testing.T) {
 	}
 }
 
+// fullTracestate builds a header carrier whose tracestate already holds n
+// foreign members (k1=v … kn=v), oldest last.
+func fullTracestate(n int) http.Header {
+	members := make([]string, n)
+	for i := range members {
+		members[i] = fmt.Sprintf("k%d=v", i+1)
+	}
+	h := traceparent("4bf92f3577b34da6a3ce929d0e0e4736", "00f067aa0ba902b7")
+	h.Set("tracestate", strings.Join(members, ","))
+	return h
+}
+
+// TestStamp_FullTracestateStillStamped: a caller whose tracestate is already
+// at the W3C cap (32 members) cannot keep this producer's stamp off the wire.
+// The SDK's Insert evicts the right-most (oldest) member to make room, as W3C
+// directs an intermediary to do; the stamp lands first, the exchange is
+// recorded as modified, and the next element attributes through the stamp.
+func TestStamp_FullTracestateStillStamped(t *testing.T) {
+	p, exp := newTestPlugin(t)
+	pctx := fakeContext(pipeline.Inbound, fullTracestate(32))
+
+	run(t, p, pctx, allow(200))
+
+	req, _ := roleSplit(t, exp.GetSpans())
+	got := pctx.Headers.Get("tracestate")
+	members := strings.Split(got, ",")
+	if want := tracestateStampKey + "=" + req.SpanContext.SpanID().String(); members[0] != want {
+		t.Fatalf("tracestate = %q, want the stamp %q first", got, want)
+	}
+	if len(members) != 32 {
+		t.Errorf("tracestate has %d members after the stamp, want 32 (the cap)", len(members))
+	}
+	if !strings.Contains(got, "k1=v") || strings.Contains(got, "k32=v") {
+		t.Errorf("tracestate = %q, want the oldest member (k32) evicted and the newest (k1) kept", got)
+	}
+	if inv := pctx.Extensions.Invocations.Inbound[0]; string(inv.Action) != "modify" {
+		t.Errorf("action = %q, want modify (the stamp was written)", inv.Action)
+	}
+	if p.stampRefusals.Load() != 0 {
+		t.Errorf("stampRefusals = %d on a full-but-valid tracestate", p.stampRefusals.Load())
+	}
+}
+
+// TestStamp_OverlongTracestateDroppedBeforeStamp: past the cap the header
+// does not parse, and the propagator drops the whole tracestate while keeping
+// the traceparent (W3C: a tracestate failure must not affect traceparent).
+// The stamp then lands on an empty list. Recorded so the shape is known: the
+// caller's members are lost on that hop, and the wire parent is unaffected.
+func TestStamp_OverlongTracestateDroppedBeforeStamp(t *testing.T) {
+	p, exp := newTestPlugin(t)
+	pctx := fakeContext(pipeline.Inbound, fullTracestate(33))
+
+	run(t, p, pctx, allow(200))
+
+	req, _ := roleSplit(t, exp.GetSpans())
+	if want := tracestateStampKey + "=" + req.SpanContext.SpanID().String(); pctx.Headers.Get("tracestate") != want {
+		t.Errorf("tracestate = %q, want exactly the stamp %q (unparseable list dropped at Extract)", pctx.Headers.Get("tracestate"), want)
+	}
+	if got := req.Parent.SpanID().String(); got != "00f067aa0ba902b7" {
+		t.Errorf("parent = %s, want the wire parent — the traceparent must survive a tracestate parse failure", got)
+	}
+	checkAttr(t, req, "lineage.parent.source", "wire")
+}
+
 // TestMint_NoTraceparentForwardsOwn is the traceparent-less entry, both
 // directions: the request span roots a fresh trace, and the forwarded request
 // now carries a traceparent naming that span PLUS the tracestate stamp — so
