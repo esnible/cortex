@@ -698,6 +698,56 @@ func TestOutcome_AbandonedHasNoStatus(t *testing.T) {
 	}
 }
 
+// TestOutcome_ErrorWithStatus: "error" is one of the four lineage.outcome
+// values the contract enumerates, and the only one no exchange asserted —
+// a regression emitting "abandoned" for a statused error passed green.
+func TestOutcome_ErrorWithStatus(t *testing.T) {
+	p, exp := newTestPlugin(t)
+	pctx := fakeContext(pipeline.Outbound, http.Header{})
+
+	run(t, p, pctx, pipeline.Outcome{FinalAction: pipeline.OutcomeError, StatusCode: 502})
+
+	_, resp := roleSplit(t, exp.GetSpans())
+	checkAttr(t, resp, "lineage.outcome", "error")
+	if got, ok := intAttr(resp, "http.status_code"); !ok || got != 502 {
+		t.Errorf("http.status_code = %d (ok=%v), want 502", got, ok)
+	}
+	if v, ok := findAttr(resp, "lineage.denied_by"); ok {
+		t.Errorf("lineage.denied_by = %q on an error outcome (only denials name a plugin)", v.String())
+	}
+}
+
+// TestLineageOutcome covers the reduction as a pure function, which is the
+// only way to reach the nil-outcome and unknown-action branches: the pipeline
+// guarantees OnFinish a non-nil Outcome with a known action.
+func TestLineageOutcome(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		in        *pipeline.Outcome
+		outcome   string
+		status    int
+		hasStatus bool
+		deniedBy  string
+	}{
+		{"nil outcome is abandoned", nil, "abandoned", 0, false, ""},
+		{"allow with status", &pipeline.Outcome{FinalAction: pipeline.OutcomeAllow, StatusCode: 200}, "ok", 200, true, ""},
+		{"allow without status", &pipeline.Outcome{FinalAction: pipeline.OutcomeAllow}, "ok", 0, false, ""},
+		{"deny names the plugin", &pipeline.Outcome{FinalAction: pipeline.OutcomeDeny, StatusCode: 401, DenyingPlugin: "jwt-validation"}, "denied", 401, true, "jwt-validation"},
+		{"error with status", &pipeline.Outcome{FinalAction: pipeline.OutcomeError, StatusCode: 502}, "error", 502, true, ""},
+		{"error without status is abandoned", &pipeline.Outcome{FinalAction: pipeline.OutcomeError}, "abandoned", 0, false, ""},
+		{"unknown action is an error", &pipeline.Outcome{FinalAction: pipeline.OutcomeAction("reset"), StatusCode: 500}, "error", 500, true, ""},
+		{"unknown action without status", &pipeline.Outcome{FinalAction: pipeline.OutcomeAction("reset")}, "error", 0, false, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			outcome, status, hasStatus, deniedBy := lineageOutcome(tc.in)
+			if outcome != tc.outcome || status != tc.status || hasStatus != tc.hasStatus || deniedBy != tc.deniedBy {
+				t.Errorf("lineageOutcome = (%q, %d, %v, %q), want (%q, %d, %v, %q)",
+					outcome, status, hasStatus, deniedBy, tc.outcome, tc.status, tc.hasStatus, tc.deniedBy)
+			}
+		})
+	}
+}
+
 // ---- request facts + capture_io + span names ----
 
 func TestRequestFacts_MCPWithCapture(t *testing.T) {
@@ -803,6 +853,110 @@ func TestCaptureIO_A2ANeverFallsThroughToCoPopulatedMCP(t *testing.T) {
 	// mcp.* facts belong to mcp hops only; the a2a label must keep them off.
 	if v, ok := findAttr(req, "mcp.method"); ok {
 		t.Errorf("mcp.method = %q emitted on an a2a hop", v.String())
+	}
+}
+
+// TestCaptureIO_InferenceThroughThePipeline: the inference payload path end to
+// end — prompt messages as input.value, the completion as output.value.
+func TestCaptureIO_InferenceThroughThePipeline(t *testing.T) {
+	p, exp := newTestPlugin(t)
+	p.cfg.CaptureIO = true
+	pctx := fakeContext(pipeline.Outbound, http.Header{})
+	pctx.Extensions.Inference = &pipeline.InferenceExtension{
+		Model:      "qwen2.5:7b",
+		Messages:   []pipeline.InferenceMessage{{Role: "user", Content: "weather in Tokyo?"}},
+		Completion: "Sunny, 24°C.",
+	}
+
+	run(t, p, pctx, allow(200))
+	req, resp := roleSplit(t, exp.GetSpans())
+
+	checkAttr(t, req, "input.value", `[{"role":"user","content":"weather in Tokyo?"}]`)
+	checkAttr(t, resp, "output.value", "Sunny, 24°C.")
+}
+
+// TestPayloadExtractors covers every branch of the two payload reductions as
+// pure functions — the a2a happy path, the inference completion and tool
+// calls, the multi-part join and the non-text fallback — where the pipeline
+// tests above exercise only the suppression and mcp cases.
+func TestPayloadExtractors(t *testing.T) {
+	a2a := func(ext *pipeline.A2AExtension) *pipeline.Context {
+		return &pipeline.Context{Extensions: pipeline.Extensions{A2A: ext}}
+	}
+	inf := func(ext *pipeline.InferenceExtension) *pipeline.Context {
+		return &pipeline.Context{Extensions: pipeline.Extensions{Inference: ext}}
+	}
+	t.Run("input", func(t *testing.T) {
+		for _, tc := range []struct {
+			name     string
+			pctx     *pipeline.Context
+			protocol string
+			want     string
+		}{
+			{"a2a text parts joined by newline", a2a(&pipeline.A2AExtension{Parts: []pipeline.A2APart{{Kind: "text", Content: "line 1"}, {Kind: "text", Content: "line 2"}}}), "a2a", "line 1\nline 2"},
+			{"a2a empty parts skipped", a2a(&pipeline.A2AExtension{Parts: []pipeline.A2APart{{Kind: "text"}, {Kind: "text", Content: "only"}}}), "a2a", "only"},
+			{"a2a non-text parts fall back to JSON", a2a(&pipeline.A2AExtension{Parts: []pipeline.A2APart{{Kind: "file"}}}), "a2a", `[{"kind":"file"}]`},
+			{"a2a no parts is empty", a2a(&pipeline.A2AExtension{Method: "message/send"}), "a2a", ""},
+			{"inference messages as JSON", inf(&pipeline.InferenceExtension{Messages: []pipeline.InferenceMessage{{Role: "system", Content: "be brief"}}}), "inference", `[{"role":"system","content":"be brief"}]`},
+			{"inference no messages is empty", inf(&pipeline.InferenceExtension{Model: "m"}), "inference", ""},
+			{"protocol keyed: a2a parser output not read on an mcp hop", a2a(&pipeline.A2AExtension{Parts: []pipeline.A2APart{{Kind: "text", Content: "x"}}}), "mcp", ""},
+		} {
+			if got := ioInputValue(tc.pctx, tc.protocol); got != tc.want {
+				t.Errorf("%s: ioInputValue = %q, want %q", tc.name, got, tc.want)
+			}
+		}
+	})
+	t.Run("output", func(t *testing.T) {
+		for _, tc := range []struct {
+			name     string
+			pctx     *pipeline.Context
+			protocol string
+			want     string
+		}{
+			{"a2a artifact happy path", a2a(&pipeline.A2AExtension{Artifact: "The weather in Tokyo is sunny."}), "a2a", "The weather in Tokyo is sunny."},
+			{"a2a artifact that is a protocol event is suppressed", a2a(&pipeline.A2AExtension{Artifact: `{"kind":"status-update","taskId":"t-1"}`}), "a2a", ""},
+			{"a2a error message", a2a(&pipeline.A2AExtension{ErrorMessage: "task failed: tool timeout"}), "a2a", "task failed: tool timeout"},
+			{"a2a artifact wins over error message", a2a(&pipeline.A2AExtension{Artifact: "partial", ErrorMessage: "then failed"}), "a2a", "partial"},
+			{"a2a suppressed artifact falls to the error message", a2a(&pipeline.A2AExtension{Artifact: `{"kind":"working"}`, ErrorMessage: "failed"}), "a2a", "failed"},
+			{"inference completion", inf(&pipeline.InferenceExtension{Completion: "Sunny."}), "inference", "Sunny."},
+			{"inference tool calls when no completion", inf(&pipeline.InferenceExtension{ToolCalls: []pipeline.InferenceToolCall{{ID: "c1", Name: "get_weather", Arguments: `{"city":"Tokyo"}`}}}), "inference", `[{"id":"c1","name":"get_weather","arguments":"{\"city\":\"Tokyo\"}"}]`},
+			{"inference completion wins over tool calls", inf(&pipeline.InferenceExtension{Completion: "done", ToolCalls: []pipeline.InferenceToolCall{{Name: "t"}}}), "inference", "done"},
+			{"inference nothing is empty", inf(&pipeline.InferenceExtension{Model: "m"}), "inference", ""},
+			{"protocol keyed: inference parser output not read on an a2a hop", inf(&pipeline.InferenceExtension{Completion: "x"}), "a2a", ""},
+		} {
+			if got := ioOutputValue(tc.pctx, tc.protocol); got != tc.want {
+				t.Errorf("%s: ioOutputValue = %q, want %q", tc.name, got, tc.want)
+			}
+		}
+	})
+}
+
+// TestIsA2AProtocolEvent pins the exact-match decision the function's comment
+// records: the five enumerated transport kinds are events, and a kind that
+// merely contains one of those words is an agent-defined artifact, not an
+// event. Until now only "status-update" was exercised.
+func TestIsA2AProtocolEvent(t *testing.T) {
+	for _, tc := range []struct {
+		in   string
+		want bool
+	}{
+		{`{"kind":"status-update","taskId":"t-1"}`, true},
+		{`{"kind":"task-status-update"}`, true},
+		{`{"kind":"artifact-update"}`, true},
+		{`{"kind":"working"}`, true},
+		{`{"kind":"canceled"}`, true},
+		{`{"kind":"final-status-report","text":"..."}`, false}, // the exact-match case the comment justifies
+		{`{"kind":"status-update-v2"}`, false},
+		{`{"kind":"message","text":"hi"}`, false},
+		{`{"taskId":"t-1"}`, false},    // no kind
+		{`{"kind":42}`, false},         // kind not a string
+		{`plain text artifact`, false}, // not JSON
+		{`["status-update"]`, false},   // JSON, not an object
+		{``, false},
+	} {
+		if got := isA2AProtocolEvent(tc.in); got != tc.want {
+			t.Errorf("isA2AProtocolEvent(%q) = %v, want %v", tc.in, got, tc.want)
+		}
 	}
 }
 
