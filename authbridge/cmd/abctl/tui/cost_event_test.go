@@ -2,6 +2,7 @@ package tui
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
@@ -100,10 +101,37 @@ func TestExchangeCellsSumToTotal(t *testing.T) {
 	}
 }
 
+// TestExchangeCellsSurviveAReportedTotalThatDisagrees: TokenUsage.Fill prefers the
+// provider's own total_tokens over the sum of the parts, so the two are not
+// obliged to agree. Each row must keep reporting its own measured half rather than
+// back-deriving anything from the total — otherwise a gateway that rounds, or
+// counts a tier this display does not, would silently corrupt both cells.
+func TestExchangeCellsSurviveAReportedTotalThatDisagrees(t *testing.T) {
+	inf := agentTurn()
+	inf.TotalTokens = 999_999 // a reported total that is not prompt+output
+	req := reqEvent(t, bigPromptWire)
+	req.RequestID = "aaa"
+	resp := respEvent(costWire, inf)
+	resp.RequestID = "aaa"
+	rows := []eventRow{{event: req}, {event: resp}}
+	partner := map[int]int{0: 1, 1: 0}
+	m := &model{}
+
+	if got := m.tokensCell(rows, partner, 0, req); got != "681,300(−9.9k)" {
+		t.Errorf("request TOKENS = %q, want the measured prompt regardless of the reported total", got)
+	}
+	if got := m.tokensCell(rows, partner, 1, resp); got != "1,850" {
+		t.Errorf("response TOKENS = %q, want the measured output regardless of the reported total", got)
+	}
+	if strings.Contains(m.tokensCell(rows, partner, 1, resp), "999") {
+		t.Error("the reported total leaked into a cell")
+	}
+}
+
 // TestCostCellPhases: the request row is a modelled prompt figure, the response
-// row the authoritative exchange total. The response figure INCLUDES the request
-// figure — it is not a generated-token cost, because no plugin publishes an
-// output rate.
+// row the exchange total as budget-track reported it. The response figure
+// INCLUDES the request figure — it is not a generated-token cost, because no
+// plugin publishes an output rate.
 func TestCostCellPhases(t *testing.T) {
 	inf := agentTurn()
 	req := reqEvent(t, bigPromptWire)
@@ -122,8 +150,8 @@ func TestCostCellPhases(t *testing.T) {
 	if got := m.costCell(rows, partner, 1, resp); got != "$0.2824" {
 		t.Errorf("response COST = %q, want %q", got, "$0.2824")
 	}
-	// Without the budget-track event there is no authoritative total, so the
-	// response cost is blank rather than modelled.
+	// Without the budget-track event nobody reported a cost, so the response cell
+	// is blank rather than modelled from the request's rates.
 	if got := m.costCell(rows, partner, 1, respEvent("", inf)); got != "" {
 		t.Errorf("unpriced response COST = %q, want empty", got)
 	}
@@ -154,14 +182,18 @@ func TestPromptCostIsTierWeighted(t *testing.T) {
 	}
 }
 
-// TestGeneratedTokensCellFallsBackToCompletion: providers that report only the
-// aggregate still get a generated count, or the response row would go blank on
-// exactly the dialects that motivated the split.
-func TestGeneratedTokensCellFallsBackToCompletion(t *testing.T) {
-	if got := generatedTokensCell(respEvent("", &pipeline.InferenceExtension{CompletionTokens: 1_850})); got != "1,850" {
+// TestGeneratedTokensCellReadsOutputTokens: the response row shows what was
+// generated, and shows nothing rather than "0" when no usage was reported — a
+// blank cell reads as "not measured", a 0 as "generated nothing".
+//
+// Asserts OutputTokens only. The CompletionTokens fallback in the cell is not
+// exercised because it cannot fire: TokenUsage.Fill sets CompletionTokens from
+// the same Output value, so a test feeding one without the other would pin a
+// shape no parser produces.
+func TestGeneratedTokensCellReadsOutputTokens(t *testing.T) {
+	if got := generatedTokensCell(respEvent("", &pipeline.InferenceExtension{OutputTokens: 1_850})); got != "1,850" {
 		t.Errorf("cell = %q, want 1,850", got)
 	}
-	// No usage at all: blank, not "0".
 	for _, inf := range []*pipeline.InferenceExtension{nil, {}} {
 		if got := generatedTokensCell(respEvent("", inf)); got != "" {
 			t.Errorf("cell = %q, want empty", got)
@@ -169,19 +201,102 @@ func TestGeneratedTokensCellFallsBackToCompletion(t *testing.T) {
 	}
 }
 
-// TestPromptTokensPrefersSplitOverAggregate: the split counters are the
-// authoritative shape; PromptTokens is a fallback for providers that expose only
-// it. Preferring the aggregate would double-count on providers that send both.
-func TestPromptTokensPrefersSplitOverAggregate(t *testing.T) {
-	both := &pipeline.InferenceExtension{InputTokens: 100, CacheReadTokens: 400, PromptTokens: 500}
-	if got := promptTokens(both); got != 500 {
-		t.Errorf("promptTokens = %d, want 500", got)
+// TestPromptTokensSumsTheSplitTiers: the prompt total is the sum of the three
+// prompt-side tiers, which is the only shape parsercommon.TokenUsage.Fill
+// produces. Summing is what lets a request row show a total at all.
+//
+// The PromptTokens fallback is not asserted for a value of its own: Fill sets it
+// to the identical sum, so there is no input where the two disagree.
+func TestPromptTokensSumsTheSplitTiers(t *testing.T) {
+	split := &pipeline.InferenceExtension{
+		InputTokens: 100, CacheReadTokens: 400, CacheWriteTokens: 25, PromptTokens: 525,
 	}
-	only := &pipeline.InferenceExtension{PromptTokens: 500}
-	if got := promptTokens(only); got != 500 {
-		t.Errorf("aggregate-only promptTokens = %d, want 500", got)
+	if got := promptTokens(split); got != 525 {
+		t.Errorf("promptTokens = %d, want 525", got)
+	}
+	// Cache-write tokens are prompt-side and must not be dropped: on a cold cache
+	// they are the bulk of the prompt, and they bill at ~1.25x the input rate.
+	noWrite := &pipeline.InferenceExtension{InputTokens: 100, CacheReadTokens: 400, PromptTokens: 500}
+	if got := promptTokens(noWrite); got != 500 {
+		t.Errorf("promptTokens = %d, want 500", got)
 	}
 	if got := promptTokens(nil); got != 0 {
 		t.Errorf("nil promptTokens = %d, want 0", got)
+	}
+	if got := promptTokens(&pipeline.InferenceExtension{}); got != 0 {
+		t.Errorf("empty promptTokens = %d, want 0", got)
+	}
+}
+
+// TestTokensCellFitsASevenDigitPrompt pins the TOKENS column width against the
+// worst realistic case. Million-token contexts are in service, and bubbles
+// truncates each cell at the column width with an ellipsis — so at 15 this
+// rendered "1,048,576(−1…", silently dropping the saving, which is the half of
+// the cell that appears nowhere else in the UI.
+//
+// Asserts against the column definition rather than a transcribed number, so
+// narrowing the column fails here instead of quietly clipping in production.
+func TestTokensCellFitsASevenDigitPrompt(t *testing.T) {
+	inf := &pipeline.InferenceExtension{
+		InputTokens: 48_576, CacheReadTokens: 1_000_000,
+		OutputTokens: 3_650, TotalTokens: 1_052_226,
+	}
+	req := reqEvent(t, bigPromptWire)
+	req.RequestID = "big"
+	resp := respEvent(costWire, inf)
+	resp.RequestID = "big"
+	rows := []eventRow{{event: req}, {event: resp}}
+	m := &model{}
+
+	cell := m.tokensCell(rows, map[int]int{0: 1, 1: 0}, 0, req)
+	if !strings.HasPrefix(cell, "1,048,576(−") {
+		t.Fatalf("TOKENS cell = %q, want a 7-digit prompt with its saving", cell)
+	}
+	width := columnWidth(t, "TOKENS")
+	if n := len([]rune(cell)); n > width {
+		t.Errorf("TOKENS cell %q is %d cols but the column is %d — bubbles will clip the saving",
+			cell, n, width)
+	}
+	// The same guard for COST, whose widest realistic value is a sub-cent saving
+	// against a dollar total.
+	costStr := m.costCell(rows, map[int]int{0: 1, 1: 0}, 0, req)
+	if n := len([]rune(costStr)); n > columnWidth(t, "COST") {
+		t.Errorf("COST cell %q is %d cols but the column is %d", costStr, n, columnWidth(t, "COST"))
+	}
+}
+
+// columnWidth reads a width off the real events-table definition, so a test
+// cannot drift from the column it is meant to be guarding.
+func columnWidth(t *testing.T, title string) int {
+	t.Helper()
+	for _, c := range newEventsTable().Columns() {
+		if c.Title == title {
+			return c.Width
+		}
+	}
+	t.Fatalf("no %q column", title)
+	return 0
+}
+
+// TestEventMethodSharesTheColumnWidth: eventMethod truncated to a hardcoded 22
+// after the column shrank to 14. bubbles re-truncates and hid it, but that is the
+// drift actionColWidth exists to prevent, so lock the two together.
+func TestEventMethodSharesTheColumnWidth(t *testing.T) {
+	if methodColWidth != columnWidth(t, "METHOD") {
+		t.Errorf("methodColWidth = %d but the METHOD column is %d",
+			methodColWidth, columnWidth(t, "METHOD"))
+	}
+	long := &pipeline.SessionEvent{
+		Inference: &pipeline.InferenceExtension{Model: "claude-sonnet-4-5-20250929"},
+	}
+	if n := len([]rune(eventMethod(*long))); n > methodColWidth {
+		t.Errorf("eventMethod returned %d cols, want <= %d", n, methodColWidth)
+	}
+	// A name that fits must not be truncated.
+	fits := &pipeline.SessionEvent{
+		Inference: &pipeline.InferenceExtension{Model: "claude-opus-5"},
+	}
+	if got := eventMethod(*fits); got != "claude-opus-5" {
+		t.Errorf("eventMethod = %q, want it untouched", got)
 	}
 }

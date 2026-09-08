@@ -11,13 +11,25 @@ import (
 // tags.
 //
 // Unlike tool-prune's event, this one carries a finished dollar figure rather
-// than rates: the plugin reads the authoritative post-discount cost out of
-// LiteLLM's response header, so there is nothing left for a consumer to compute.
+// than rates, so a consumer has no arithmetic left to do. It is NOT always an
+// authoritative figure though: the plugin prefers the cost LiteLLM stamps on the
+// response, but a streamed response always reports 0 there, so those are priced
+// from the plugin's own per-token rates instead. Source says which happened.
 type costEvent struct {
 	CostUSD float64 `json:"cost_usd"`
-	// Source is "gateway-header" (authoritative) or "usage-fallback" (priced
-	// from token counters, used for streamed responses whose header reports 0).
-	Source        string  `json:"source"`
+	// Source is "gateway-header" (the gateway's own post-discount figure) or
+	// "usage-fallback" (priced from token counters by the plugin, used for
+	// streamed responses whose header reports 0 — for a streaming agent this is
+	// the common case, not the exception).
+	//
+	// Decoded but deliberately not rendered: the COST column shows modelled and
+	// gateway-stamped figures identically, matching the request-side cost, which
+	// is modelled too. Marking one and not the other would be the inconsistency.
+	Source string `json:"source"`
+	// DailyTotalUSD / DailyMaxUSD are decoded for wire coverage — nothing renders
+	// them yet. Kept so the decode test pins every field the plugin publishes,
+	// which is what makes a tag rename fail here rather than silently blank a
+	// column later.
 	DailyTotalUSD float64 `json:"daily_total_usd"`
 	DailyMaxUSD   float64 `json:"daily_max_usd"`
 }
@@ -50,10 +62,10 @@ func decodeCostEvent(e *pipeline.SessionEvent) (costEvent, bool) {
 // close to an order of magnitude by flat pricing. The three rates needed are
 // exactly the three tool-prune already carries.
 //
-// This is a model, not a measurement — the authoritative figure only exists for
-// the exchange as a whole, on the response, and only when litellm-budget-track
-// is running. Rates resolved as "none" yield ok=false rather than a $0.00 that
-// would read as a free prompt.
+// This is a model, not a measurement: the only figure anyone reports is for the
+// exchange as a whole, on the response, and only when litellm-budget-track is
+// running. Rates resolved as "none" yield ok=false rather than a $0.00 that would
+// read as a free prompt.
 func promptCost(ps pruneSaving, resp *pipeline.InferenceExtension) (usd float64, ok bool) {
 	if resp == nil || ps.RateSource == "none" {
 		return 0, false
@@ -72,8 +84,12 @@ func promptCost(ps pruneSaving, resp *pipeline.InferenceExtension) (usd float64,
 // is the only party that tokenizes, but it is a request-side quantity — which is
 // what lets a request row show a total at all.
 //
-// Falls back to the reported aggregate when a provider exposes only PromptTokens
-// without the split, mirroring savedTokensAndCost.
+// The PromptTokens fallback cannot currently fire, and is kept only to mirror
+// savedTokensAndCost: parsercommon.TokenUsage.Fill is the sole production writer
+// of these fields and sets PromptTokens to Input+CacheRead+CacheWrite — the same
+// sum computed here — so when the split is zero the aggregate is zero too. It
+// costs nothing and would start earning its keep if a parser ever published the
+// aggregate directly.
 func promptTokens(resp *pipeline.InferenceExtension) int {
 	if resp == nil {
 		return 0
