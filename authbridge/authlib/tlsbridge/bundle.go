@@ -64,7 +64,17 @@ var ErrNoSystemRoots = errors.New("tlsbridge: no system root bundle found")
 //
 // Idempotent: a bundle whose content already matches is left alone, so calling
 // this on every boot neither churns the file nor disturbs a process that has it
-// open. Rewrites when the CA has rotated or the system roots have been updated.
+// open. It re-reads both inputs, so a rotated CA or an updated root store is
+// picked up — but only AT A CALL, and the only caller is the proxy at startup.
+// For a service documented to run for weeks, that makes this a snapshot taken at
+// boot, not a view of the store.
+//
+// The direction that matters is root REMOVAL: once the OS distrusts a root,
+// every tool pointed at bundle.crt keeps trusting it until the proxy restarts,
+// and nothing surfaces that. Addition is the benign half — a root added after
+// boot is simply absent, and absence fails closed. Re-assembling on an interval
+// would close the gap, and the content comparison above already makes that free
+// of churn; it is not done yet because nothing has needed it.
 //
 // Callers must treat failure as non-fatal. The bridge itself works without a
 // bundle — only the clients' ability to verify it is affected — so a boot that

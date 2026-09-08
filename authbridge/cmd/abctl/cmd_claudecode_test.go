@@ -700,15 +700,18 @@ func TestClaudeCodeEnable_ReplacingVarsGetTheBundleNotTheCA(t *testing.T) {
 	}
 }
 
-// TestClaudeCodeDisable_RestoresNewCAKeys: adding keys to managedKeys is only
-// safe if disable's restore bookkeeping covers them too. A user who had their own
-// SSL_CERT_FILE (corporate CA) must get it back, not lose it.
-func TestClaudeCodeDisable_RestoresNewCAKeys(t *testing.T) {
-	const prior = `{"env":{"SSL_CERT_FILE":"/corp/ca.pem"}}`
-	settings, cfg := fixture(t, prior)
+// TestClaudeCodeEnable_RefusesToClobberUserSSLCertFile: someone behind a
+// corporate CA already has SSL_CERT_FILE set. Replacing it would break their TLS
+// and give no clue why — the same property TestClaudeCodeEnable_
+// RefusesToClobberForeignProxy asserts for HTTPS_PROXY, now that the CA keys are
+// managed too.
+//
+// A foreign value can only ever reach the refusal, never the restore path, which
+// is why the round-trip below needs a cortex-shaped prior value instead.
+func TestClaudeCodeEnable_RefusesToClobberUserSSLCertFile(t *testing.T) {
+	settings, cfg := fixture(t, `{"env":{"SSL_CERT_FILE":"/corp/ca.pem"}}`)
 	var out, errb bytes.Buffer
 
-	// A foreign value must not be silently replaced in the first place.
 	if code := claudeCodeEnable(settings, cfg, true, &out, &errb); code == 0 {
 		t.Fatalf("enable overwrote a user-set %s; stdout:\n%s", envSSLCert, out.String())
 	}
@@ -717,5 +720,72 @@ func TestClaudeCodeDisable_RestoresNewCAKeys(t *testing.T) {
 	}
 	if env := readEnv(t, settings); env[envSSLCert] != "/corp/ca.pem" {
 		t.Errorf("%s = %q, want the user's value untouched", envSSLCert, env[envSSLCert])
+	}
+}
+
+// TestClaudeCodeDisable_RestoresPriorCAValues is the restore path for the CA keys
+// this change added to managedKeys. Both the capture in enable and the loop in
+// disable iterate managedKeys, so the new keys come along for free — but nothing
+// pinned that, and the bookkeeping is where a partial addition would go wrong
+// silently: a key added to the write path but missed by the restore path deletes
+// something the user owned.
+//
+// Uses a cortex-SHAPED prior value (a stale bundle path under ~/.cortex), because
+// isCortexValue accepts it and enable proceeds to overwrite. A foreign value is
+// refused outright and never reaches the state file, so it cannot exercise this.
+func TestClaudeCodeDisable_RestoresPriorCAValues(t *testing.T) {
+	stale := filepath.Join("/somewhere", ".cortex", "ca", "old-bundle.crt")
+	settings, cfg := fixture(t, `{"env":{
+	  "SSL_CERT_FILE":"`+stale+`",
+	  "GIT_SSL_CAINFO":"`+stale+`",
+	  "ANTHROPIC_AUTH_TOKEN":"sk-x"
+	}}`)
+	state := filepath.Join(t.TempDir(), "claude-code-state.json")
+	var out, errb bytes.Buffer
+
+	if code := claudeCodeEnable2(settings, cfg, state, true, &out, &errb); code != 0 {
+		t.Fatalf("enable: %s", errb.String())
+	}
+	// Enable replaced them with the current bundle path.
+	if got := readEnv(t, settings)[envSSLCert]; got == stale {
+		t.Fatalf("%s was not updated, so the restore below proves nothing", envSSLCert)
+	}
+	if code := claudeCodeDisable2(settings, state, true, &out, &errb); code != 0 {
+		t.Fatalf("disable: %s", errb.String())
+	}
+
+	env := readEnv(t, settings)
+	for _, k := range []string{envSSLCert, envGitCA} {
+		if got := env[k]; got != stale {
+			t.Errorf("%s = %q, want the prior value %q restored", k, got, stale)
+		}
+	}
+	// Keys the user did NOT have are still removed rather than left behind.
+	for _, k := range []string{envRequestsCA, envCurlCA, envProxy, envCACerts} {
+		if _, ok := env[k]; ok {
+			t.Errorf("%s survived disable although we added it", k)
+		}
+	}
+	if env["ANTHROPIC_AUTH_TOKEN"] != "sk-x" {
+		t.Error("unrelated entry lost")
+	}
+}
+
+// TestDarwinGoNoteNamesTheKeychainRemedy: SSL_CERT_FILE is inert on macOS, so the
+// note is the only place a user learns that the Go tools need the keychain. If it
+// stops naming the command, the gap goes back to being silent.
+func TestDarwinGoNoteNamesTheKeychainRemedy(t *testing.T) {
+	note := darwinGoNote("/Users/x/.cortex/ca/ca.crt")
+	for _, want := range []string{
+		"security add-trusted-cert", "login.keychain-db",
+		"/Users/x/.cortex/ca/ca.crt", "inert",
+	} {
+		if !strings.Contains(note, want) {
+			t.Errorf("note is missing %q:\n%s", want, note)
+		}
+	}
+	// It must not claim the other tools are broken — they are not.
+	if strings.Contains(note, "git, curl and Python are broken") {
+		t.Error("note overstates the scope")
 	}
 }

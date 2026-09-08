@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 
@@ -34,14 +35,24 @@ const (
 	// them at the bare CA leaves the tool trusting one private CA and nothing
 	// else — every unproxied TLS call then fails. Go is explicit about it:
 	// crypto/x509 root_unix.go does `files = []string{f}` when SSL_CERT_FILE is
-	// set. That failure is platform-split and so easy to ship blind: macOS goes
-	// through root_darwin.go's platform verifier and keeps working, while every
-	// Linux box and CI runner breaks.
+	// set.
 	//
 	// HTTPS_PROXY reaches these tools whether or not they were the target — a
 	// Go or Python program spawned by Claude Code inherits the proxy and must be
 	// able to verify the bridge's forged leaf.
-	envSSLCert    = "SSL_CERT_FILE"      // Go: gh, abctl, any Go CLI
+	//
+	// SSL_CERT_FILE DOES NOTHING ON macOS. root_unix.go, which honours it, is
+	// built for `linux || freebsd || …` and excludes darwin; darwin's
+	// loadSystemRoots returns a `systemPool: true` sentinel that reads no files
+	// at all, and verify.go then routes any program that has not set RootCAs
+	// straight to systemVerify — Security.framework, keychain only. So on macOS
+	// a Go tool cannot be pointed at a CA file by environment; the CA has to go
+	// into the keychain instead (see darwinGoNote). It is still written here
+	// because it is correct and necessary everywhere else, including CI.
+	//
+	// The other three are unaffected: git, curl and Python read their bundles
+	// through OpenSSL/LibreSSL, which honours these variables on macOS too.
+	envSSLCert    = "SSL_CERT_FILE"      // Go: gh, abctl, any Go CLI — Linux only, see above
 	envGitCA      = "GIT_SSL_CAINFO"     // git (incl. the fetches `go mod` makes)
 	envRequestsCA = "REQUESTS_CA_BUNDLE" // Python requests: keycloak_sync, setup scripts
 	envCurlCA     = "CURL_CA_BUNDLE"     // curl
@@ -126,6 +137,27 @@ var managedKeys = []string{
 // pointed at ca.crt is the exact bug this grouping prevents.
 var bundleKeys = []string{envSSLCert, envGitCA, envRequestsCA, envCurlCA}
 
+// darwinGoNote is printed on macOS, where SSL_CERT_FILE is inert: Go resolves
+// roots through Security.framework and reads no CA file, so no environment
+// variable can make `go`, `gh` or any other Go tool trust the bridge. Only the
+// keychain can. git, curl and Python are unaffected — they read their bundles
+// through OpenSSL/LibreSSL, which honours the variables on macOS.
+//
+// Said at enable time rather than left to documentation because the failure it
+// predicts is a bare "x509: certificate signed by unknown authority" from a tool
+// the user has just been told is configured — the same "no error points at the
+// cause" problem this command exists to remove.
+func darwinGoNote(caPath string) string {
+	return "Note: on macOS, SSL_CERT_FILE cannot make Go tools (go, gh) trust the bridge.\n" +
+		"  Go reads roots from the keychain, not from any CA file, so that one variable is\n" +
+		"  inert here — git, curl and Python are fine. To cover the Go tools, trust the CA\n" +
+		"  in your login keychain:\n\n" +
+		"    security add-trusted-cert -k ~/Library/Keychains/login.keychain-db \\\n" +
+		"      -p ssl " + caPath + "\n\n" +
+		"  Undo with: security delete-certificate -c authbridge-tls-bridge-ca \\\n" +
+		"    ~/Library/Keychains/login.keychain-db\n\n"
+}
+
 const claudeCodeUsage = `abctl claude-code — route Claude Code through Cortex without shell env vars
 
 Usage:
@@ -144,6 +176,11 @@ bridge. NODE_EXTRA_CA_CERTS (Node) gets ca.crt because it EXTENDS the trust
 store; SSL_CERT_FILE (go, gh), GIT_SSL_CAINFO (git), REQUESTS_CA_BUNDLE (Python)
 and CURL_CA_BUNDLE (curl) get bundle.crt, because each REPLACES the trust store
 and ca.crt alone would leave them trusting one private CA and nothing else.
+
+macOS caveat: SSL_CERT_FILE has no effect there. Go resolves roots through the
+keychain and reads no CA file, so no environment variable can make go or gh
+trust the bridge; enable prints the "security add-trusted-cert" command that
+does. git, curl and Python are unaffected on macOS.
 
 Only those keys are added; every other setting, including any other env entry,
 is left exactly as it was. The first run copies the original file to
@@ -288,29 +325,38 @@ func claudeCodeEnable2(settingsPath, cortexCfgPath, statePath string, yes bool, 
 		}
 	}
 
-	// The CA path is written whether or not the file exists, because enabling
-	// before the first start is legitimate — the proxy generates it on boot. But a
-	// NODE_EXTRA_CA_CERTS pointing at a missing file fails SILENTLY: requests keep
-	// working, every one tunnels through opaquely, and nothing is parsed. Say so
-	// now rather than let that be discovered later.
-	if _, serr := os.Stat(want[envCACerts]); serr != nil {
-		fmt.Fprintf(stdout, "Note: %s does not exist yet.\n"+
-			"  Cortex creates it on first start. Until then Claude Code cannot verify the\n"+
-			"  bridge and every request tunnels through unparsed — which looks like nothing\n"+
-			"  is wrong. Start Cortex, then check with: abctl claude-code status\n\n",
-			want[envCACerts])
-	}
-	// The bundle is checked separately: it is written by a LATER step than ca.crt
-	// (the proxy assembles it from the CA plus the platform roots), and on a host
-	// where no root store could be located it never appears at all. A tool whose
-	// CA variable points at a missing file fails closed with a certificate error
-	// rather than silently, so say which tools are affected and why.
-	if _, serr := os.Stat(want[envSSLCert]); serr != nil {
-		fmt.Fprintf(stdout, "Note: %s does not exist yet.\n"+
-			"  Cortex assembles it on start from the CA plus this machine's root store; go,\n"+
-			"  gh, git, curl and Python read it. If it is still missing after a start, Cortex\n"+
-			"  could not find a system root bundle — check the proxy log for \"trust bundle\".\n\n",
-			want[envSSLCert])
+	// Both trust files are reported only when a ca_dir was configured at all.
+	// wanted() populates these keys under `if cfg.TLSBridge.CADir != ""`, so
+	// without one the paths are "" and an unguarded Stat printed
+	// "Note:  does not exist yet." with a blank path — a note about no file.
+	if want[envCACerts] != "" {
+		// The CA path is written whether or not the file exists, because enabling
+		// before the first start is legitimate — the proxy generates it on boot. But
+		// a NODE_EXTRA_CA_CERTS pointing at a missing file fails SILENTLY: requests
+		// keep working, every one tunnels through opaquely, and nothing is parsed.
+		// Say so now rather than let that be discovered later.
+		if _, serr := os.Stat(want[envCACerts]); serr != nil {
+			fmt.Fprintf(stdout, "Note: %s does not exist yet.\n"+
+				"  Cortex creates it on first start. Until then Claude Code cannot verify the\n"+
+				"  bridge and every request tunnels through unparsed — which looks like nothing\n"+
+				"  is wrong. Start Cortex, then check with: abctl claude-code status\n\n",
+				want[envCACerts])
+		}
+		// The bundle is checked separately: it is written by a LATER step than
+		// ca.crt (the proxy assembles it from the CA plus the platform roots), and
+		// on a host where no root store could be located it never appears at all. A
+		// tool whose CA variable points at a missing file fails closed with a
+		// certificate error rather than silently, so say which tools are affected.
+		if _, serr := os.Stat(want[envSSLCert]); serr != nil {
+			fmt.Fprintf(stdout, "Note: %s does not exist yet.\n"+
+				"  Cortex assembles it on start from the CA plus this machine's root store;\n"+
+				"  git, curl and Python read it. If it is still missing after a start, Cortex\n"+
+				"  could not find a system root bundle — check the proxy log for \"trust bundle\".\n\n",
+				want[envSSLCert])
+		}
+		if runtime.GOOS == "darwin" {
+			fmt.Fprint(stdout, darwinGoNote(want[envCACerts]))
+		}
 	}
 
 	var changes []string

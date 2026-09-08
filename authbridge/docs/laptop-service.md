@@ -149,6 +149,36 @@ followed by this machine's public roots. Pointing a replacing variable at `ca.cr
 would leave that tool trusting one private CA and nothing else, which breaks every
 direct TLS call it makes.
 
+### Go tools on macOS need the keychain, not a variable
+
+`SSL_CERT_FILE` — the Go one, covering `go`, `gh` and `abctl` itself — **does
+nothing on macOS**. Go's `crypto/x509` honours it only in `root_unix.go`, which is
+built for `linux || freebsd || …` and excludes darwin; darwin's `loadSystemRoots`
+returns a sentinel that reads no files, and verification is then handed to
+Security.framework, which consults the keychain alone. No environment variable can
+change that.
+
+So on a Mac, when the bridge decrypts a host a Go tool is talking to, that tool
+fails with a bare `x509: certificate signed by unknown authority`. To cover them,
+trust the CA in your login keychain:
+
+```sh
+security add-trusted-cert -k ~/Library/Keychains/login.keychain-db \
+  -p ssl ~/.cortex/ca/ca.crt
+```
+
+Undo with:
+
+```sh
+security delete-certificate -c authbridge-tls-bridge-ca \
+  ~/Library/Keychains/login.keychain-db
+```
+
+`git`, `curl` and Python are **not** affected on macOS — they read their bundles
+through OpenSSL/LibreSSL, which honours the variables on every platform. And on
+Linux `SSL_CERT_FILE` works normally, so nothing extra is needed there.
+`abctl claude-code enable` prints this note when it runs on macOS.
+
 Cortex keeps running; nothing sends traffic to it. `abctl claude-code enable` puts it
 back.
 
