@@ -177,3 +177,91 @@ func TestReportSessionInterruption(t *testing.T) {
 		}
 	})
 }
+
+// TestServiceIsCurrent covers the no-op decision. Each clause is a way for
+// "installed" to be a lie, and getting any of them wrong means either a pointless
+// restart — which cuts every attached Claude Code session — or skipping a real upgrade.
+func TestServiceIsCurrent(t *testing.T) {
+	base := func(t *testing.T) servicePaths {
+		t.Helper()
+		dir := t.TempDir()
+		p := servicePaths{
+			unitFile:   filepath.Join(dir, "unit.plist"),
+			binary:     filepath.Join(dir, "authbridge-proxy"),
+			configFile: filepath.Join(dir, "config.yaml"),
+			home:       dir,
+		}
+		body := renderUnitFor(runtime.GOOS, p)
+		if err := os.WriteFile(p.unitFile, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+
+	t.Run("no unit at all is not current", func(t *testing.T) {
+		p := base(t)
+		if err := os.Remove(p.unitFile); err != nil {
+			t.Fatal(err)
+		}
+		if serviceIsCurrent(p) {
+			t.Error("claimed current with no unit installed")
+		}
+	})
+
+	t.Run("a unit from a different abctl is not current", func(t *testing.T) {
+		p := base(t)
+		body, err := os.ReadFile(p.unitFile)
+		if err != nil {
+			t.Fatal(err)
+		}
+		stale := strings.Replace(string(body), version, "v0.0.1-ancient", 1)
+		if err := os.WriteFile(p.unitFile, []byte(stale), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if serviceIsCurrent(p) {
+			t.Error("claimed current for a unit another abctl wrote; it pins that abctl's binary")
+		}
+	})
+
+	t.Run("a unit naming a different binary is not current", func(t *testing.T) {
+		p := base(t)
+		p.binary = filepath.Join(t.TempDir(), "some-other-proxy")
+		if serviceIsCurrent(p) {
+			t.Error("claimed current while the unit names a different binary")
+		}
+	})
+
+	t.Run("a unit naming a different config is not current", func(t *testing.T) {
+		p := base(t)
+		p.configFile = filepath.Join(t.TempDir(), "other.yaml")
+		if serviceIsCurrent(p) {
+			t.Error("claimed current while the unit names a different config")
+		}
+	})
+
+	t.Run("no health URL means we cannot confirm it is serving", func(t *testing.T) {
+		p := base(t)
+		p.healthURL = ""
+		if serviceIsCurrent(p) {
+			t.Error("claimed current without being able to confirm it serves")
+		}
+	})
+
+	t.Run("darwin requires --supervise, or crashes go unrecovered", func(t *testing.T) {
+		if runtime.GOOS != "darwin" {
+			t.Skip("darwin only")
+		}
+		p := base(t)
+		body, err := os.ReadFile(p.unitFile)
+		if err != nil {
+			t.Fatal(err)
+		}
+		no := strings.Replace(string(body), "<string>--supervise</string>", "", 1)
+		if err := os.WriteFile(p.unitFile, []byte(no), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if serviceIsCurrent(p) {
+			t.Error("claimed current for a unit that lost --supervise")
+		}
+	})
+}

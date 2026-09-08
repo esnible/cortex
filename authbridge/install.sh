@@ -61,6 +61,18 @@ CORTEX_DIR="${HOME}/.cortex"
 # PATH_MARKER identifies our block in a shell profile, so a re-run does not add a
 # second copy and a person can find what to delete.
 PATH_MARKER="# added by Cortex (rossoctl/cortex) — delete these two lines to undo"
+
+# installed_version prints the version of an already-installed binary, or nothing.
+#
+# Both binaries print "<name> vX.Y.Z"; the tag is the last field. Anything unexpected —
+# missing binary, a build that does not know --version, a quarantined binary that will
+# not run — prints nothing, which reads as "not this version" and re-installs. Erring
+# toward re-installing is right: a wrong skip leaves someone on an old build believing
+# they upgraded.
+installed_version() {
+	[ -x "${BIN_DIR}/$1" ] || return 0
+	"${BIN_DIR}/$1" --version 2>/dev/null | awk 'NR==1{print $NF}'
+}
 case "$(uname -s)" in
 	Darwin) SUPERVISOR_NAME="launchd user agent" ;;
 	*) SUPERVISOR_NAME="systemd user unit" ;;
@@ -314,6 +326,7 @@ if [ "${AUTHBRIDGE_SKIP_DOWNLOAD:-}" = "1" ]; then
 		[ -x "${BIN_DIR}/${b}" ] || die "AUTHBRIDGE_SKIP_DOWNLOAD=1 but ${BIN_DIR}/${b} is missing"
 	done
 	version="already installed"
+	skip_install=1
 	info "Using the binaries already in ${BIN_DIR}"
 else
 
@@ -340,6 +353,18 @@ base="https://github.com/${REPO}/releases/download/${version}"
 abctl_tgz="abctl_${version}_${os}_${arch}.tar.gz"
 proxy_tgz="authbridge-proxy_${version}_${os}_${arch}.tar.gz"
 
+# Already at this version? Then there is nothing to download, and nothing to
+# overwrite. Re-running the one-liner is how people upgrade, so it runs constantly
+# against installs that are already current — it should cost nothing and change
+# nothing. Both binaries must match: replacing one and not the other is the version
+# skew that put an older proxy in the launchd unit.
+if installed_version abctl | grep -qx "${version}" &&
+	installed_version authbridge-proxy | grep -qx "${version}"; then
+	info "Already at ${version} — not re-downloading."
+	skip_install=1
+fi
+
+if [ -z "${skip_install:-}" ]; then
 info "Downloading ${version} for ${os}/${arch}..."
 curl -fsSL "${base}/${abctl_tgz}" -o "${tmp}/${abctl_tgz}" || die "download failed: ${abctl_tgz}"
 curl -fsSL "${base}/${proxy_tgz}" -o "${tmp}/${proxy_tgz}" || die "download failed: ${proxy_tgz}"
@@ -406,6 +431,7 @@ fi
 
 rm -rf "$tmp"
 trap - EXIT
+fi # end of the skip-if-already-at-this-version guard
 fi # end of download block
 
 # offer_path_setup adds BIN_DIR to the shell profile, with consent.
@@ -490,8 +516,13 @@ case ":${PATH}:" in
 	*) abctl_cmd="${BIN_DIR}/abctl" proxy_cmd="$proxy" ;;
 esac
 
-info ""
-info "Installed abctl and authbridge-proxy to ${BIN_DIR}"
+# Both skip paths have already said what they did ("Already at <v>" or "Using the
+# binaries already in ..."), so saying "Installed" after them would be both redundant
+# and untrue.
+if [ -z "${skip_install:-}" ]; then
+	info ""
+	info "Installed abctl and authbridge-proxy to ${BIN_DIR}"
+fi
 case ":${PATH}:" in
 	*":${BIN_DIR}:"*) ;;
 	*)

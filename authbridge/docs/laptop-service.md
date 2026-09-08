@@ -30,6 +30,20 @@ agents added mid-session — verified across `KeepAlive`, `StartInterval` and
 `RunAtLoad` — so the supervisor is what makes crash recovery work. On Linux there is
 one process; systemd handles it.
 
+## Re-running the installer is safe
+
+The one-liner is how you upgrade, so it is meant to be run repeatedly. When nothing has
+changed it changes nothing: it does not re-download binaries already at that version, and
+`service install` reports `Already current` and leaves the running proxy alone rather
+than restarting it.
+
+That last part matters — a restart cuts every attached Claude Code session, because
+`HTTPS_PROXY` is fixed in each session's environment at startup and cannot fall back to a
+direct connection. When a restart genuinely is needed, install says how many connections
+it is about to cut.
+
+To restart deliberately: `abctl service restart`.
+
 ## `abctl: command not found`
 
 The installer puts both binaries in `~/.local/bin`. If that is not on your PATH it
