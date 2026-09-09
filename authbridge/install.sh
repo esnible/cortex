@@ -33,19 +33,17 @@
 # --demo -> --local alias is different: that flag really did ship.)
 #
 # Flags rather than env vars: written `VAR=1 curl ... | sh` the variable reaches
-# curl, not sh, so the script runs without it. `sh -s -- --flag` has no such
-# failure mode. The env vars below still work.
+# curl, not sh, so the script runs without it — the failure mode is silent, and
+# `sh -s -- --flag` does not have it. That is why the env aliases for --ref and
+# --install-only were removed rather than kept as a second spelling: they were the
+# form most likely to be typed and least likely to work.
 #
 # By default this script re-runs the copy from the newest RELEASE rather than
 # executing whatever is currently on main — main is unstable by definition, and a
 # `curl | sh` should not be the first thing to run a change nobody has released.
 # --ref=main opts back in; --ref=vX.Y.Z pins.
 #
-# Environment:
-#   AUTHBRIDGE_REF=REF          same as --ref
-#   AUTHBRIDGE_VERSION=vX.Y.Z   install binaries from a specific release
-#                               (default: the release this script came from)
-#   AUTHBRIDGE_INSTALL_ONLY=1   same as --install-only
+# Environment (maintainer testing only — not part of the documented interface):
 #   AUTHBRIDGE_SKIP_DOWNLOAD=1  use the already-installed binaries in ~/.local/bin
 #                               instead of downloading (re-run setup offline)
 # set -eu, not -euo pipefail: this is POSIX sh (the documented entry point is
@@ -104,17 +102,10 @@ Options:
                    it runs as plain `claude` with no environment variables
   --local          the default, spelled out
   --yes, -y        do not prompt; answer yes to configuring Claude Code
-  --ref=REF        take THIS SCRIPT from a git ref instead of the newest release
-                   (e.g. --ref=main for unreleased changes, --ref=v0.7.0-alpha.4
-                   to pin). Binaries come from the same release unless
-                   AUTHBRIDGE_VERSION says otherwise.
+  --ref=REF        install from a git ref instead of the newest release — both
+                   this script and the binaries (e.g. --ref=main for unreleased
+                   changes, --ref=v0.7.0-alpha.4 to pin)
   -h, --help       this text
-
-Environment:
-  AUTHBRIDGE_VERSION=vX.Y.Z   install a specific release tag (default: newest)
-  AUTHBRIDGE_INSTALL_ONLY=1   same as --install-only
-  AUTHBRIDGE_SKIP_DOWNLOAD=1  use the binaries already in ~/.local/bin instead of
-                              downloading (re-run setup offline)
 
 After installing, to cut Claude Code's token cost:
   abctl tools scan --write ~/.cortex/config.yaml
@@ -125,12 +116,13 @@ USAGE
 MODE=local
 WIRE_CLAUDE_CODE=""
 ASSUME_YES=""
+WANT_REF=""
 for arg in "$@"; do
 	case "$arg" in
 		--install-only) MODE=install-only ;;
 		--claude-code) WIRE_CLAUDE_CODE=1 ;;
 		--yes | -y) ASSUME_YES=1 ;;
-		--ref=*) AUTHBRIDGE_REF="${arg#*=}" ;;
+		--ref=*) WANT_REF="${arg#*=}" ;;
 		# --local is the default; accepted so writing it out explicitly works, and
 		# so it mirrors the proxy flag of the same name.
 		--local) MODE=local ;;
@@ -141,11 +133,6 @@ for arg in "$@"; do
 		*) die "unknown option: $arg (try --claude-code, --install-only, --local, --ref=REF, --yes, or no argument)" ;;
 	esac
 done
-# Env form kept working; the flag wins if both are given.
-if [ "${AUTHBRIDGE_INSTALL_ONLY:-}" = "1" ] && [ "$MODE" = "local" ]; then
-	MODE=install-only
-fi
-
 command -v curl >/dev/null 2>&1 || die "curl is required"
 command -v tar  >/dev/null 2>&1 || die "tar is required"
 
@@ -248,7 +235,7 @@ ere_escape() {
 # the child sees it set and does not bootstrap again.
 SCRIPT_REF="${AUTHBRIDGE_SCRIPT_REF:-}"
 if [ -z "${SCRIPT_REF}" ]; then
-	want_ref="${AUTHBRIDGE_REF:-}"
+	want_ref="${WANT_REF:-}"
 	if [ -z "${want_ref}" ]; then
 		want_ref="$(newest_release)" || true
 	fi
@@ -613,12 +600,12 @@ if ! "${BIN_DIR}/abctl" service status >/dev/null 2>&1 &&
   in order to start Cortex. Either use the installer that shipped with it:
     curl -fsSL https://raw.githubusercontent.com/${REPO}/${version}/authbridge/install.sh | sh
   or install newer binaries with this script:
-    AUTHBRIDGE_VERSION=<newer tag>"
+    --ref=<newer tag>"
 			;;
 		*)
 			die "the abctl in ${BIN_DIR} has no 'service' command, which this installer
   needs in order to start Cortex. Install a newer one — drop
-  AUTHBRIDGE_SKIP_DOWNLOAD, or point AUTHBRIDGE_VERSION at a release that has it."
+  AUTHBRIDGE_SKIP_DOWNLOAD, or pass --ref=<a release that has it>."
 			;;
 	esac
 fi

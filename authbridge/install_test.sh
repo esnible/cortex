@@ -194,5 +194,20 @@ set -e
 check "stdout carries no progress text" "1" "$(printf '%s\n' "${_out}" | wc -l | tr -d ' ')"
 check "stdout is exactly the version" "v0.7.0-alpha.7" "${_out}"
 
+# --- removed knobs leave no stale advice ---
+#
+# The failure mode is not "the var still works" — it is a message telling someone
+# to set a var the script no longer reads. Three sites advised AUTHBRIDGE_VERSION.
+
+for _v in AUTHBRIDGE_VERSION AUTHBRIDGE_REF AUTHBRIDGE_INSTALL_ONLY; do
+	_hits=$(grep -c "${_v}" "${INSTALL_SH}" || true)
+	check "${_v} is gone from install.sh entirely" "0" "${_hits}"
+done
+
+for _v in AUTHBRIDGE_SKIP_DOWNLOAD AUTHBRIDGE_SCRIPT_REF; do
+	_hits=$(grep -c "${_v}" "${INSTALL_SH}" || true)
+	check_fails "${_v} is still present" "${_hits}"
+done
+
 printf '\n%s passed, %s failed\n' "${PASS}" "${FAIL}"
 [ "${FAIL}" = "0" ]
