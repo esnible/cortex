@@ -67,16 +67,33 @@ func TestBundled_BuildsIntoATable(t *testing.T) {
 	}
 }
 
-func TestBundled_ReturnsACopy(t *testing.T) {
-	// The rows are package state shared by every Registry. A caller that appended
-	// to the original would corrupt every later NewTable.
+func TestBundled_ReturnsADeepCopy(t *testing.T) {
+	// The rows are package state shared by every Registry, so a caller that wrote
+	// through one would corrupt every later NewTable. Thresholds are the part a
+	// shallow copy still aliases, which is why they are checked explicitly.
 	a := pricing.Bundled()
 	if len(a) == 0 {
 		t.Fatal("bundled table is empty")
 	}
 	a[0].Model = "mutated"
 	if pricing.Bundled()[0].Model == "mutated" {
-		t.Error("Bundled() aliases package state")
+		t.Error("Bundled() aliases its rows")
+	}
+
+	var i, ti = -1, -1
+	for n, e := range a {
+		if len(e.Rates.Thresholds) > 0 {
+			i, ti = n, 0
+			break
+		}
+	}
+	if i < 0 {
+		t.Skip("no bundled entry carries a threshold to test aliasing against")
+	}
+	before := pricing.Bundled()[i].Rates.Thresholds[ti].Rate
+	a[i].Rates.Thresholds[ti].Rate[pricing.TierInput] = 99
+	if after := pricing.Bundled()[i].Rates.Thresholds[ti].Rate; after != before {
+		t.Errorf("Bundled() aliases threshold state: %v became %v", before, after)
 	}
 }
 

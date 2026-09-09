@@ -275,10 +275,19 @@ const BundledUpstreamCommit = %q
 
 // Bundled returns the price table shipped in the binary.
 //
-// Returns a copy: the rows are package state shared by every Registry, and a
-// caller that appended to the original would corrupt every later NewTable.
+// Deeply copied, thresholds included. The rows are package state shared by every
+// Registry, so a caller that appended to the slice — or wrote through a row's
+// Thresholds, which a shallow copy would still alias — would corrupt every later
+// NewTable in the process.
 func Bundled() []Entry {
-	return append([]Entry(nil), bundledEntries...)
+	out := make([]Entry, len(bundledEntries))
+	for i, e := range bundledEntries {
+		if e.Rates.Thresholds != nil {
+			e.Rates.Thresholds = append([]ContextThreshold(nil), e.Rates.Thresholds...)
+		}
+		out[i] = e
+	}
+	return out
 }
 
 var bundledEntries = []Entry{

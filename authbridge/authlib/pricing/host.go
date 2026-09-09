@@ -44,6 +44,10 @@ func anyHost(pattern string) bool { return pattern == "" || pattern == "*" }
 // An empty endpoint never matches a named pattern. A session event with no Host
 // must not be priced by a host-scoped row, which would attribute untraceable
 // traffic to whichever gateway happened to sort first.
+//
+// PRECONDITION: pattern is already lower-cased. NewTable does that once at build
+// time so the request path does not re-do it per row. Only the endpoint is folded
+// here, so passing a mixed-case pattern directly will not match.
 func matchHost(pattern, endpoint string) bool {
 	if anyHost(pattern) {
 		return true
