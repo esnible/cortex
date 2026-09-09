@@ -396,7 +396,12 @@ func main() {
 		// are worth remembering. The aggregator reclaims its coldest ring at the
 		// cap rather than refusing new sessions, which matters because the store
 		// evicts and expires sessions without telling it.
-		usageAgg = usage.New(usage.WithMaxSessions(maxSessions))
+		// WithPricing closes the gap that made cost depend on which plugins were
+		// configured: without it, only litellm-budget-track could produce a figure,
+		// so a pipeline running just inference-parser reported every request
+		// unpriced however many tokens it burned. The registry is the same
+		// long-lived one the plugins hold, so a config reload moves both together.
+		usageAgg = usage.New(usage.WithMaxSessions(maxSessions), usage.WithPricing(pricingRegistry))
 		sessions.AddRecorder(usageAgg)
 
 		// "ttl=0s" would read like a misconfiguration rather than the default.
