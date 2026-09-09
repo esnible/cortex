@@ -26,13 +26,33 @@ func realPEM(t *testing.T) []byte {
 // withSystemRoots points the package at a temp root store for the duration of a
 // test, so an outcome never depends on what the host happens to ship. Passing nil
 // means "no root store on this machine".
+// isolateRootSources detaches the package from the host's trust store for one test.
+//
+// findSystemRootsFrom consults three sources — SSL_CERT_FILE, systemRootFiles, then
+// SSL_CERT_DIR or certDirectories — and a test that neutralises only one of them is
+// at the mercy of whatever the runner ships. Overriding just systemRootFiles let a
+// Linux runner's populated /etc/ssl/certs satisfy four tests that assert "no roots on
+// this machine": they passed on macOS, where that directory holds nothing parseable,
+// and failed in CI.
+//
+// Every test that pins root discovery calls this, so there is one place to extend
+// when a fourth source appears.
+func isolateRootSources(t *testing.T) {
+	t.Helper()
+	origFiles := systemRootFiles
+	origDirs := certDirectories
+	t.Cleanup(func() { systemRootFiles = origFiles; certDirectories = origDirs })
+	certDirectories = []string{filepath.Join(t.TempDir(), "absent-dir")}
+	systemRootFiles = []string{filepath.Join(t.TempDir(), "absent.pem")}
+	t.Setenv("SSL_CERT_FILE", "")
+	t.Setenv("SSL_CERT_DIR", "")
+}
+
 func withSystemRoots(t *testing.T, pem []byte) {
 	t.Helper()
-	orig := systemRootFiles
-	t.Cleanup(func() { systemRootFiles = orig })
+	isolateRootSources(t)
 	if pem == nil {
-		systemRootFiles = []string{filepath.Join(t.TempDir(), "absent.pem")}
-		return
+		return // isolateRootSources already pointed every source at nothing
 	}
 	p := filepath.Join(t.TempDir(), "roots.pem")
 	if err := os.WriteFile(p, pem, 0o644); err != nil {
@@ -178,8 +198,11 @@ func TestEnsureTrustBundle_KeepsAStaleBundleAndSaysSo(t *testing.T) {
 // usable public roots — the CA-only trust store by another route. Some minimal
 // images also ship an empty placeholder at a well-known path.
 func TestEnsureTrustBundle_SkipsUnparseableRootFiles(t *testing.T) {
-	orig := systemRootFiles
-	t.Cleanup(func() { systemRootFiles = orig })
+	// Isolate first: this test sets systemRootFiles by hand to control the candidate
+	// ORDER, which withSystemRoots cannot express — but it still needs the env vars
+	// and cert directories detached, or SSL_CERT_FILE from the host wins ahead of all
+	// three candidates and the assertion tests nothing.
+	isolateRootSources(t)
 	dir := t.TempDir()
 
 	empty := filepath.Join(dir, "empty.pem")

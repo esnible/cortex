@@ -17,9 +17,9 @@ func TestFindSystemRoots_HonoursSSLCertFile(t *testing.T) {
 	if err := os.WriteFile(custom, pem, 0o644); err != nil { //nolint:gosec
 		t.Fatal(err)
 	}
+	isolateRootSources(t) // outcome must not depend on the host's own store
 	t.Setenv("SSL_CERT_FILE", custom)
 	t.Setenv("SSL_CERT_DIR", "")
-	withSystemRoots(t, nil) // outcome must not depend on the host's own store
 
 	path, data, err := findSystemRootsFrom("")
 	if err != nil {
@@ -49,9 +49,9 @@ func TestFindSystemRoots_HonoursSSLCertDir(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "junk.0"), []byte("not a cert"), 0o644); err != nil { //nolint:gosec
 		t.Fatal(err)
 	}
+	isolateRootSources(t) // force the directory path to be the one that answers
 	t.Setenv("SSL_CERT_FILE", "")
 	t.Setenv("SSL_CERT_DIR", dir)
-	withSystemRoots(t, nil) // force the directory path to be the one that answers
 
 	path, data, err := findSystemRootsFrom("")
 	if err != nil {
@@ -76,9 +76,9 @@ func TestFindSystemRoots_NeverReadsItsOwnBundle(t *testing.T) {
 	if err := os.WriteFile(bundle, pem, 0o644); err != nil { //nolint:gosec
 		t.Fatal(err)
 	}
+	isolateRootSources(t)
 	t.Setenv("SSL_CERT_FILE", bundle)
 	t.Setenv("SSL_CERT_DIR", filepath.Join(dir, "nonexistent"))
-	withSystemRoots(t, nil)
 
 	path, _, err := findSystemRootsFrom(bundle)
 	if err == nil && path == bundle {
@@ -100,9 +100,9 @@ func TestFindSystemRoots_SkipsUnparseableSSLCertFile(t *testing.T) {
 	if err := os.WriteFile(bad, []byte("-----BEGIN CERTIFICATE-----\nnope\n"), 0o644); err != nil { //nolint:gosec
 		t.Fatal(err)
 	}
+	isolateRootSources(t)
 	t.Setenv("SSL_CERT_FILE", bad)
 	t.Setenv("SSL_CERT_DIR", "")
-	withSystemRoots(t, nil)
 
 	path, _, err := findSystemRootsFrom("")
 	if err == nil && path == bad {
