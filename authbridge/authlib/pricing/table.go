@@ -100,20 +100,6 @@ func (s specificity) beats(o specificity) bool {
 	}
 }
 
-// anyHost reports whether a host pattern matches every endpoint.
-func anyHost(pattern string) bool { return pattern == "" || pattern == "*" }
-
-// matchHost reports whether endpoint matches pattern.
-//
-// Exact, case-insensitive equality for now. Task 1.4 widens this to host globs
-// with the port stripped, reusing sparc/collect.go:148-156's path.Match idiom.
-func matchHost(pattern, endpoint string) bool {
-	if anyHost(pattern) {
-		return true
-	}
-	return pattern == strings.ToLower(endpoint)
-}
-
 // NewTable compiles entries into a table, rejecting rows that cannot mean
 // anything useful.
 func NewTable(entries []Entry) (*Table, error) {
@@ -133,6 +119,11 @@ func NewTable(entries []Entry) (*Table, error) {
 			return nil, err
 		}
 		host := strings.ToLower(e.Host)
+		if !anyHost(host) {
+			if err := validHostPattern(host); err != nil {
+				return nil, fmt.Errorf("pricing: host pattern %q: %w", e.Host, err)
+			}
+		}
 		t.rows = append(t.rows, row{
 			host:  host,
 			model: m,
