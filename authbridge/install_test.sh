@@ -155,8 +155,8 @@ check_fails "an empty body fails" "${_st}"
 # `--ref=main` set only the script, because there was no main release to download
 # from. One rule now covers both.
 
-with_resolve_version() { # script_ref fixture-path
-	_ref=$1; _f=$2
+with_resolve_version() { # script_ref fixture-path [channel_requested]
+	_ref=$1; _f=$2; _req=${3:-}
 	{
 		printf 'REPO=rossoctl/cortex\n'
 		# CHANNEL_TAG is read out of install.sh, not restated here, so this probe
@@ -172,6 +172,7 @@ with_resolve_version() { # script_ref fixture-path
 		printf 'curl() { cat "%s"; }\n' "${_f}"
 		sed -n '/^newest_release()/,/^}/p' "${INSTALL_SH}"
 		sed -n '/^resolve_version()/,/^}/p' "${INSTALL_SH}"
+		printf 'CHANNEL_REQUESTED=%s\n' "${_req}"
 		printf 'resolve_version "%s"\n' "${_ref}"
 	} >"${TMP}/rv.sh"
 	sh "${TMP}/rv.sh" 2>/dev/null
@@ -186,7 +187,15 @@ EOF
 # hardcode it, or renaming the channel silently passes a stale test.
 CHANNEL_TAG=$(sed -n 's/^CHANNEL_TAG="\(.*\)"$/\1/p' "${INSTALL_SH}")
 check "install.sh defines a non-colliding CHANNEL_TAG" "1" "$(printf '%s' "${CHANNEL_TAG}" | grep -c '^main-' || true)"
-check "--ref=main installs the channel tag" "${CHANNEL_TAG}" "$(with_resolve_version main "${FIXTURE}")"
+check "--ref=main installs the channel tag" "${CHANNEL_TAG}" "$(with_resolve_version main "${FIXTURE}" 1)"
+
+# The bootstrap sets SCRIPT_REF=main for TWO other reasons: the release API was
+# unreachable, and the wanted release has no install.sh. Both mean "run main's script";
+# neither means "install main's binaries". Without this distinction a rate-limited user
+# who ran the plain one-liner silently received an unreleased build — and rate limiting
+# is reachable, not theoretical. Guarding on the literal "main" alone is what caused it,
+# so the test pins the fallback, not just the happy path.
+check "fallback to main's script still installs a RELEASE" "v0.7.0-alpha.7" "$(with_resolve_version main "${FIXTURE}")"
 check "--ref=v0.7.0-alpha.4 installs that release" "v0.7.0-alpha.4" "$(with_resolve_version v0.7.0-alpha.4 "${FIXTURE}")"
 check "no ref resolves the newest v-tag" "v0.7.0-alpha.7" "$(with_resolve_version "" "${FIXTURE}")"
 

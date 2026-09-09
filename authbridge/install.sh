@@ -210,11 +210,20 @@ newest_release() {
 # was no `main` release to download from. Now that the developer channel publishes
 # one, the special case disappears rather than growing a second flag.
 resolve_version() { # script_ref
+	# Only an EXPLICIT --ref=main selects channel binaries. The bootstrap also sets
+	# SCRIPT_REF=main when it falls back to this copy — API unreachable, or the release
+	# it wanted has no install.sh. That means "run main's script", not "install main's
+	# binaries", and conflating the two hands an unreleased build to someone who asked
+	# for a release. Rate limiting makes that path reachable, not theoretical.
+	#
+	# The assets live on CHANNEL_TAG, not on a tag called `main` — see its definition
+	# for why. The ref someone types, the tag the assets hang off, and the binary's own
+	# stamp are three different strings, deliberately.
+	if [ "$1" = "main" ] && [ "${CHANNEL_REQUESTED:-}" = "1" ]; then
+		printf '%s\n' "${CHANNEL_TAG}"
+		return 0
+	fi
 	case "$1" in
-		# The channel's assets live on CHANNEL_TAG, not on a tag called `main` —
-		# see its definition for why. The ref someone types and the tag the assets
-		# hang off are allowed to differ; the binary stamp differs from both.
-		main) printf '%s\n' "${CHANNEL_TAG}" ;;
 		v*) printf '%s\n' "$1" ;;
 		*)
 			# >&2 deliberately: this function's stdout IS the resolved version, and
@@ -253,11 +262,18 @@ if [ -z "${SCRIPT_REF}" ]; then
 		want_ref="$(newest_release)" || true
 	fi
 	if [ -z "${want_ref}" ]; then
+		# Could not ask: offline, rate-limited, 5xx. Fall back to THIS copy of the
+		# script, but deliberately NOT to channel binaries. Whoever ran the plain
+		# one-liner asked for a release, so CHANNEL_REQUESTED stays unset and version
+		# resolution below still hunts for the newest v-tag — failing loudly if it
+		# cannot find one, which beats silently installing an unreleased build.
 		warn "could not resolve the newest release; continuing with the copy from main"
 		SCRIPT_REF="main"
 	elif [ "${want_ref}" = "main" ]; then
-		# Explicitly asked for main: this copy already is main.
+		# Explicitly asked for main: this copy already is main, and channel binaries
+		# are what was requested. This is the ONLY branch that sets CHANNEL_REQUESTED.
 		SCRIPT_REF="main"
+		CHANNEL_REQUESTED=1
 	else
 		# Rebuild the argument list without --ref: it is meta, consumed here, and a
 		# released script from before --ref existed rejects it as an unknown option.
@@ -303,6 +319,9 @@ if [ -z "${SCRIPT_REF}" ]; then
 			# A release from before this script existed under that name. Falling
 			# back beats refusing to install, but name the copy that is running so
 			# a surprise is attributable.
+			# Same reasoning as the unreachable-API fallback above: running main's
+			# SCRIPT is the fallback, installing main's BINARIES is not.
+			# CHANNEL_REQUESTED stays unset.
 			warn "${want_ref} has no authbridge/install.sh (HTTP 404); continuing with the copy from main"
 			SCRIPT_REF="main"
 		else
