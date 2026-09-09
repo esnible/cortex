@@ -634,6 +634,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// reading. So nothing is deleted here and the focused pane is never changed
 		// out from under the user — see reconcileGone for the reasoning and for the
 		// one case (rekey) where cached events legitimately move.
+		//
+		// Must run BEFORE m.sessions is replaced: it detects a rekey by looking for
+		// an id absent from the previous list. See reconcileGone.
 		m.reconcileGone(msg)
 		m.sessions = []session.SessionSummary(msg)
 		m.connState.phase = connOpen

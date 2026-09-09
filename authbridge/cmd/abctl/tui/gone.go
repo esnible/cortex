@@ -22,6 +22,15 @@ const (
 	// goneRestart: the server listed nothing at all. The store is in-memory and
 	// per-pod, so a restarted proxy comes back with zero sessions and stays that
 	// way until traffic arrives.
+	//
+	// An empty list is strong but not conclusive evidence of a restart. Eviction
+	// cannot produce one (it fires only when the count EXCEEDS max_sessions, so
+	// something always survives), which leaves one other route: an explicit
+	// session.ttl whose sweep aged out every session at once. That needs a
+	// non-default config, so the wording below leads with the restart and admits
+	// the alternative rather than asserting one cause. Distinguishing them for
+	// real needs a boot/instance id from the server — the count is not on the
+	// wire today. See the follow-up issue.
 	goneRestart
 )
 
@@ -59,6 +68,13 @@ func (m *model) reconcileGone(summaries []session.SessionSummary) {
 	// server-assigned contextId once the backend response reveals it, and the
 	// events under the old key are the same events. Migrate them so the history
 	// stays attached to the surviving id, and follow the user's selection over.
+	//
+	// ORDERING DEPENDENCY: soleNewSession compares against m.sessions, which must
+	// still hold the PREVIOUS list. The caller therefore has to invoke this before
+	// assigning m.sessions = msg (see the sessionsLoadedMsg case in app.go). Swap
+	// those two lines and every id looks familiar, soleNewSession returns "", and
+	// rekeys silently stop migrating — the events survive under the old id, so the
+	// bug shows up only as a stale duplicate bucket rather than as a failure.
 	if events, ok := m.events[session.DefaultSessionID]; ok && !serverIDs[session.DefaultSessionID] {
 		if newID := soleNewSession(serverIDs, m.sessions); newID != "" {
 			m.migrateSession(session.DefaultSessionID, newID, events)
@@ -134,6 +150,17 @@ func (m *model) migrateSession(oldID, newID string, events []pipeline.SessionEve
 // reliable signal available for when the data stopped mattering. The session
 // being opened is retained even when gone — that is precisely the case this
 // whole change exists to preserve.
+//
+// SOLE RELEASE POINT: enter on the sessions pane (keys.go) is the only caller, so
+// a user who never drills into another session after a restart keeps all N
+// tombstoned sessions for the process lifetime. That is the one path where
+// retention is unbounded in TIME; it stays bounded in SIZE by
+// maxEventsPerSession per session, and a whole pod switch clears the map outright
+// (backToPodsPane), so there is no need to release there too. Deliberate: a timer
+// or a count-based sweep would be another mechanism deleting events out from
+// under someone who stepped away, which is the exact failure this file exists to
+// remove. If a bound is ever wanted, cap the NUMBER of tombstones and evict the
+// least-recently-viewed — never the one on screen.
 func (m *model) forgetGoneExcept(keep string) {
 	for id := range m.gone {
 		if id == keep {
@@ -158,7 +185,7 @@ func goneBanner(reason goneReason, width int) string {
 	var msg string
 	switch reason {
 	case goneRestart:
-		msg = "proxy restarted — no longer live. Events below are abctl's copy; the server's is gone."
+		msg = "server has no sessions (proxy restarted, or all aged out) — events below are abctl's copy."
 	default:
 		msg = "session no longer on server (evicted) — events below are abctl's copy."
 	}

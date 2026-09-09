@@ -92,8 +92,10 @@ func TestGoneSessionStaysInSessionsTable(t *testing.T) {
 	for _, r := range m.sessionsTbl.Rows() {
 		if r[0] == "vanished" {
 			found = true
-			if !strings.Contains(r[2], "3") {
-				t.Errorf("tombstone row lost its event count: %v", r)
+			// Exact, not Contains: "13" and "30" contain "3" and would sail
+			// through a substring check on a count that had drifted.
+			if r[2] != "3" {
+				t.Errorf("tombstone row lost its event count: got %q, want %q in %v", r[2], "3", r)
 			}
 		}
 	}
@@ -160,6 +162,36 @@ func TestRekey_MigratesEventsAndSelection(t *testing.T) {
 		if e.SessionID != "ctx-42" {
 			t.Errorf("migrated event kept the stale SessionID %q", e.SessionID)
 		}
+	}
+}
+
+// Guards the ordering dependency the rekey detection rests on: reconcileGone
+// must run while m.sessions still holds the PREVIOUS list, because that is how it
+// tells a rekeyed id from one it already knew.
+//
+// This drives Update (not reconcileGone directly), so reordering the two lines in
+// the sessionsLoadedMsg case fails here. Without it a reorder would be silent: no
+// id looks new, soleNewSession returns "", and the rekey just stops migrating —
+// leaving a stale duplicate bucket rather than an error.
+func TestRekeyDetection_RunsBeforeSessionsIsReplaced(t *testing.T) {
+	m := newTestGoneModel(t, session.DefaultSessionID)
+	// "known" is already in the previous list, so only "ctx-42" is new. Were
+	// m.sessions replaced first, both would look known and nothing would migrate.
+	m.sessions = []session.SessionSummary{
+		{ID: session.DefaultSessionID}, {ID: "known"},
+	}
+
+	m.Update(sessionsLoadedMsg{
+		{ID: "known", UpdatedAt: time.Now()},
+		{ID: "ctx-42", UpdatedAt: time.Now()},
+	})
+
+	if len(m.events["ctx-42"]) != 3 {
+		t.Fatalf("rekey did not migrate: reconcileGone likely ran after m.sessions " +
+			"was replaced, so no id looked new")
+	}
+	if _, stale := m.events[session.DefaultSessionID]; stale {
+		t.Error("old bucket left behind as a duplicate")
 	}
 }
 
