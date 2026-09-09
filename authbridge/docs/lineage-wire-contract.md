@@ -1,4 +1,4 @@
-# Lineage wire contract — two-span sidecar lineage (v1.6.3)
+# Lineage wire contract — two-span sidecar lineage (v1.7.0)
 
 What the AuthBridge `lineage-telemetry` plugin emits, what it writes onto the wire, and what the
 data-governance `sidecar` interactions algorithm (ADR-0030) commits to when consuming it.
@@ -174,7 +174,8 @@ handles `openinference.span.kind`.
 | `lineage.exchange.id` | both | `00f067aa0ba902b7` | the request span id, hex |
 | `lineage.role` | both | `request` \| `response` | which half this span is |
 | `lineage.direction` | both | `inbound` \| `outbound` | |
-| `lineage.self.id` | both | `weather-service` | this workload's identity, from `self_id` or `self_id_file`, **reduced to its last non-empty `/`-segment**: a SPIFFE ID `spiffe://td/ns/team1/sa/agent` emits `agent`, and two identities that differ only above that segment emit the same value — the consumer keys entity identity on it (§7). The producer emits nothing without one: with no identity source configured it refuses to start, and while `self_id_file` is not yet readable it is not ready and skips every exchange (no span, no header) until the file resolves |
+| `lineage.self.id` | both | `weather-service` | this workload's identity, from `self_id` or `self_id_file`, **reduced to its last non-empty `/`-segment**: a SPIFFE ID `spiffe://td/ns/team1/sa/agent` emits `agent`, and two identities that differ only above that segment emit the same value — the consumer keys entity identity on it (§7). The producer emits nothing without one: with no identity source configured it refuses to start, and while `self_id_file` is not yet readable it is not ready and skips every exchange (no span, no header) until the file resolves. Not capped by `max_attr_bytes` (an identity fact is never truncated; the value is operator configuration, not caller input) |
+| `lineage.self.namespace` | both | `team1` | the Kubernetes namespace this workload runs in, from the `namespace` key or `namespace_file` (§6), trimmed of surrounding whitespace and otherwise verbatim; always an RFC 1123 DNS label (lowercase letters, digits and `-`, 1–63 chars), since the producer refuses any other shape. The other half of its identity: the consumer keys an entity on the (namespace, `self.id`) pair (§7), since the same `self.id` in two namespaces is two workloads. Never derived from the SPIFFE ID's path (a registrar convention, and the kit path has no SPIFFE ID); the producer refuses to start without one. Not capped by `max_attr_bytes`: an identity fact is never truncated |
 | `lineage.peer.host` | both, when present | `weather-tool-mcp.team1.svc:8000` | the Host/authority header. Outbound: the service being called. Inbound: the address this workload was reached on |
 | `lineage.protocol` | both | `a2a` \| `mcp` \| `inference` \| `http` | which parser matched, at fixed precedence `a2a` > `mcp` > `inference`; `http` = none. The precedence is load-bearing: the parsers are not mutually exclusive — `mcp-parser` attaches to any JSON-RPC body, including every a2a exchange — so an a2a hop is labeled `a2a`, never `mcp`. The payload reduction (§5) is keyed by this label, reading the same protocol's parser |
 | `lineage.parent.source` | request | `tracestate` \| `wire` \| `none` | which precedence in §3.2 chose the parent. An audit fact; the consumer derives nothing from it |
@@ -239,12 +240,14 @@ construction.
 | `otel_ca_file` | — | PEM bundle to verify the collector's certificate against, for a private CA; implies `otel_tls`, and `otel_ca_file` with `otel_tls: false` is refused. An unreadable file, or one with no certificate, refuses to start |
 | `capture_io` | `false` | attach `input.value` / `output.value` |
 | `max_payload_bytes` | `4096` | producer-side cap on those two values; `0` or unset takes the default, `-1` attaches whole, any other negative is refused at start |
-| `max_attr_bytes` | `256` | cap on every variable-content string attribute and the span name (§4); same `0` / `-1` / negative semantics as `max_payload_bytes` |
+| `max_attr_bytes` | `256` | cap on every variable-content string attribute and the span name (§4), except the two identity facts `lineage.self.id` and `lineage.self.namespace`, which are operator configuration and never truncated; same `0` / `-1` / negative semantics as `max_payload_bytes` |
 | `mint_traceparent` | `true` | §3.3; `false` = a pure observer that never writes a `traceparent` |
 | `bypass_paths` | `/.well-known/*`, `/healthz`, `/readyz`, `/health` | path globs (`path.Match`; `*` does not cross `/`) that produce no spans, matched by the shared bypass package (query stripped, path normalized) — the same key and semantics as `jwt-validation` and `sparc` |
 | `bypass_hosts` | `otel-collector`, `otel-collector.*`, `jaeger`, `jaeger.*`, `zipkin`, `zipkin.*`, `prometheus`, `prometheus.*` | outbound host globs that produce no spans |
-| `self_id` | — | this workload's identity (§4: reduced to its last `/`-segment); a blank value is refused at start |
+| `self_id` | — | this workload's identity (§4: reduced to its last `/`-segment); a blank value, or one with no non-empty `/`-segment (`/`), is refused at start — no name, no subject |
 | `self_id_file` | `/shared/client-id.txt` | read when `self_id` is empty. Until it is readable and carries an identity the producer is not ready — every exchange skipped, nothing written to the wire — and it re-reads the file in the background, the sidecar's `/readyz` naming it meanwhile (a pod whose readiness probe uses `/readyz` stays out of rotation until the file lands — the `Readier` contract for a mounted credential, and in the stock chain `jwt-validation` already holds readiness on this same file); the process starts regardless, so the plugin never takes the sidecar's other plugins down over a late mount. Refused at start only when `self_id` is also empty |
+| `namespace` | — | this workload's Kubernetes namespace, emitted as `lineage.self.namespace` (§4). Required (or `namespace_file`), and shape-checked: an absent or blank value, or one that is not an RFC 1123 DNS label, is refused at start — a `/` would make the consumer's `{kind}:{namespace}/{self.id}` key ambiguous. Resolved before anything else in the producer's start, so a refusal leaves nothing behind. The attach kit writes its `NAMESPACE`. A producer older than this key rejects a configuration that carries it (unknown keys are a boot error), so image and configuration change together |
+| `namespace_file` | — | read once at start when `namespace` is empty; meant for `/var/run/secrets/kubernetes.io/serviceaccount/namespace`, which the kubelet projects from the pod's own metadata — the one source that is correct in every copy of a configuration shared across namespaces (the platform's per-namespace ConfigMap is rendered from one template and copied). Absent, blank or not a DNS label refuses at start; no default, no poller |
 
 Setting `bypass_paths` or `bypass_hosts` **replaces** the default list rather than extending it —
 the convention the `ibac`, `sparc` and `cpex` plugins use for their keys of the same name. An
@@ -276,6 +279,26 @@ Unknown keys are a boot error.
 - Kinds and entity identity come from the facts only. `classify()` never requires `input.value` or
   `output.value`; bodyless exchanges produce complete, first-class interaction rows with NULL payload
   hashes, and the UI renders them like any other row.
+- A pod's entity identity is the pair (`lineage.self.namespace`, `lineage.self.id`), read from the
+  request span (the response half is never consulted for identity): its natural key is
+  `{kind}:{namespace}/{self.id}` (so the row id, uuid5 of the natural key, splits with it), and the
+  namespace is stored again in `entities.namespace` for reading without parsing the key. The key
+  is parseable because a namespace is a DNS label and never contains `/`; a present value that is
+  not a DNS label (empty, padded, or any other shape) is a producer contract violation and halts
+  the derivation loudly, as a missing `self.id` does. The callee of an outbound hop takes both facts
+  from the callee's own echo span when it exists; the `peer.host` fallback, an LLM endpoint, a user
+  and an anonymous client have no namespace. A span with no `lineage.self.namespace` at all — one a
+  pre-v1.7 producer emitted, stored and replayable — keys its pod without a namespace, as v1.6 did:
+  absence is recorded, never filled in from `peer.host`, a SPIFFE path or the trace. Two
+  consequences follow and are accepted: traces recorded before the producer carried the fact keep
+  their un-namespaced identities for good (a re-derivation reproduces them), so a pod has one
+  entity row for its history and another from the cutover on unless the pre-v1.7 spans are dropped
+  before a replay; and during a mixed rollout a v1.6 callee's echo under a v1.7 caller keys that
+  callee without a namespace while its own v1.7 spans key it with one — one pod, two rows, for as
+  long as both trace sets exist.
+- The natural key is a consumed vocabulary, not only a column: `lineage_metadata.data_sources` /
+  `.entities` store natural keys as text, the data-lineage traversal seeds on them, and any policy
+  matching an entity by name must match the namespaced form.
 - The consumer never welds a fragmented trace: an anchor whose parent is not a stored anchor derives
   as a root.
 - `content_kind` vocabulary stays ADR-0014-compatible; the classification processor consumes
@@ -302,6 +325,22 @@ The producer must not emit these, and the consumer reads nothing from them.
 Version ladder, newest first. Each line is what changed on the wire or in the vocabulary; the
 mechanisms named as removed are not to be reintroduced.
 
+- **v1.7.0** — `lineage.self.namespace` on both spans, from a new **required** `namespace` config
+  key or a `namespace_file` (absent, blank, or not a DNS label refuses at start, as a blank
+  `self_id` does; resolved first, so a refusal leaves nothing behind); a `self_id` made only of
+  separators (`/`), which the reduction would emit as-is, is now refused too, and a `self_id_file`
+  carrying one keeps the producer not-ready like a blank file. Neither identity fact is capped by
+  `max_attr_bytes` any more (`self.id` was): the pair the consumer keys on is never truncated. The reduction itself, its §4 clause
+  and the by-design collision of same-named workloads across namespaces on `self.id` alone are
+  unchanged — that clause is the documentation half (v1.6.1); the namespace is the identity half; the consumer keys a pod's
+  entity on (namespace, `self.id`) — natural key `{kind}:{namespace}/{self.id}` — and stores the
+  namespace in a new nullable `entities.namespace` column. Motivation: `self.id` is
+  the last segment of the SPIFFE ID, so `team1/weather-service` and `team2/weather-service` derived
+  as one entity, and every interaction of both pods pointed at one row. The namespace is a
+  configured fact, not parsed out of the SPIFFE path — the `ns/…/sa/…` layout is a registrar
+  convention, and a kit-attached pod has no SPIFFE ID at all. `lineage.self.id`, its reduction, and
+  span names are unchanged. Additive on the wire, breaking in configuration: every existing
+  `lineage-telemetry` block needs the key.
 - **v1.6.3** — an unreadable or blank `self_id_file` no longer refuses to start: the producer starts
   not-ready, skips every exchange (no span, no header) and re-reads the file until an identity
   appears. Until now the refusal failed the whole sidecar — every plugin in its chain — over a

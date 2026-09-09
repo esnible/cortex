@@ -169,6 +169,30 @@ type Config struct {
 	// not ready and skips every exchange, polling the file in background (see
 	// Init), and /readyz names it meanwhile. Ignored when SelfID is set.
 	SelfIDFile string `json:"self_id_file" description:"Read when self_id is empty; until it is readable the plugin is not ready and emits nothing. Refused at start only when self_id is also empty." default:"/shared/client-id.txt"`
+
+	// Namespace is the Kubernetes namespace this workload runs in, emitted as
+	// the lineage.self.namespace fact on every span. Required: lineage.self.id
+	// alone is not an identity — the same workload name in two namespaces is
+	// two workloads, and the consumer keys entity identity on the
+	// (namespace, self.id) pair (wire contract §7). The attach kit writes its
+	// NAMESPACE here. It is never derived from the SPIFFE ID's path — that
+	// layout is a registrar convention, and the kit path has no SPIFFE ID at
+	// all. Empty, blank, or not an RFC 1123 DNS label (the only shape a
+	// namespace can have) refuses at start (see resolveNamespace); when empty,
+	// NamespaceFile is consulted instead.
+	Namespace string `json:"namespace" required:"true" description:"This workload's Kubernetes namespace (an RFC 1123 DNS label), emitted as lineage.self.namespace on every span; refused at start when empty or not a label. Alternatively namespace_file."`
+
+	// NamespaceFile is a file carrying the namespace, read once at Init when
+	// Namespace is empty — meant for the path the kubelet projects from the
+	// pod's own metadata into every container that mounts the service-account
+	// volume, /var/run/secrets/kubernetes.io/serviceaccount/namespace. That
+	// is the one source that is correct in every copy of a ConfigMap shared
+	// across namespaces (the platform's per-namespace authbridge-runtime-config
+	// is rendered from one template and copied), where an inline literal would
+	// be confidently wrong in every namespace but one. No default and no
+	// poller: an absent file is a wrong path or a missing mount, and refuses
+	// at start like an empty value. Ignored when Namespace is set.
+	NamespaceFile string `json:"namespace_file" description:"Read when namespace is empty, once at start (e.g. /var/run/secrets/kubernetes.io/serviceaccount/namespace); absent, blank or not a DNS label refuses at start."`
 }
 
 func defaultConfig() Config {

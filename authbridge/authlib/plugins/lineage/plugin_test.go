@@ -47,6 +47,7 @@ func newTestPlugin(t *testing.T) (*LineageTelemetry, *tracetest.InMemoryExporter
 	p.tp = tp
 	p.tracer = tp.Tracer("test")
 	p.selfID = "weather-service"
+	p.cfg.Namespace = "team1"
 	p.ready.Store(true)
 	return p, exp
 }
@@ -1227,6 +1228,11 @@ func TestConfigSchema_TracksConfig(t *testing.T) {
 	if len(schema) != keys {
 		t.Errorf("schema has %d fields, Config has %d json keys", len(schema), keys)
 	}
+	// The operator-facing tooling (abctl templates, /v1/plugins) reads the
+	// required tag; the one key whose absence refuses boot must carry it.
+	if f, ok := byName["namespace"]; !ok || !f.Required {
+		t.Error("namespace is not marked required in the schema")
+	}
 }
 
 // The invocation action follows what happened to the message: the tracestate
@@ -1422,7 +1428,7 @@ func TestConfigure_Defaults(t *testing.T) {
 
 func TestConfigure_DecodesKeptKeys(t *testing.T) {
 	p := NewLineageTelemetry()
-	raw := json.RawMessage(`{"otel_endpoint":"http://collector:4317","capture_io":true,"self_id":"weather-service"}`)
+	raw := json.RawMessage(`{"otel_endpoint":"http://collector:4317","capture_io":true,"self_id":"weather-service","namespace":"team1"}`)
 	if err := p.Configure(raw); err != nil {
 		t.Fatalf("Configure: %v", err)
 	}
@@ -1434,6 +1440,9 @@ func TestConfigure_DecodesKeptKeys(t *testing.T) {
 	}
 	if p.cfg.SelfID != "weather-service" {
 		t.Errorf("self_id = %q", p.cfg.SelfID)
+	}
+	if p.cfg.Namespace != "team1" {
+		t.Errorf("namespace = %q", p.cfg.Namespace)
 	}
 }
 
@@ -1500,9 +1509,13 @@ func TestInit_RefusesToStartWithoutIdentity(t *testing.T) {
 		cfg     Config
 		wantErr bool
 	}{
-		{"inline self_id starts", Config{OTelEndpoint: "localhost:4317", SelfID: "weather-service"}, false},
-		{"blank inline self_id refuses", Config{OTelEndpoint: "localhost:4317", SelfID: " \n"}, true},
-		{"no identity source refuses", Config{OTelEndpoint: "localhost:4317"}, true},
+		{"inline self_id starts", Config{OTelEndpoint: "localhost:4317", Namespace: "team1", SelfID: "weather-service"}, false},
+		{"blank inline self_id refuses", Config{OTelEndpoint: "localhost:4317", Namespace: "team1", SelfID: " \n"}, true},
+		// Separators only: serviceLabel would emit "/" as an entity key — a
+		// subject with no name. Refused, like blank (#761 round 6).
+		{"slash-only inline self_id refuses", Config{OTelEndpoint: "localhost:4317", Namespace: "team1", SelfID: "/"}, true},
+		{"slashes-only inline self_id refuses", Config{OTelEndpoint: "localhost:4317", Namespace: "team1", SelfID: " // "}, true},
+		{"no identity source refuses", Config{OTelEndpoint: "localhost:4317", Namespace: "team1"}, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1527,6 +1540,206 @@ func TestInit_RefusesToStartWithoutIdentity(t *testing.T) {
 	}
 }
 
+// TestInit_RefusesWithoutNamespace: the namespace is the other half of
+// identity (config.go, Namespace) — the consumer keys an entity on
+// (namespace, self.id), so a pod emitting only self.id would collapse onto
+// the row of a same-named pod in another namespace. It is inline-only and
+// known when the config is rendered, so there is no file to wait for: absent
+// or blank refuses at boot, exactly as a blank self_id does — and so does a
+// value that is not a DNS label: the consumer composes "{kind}:{ns}/{id}", so
+// a "/" would make the key ambiguous, and a value longer than max_attr_bytes
+// would reach the wire truncated. Surrounding whitespace alone is trimmed.
+func TestInit_RefusesWithoutNamespace(t *testing.T) {
+	long := strings.Repeat("n", 64)
+	for _, tc := range []struct {
+		name    string
+		ns      string
+		wantErr bool
+	}{
+		{"absent", "", true},
+		{"blank", " \n\t", true},
+		{"slash", "team1/team2", true},
+		{"uppercase", "TEAM1", true},
+		{"space inside", "team 1", true},
+		{"dots", "team1.svc", true},
+		{"leading hyphen", "-team1", true},
+		{"64 chars", long, true},
+		{"63 chars", long[:63], false},
+		{"padded label", "  team1\n", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := NewLineageTelemetry()
+			p.cfg = Config{OTelEndpoint: "localhost:4317", SelfID: "weather-service", Namespace: tc.ns}
+			err := p.Init(context.Background())
+			if !tc.wantErr {
+				if err != nil {
+					t.Fatalf("Init refused a valid namespace %q: %v", tc.ns, err)
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+				_ = p.Shutdown(ctx) // the provider AND the gRPC client Init stored
+				cancel()
+				if got := strings.TrimSpace(tc.ns); p.cfg.Namespace != got {
+					t.Errorf("stored namespace = %q, want %q", p.cfg.Namespace, got)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("Init succeeded with namespace %q", tc.ns)
+			}
+			if !strings.Contains(err.Error(), "namespace") {
+				t.Errorf("error does not name the key: %v", err)
+			}
+			if p.Ready() {
+				t.Error("plugin reports Ready after a refused Init")
+			}
+			// The refusal precedes everything else Init builds: no tracer
+			// provider, no poller, nothing to leak or to shut down.
+			if p.tp != nil || p.bgCancel.Load() != nil {
+				t.Error("a refused namespace left a tracer provider or a poller behind")
+			}
+		})
+	}
+}
+
+// TestInit_RefusesNamespaceBeforeIdentityPoll: the namespace check runs
+// before the identity switch, so a config with an unreadable self_id_file
+// AND no namespace is refused outright — the log never promises a poller
+// that Init then fails to start, and no goroutine exists after the refusal.
+func TestInit_RefusesNamespaceBeforeIdentityPoll(t *testing.T) {
+	p := NewLineageTelemetry()
+	p.cfg = Config{OTelEndpoint: "localhost:4317", SelfIDFile: t.TempDir() + "/absent"}
+	if err := p.Init(context.Background()); err == nil {
+		t.Fatal("Init succeeded with no namespace and an unreadable self_id_file")
+	}
+	if p.bgCancel.Load() != nil || p.tp != nil || p.Ready() {
+		t.Error("refused Init left a poller, a tracer provider, or readiness behind")
+	}
+}
+
+// TestInit_NamespaceFile: the file source exists for the one ConfigMap that
+// is shared across namespaces (the platform's), where an inline literal is
+// wrong everywhere but one namespace and the kubelet-projected file is right
+// everywhere. Read once, no poller; the inline key wins when set; the same
+// shape rules apply; an absent file refuses rather than waits.
+func TestInit_NamespaceFile(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name, content string) string {
+		path := dir + "/" + name
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	for _, tc := range []struct {
+		name    string
+		cfg     Config
+		want    string
+		wantErr string
+	}{
+		{"projected file", Config{NamespaceFile: write("ns", "team2\n")}, "team2", ""},
+		{"inline wins over file", Config{Namespace: "team1", NamespaceFile: write("ns2", "team2\n")}, "team1", ""},
+		{"absent file refuses", Config{NamespaceFile: dir + "/missing"}, "", "/missing"},
+		{"blank file refuses", Config{NamespaceFile: write("blank", " \n")}, "", "carries no namespace"},
+		{"non-label file refuses", Config{NamespaceFile: write("bad", "Team-2\n")}, "", "not a DNS label"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := NewLineageTelemetry()
+			tc.cfg.OTelEndpoint, tc.cfg.SelfID = "localhost:4317", "weather-service"
+			p.cfg = tc.cfg
+			err := p.Init(context.Background())
+			if err == nil {
+				ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+				_ = p.Shutdown(ctx)
+				cancel()
+			}
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("err = %v, want one naming %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Init: %v", err)
+			}
+			if p.cfg.Namespace != tc.want {
+				t.Errorf("namespace = %q, want %q", p.cfg.Namespace, tc.want)
+			}
+		})
+	}
+}
+
+// TestNamespace_ThroughDecodeAndInit pins the real path — Configure (decode)
+// then Init (trim) then an exchange — rather than a field the test wrote:
+// a padded JSON value lands on both spans trimmed, and otherwise verbatim.
+func TestNamespace_ThroughDecodeAndInit(t *testing.T) {
+	p := NewLineageTelemetry()
+	if err := p.Configure([]byte(`{"otel_endpoint":"localhost:4317","self_id":"weather-service","namespace":" team1\n"}`)); err != nil {
+		t.Fatalf("Configure: %v", err)
+	}
+	if err := p.Init(context.Background()); err != nil {
+		t.Fatalf("Init: %v", err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = p.Shutdown(ctx) // the in-memory provider swapped in below, and the gRPC client
+	})
+	// Swap the real exporter for an in-memory one so the spans can be read —
+	// after shutting the real provider down, so nothing Init built is orphaned.
+	{
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		_ = p.tp.Shutdown(ctx)
+		cancel()
+	}
+	exp := tracetest.NewInMemoryExporter()
+	p.tp = sdktrace.NewTracerProvider(sdktrace.WithSyncer(exp))
+	p.tracer = p.tp.Tracer("test")
+	run(t, p, fakeContext(pipeline.Outbound, http.Header{}), allow(200))
+	req, resp := roleSplit(t, exp.GetSpans())
+	for _, s := range []tracetest.SpanStub{req, resp} {
+		if got := attrStr(s, "lineage.self.namespace"); got != "team1" {
+			t.Errorf("%s: lineage.self.namespace = %q, want team1 (trimmed)", s.Name, got)
+		}
+	}
+}
+
+// TestNamespace_NeverCapped: max_attr_bytes caps caller-controlled strings;
+// an identity fact must not be truncated, or the consumer keys the pod on a
+// name that is not its own. The namespace is bounded by Init's DNS-label
+// check instead, so a tiny cap leaves it whole.
+func TestNamespace_NeverCapped(t *testing.T) {
+	p, exp := newTestPlugin(t)
+	p.cfg.MaxAttrBytes = 4
+	p.cfg.Namespace = "team-with-a-long-name"
+	run(t, p, fakeContext(pipeline.Inbound, http.Header{}), allow(200))
+	req, _ := roleSplit(t, exp.GetSpans())
+	if got := attrStr(req, "lineage.self.namespace"); got != "team-with-a-long-name" {
+		t.Errorf("lineage.self.namespace = %q, want the whole value", got)
+	}
+}
+
+// TestNamespace_OnBothSpans: lineage.self.namespace rides beside
+// lineage.self.id on the request AND the response span (contract §4 "both"),
+// verbatim from config — never parsed out of a SPIFFE self_id — and the
+// self.id fact is unchanged by it: the pair is composed by the consumer.
+func TestNamespace_OnBothSpans(t *testing.T) {
+	for _, dir := range []pipeline.Direction{pipeline.Inbound, pipeline.Outbound} {
+		p, exp := newTestPlugin(t)
+		p.selfID = "spiffe://localtest.me/ns/team2/sa/weather-service"
+		p.cfg.Namespace = "team1" // deliberately NOT the SPIFFE path's ns: config is the fact
+		run(t, p, fakeContext(dir, http.Header{}), allow(200))
+		req, resp := roleSplit(t, exp.GetSpans())
+		for _, s := range []tracetest.SpanStub{req, resp} {
+			if got := attrStr(s, "lineage.self.namespace"); got != "team1" {
+				t.Errorf("%s %s: lineage.self.namespace = %q, want team1", dir, s.Name, got)
+			}
+			if got := attrStr(s, "lineage.self.id"); got != "weather-service" {
+				t.Errorf("%s %s: lineage.self.id = %q, want weather-service", dir, s.Name, got)
+			}
+		}
+	}
+}
+
 // TestInit_MissingSelfIDFileIsNotFatal: the default self_id_file is the
 // operator-mounted Secret, which can land after the pod starts. An Init error
 // fails Pipeline.Start and takes every other plugin in the chain down with it,
@@ -1540,6 +1753,7 @@ func TestInit_MissingSelfIDFileIsNotFatal(t *testing.T) {
 	}{
 		{"absent", nil},
 		{"present but blank", []byte(" \n\t\n")},
+		{"present but separators only", []byte("/\n")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			path := t.TempDir() + "/client-id.txt"
@@ -1590,7 +1804,7 @@ func TestShutdown_StopsIdentityPoll(t *testing.T) {
 	for i := 0; i < 300; i++ {
 		path := fmt.Sprintf("%s/client-id-%d.txt", dir, i)
 		p := NewLineageTelemetry()
-		p.cfg = Config{OTelEndpoint: "localhost:4317", SelfIDFile: path}
+		p.cfg = Config{OTelEndpoint: "localhost:4317", Namespace: "team1", SelfIDFile: path}
 		if err := p.Init(context.Background()); err != nil {
 			t.Fatalf("Init: %v", err)
 		}
@@ -1620,7 +1834,7 @@ func initPolling(t *testing.T, path string) *LineageTelemetry {
 	identityPollInterval = 5 * time.Millisecond
 	t.Cleanup(func() { identityPollInterval = restore })
 	p := NewLineageTelemetry()
-	p.cfg = Config{OTelEndpoint: "localhost:4317", SelfIDFile: path}
+	p.cfg = Config{OTelEndpoint: "localhost:4317", Namespace: "team1", SelfIDFile: path}
 	if err := p.Init(context.Background()); err != nil {
 		t.Fatalf("Init with an unreadable self_id_file must not fail the process: %v", err)
 	}
@@ -1671,7 +1885,7 @@ func TestInit_ReadsSelfIDFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := NewLineageTelemetry()
-	p.cfg = Config{OTelEndpoint: "localhost:4317", SelfIDFile: path}
+	p.cfg = Config{OTelEndpoint: "localhost:4317", Namespace: "team1", SelfIDFile: path}
 	if err := p.Init(context.Background()); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
@@ -1855,7 +2069,7 @@ func TestConfig_BypassReplacesDefaults(t *testing.T) {
 // returns nil — since the closed socket itself is not introspectable here.
 func TestShutdown_ClosesConn(t *testing.T) {
 	p := NewLineageTelemetry()
-	p.cfg = Config{OTelEndpoint: "localhost:4317", SelfID: "weather-service"}
+	p.cfg = Config{OTelEndpoint: "localhost:4317", Namespace: "team1", SelfID: "weather-service"}
 	if err := p.Init(context.Background()); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
@@ -1888,7 +2102,7 @@ func TestShutdown_NoInitIsSafe(t *testing.T) {
 // a torn-down tracer provider.
 func TestShutdown_ClearsReady(t *testing.T) {
 	p := NewLineageTelemetry()
-	p.cfg = Config{OTelEndpoint: "localhost:4317", SelfID: "weather-service"}
+	p.cfg = Config{OTelEndpoint: "localhost:4317", Namespace: "team1", SelfID: "weather-service"}
 	if err := p.Init(context.Background()); err != nil {
 		t.Fatalf("Init: %v", err)
 	}
@@ -2111,7 +2325,7 @@ func TestInit_CAFile(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			p := NewLineageTelemetry()
-			p.cfg = Config{OTelEndpoint: "collector.ns:4317", OTelCAFile: tc.caFile, SelfID: "x"}
+			p.cfg = Config{OTelEndpoint: "collector.ns:4317", Namespace: "team1", OTelCAFile: tc.caFile, SelfID: "x"}
 			err := p.Init(context.Background())
 			if tc.wantErr {
 				if err == nil {

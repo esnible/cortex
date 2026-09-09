@@ -168,10 +168,38 @@ When the platform injects its own AuthBridge sidecar (an `AgentRuntime` CR),
 lineage is enabled for the whole namespace by adding the three parsers +
 `lineage-telemetry` to both directions of the operator-rendered
 `authbridge-runtime-config` ConfigMap. Leave `self_id` unset — each pod
-resolves its identity from the operator-mounted credential. The propagation
-half is unchanged, and a platform upgrade re-renders the ConfigMap; re-apply
-after one. This route is described here, not exercised: nothing in this kit
-generates that edit.
+resolves its identity from the operator-mounted credential. For the namespace
+fact (required; it is what keeps two same-named pods in two namespaces two
+entities at the consumer, wire contract §7) do **not** write a literal
+`namespace: team1` into that ConfigMap: the platform chart renders it from one
+template for every agent namespace and the operator copies the release
+namespace's ConfigMap into namespaces that lack one, so a literal would be
+confidently wrong in every namespace but one. Use the file source instead,
+which is correct in every copy:
+
+```yaml
+- name: lineage-telemetry
+  config:
+    otel_endpoint: "otel-collector.rossoctl-system.svc.cluster.local:4317"
+    namespace_file: /var/run/secrets/kubernetes.io/serviceaccount/namespace
+```
+
+That file is projected by the kubelet from the pod's own metadata into every
+container that mounts the service-account volume; if the injected sidecar
+does not mount it, the plugin refuses to start (loudly, naming the path)
+rather than guess. The propagation half is unchanged, and a platform upgrade
+re-renders the ConfigMap; re-apply after one. This route is described here,
+not exercised: nothing in this kit generates that edit.
+
+**Upgrading across the namespace key.** A sidecar built before the key
+rejects any config that carries it (unknown keys are a boot error), and one
+built with it refuses any config that lacks it — so the image and the
+ConfigMap flip together, per pod, never one before the other. On the kit
+route that is one command: re-run `sidecar-patch.sh` with a `SIDECAR_IMAGE`
+that carries the key; it rewrites the ConfigMap and patches the Deployment,
+and the image change rolls the pod. A re-run with an unchanged image rolls no
+pod, and the running sidecar only hot-reloads the ConfigMap — the script says
+so and names the log line to check.
 
 ---
 
@@ -243,10 +271,14 @@ The generated ConfigMap's plugin entry:
     otel_endpoint: "otel-collector.rossoctl-system.svc.cluster.local:4317"   # host:port; https:// prefix turns on TLS
     capture_io: false     # the plugin's default; CAPTURE_IO=true attaches the parsed content — PII lives in it
     self_id: "<deploy>"   # ALWAYS set (SELF_ID, default: the Deployment name) — see below
+    namespace: "<ns>"     # ALWAYS set (NAMESPACE): the plugin refuses to start without it
     # max_payload_bytes: 4096 — the plugin's default cap on a captured value (MAX_PAYLOAD_BYTES)
 ```
 
-`self_id` is always emitted: the plugin's `self_id_file` fallback (the
+`namespace` is the pod's Kubernetes namespace and rides on every span as
+`lineage.self.namespace`; the consumer keys an entity on the (namespace,
+`self_id`) pair, so the same Deployment name in two namespaces stays two
+entities. `self_id` is always emitted: the plugin's `self_id_file` fallback (the
 operator-mounted credential, which can race its own Secret and fail the
 sidecar's boot) is deliberately never used on a ConfigMap this kit generates.
 The plugin's `bypass_paths` / `bypass_hosts` keep infrastructure noise out
@@ -299,6 +331,9 @@ BAKE — once per app image                 ATTACH — once per Deployment
 |---|---|
 | No spans at all | Wrong `OTEL_ENDPOINT`, or the sidecar image predates the plugin — read the `envoy-proxy` container's log. |
 | `envoy-proxy` restarts with `unknown plugin "lineage-telemetry"` | The published image, until a release carries the plugin. Build from this repo (RECIPE step 1); the printed back-out line meanwhile. The patch pulls `IfNotPresent`, so a node that cached an older `:latest` keeps it. |
+| `envoy-proxy` restarts with `json: unknown field "namespace"` | A ConfigMap from this kit against a sidecar image built before the namespace key. Re-run `sidecar-patch.sh` with a `SIDECAR_IMAGE` that carries it ("Upgrading across the namespace key"). |
+| `envoy-proxy` restarts with `namespace is required` or `is not a DNS label` | A sidecar that carries the key against a ConfigMap that lacks it or hand-carries a value that is not a namespace. Re-run `sidecar-patch.sh` (it renders `NAMESPACE`, already validated as a DNS label). |
+| Spans arrive without `lineage.self.namespace` after an attach that printed "attached" | The Deployment patch was a no-op (same image, same knobs), so no pod rolled and the old sidecar refused the hot-reload. The script prints a NOTE with the log line to check; re-run with a matching `SIDECAR_IMAGE`. |
 | Only inbound hops, never outbound | `proxy-init` did not install its iptables rules — its log. |
 | Outbound hops fragment (`lineage.parent.source=none` on the pod's outbound hops) | `traceparent` not propagating: the app container lacks `LINEAGE_PROPAGATE=1` (the patch sets it with `APP_CONTAINER`; an operator-owned Deployment needs `SELF_ACTIVATE=1`), or the call runs in a worker thread (the `threading` instrumentor is bundled), or the client library is outside the envelope. Only the entry hop dangling is expected. |
 | The app cannot reach its database / mail server after the patch | A plaintext non-HTTP port went through the outbound HTTP codec — `OUTBOUND_PORTS_EXCLUDE` it. |

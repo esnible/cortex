@@ -40,7 +40,8 @@
 #
 # Env — read here:
 #   DEPLOY         target Deployment (required)
-#   NAMESPACE      default team1
+#   NAMESPACE      default team1; also written into the plugin config as its
+#                  identity namespace (lineage.self.namespace on every span)
 #   SELF_ID        lineage identity (default: DEPLOY)
 #   APP_CONTAINER  the app container to switch propagation on (optional)
 # Env — inherited by attach-lineage.sh and validated there (see its header):
@@ -213,13 +214,28 @@ apply() {
     cm_existed=1
   fi
   kubectl apply -f - <<<"$cm"
-  kubectl patch deploy "$DEPLOY" -n "$NAMESPACE" --type strategic --patch "$patch" || {
+  patched="$(kubectl patch deploy "$DEPLOY" -n "$NAMESPACE" --type strategic --patch "$patch")" || {
     # Only a failure the dry-run could not predict lands here (e.g. a 409
     # from a concurrent write). Nothing else was written this run except,
     # possibly, the ConfigMap — remove it only if this run created it.
     [ "$cm_existed" = "1" ] || kubectl delete cm -n "$NAMESPACE" "authbridge-lineage-config-$DEPLOY"
     exit 1
   }
+  echo "$patched"
+  # A re-run whose patch changes nothing (same images, same knobs) rolls no
+  # pod: the running sidecar picks the rewritten ConfigMap up by hot-reload,
+  # and a reload the binary rejects — a pre-v1.7 sidecar refusing the
+  # `namespace` key, say — is logged and otherwise silent, the old pipeline
+  # kept. "attached" below would then be true of the objects and false of
+  # the spans. Say so, and name the check.
+  case "$patched" in
+    *"(no change)"*)
+      echo "NOTE: the Deployment was already patched; no pod rolled. The ConfigMap change reaches" >&2
+      echo "      the running sidecar by hot-reload only. Confirm with:" >&2
+      echo "        kubectl -n $NAMESPACE logs deploy/$DEPLOY -c envoy-proxy | grep 'lineage-telemetry: initialized'" >&2
+      echo "      (expect namespace=$NAMESPACE); a sidecar older than the plugin's config refuses the reload" >&2
+      echo "      and keeps its previous pipeline — re-run with a matching SIDECAR_IMAGE, which rolls the pod." >&2 ;;
+  esac
   # Said before the wait: a rollout that never completes still needs this line.
   # CM after the patch: pods of a revision that still mounts it cannot start.
   echo ">> back out: kubectl -n $NAMESPACE patch deploy/$DEPLOY --type strategic -p '$undo' && kubectl -n $NAMESPACE delete cm authbridge-lineage-config-$DEPLOY"
