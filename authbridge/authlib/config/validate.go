@@ -2,6 +2,8 @@ package config
 
 import (
 	"fmt"
+
+	"github.com/rossoctl/cortex/authbridge/authlib/pricing"
 )
 
 // Validate checks the top-level runtime config: mode and listener combo.
@@ -23,7 +25,25 @@ func Validate(cfg *Config) error {
 	default:
 		return fmt.Errorf("unknown mode %q (valid: envoy-sidecar, waypoint, proxy-sidecar)", cfg.Mode)
 	}
-	return validateListeners(cfg)
+	if err := validateListeners(cfg); err != nil {
+		return err
+	}
+	return validatePricing(cfg)
+}
+
+// validatePricing builds the rate table and discards it, so a fault in the
+// `pricing:` section fails at startup beside every other config error.
+//
+// Building is the validation: the table's constructor is what rejects a malformed
+// glob, both units set for one tier, a non-finite rate, or a row that prices
+// nothing. Deferring to first use would surface those as silently unpriced traffic
+// instead of an error, and unpriced traffic looks exactly like a deployment with no
+// rates configured.
+func validatePricing(cfg *Config) error {
+	if _, err := pricing.Build(cfg.Pricing); err != nil {
+		return err
+	}
+	return nil
 }
 
 func validateListeners(cfg *Config) error {

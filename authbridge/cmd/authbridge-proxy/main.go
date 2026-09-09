@@ -35,6 +35,7 @@ import (
 	"github.com/rossoctl/cortex/authbridge/authlib/config"
 	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
 	"github.com/rossoctl/cortex/authbridge/authlib/plugins"
+	"github.com/rossoctl/cortex/authbridge/authlib/pricing"
 	"github.com/rossoctl/cortex/authbridge/authlib/reloader"
 	"github.com/rossoctl/cortex/authbridge/authlib/runtimeutil"
 	"github.com/rossoctl/cortex/authbridge/authlib/session"
@@ -273,6 +274,23 @@ func main() {
 		slog.Debug("Config does not use SPIFFE")
 	}
 
+	// The pricing registry is built ONCE, here, deliberately outside
+	// buildPipelines. The reloader re-invokes that closure on every config change,
+	// but the usage aggregator that shares these rates is created further down and
+	// outlives every rebuild — so a registry reconstructed per pipeline would leave
+	// the aggregator holding a stale table forever, and /v1/usage would silently
+	// disagree with the plugins about what a request cost. The table is swapped in
+	// place instead; the pointer never changes. See pricing.Registry.
+	pricingRegistry := pricing.NewRegistry(nil)
+	if tab, err := pricing.Build(bootCfg.Pricing); err != nil {
+		// Unreachable in practice: config.Validate already built this table and
+		// rejected a bad section. Fatal rather than ignored so the two can never
+		// drift into a state where startup succeeds with no rates at all.
+		log.Fatalf("pricing table: %v", err)
+	} else {
+		pricingRegistry.Swap(tab)
+	}
+
 	// This binary is hardcoded to proxy-sidecar. Rejecting other modes
 	// early gives operators a clear boot-time error instead of silently
 	// misbehaving (e.g., YAML says envoy-sidecar but binary can't
@@ -293,11 +311,22 @@ func main() {
 			return nil, nil, nil, err
 		}
 		config.WarnEmptyPipelines(c, slog.Default())
-		in, err := plugins.BuildWithSPIFFE(c.Pipeline.Inbound.Plugins, provider)
+		// Rates reload with the rest of the config. Swapped BEFORE the pipelines are
+		// built so a plugin's Configure sees the new table, and swapped in place so
+		// the usage aggregator — which holds this same registry from before the
+		// reload — sees it too.
+		tab, err := pricing.Build(c.Pricing)
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("pricing: %w", err)
+		}
+		pricingRegistry.Swap(tab)
+
+		deps := plugins.Deps{SPIFFE: provider, Pricing: pricingRegistry}
+		in, err := plugins.BuildWithDeps(c.Pipeline.Inbound.Plugins, deps)
 		if err != nil {
 			return nil, nil, nil, fmt.Errorf("inbound: %w", err)
 		}
-		out, err := plugins.BuildWithSPIFFE(c.Pipeline.Outbound.Plugins, provider)
+		out, err := plugins.BuildWithDeps(c.Pipeline.Outbound.Plugins, deps)
 		if err != nil {
 			return nil, nil, nil, fmt.Errorf("outbound: %w", err)
 		}
