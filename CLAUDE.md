@@ -4,6 +4,33 @@ This file provides context for Claude (AI assistant) when working with the `cort
 
 ## AI Assistant Instructions
 
+- **Always work in your own git worktree — never in the shared top-level checkout.**
+  Several Claude Code sessions run against this repo at once. They share one object
+  store, which is fine, but a shared *working tree* is not: `git checkout` in one
+  session rewrites files under another, and two sessions' uncommitted edits land in one
+  index. Before starting work:
+
+  ```sh
+  git fetch https://github.com/rossoctl/cortex.git main
+  git rev-parse --short FETCH_HEAD          # verify what you are branching from
+  git worktree add .worktrees/<topic> -b <branch> FETCH_HEAD
+  ```
+
+  Then stay in that directory. Leave the top-level checkout alone — treat it as a
+  reference copy someone else may be using.
+
+  Three things learned the hard way:
+  - **Verify `FETCH_HEAD` before branching from it.** It is shared across worktrees, so
+    a stale one silently branches from an ancient commit. That has already reverted
+    `CLAUDE.md` mid-session to a pre-rename state.
+  - **Git refuses to check out one branch in two worktrees.** That is a feature, not an
+    obstacle — if it refuses, another session has the branch.
+  - **Worktrees do not isolate the running Cortex.** One `~/.cortex/config.yaml`, one
+    launchd label, one proxy on `:47600`, and every session's `HTTPS_PROXY` points at
+    it. `abctl service install`, `service restart` and `--ref=main` all replace that
+    single instance and cut every other session's traffic. Coordinate before touching
+    it.
+
 - **Use `Assisted-By` for attribution** — never add `Co-Authored-By`, `Generated with Claude Code`, or similar trailers. See [Commit Attribution Policy](#commit-attribution-policy) below.
 
 ## Repository Overview
