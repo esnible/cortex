@@ -668,6 +668,77 @@ func TestEmitCost_NoEmitWhenUnpriced(t *testing.T) {
 	}
 }
 
+// TestOnRequestRecordsDenyInvocation: the 429 path must record a deny
+// Invocation with the spend snapshot, or phase:"denied" never surfaces.
+func TestOnRequestRecordsDenyInvocation(t *testing.T) {
+	p := configure(t, 0.001)
+
+	// Push past the budget so the next OnRequest denies.
+	p.OnResponse(context.Background(), &pipeline.Context{
+		ResponseHeaders: http.Header{responseCostHeader: {"0.002"}},
+	})
+
+	// Stamp Plugin+Phase like Pipeline.Run does — without it Record leaves
+	// Phase:"" and the listener's FilteredByPhase drops the invocation.
+	pctx := &pipeline.Context{}
+	pctx.SetCurrentPlugin("litellm-budget-track", pipeline.InvocationPhaseRequest)
+	defer pctx.ClearCurrentPlugin()
+
+	action := p.OnRequest(context.Background(), pctx)
+	if action.Type != pipeline.Reject {
+		t.Fatalf("OnRequest() over budget = %v, want Reject", action.Type)
+	}
+
+	if pctx.Extensions.Invocations == nil {
+		t.Fatal("no Invocations recorded on deny path")
+	}
+	inv := pctx.Extensions.Invocations.Inbound
+	if len(inv) != 1 {
+		t.Fatalf("Inbound invocations = %d, want 1", len(inv))
+	}
+	got := inv[0]
+	if got.Plugin != "litellm-budget-track" {
+		t.Errorf("Plugin = %q, want litellm-budget-track", got.Plugin)
+	}
+	if got.Phase != pipeline.InvocationPhaseRequest {
+		t.Errorf("Phase = %q, want request (else listener FilteredByPhase drops it)", got.Phase)
+	}
+	if got.Action != pipeline.ActionDeny {
+		t.Errorf("Action = %q, want deny", got.Action)
+	}
+	if got.Reason != "budget.exceeded" {
+		t.Errorf("Reason = %q, want budget.exceeded", got.Reason)
+	}
+	// Snapshot must match the ledger the plugin actually checked — not a
+	// stale zero from before the OnResponse above. Values match the 429
+	// wire message's precision.
+	if got.Details["daily_total_usd"] != "0.0020" {
+		t.Errorf("Details[daily_total_usd] = %q, want 0.0020", got.Details["daily_total_usd"])
+	}
+	if got.Details["daily_max_usd"] != "0.00" {
+		t.Errorf("Details[daily_max_usd] = %q, want 0.00", got.Details["daily_max_usd"])
+	}
+	if got.Details["total_calls"] != "1" {
+		t.Errorf("Details[total_calls] = %q, want 1", got.Details["total_calls"])
+	}
+}
+
+// TestOnRequestUnderBudgetRecordsNothing: allow-path stays clean; an
+// always-record plugin would clutter every timeline.
+func TestOnRequestUnderBudgetRecordsNothing(t *testing.T) {
+	p := configure(t, 5.00)
+	pctx := &pipeline.Context{}
+	pctx.SetCurrentPlugin("litellm-budget-track", pipeline.InvocationPhaseRequest)
+	defer pctx.ClearCurrentPlugin()
+	if action := p.OnRequest(context.Background(), pctx); action.Type != pipeline.Continue {
+		t.Fatalf("OnRequest() under budget = %v, want Continue", action.Type)
+	}
+	if pctx.Extensions.Invocations != nil && len(pctx.Extensions.Invocations.Inbound) > 0 {
+		t.Errorf("under-budget OnRequest recorded %d invocations, want 0",
+			len(pctx.Extensions.Invocations.Inbound))
+	}
+}
+
 // TestEndToEnd_CostReachesUsageAggregator closes the loop this plugin's cost
 // event depends on but no unit test covers: the plugin writes to
 // pctx.Extensions.Custom, a listener promotes that to SessionEvent.Plugins via
