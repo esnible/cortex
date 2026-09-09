@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/rossoctl/cortex/authbridge/authlib/costevent"
 	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
 )
 
@@ -113,29 +114,17 @@ type bucket struct {
 	byPlugin map[string]Counts
 }
 
-// Pricer converts a model name and token count to millionths of a dollar.
-// Optional: a nil Pricer leaves CostMicros zero and the API omits it.
+// Cost is read from the figure litellm-budget-track settles per response and
+// publishes on the session event (see authlib/costevent): it prefers the
+// gateway's own post-discount cost header and falls back to pricing the usage
+// block. So the number here is a plugin's measurement, not a rate table's guess,
+// and this package holds no rates of its own — deployment-specific pricing is
+// not something authlib should assert.
 //
-// Injected rather than implemented here because rates are deployment-specific —
-// a gateway bills differently from the vendor's list price — and authlib has no
-// business asserting one.
-//
-// TODO(cost): no caller supplies one yet, so CostMicros is always zero and
-// Snapshot reports priced:false. Two candidate sources, neither reachable from
-// here today:
-//
-//   - toolprune's defaultPatterns table has per-family rates, but it is
-//     package-private and measured against the rossoctl LiteLLM gateway, which
-//     bills well below vendor list. Applying it to a direct-to-Anthropic
-//     deployment understates cost by roughly 4x on the input tier.
-//   - litellm-budget-track already reads the authoritative post-discount figure
-//     from LiteLLM's X-Litellm-Response-Cost header, but keeps it inside the
-//     plugin. Surfacing it onto the session event would let the aggregator use a
-//     real number instead of a modelled one, which is the better fix.
-//
-// The field is reserved on the wire now so adding it later is not a breaking
-// change.
-type Pricer func(model string, tokens int64) int64
+// Traffic the plugin did not price contributes no cost and is visible as the gap
+// between Counts.PricedRequests and Counts.Requests. Modelled rates for that
+// traffic arrive with the pricing resolver; see
+// docs/superpowers/specs/2026-09-09-pricing-consolidation-design.md.
 
 // Aggregator is a fixed ring of per-minute buckets. Safe for concurrent use.
 //
@@ -151,7 +140,6 @@ type Aggregator struct {
 	all      []bucket
 	sessions map[string]*sessionRing
 	maxSess  int
-	pricer   Pricer
 	now      func() time.Time
 
 	// pending holds request-phase plugin names awaiting their response event,
@@ -197,9 +185,6 @@ type sessionRing struct {
 
 // Option configures an Aggregator.
 type Option func(*Aggregator)
-
-// WithPricer supplies cost rates. Without it, CostMicros stays zero.
-func WithPricer(p Pricer) Option { return func(a *Aggregator) { a.pricer = p } }
 
 // WithClock overrides time.Now, for deterministic tests.
 func WithClock(now func() time.Time) Option { return func(a *Aggregator) { a.now = now } }
@@ -411,17 +396,25 @@ func (a *Aggregator) foldInto(ring []bucket, t time.Time, e *pipeline.SessionEve
 		*b = bucket{start: t} // stale lap: reset rather than accumulate onto old data
 	}
 
-	var tokens, cost int64
+	var tokens int64
 	var model string
 	if e.Inference != nil {
 		tokens = int64(e.Inference.TotalTokens)
 		model = e.Inference.Model
-		if a.pricer != nil && tokens > 0 {
-			cost = a.pricer(model, tokens)
-		}
 	}
 
-	one := Counts{Requests: 1, Tokens: tokens, CostMicros: cost}
+	// Cost comes from the plugin that already settled it, not from a rate table
+	// here: litellm-budget-track prefers the gateway's own post-discount figure
+	// and falls back to pricing the usage block, then publishes the result on the
+	// event. Absent means unpriced, which is not the same as free — hence the
+	// separate PricedRequests counter rather than inferring coverage from a zero.
+	var cost, priced int64
+	if ce, ok := costevent.Decode(e); ok {
+		cost = ce.Micros()
+		priced = 1
+	}
+
+	one := Counts{Requests: 1, Tokens: tokens, CostMicros: cost, PricedRequests: priced}
 	if e.StatusCode >= 400 || e.Phase == pipeline.SessionDenied {
 		one.Errors = 1
 	}
