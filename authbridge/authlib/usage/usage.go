@@ -50,10 +50,18 @@ type Counts struct {
 	Tokens   int64 `json:"tokens,omitempty"`
 	// CostMicros is millionths of a US dollar. An integer unit keeps bucket
 	// addition exact and JSON round-tripping lossless, which float dollars do
-	// not; a client divides by 1e6 to display. Zero when no pricer is
-	// configured, which is not the same as "this traffic was free" — the API
-	// omits the field entirely in that case rather than asserting $0.
+	// not; a client divides by 1e6 to display. Zero when nothing here could be
+	// priced, which is not the same as "this traffic was free" — the API omits
+	// the field entirely in that case rather than asserting $0.
 	CostMicros int64 `json:"costMicros,omitempty"`
+	// PricedRequests counts the requests that actually produced a cost. Coverage
+	// is a counter rather than a flag because buckets are summed when a client
+	// asks for a coarser resolution, and because a deployment can price some of
+	// its traffic and not the rest: several endpoints, rates known for some.
+	//
+	// Requests-minus-PricedRequests is the gap, correct at every resolution, and
+	// it is what stops a partial total being presented as a complete one.
+	PricedRequests int64 `json:"pricedRequests,omitempty"`
 }
 
 func (c *Counts) add(o Counts) {
@@ -61,6 +69,7 @@ func (c *Counts) add(o Counts) {
 	c.Errors += o.Errors
 	c.Tokens += o.Tokens
 	c.CostMicros += o.CostMicros
+	c.PricedRequests += o.PricedRequests
 }
 
 // Bucket is one BucketWidth slice of time, as served to clients.

@@ -1,12 +1,14 @@
 package usage
 
 import (
+	"encoding/json"
 	"fmt"
 	"math"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/rossoctl/cortex/authbridge/authlib/costevent"
 	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
 )
 
@@ -26,6 +28,57 @@ func respEvent(at time.Time, status int, dur time.Duration, model string, tokens
 		e.Inference = &pipeline.InferenceExtension{Model: model, TotalTokens: tokens}
 	}
 	return e
+}
+
+// withCost attaches the cost event litellm-budget-track publishes, exactly as a
+// listener would after SnapshotPlugins. Returns e so it composes with respEvent.
+func withCost(t *testing.T, e *pipeline.SessionEvent, costUSD float64) *pipeline.SessionEvent {
+	t.Helper()
+	raw, err := json.Marshal(costevent.Event{
+		CostUSD: costUSD,
+		Source:  costevent.SourceGatewayHeader,
+	})
+	if err != nil {
+		t.Fatalf("marshal cost event: %v", err)
+	}
+	if e.Plugins == nil {
+		e.Plugins = map[string]json.RawMessage{}
+	}
+	e.Plugins[costevent.PluginName] = raw
+	return e
+}
+
+// TestCountsAddFoldsPricedRequests is why coverage is a counter and not a
+// boolean: buckets are summed when a client asks for a coarser resolution, and
+// a bool cannot express "12 of 40 requests in this window were priced".
+func TestCountsAddFoldsPricedRequests(t *testing.T) {
+	a := Counts{Requests: 10, CostMicros: 500, PricedRequests: 4}
+	a.add(Counts{Requests: 5, CostMicros: 250, PricedRequests: 3})
+
+	if a.Requests != 15 {
+		t.Errorf("Requests = %d, want 15", a.Requests)
+	}
+	if a.CostMicros != 750 {
+		t.Errorf("CostMicros = %d, want 750", a.CostMicros)
+	}
+	if a.PricedRequests != 7 {
+		t.Errorf("PricedRequests = %d, want 7", a.PricedRequests)
+	}
+	if unpriced := a.Requests - a.PricedRequests; unpriced != 8 {
+		t.Errorf("unpriced = %d, want 8", unpriced)
+	}
+}
+
+// TestCountsPricedRequestsOmittedWhenZero keeps the wire quiet for deployments
+// that price nothing.
+func TestCountsPricedRequestsOmittedWhenZero(t *testing.T) {
+	b, err := json.Marshal(Counts{Requests: 3})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(b), "pricedRequests") {
+		t.Errorf("zero PricedRequests should be omitted, got %s", b)
+	}
 }
 
 // An idle minute must come back as a present, zeroed bucket. A client cannot
