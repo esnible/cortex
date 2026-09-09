@@ -92,5 +92,62 @@ fixture compact.json <<'EOF'
 EOF
 check "compact JSON resolves the newest tag, not the oldest" "v0.7.0-alpha.7" "$(with_newest_release "${FIXTURE}")"
 
+# --- newest_release: the main channel must not hijack the default ---
+#
+# The rolling `main` release sorts first until the next tagged release, because the
+# API sorts by created_at and created_at is fixed at creation. Unfiltered, the
+# v[0-9]* shape check then rejects it and the whole default install dies.
+
+fixture main_first.json <<'EOF'
+[
+  {
+    "tag_name": "main",
+    "prerelease": true
+  },
+  {
+    "tag_name": "v0.7.0-alpha.7"
+  }
+]
+EOF
+check "a main release sorting first is skipped" "v0.7.0-alpha.7" "$(with_newest_release "${FIXTURE}")"
+
+fixture main_first_compact.json <<'EOF'
+[{"tag_name":"main"},{"tag_name":"v0.7.0-alpha.7"},{"tag_name":"v0.3.1"}]
+EOF
+check "main skipped in compact JSON too" "v0.7.0-alpha.7" "$(with_newest_release "${FIXTURE}")"
+
+fixture only_non_v.json <<'EOF'
+[{"tag_name":"main"},{"tag_name":"nightly"}]
+EOF
+set +e
+_out=$(with_newest_release "${FIXTURE}"); _st=$?
+set -e
+check_fails "a page with no v-tag returns non-zero rather than guessing" "${_st}"
+check "and prints nothing on stdout" "" "${_out}"
+
+# --- newest_release: hostile inputs still fail closed ---
+
+fixture ratelimit.json <<'EOF'
+{"message":"API rate limit exceeded","documentation_url":"https://x"}
+EOF
+set +e
+_out=$(with_newest_release "${FIXTURE}"); _st=$?
+set -e
+check_fails "rate-limit body fails" "${_st}"
+
+fixture html.json <<'EOF'
+<html><body>502 Bad Gateway</body></html>
+EOF
+set +e
+_st=0; _out=$(with_newest_release "${FIXTURE}") || _st=$?
+set -e
+check_fails "an HTML error page fails" "${_st}"
+
+fixture empty.json </dev/null
+set +e
+_st=0; _out=$(with_newest_release "${FIXTURE}") || _st=$?
+set -e
+check_fails "an empty body fails" "${_st}"
+
 printf '\n%s passed, %s failed\n' "${PASS}" "${FAIL}"
 [ "${FAIL}" = "0" ]

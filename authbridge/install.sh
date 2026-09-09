@@ -149,11 +149,11 @@ fi
 command -v curl >/dev/null 2>&1 || die "curl is required"
 command -v tar  >/dev/null 2>&1 || die "tar is required"
 
-# newest_release prints the newest release tag, prereleases included.
+# newest_release prints the newest VERSION release tag, prereleases included.
 # `releases/latest` excludes prereleases and this project ships them, so list
-# releases (newest first) and take the first tag_name.
+# releases (newest first) and take the first tag that looks like a version.
 newest_release() {
-	# Three steps, each doing one thing that cannot silently go wrong:
+	# Four steps, each doing one thing that cannot silently go wrong:
 	#
 	#   tr ',{}' '\n'   put every JSON field on its own line, so nothing greedy can
 	#                   run past the field it was aimed at. Without this the old
@@ -161,34 +161,47 @@ newest_release() {
 	#                   against a COMPACT response the whole array is one line, the
 	#                   greedy .* runs to the LAST tag_name, and it returns the OLDEST
 	#                   release. Verified — it yields v0.3.1 from compact JSON.
-	#   grep -m1 ...    match tag_name only where it is a KEY (anchored, colon after).
+	#   grep '"tag_name":'
+	#                   match tag_name only where it is a KEY (anchored, colon after).
 	#                   An unanchored match is hijacked by any release whose name or
 	#                   body contains the text "tag_name", and release bodies are ours
-	#                   to author.
+	#                   to author. Every tag, not just the first — the -m1 belongs on
+	#                   the value filter below, so that what gets picked is the first
+	#                   VERSION tag rather than merely the first tag.
 	#   cut -d'"' -f4   take the value by position, not by pattern.
+	#   grep -m1 '^v[0-9]'
+	#                   the developer channel's rolling `main` release sorts first
+	#                   until the next tagged release (the API sorts by created_at,
+	#                   which is fixed at creation). Taking the first entry blindly
+	#                   would hand `main` to someone who never asked for it, and the
+	#                   shape check below would then reject it and kill the install
+	#                   outright. Skipping non-version tags keeps the channel
+	#                   invisible to the default path.
 	#
-	# Then check the shape: a tag looks like v<digit>... Anything else means the API
-	# returned something we did not expect — an error page, a rate-limit body, a schema
-	# change — and the right move is to say so, not to build a download URL out of it.
-	# This is the difference that matters: a surprise becomes an error instead of a
-	# wrong answer.
+	# ?per_page=10 for the same reason: one page has to contain a version tag even
+	# with rolling releases ahead of it. Ten is headroom, not a calculation — there is
+	# one rolling release, so two would do.
+	#
+	# The shape check is now a backstop rather than the filter. Reaching it with a
+	# non-version tag is impossible; reaching it EMPTY is not, and means no version tag
+	# in ten releases — an error page, a rate-limit body, a schema change. Fail rather
+	# than build a download URL out of it. No warning here: the only reachable failure
+	# is "nothing matched", and naming `main` at someone who never mentioned it is
+	# noise. The caller already dies with actionable advice.
 	#
 	# Not jq (not installed everywhere) and not gh (a far larger dependency than a
 	# curl|sh installer should require; this script needs curl, tar and a checksum tool).
 	# Not /releases/latest either: it excludes prereleases, and this project ships them,
 	# so it names a tag from January. Listing releases asks what we actually mean — the
 	# newest release, whatever its flags.
-	_tag=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases?per_page=1" 2>/dev/null \
+	_tag=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases?per_page=10" 2>/dev/null \
 		| tr ',{}' '\n' \
-		| grep -m1 '^[[:space:]]*"tag_name"[[:space:]]*:' \
-		| cut -d'"' -f4)
+		| grep '^[[:space:]]*"tag_name"[[:space:]]*:' \
+		| cut -d'"' -f4 \
+		| grep -m1 '^v[0-9]')
 	case "${_tag}" in
 		v[0-9]*) ;;
-		'') return 1 ;;
-		*)
-			warn "the release API returned an unexpected tag: ${_tag}"
-			return 1
-			;;
+		*) return 1 ;;
 	esac
 	printf '%s\n' "${_tag}"
 }
