@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rossoctl/cortex/authbridge/authlib/costevent"
 	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
 )
 
@@ -522,18 +523,50 @@ func TestZeroCostHeaderStreamedPricesFromUsage(t *testing.T) {
 	}
 }
 
-// getCostEvent pulls the emitted costEvent out of pctx.Extensions.Custom
+// getCostEvent pulls the emitted cost event out of pctx.Extensions.Custom
 // under the same key the listener would read. Nil when nothing was emitted.
-func getCostEvent(t *testing.T, pctx *pipeline.Context) *costEvent {
+func getCostEvent(t *testing.T, pctx *pipeline.Context) *costevent.Event {
 	t.Helper()
 	if pctx.Extensions.Custom == nil {
 		return nil
 	}
-	v, ok := pctx.Extensions.Custom["litellm-budget-track"+pipeline.PluginEventSuffix].(costEvent)
+	v, ok := pctx.Extensions.Custom["litellm-budget-track"+pipeline.PluginEventSuffix].(costevent.Event)
 	if !ok {
 		return nil
 	}
 	return &v
+}
+
+// TestPluginNameMatchesCostEventKey pins the plugin name to the constant the
+// aggregator and abctl look the event up by. A rename on one side only would
+// make every consumer silently stop seeing costs.
+func TestPluginNameMatchesCostEventKey(t *testing.T) {
+	if got := New().Name(); got != costevent.PluginName {
+		t.Errorf("Name() = %q, costevent.PluginName = %q", got, costevent.PluginName)
+	}
+}
+
+// TestEmitCostWireFormatUnchanged is the independent proof that promoting the
+// event struct into authlib/costevent did not alter the bytes on the wire. abctl
+// decodes these exact tags from a separate module that this change does not
+// rebuild, so a drift here would silently blank its COST column.
+func TestEmitCostWireFormatUnchanged(t *testing.T) {
+	p := configure(t, 10)
+	pctx := &pipeline.Context{ResponseHeaders: http.Header{responseCostHeader: {"0.25"}}}
+	p.OnResponse(context.Background(), pctx)
+
+	ev := getCostEvent(t, pctx)
+	if ev == nil {
+		t.Fatal("no cost event emitted")
+	}
+	b, err := json.Marshal(*ev)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	const want = `{"cost_usd":0.25,"source":"gateway-header","daily_total_usd":0.25,"daily_max_usd":10}`
+	if string(b) != want {
+		t.Errorf("wire format changed:\n got %s\nwant %s", b, want)
+	}
 }
 
 // TestEmitCost_HeaderPath: OnResponse (buffered) prices from the header
@@ -551,8 +584,8 @@ func TestEmitCost_HeaderPath(t *testing.T) {
 	if ev.CostUSD != 0.0025 {
 		t.Errorf("CostUSD = %v, want 0.0025", ev.CostUSD)
 	}
-	if ev.Source != sourceGatewayHeader {
-		t.Errorf("Source = %q, want %s", ev.Source, sourceGatewayHeader)
+	if ev.Source != costevent.SourceGatewayHeader {
+		t.Errorf("Source = %q, want %s", ev.Source, costevent.SourceGatewayHeader)
 	}
 	if ev.DailyTotalUSD != 0.0025 {
 		t.Errorf("DailyTotalUSD = %v, want 0.0025", ev.DailyTotalUSD)
@@ -594,8 +627,8 @@ func TestEmitCost_UsageFallback(t *testing.T) {
 	if ev == nil {
 		t.Fatal("no costEvent emitted")
 	}
-	if ev.Source != sourceUsageFallback {
-		t.Errorf("Source = %q, want %s", ev.Source, sourceUsageFallback)
+	if ev.Source != costevent.SourceUsageFallback {
+		t.Errorf("Source = %q, want %s", ev.Source, costevent.SourceUsageFallback)
 	}
 	want := 100*1e-6 + 40*5e-6
 	if ev.CostUSD < want-1e-12 || ev.CostUSD > want+1e-12 {
