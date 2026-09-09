@@ -117,7 +117,7 @@ slice · 2 token parsers → 1 · 5 arithmetic sites → 1.
 
 ## Phase 1 — `authlib/pricing` standalone
 
-**Status:** ⬜ NOT YET DETAILED
+**Status:** ✅ DETAILED · ✅ IMPLEMENTED
 
 **Spec scope (verbatim, §Phasing entry 1):** "**`authlib/pricing` standalone** — types,
 resolution, `Cost`, host matching, bundled slice + generator + golden test. No consumers.
@@ -1406,10 +1406,73 @@ Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>"
 
 ---
 
-**Remaining in phase 1** (next turn): Task 1.4 host globs with port stripping plus
-`UsageFromInference`; Task 1.5 the long-lived `Registry` with an atomically-swappable
-table; Task 1.6 the generated bundled slice, its generator, the `make` target and the
-golden test pinning the upstream commit.
+### Tasks 1.4-1.6 (implemented; recorded as built)
+
+Detailed at implementation time rather than in advance, since they were written and
+executed in the same pass. Each followed the same TDD order as 1.1-1.3.
+
+**Task 1.4 — host globs and the `Usage` conversion** · `pricing/host.go`,
+`pricing/inference.go` (+ tests), `pricing/table.go` modified
+
+- `hostKey` strips the port; `matchHost` uses `path.Match` (sparc's idiom, not the
+  model matcher's `gobwas/glob`, so a host glob carried over from a sparc config
+  behaves the same); `validHostPattern` rejects malformed patterns at build time,
+  because `path.Match` reports `ErrBadPattern` only when called and a bad pattern
+  would otherwise silently unprice its endpoint.
+- **Bug the test caught:** `path.Match` reads `[` as a character class, so `[::1]`
+  parsed as "one of ':' or '1'" and never matched the address it names. Bracketed
+  IPv6 literals are now compared literally (`isIPv6Literal`).
+- `UsageFromInference` is the single parser-vocabulary conversion. Split counters
+  beat the legacy `PromptTokens` / `CompletionTokens` aggregates — the aggregate is
+  *derived from* the split, so reading it would fold cache tiers into uncached input
+  and over-price cache-heavy traffic ~10x. The aggregates remain the fallback for
+  providers reporting only totals, since zero usage is unpriced in `Cost` and such
+  traffic would otherwise vanish from the total rather than be priced approximately.
+
+**Task 1.5 — `Registry`** · `pricing/registry.go` (+ test)
+
+- `atomic.Pointer[Table]` behind a pointer that never changes, because
+  `buildPipelines` is a reloader-invoked closure while the usage aggregator sharing
+  the rates is created once outside it and outlives every rebuild. Covered by a test
+  that captures a `Resolver` *before* the swap — the aggregator's exact position —
+  plus a concurrent resolve/swap test under `-race`.
+- `Registry.Cost` collapses provenance to `ProvNone` whenever the request is
+  unpriced, including when a row matched but its tiers do not cover the request:
+  reporting `bundled` beside a figure of zero would label an absent answer as a
+  sourced one.
+- A nil `Registry` resolves to `ProvNone` rather than panicking.
+
+**Task 1.6 — bundled slice, generator, `make` target, golden test** ·
+`pricing/bundled.go` (generated), `pricing/internal/pricegen/`,
+`pricing/internal/gen/`, `pricing/testdata/model_prices.snapshot.json`,
+`pricing/bundled_test.go`, root `Makefile`
+
+- 33 rows pinned to litellm `ee7c7e14f3dd7c4c3930a423440ec26427e2c554`: 28 exact
+  models plus 5 family globs carrying the newest member's rates, so an unreleased
+  version still prices while a known one always wins on specificity.
+- **Success criterion 2 met from real data:** `claude-opus-4-1` $15.00/Mtok input vs
+  `claude-opus-5` $5.00 — exactly 3x, which one `*claude-opus-*` glob could not
+  express. Four sonnet models carry a genuine 200k threshold, so that path is
+  exercised by upstream data.
+- **Bug found in the first generated output:** rates rendered as Go *integer*
+  constant expressions. `15 / 1000000` is integer division and compiles to **zero**,
+  so every whole-dollar rate silently unpriced its model while the fractional rate
+  beside it worked. `floatLiteral` now guarantees a decimal point, and the golden
+  test fails by name when the hazard is reintroduced (verified by mutation).
+- The transform lives in `internal/pricegen`, not in the generator command, so the
+  golden test runs the same code against the committed snapshot with no network.
+- Only `litellm_provider == "anthropic"` is kept: the `vertex_ai` and `bedrock`
+  mirrors carry their own rates, and mixing them under one `*` host scope would make
+  the table depend on map iteration order.
+- Bundled rates are **vendor list**. A gateway billing below list is overstated; the
+  generated file says so, and a host-scoped `pricing:` entry outranks it. Phase 7
+  discovery is the real fix.
+- `Rates.For(Tier) (float64, bool)` added — the per-tier invariant in accessor form,
+  which phase 3's `toolprune` event needs.
+
+**Phase 1 gate:** `go build ./...` `BUILD:0` · `go vet ./...` `VET:0` ·
+`go test -race ./...` (all of `authlib`) `TEST:0` ·
+`golangci-lint --new-from-rev=f742c6f8 ./pricing/...` `0 issues` · `gofmt -l` clean.
 
 <!-- /FILL-IN:PHASE-1 -->
 
