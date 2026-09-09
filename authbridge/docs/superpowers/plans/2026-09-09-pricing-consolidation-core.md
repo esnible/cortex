@@ -1480,7 +1480,7 @@ executed in the same pass. Each followed the same TDD order as 1.1-1.3.
 
 ## Phase 2 — Injection
 
-**Status:** ⬜ NOT YET DETAILED
+**Status:** ✅ IMPLEMENTED
 
 **Spec scope (verbatim, §Phasing entry 2):** "**Injection** — `Deps` / `BuildWithDeps`,
 `ResolverConsumer`, consumer probe. Behaviour-neutral."
@@ -1493,7 +1493,55 @@ build, swap on reload, and pass it to `usage.New`. No plugin behaviour changes y
 **Read before detailing:** spec `### Injection` (L317-348), `## Config` (L463-498).
 
 <!-- FILL-IN:PHASE-2 -->
-*Tasks not yet written.*
+
+### Implemented (recorded as built)
+
+**`pricing.Config` + `Build`** · `pricing/config.go`, `pricing/consumer.go` (+ tests)
+
+- One `pricing:` section replaces the 17 rate fields previously spread across two
+  plugin configs. Endpoint-scoped, so one process prices several gateways and the
+  vendor endpoint differently — the choice is per *request*, not per deployment.
+- `bundled: true` by default; `Build(nil)` yields the bundled table alone.
+- Both units per tier; **both set for one tier is a startup error naming the tier**,
+  since they differ by 10⁶ and the readout could not say which was honoured.
+- Also rejected at startup: negative/non-finite rates, endpoints with no models,
+  models pricing nothing, thresholds with no `prompt_tokens`, thresholds overriding
+  nothing. Errors name endpoint and model; faults reported in sorted order so a
+  config with several reports the same one across restarts.
+- `ResolverConsumer` mirrors `spiffe.ProviderConsumer` — plugin factories take no
+  construction arguments, so process-wide deps arrive by injection.
+
+**`Deps` + `BuildWithDeps`** · `plugins/deps.go` (+ test), `plugins/registry.go`
+
+- `Build` and `BuildWithSPIFFE` were two copies of the same 40 lines differing in one
+  injection; adding pricing would have made a third. Both now delegate:
+  **78 lines deleted, 9 added.**
+- Injection happens **before `Configure`** — the contract, since a plugin's
+  `Configure` may build rate-dependent state. Verified by mutation: moving injection
+  after `Configure` fails `TestBuildWithDeps_InjectsResolverBeforeConfigure` by name.
+- A nil dep is *not* injected rather than injected as nil, or the plugin's own
+  `!= nil` guard would be true while every call through it panicked.
+- `PricingConsumerPlugins()` probe mirrors `SPIFFEConsumerPlugins()`.
+
+**Config + proxy wiring** · `config/config.go`, `config/validate.go`,
+`cmd/authbridge-proxy/main.go`
+
+- `Validate` builds the table and discards it, so pricing faults fail at startup
+  beside every other config error instead of becoming silently unpriced traffic.
+- The `Registry` is created **once, outside `buildPipelines`** — that closure is
+  reloader-invoked while the usage aggregator sharing the rates is created later and
+  outlives every rebuild. On reload the table is rebuilt and swapped *in place*,
+  before pipelines build.
+- **No reloader change needed:** `validateReloadable` (`reloader.go:303-325`) is a
+  deny-list naming only `mode` and `listener.*`, so `pricing:` is reloadable already.
+- Behaviour-neutral — no plugin consumes the resolver yet.
+
+**Phase 2 gate:** all 6 buildable workspace modules `build:OK test:OK` ·
+`go vet` clean · `gofmt -l` clean on touched files (4 pre-existing unformatted files
+under `plugins/` left alone — unformatted at the merge base too) ·
+`golangci-lint --new-from-rev=f742c6f8` 0 issues across `config`, `plugins`,
+`pricing` and `cmd/authbridge-proxy`.
+
 <!-- /FILL-IN:PHASE-2 -->
 
 ---
