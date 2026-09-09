@@ -2,11 +2,11 @@ package pricing
 
 import "testing"
 
-// perMillion converts the unit providers publish into the per-token unit the
-// package stores. Divided by a constant so the compiler folds it exactly — a
-// runtime division lands a ulp low and makes expected values disagree in the
-// last digit for no reason (the rule toolprune/pricing.go:45-47 already states).
-const perMillion = 1_000_000
+// perMillion is the production constant under a shorter name, so tests read in the
+// unit providers publish. Divided by a CONSTANT so the compiler folds it exactly —
+// a runtime division lands a ulp low and would make expected values disagree in
+// the last digit for no reason (the rule toolprune/pricing.go:45-47 states).
+const perMillion = tokensPerMillion
 
 func TestUsagePromptTotal(t *testing.T) {
 	u := Usage{Input: 10, CacheWrite: 20, CacheRead: 30, Output: 40}
