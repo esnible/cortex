@@ -1,0 +1,96 @@
+#!/bin/sh
+# Tests for authbridge/install.sh.
+#
+# install.sh is a curl|sh entry point, so its failure modes are other people's
+# first experience of Cortex. Until this file existed the only automated check was
+# `shellcheck --severity=error`, which is why the tag-parser bug (returning the
+# OLDEST release from compact JSON) shipped in #902 without a test.
+#
+# Approach: source a single function out of install.sh with `curl` replaced by one
+# that prints a fixture. No network, no GitHub, no downloads. Plain POSIX sh
+# because the repo has no bats or shunit2 and a framework is not worth it for a
+# handful of functions.
+#
+# Run: sh authbridge/install_test.sh
+set -eu
+
+# shellcheck disable=SC1007 # `CDPATH= cd` is deliberate, not a typo: it empties
+# CDPATH for this one command. The documented invocation is `sh
+# authbridge/install_test.sh`, so $0 is RELATIVE — with a CDPATH set, `cd` can
+# resolve it against a CDPATH entry and land somewhere else entirely.
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+INSTALL_SH="${SCRIPT_DIR}/install.sh"
+[ -f "${INSTALL_SH}" ] || { printf 'cannot find %s\n' "${INSTALL_SH}" >&2; exit 1; }
+
+TMP=$(mktemp -d)
+trap 'rm -rf "${TMP}"' EXIT
+
+PASS=0
+FAIL=0
+
+check() { # label expected actual
+	if [ "$2" = "$3" ]; then
+		PASS=$((PASS + 1))
+		printf '  ok   %s\n' "$1"
+	else
+		FAIL=$((FAIL + 1))
+		printf '  FAIL %s\n       expected %s\n       actual   %s\n' "$1" "$2" "$3"
+	fi
+}
+
+check_fails() { # label status
+	if [ "$2" != "0" ]; then
+		PASS=$((PASS + 1))
+		printf '  ok   %s (exit %s)\n' "$1" "$2"
+	else
+		FAIL=$((FAIL + 1))
+		printf '  FAIL %s: expected non-zero exit, got 0\n' "$1"
+	fi
+}
+
+fixture() { # name; body on stdin. Sets $FIXTURE to the path.
+	FIXTURE="${TMP}/$1"
+	cat >"${FIXTURE}"
+}
+
+# with_newest_release runs install.sh's newest_release() against a fixture.
+#
+# The function is extracted by line range rather than sourcing install.sh, because
+# sourcing would run the whole installer. `curl` is replaced by a function so the
+# extracted code is unmodified — testing what ships, not a copy of it.
+with_newest_release() { # fixture-path
+	_f=$1
+	{
+		printf 'REPO=rossoctl/cortex\n'
+		printf 'warn() { printf "warning: %%s\\n" "$*" >&2; }\n'
+		printf 'curl() { cat "%s"; }\n' "${_f}"
+		sed -n '/^newest_release()/,/^}/p' "${INSTALL_SH}"
+		printf 'newest_release\n'
+	} >"${TMP}/probe.sh"
+	sh "${TMP}/probe.sh" 2>/dev/null
+}
+
+printf 'install.sh tests\n'
+
+# --- newest_release: the shape it is documented to handle ---
+
+fixture pretty.json <<'EOF'
+[
+  {
+    "tag_name": "v0.7.0-alpha.7",
+    "name": "v0.7.0-alpha.7"
+  },
+  {
+    "tag_name": "v0.3.1"
+  }
+]
+EOF
+check "pretty JSON resolves the newest tag" "v0.7.0-alpha.7" "$(with_newest_release "${FIXTURE}")"
+
+fixture compact.json <<'EOF'
+[{"tag_name":"v0.7.0-alpha.7"},{"tag_name":"v0.7.0-alpha.6"},{"tag_name":"v0.3.1"}]
+EOF
+check "compact JSON resolves the newest tag, not the oldest" "v0.7.0-alpha.7" "$(with_newest_release "${FIXTURE}")"
+
+printf '\n%s passed, %s failed\n' "${PASS}" "${FAIL}"
+[ "${FAIL}" = "0" ]
