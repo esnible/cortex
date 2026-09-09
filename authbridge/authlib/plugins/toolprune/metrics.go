@@ -2,6 +2,7 @@ package toolprune
 
 import (
 	"fmt"
+	"github.com/rossoctl/cortex/authbridge/authlib/pricing"
 	"sort"
 	"strings"
 	"sync"
@@ -46,11 +47,11 @@ type metrics struct {
 	unpriced       uint64
 	unpricedModels map[string]uint64
 
-	// usedDefaultRates records that at least one request was priced from the
+	// usedBundledRates records that at least one request was priced from the
 	// built-in table rather than operator config, so the readout can say so.
 	// A dollar figure that silently mixes measured and assumed rates invites
 	// being quoted as though it were measured.
-	usedDefaultRates bool
+	usedBundledRates bool
 }
 
 func (m *metrics) seen() {
@@ -87,21 +88,21 @@ func (m *metrics) record(names []string, bytesRemoved int) {
 	}
 }
 
-func (m *metrics) observeSaving(tokens float64, t tier, usd float64, src rateSource, model string) {
+func (m *metrics) observeSaving(tokens float64, t pricing.Tier, usd float64, prov pricing.Provenance, model string) {
 	m.mu.Lock()
 	switch t {
-	case tierCacheWrite:
+	case pricing.TierCacheWrite:
 		m.savedCacheWrite += tokens
-	case tierCacheRead:
+	case pricing.TierCacheRead:
 		m.savedCacheRead += tokens
 	default:
 		m.savedInput += tokens
 	}
 	m.requestsCosted++
-	if src != rateNone {
+	if prov != pricing.ProvNone {
 		m.usdSaved += usd
-		if src == rateDefault {
-			m.usedDefaultRates = true
+		if prov == pricing.ProvBundled {
+			m.usedBundledRates = true
 		}
 	} else {
 		m.unpriced++
@@ -187,14 +188,14 @@ func (m *metrics) snapshot() []pipeline.Metric {
 	// Dollars, accumulated per request at that request's model rate.
 	if m.usdSaved > 0 {
 		costNote := note
-		if m.usedDefaultRates {
-			// Provenance travels with the number. Built-in rates are
-			// gateway-specific and not refreshed, so a figure derived from them
-			// must not read as one measured on this account.
-			// Name the provenance, not just the fact. "default rates" alone reads
-			// as a rounding caveat; these were measured on a discounted gateway,
-			// so for anyone paying vendor list the figure is several times low.
-			costNote = "built-in rates (discounted gateway; understates list pricing) — set pricing.<model>"
+		if m.usedBundledRates {
+			// Provenance travels with the number. The bundled table is VENDOR
+			// LIST, generated from LiteLLM's public map, so the caveat runs the
+			// opposite way from the hand-measured gateway defaults it replaced: a
+			// deployment on a discounted gateway is now OVERSTATED, not understated.
+			// Name that direction, because "built-in rates" alone reads as a
+			// rounding caveat rather than a systematic bias with a known sign.
+			costNote = "bundled vendor-list rates (a discounted gateway is overstated) — pin it under pricing.endpoints"
 			if note != "" {
 				costNote = note + "; " + costNote
 			}
