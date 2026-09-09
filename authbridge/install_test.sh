@@ -159,6 +159,9 @@ with_resolve_version() { # script_ref fixture-path
 	_ref=$1; _f=$2
 	{
 		printf 'REPO=rossoctl/cortex\n'
+		# CHANNEL_TAG is read out of install.sh, not restated here, so this probe
+		# cannot disagree with the script about what the channel is called.
+		sed -n '/^CHANNEL_TAG=/p' "${INSTALL_SH}"
 		printf 'warn() { printf "warning: %%s\\n" "$*" >&2; }\n'
 		printf 'die() { printf "error: %%s\\n" "$*" >&2; exit 1; }\n'
 		# info() is stubbed to match install.sh's definition EXACTLY — stdout, not
@@ -177,7 +180,13 @@ with_resolve_version() { # script_ref fixture-path
 fixture rv_releases.json <<'EOF'
 [{"tag_name":"main"},{"tag_name":"v0.7.0-alpha.7"}]
 EOF
-check "--ref=main installs main binaries" "main" "$(with_resolve_version main "${FIXTURE}")"
+# --ref=main resolves to the channel tag, not the literal string "main": a
+# release tagged `main` would collide with the branch. See CHANNEL_TAG in
+# install.sh. The harness must pick the constant up from the script rather than
+# hardcode it, or renaming the channel silently passes a stale test.
+CHANNEL_TAG=$(sed -n 's/^CHANNEL_TAG="\(.*\)"$/\1/p' "${INSTALL_SH}")
+check "install.sh defines a non-colliding CHANNEL_TAG" "1" "$(printf '%s' "${CHANNEL_TAG}" | grep -c '^main-' || true)"
+check "--ref=main installs the channel tag" "${CHANNEL_TAG}" "$(with_resolve_version main "${FIXTURE}")"
 check "--ref=v0.7.0-alpha.4 installs that release" "v0.7.0-alpha.4" "$(with_resolve_version v0.7.0-alpha.4 "${FIXTURE}")"
 check "no ref resolves the newest v-tag" "v0.7.0-alpha.7" "$(with_resolve_version "" "${FIXTURE}")"
 

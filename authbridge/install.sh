@@ -52,6 +52,15 @@
 set -eu
 
 REPO="rossoctl/cortex"
+# CHANNEL_TAG is the release the developer channel's assets hang off. Deliberately
+# NOT "main": a GitHub release needs a git tag, and a tag named `main` would collide
+# with the branch. Verified consequences of that collision — `git rev-parse main`
+# resolves to the TAG, not the branch, and every git command warns "refname 'main' is
+# ambiguous". The tag would also freeze at the first publish (uploading assets does
+# not move it) while the branch moved on, so anything resolving `main` as a revision
+# would silently read a stale commit. `--ref=main` is still what people type; only
+# the tag underneath differs.
+CHANNEL_TAG="main-latest"
 BIN_DIR="${HOME}/.local/bin"
 # Every file Cortex writes for this user lives here: config, CA, keys, logs,
 # pidfiles. One directory to inspect, back up, or delete.
@@ -202,7 +211,11 @@ newest_release() {
 # one, the special case disappears rather than growing a second flag.
 resolve_version() { # script_ref
 	case "$1" in
-		v*|main) printf '%s\n' "$1" ;;
+		# The channel's assets live on CHANNEL_TAG, not on a tag called `main` —
+		# see its definition for why. The ref someone types and the tag the assets
+		# hang off are allowed to differ; the binary stamp differs from both.
+		main) printf '%s\n' "${CHANNEL_TAG}" ;;
+		v*) printf '%s\n' "$1" ;;
 		*)
 			# >&2 deliberately: this function's stdout IS the resolved version, and
 			# info() writes to stdout (see its definition above). Without the

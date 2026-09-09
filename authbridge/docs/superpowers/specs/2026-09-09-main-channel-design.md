@@ -68,14 +68,41 @@ guard below is optional.
 
 | # | Decision | Choice |
 | --- | --- | --- |
-| D1 | Publishing mechanism | **One rolling pre-release** tagged `main`, assets overwritten each push. Reuses the existing `releases/download/<tag>` URL shape, so the download path is unchanged. |
+| D1 | Publishing mechanism | **One rolling pre-release** tagged `main-latest`, assets overwritten each push. Reuses the existing `releases/download/<tag>` URL shape, so the download path is unchanged. **Amended during implementation — see D9.** |
 | D2 | Trigger | **Every push to `main`.** A merged fix is installable minutes later — the motivating case. |
 | D3 | Selection | **One selector: `--ref=X` means "install X"** — script *and* binaries — for every X, including `main`. No new flag. |
-| D4 | Build identity | Asset names use the tag (`main`); the binary is stamped `main-<short-sha>`. The two deliberately disagree. |
+| D4 | Build identity | Asset names use the release tag (`main-latest`); the binary is stamped `main-<short-sha>`. The two deliberately disagree. |
 | D5 | Default resolution | `newest_release()` fetches `?per_page=10` and returns the first tag matching `v[0-9]*`, ignoring the channel entirely. |
 | D6 | Workflow home | **Extend `release-binaries.yaml`** rather than add a second workflow. |
 | D7 | Knob cleanup | Remove `AUTHBRIDGE_REF`, `AUTHBRIDGE_INSTALL_ONLY`, `AUTHBRIDGE_VERSION`. Keep `AUTHBRIDGE_SKIP_DOWNLOAD` (undocumented, maintainer) and `AUTHBRIDGE_SCRIPT_REF` (internal). |
 | D8 | First publish | Gated on repo variable `MAIN_CHANNEL_ENABLED`, unset by default — this is what lets everything ship in one PR safely (see Sequencing). |
+| D9 | Channel tag name | **`main-latest`, not `main`** — a release needs a git tag, and a tag named `main` collides with the branch. Added during implementation; supersedes D1's original name. |
+
+**On D9 (added during implementation).** D1 originally named the rolling tag
+`main`. That does not work: a GitHub release requires a git tag, so it would have
+created a tag named `main` beside the branch of the same name. Verified
+consequences —
+
+- `git rev-parse main` resolves to the **tag**, not the branch: git's ref
+  precedence puts `refs/tags/` first. Anything treating `main` as a revision
+  silently reads the wrong commit, including the worktree bootstrap in the root
+  `CLAUDE.md`.
+- every git command against the repo prints `warning: refname 'main' is
+  ambiguous` — permanently, for every contributor.
+- the tag would freeze at the first publish. `gh release upload --clobber`
+  replaces assets and never moves the tag, so it drifts further from the branch
+  on every merge.
+- unverified but plausible: the bootstrap fetches
+  `raw.githubusercontent.com/<repo>/main/authbridge/install.sh`. If GitHub
+  resolves that tag-first the way git does, `--ref=main` would fetch a frozen
+  script forever — the channel would appear to work and silently serve a stale
+  installer. Confirming it would have required creating the colliding tag on a
+  real repo.
+
+Only the tag changes. `--ref=main` remains what a developer types;
+`resolve_version` maps it to `CHANNEL_TAG` (`install.sh`), and the CI workflow
+must use the same string. The test suite reads the constant out of `install.sh`
+rather than restating it, so a rename cannot leave a stale expectation passing.
 
 **On D3.** `--ref` is inconsistent *today*: `--ref=v0.7.0-alpha.4` sets both halves
 (`v*) version="${SCRIPT_REF}"`), while `--ref=main` sets only the script because there is
