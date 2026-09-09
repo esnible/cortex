@@ -1,0 +1,347 @@
+// Package pricegen turns LiteLLM's public model_prices_and_context_window.json
+// into pricing.Entry rows and renders them as Go source.
+//
+// It lives in internal/ because it is build tooling, not runtime code, and it is
+// a library rather than living inside the generator command so the golden test can
+// run the exact same transform against a committed snapshot. A generator whose
+// transform only exists inside a main package cannot be tested without a network.
+package pricegen
+
+import (
+	"bytes"
+	"encoding/json"
+	"fmt"
+	"go/format"
+	"regexp"
+	"sort"
+	"strconv"
+	"strings"
+
+	"github.com/rossoctl/cortex/authbridge/authlib/pricing"
+)
+
+// AnthropicProvider is the litellm_provider value we keep. Only the first-party
+// Anthropic endpoint's rates are vendor list prices; the vertex_ai/ and bedrock/
+// mirrors carry their own, and mixing them under one "*" host scope would make the
+// bundled table's numbers depend on map iteration order.
+const AnthropicProvider = "anthropic"
+
+// contextThreshold is the one long-context breakpoint in scope. LiteLLM also
+// publishes _above_272k and _above_512k variants for other providers, and an
+// _above_1hr cache-write premium; both are deliberately out of scope (see
+// pricing.Tier), so their fields are ignored rather than silently flattened.
+const contextThreshold = 200_000
+
+// tokensPerMillion renders rates in the unit providers publish.
+const tokensPerMillion = 1_000_000
+
+// modelInfo is the subset of a LiteLLM price-map entry that this package reads.
+type modelInfo struct {
+	Provider string `json:"litellm_provider"`
+
+	Input      *float64 `json:"input_cost_per_token"`
+	CacheWrite *float64 `json:"cache_creation_input_token_cost"`
+	CacheRead  *float64 `json:"cache_read_input_token_cost"`
+	Output     *float64 `json:"output_cost_per_token"`
+
+	InputAbove      *float64 `json:"input_cost_per_token_above_200k_tokens"`
+	CacheWriteAbove *float64 `json:"cache_creation_input_token_cost_above_200k_tokens"`
+	CacheReadAbove  *float64 `json:"cache_read_input_token_cost_above_200k_tokens"`
+	OutputAbove     *float64 `json:"output_cost_per_token_above_200k_tokens"`
+}
+
+// Filter reduces a full price map to the Anthropic-provider entries, so the
+// committed snapshot is kilobytes rather than the 2.3 MB upstream file.
+//
+// Idempotent: filtering an already-filtered map is a no-op, which is what lets the
+// generator and the golden test run the same Entries transform over different
+// inputs.
+func Filter(raw []byte) ([]byte, error) {
+	var all map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &all); err != nil {
+		return nil, fmt.Errorf("pricegen: parse price map: %w", err)
+	}
+	keep := map[string]json.RawMessage{}
+	for name, body := range all {
+		var mi modelInfo
+		if json.Unmarshal(body, &mi) != nil {
+			continue // sample_spec and other non-model rows
+		}
+		if mi.Provider != AnthropicProvider {
+			continue
+		}
+		keep[name] = body
+	}
+	if len(keep) == 0 {
+		return nil, fmt.Errorf("pricegen: no %s entries in the price map", AnthropicProvider)
+	}
+	return json.MarshalIndent(keep, "", "  ")
+}
+
+// Entries builds the bundled rows from a price map.
+//
+// Two kinds of row are emitted, both at ProvBundled:
+//
+//   - One EXACT row per model. This is the point of generating the table: the data
+//     already distinguishes claude-opus-4-1 ($15/Mtok input) from claude-opus-5
+//     ($5/Mtok), which the three hand-measured family globs it replaces priced
+//     identically — a 3x error on every opus-4-1 request.
+//   - One family GLOB row per family, carrying the newest member's rates, so a
+//     model released after this table was generated still prices instead of
+//     dropping out of the dollar total. Exact beats glob within a provenance
+//     level, so a known version always wins over its family's extrapolation.
+//
+// The family rows are an extrapolation and are the reason provenance exists: they
+// are bundled, not authoritative, and an operator whose gateway disagrees pins it
+// in config.
+func Entries(raw []byte) ([]pricing.Entry, error) {
+	var all map[string]modelInfo
+	if err := json.Unmarshal(raw, &all); err != nil {
+		return nil, fmt.Errorf("pricegen: parse price map: %w", err)
+	}
+
+	var out []pricing.Entry
+	newest := map[string]string{} // family -> winning model key
+
+	names := make([]string, 0, len(all))
+	for name := range all {
+		names = append(names, name)
+	}
+	sort.Strings(names) // deterministic output regardless of map order
+
+	for _, name := range names {
+		mi := all[name]
+		if mi.Provider != AnthropicProvider {
+			continue
+		}
+		rates, ok := ratesOf(mi)
+		if !ok {
+			continue // no usable rate: a row that prices nothing is rejected by NewTable
+		}
+		out = append(out, pricing.Entry{
+			Host:  "*",
+			Model: name,
+			Rates: rates,
+			Prov:  pricing.ProvBundled,
+		})
+		if fam, ver, dated := parseName(name); fam != "" {
+			cur, seen := newest[fam]
+			if !seen {
+				newest[fam] = name
+			} else if iv, id := versionOf(cur); moreRecent(ver, dated, iv, id) {
+				newest[fam] = name
+			}
+		}
+	}
+
+	fams := make([]string, 0, len(newest))
+	for fam := range newest {
+		fams = append(fams, fam)
+	}
+	sort.Strings(fams)
+	for _, fam := range fams {
+		rates, ok := ratesOf(all[newest[fam]])
+		if !ok {
+			continue
+		}
+		out = append(out, pricing.Entry{
+			Host:  "*",
+			Model: "*claude-" + fam + "-*",
+			Rates: rates,
+			Prov:  pricing.ProvBundled,
+		})
+	}
+	return out, nil
+}
+
+// ratesOf converts one price-map entry into Rates, reporting whether any tier was
+// priced at all.
+func ratesOf(mi modelInfo) (pricing.Rates, bool) {
+	var r pricing.Rates
+	set := func(tier pricing.Tier, v *float64) {
+		if v != nil && *v > 0 {
+			r.Base[tier], r.Set[tier] = *v, true
+		}
+	}
+	set(pricing.TierInput, mi.Input)
+	set(pricing.TierCacheWrite, mi.CacheWrite)
+	set(pricing.TierCacheRead, mi.CacheRead)
+	set(pricing.TierOutput, mi.Output)
+
+	var th pricing.ContextThreshold
+	th.AbovePromptTokens = contextThreshold
+	setAbove := func(tier pricing.Tier, v *float64) {
+		if v != nil && *v > 0 {
+			th.Rate[tier], th.Set[tier] = *v, true
+		}
+	}
+	setAbove(pricing.TierInput, mi.InputAbove)
+	setAbove(pricing.TierCacheWrite, mi.CacheWriteAbove)
+	setAbove(pricing.TierCacheRead, mi.CacheReadAbove)
+	setAbove(pricing.TierOutput, mi.OutputAbove)
+	for _, s := range th.Set {
+		if s {
+			r.Thresholds = []pricing.ContextThreshold{th}
+			break
+		}
+	}
+	return r, r.Base != [4]float64{} || len(r.Thresholds) > 0
+}
+
+var (
+	dateSuffix = regexp.MustCompile(`^\d{8}$`)
+	numeric    = regexp.MustCompile(`^\d+$`)
+)
+
+// parseName splits a model key into its family, version tuple and whether it
+// carries a date suffix.
+//
+// Handles both spellings LiteLLM uses: "claude-opus-4-1" (family then version) and
+// "claude-3-7-sonnet-20250219" (version then family). The family is the first
+// token that is neither "claude" nor a number, so neither ordering needs a special
+// case.
+func parseName(key string) (family string, version []int, dated bool) {
+	for _, tok := range strings.Split(strings.ToLower(key), "-") {
+		switch {
+		case tok == "claude":
+		case dateSuffix.MatchString(tok):
+			dated = true
+		case numeric.MatchString(tok):
+			n, _ := strconv.Atoi(tok)
+			version = append(version, n)
+		case family == "":
+			family = tok
+		}
+	}
+	return family, version, dated
+}
+
+func versionOf(key string) (version []int, dated bool) {
+	_, v, d := parseName(key)
+	return v, d
+}
+
+// moreRecent reports whether (version, dated) beats the incumbent.
+//
+// An undated key wins over a dated one at the same version — "claude-opus-4-5" is
+// the alias an operator's traffic actually names, while the dated key is the
+// pinned snapshot. Otherwise the higher version tuple wins.
+func moreRecent(version []int, dated bool, iv []int, id bool) bool {
+	if c := compareVersion(version, iv); c != 0 {
+		return c > 0
+	}
+	return id && !dated
+}
+
+func compareVersion(a, b []int) int {
+	for i := 0; i < len(a) && i < len(b); i++ {
+		if a[i] != b[i] {
+			if a[i] > b[i] {
+				return 1
+			}
+			return -1
+		}
+	}
+	switch {
+	case len(a) > len(b):
+		return 1
+	case len(a) < len(b):
+		return -1
+	}
+	return 0
+}
+
+// Render emits the generated Go source for a bundled table.
+func Render(entries []pricing.Entry, commit string) ([]byte, error) {
+	var b bytes.Buffer
+	fmt.Fprintf(&b, `// Code generated by pricing/internal/gen. DO NOT EDIT.
+//
+// Regenerate with: make pricing-table COMMIT=<litellm commit sha>
+//
+// Source: BerriAI/litellm model_prices_and_context_window.json. These are VENDOR
+// LIST prices for the first-party Anthropic endpoint. A gateway that bills below
+// list — most internal LiteLLM deployments do — is OVERSTATED by this table, and
+// an operator corrects it with a host-scoped %spricing:%s entry, which outranks
+// anything bundled. Rates are written in the unit providers publish, dollars per
+// million tokens, divided by a constant so the compiler folds each one exactly.
+
+package pricing
+
+// BundledUpstreamCommit is the BerriAI/litellm commit this table was generated
+// from. Pinned so "refresh the rates" is a scripted diff against a known base
+// rather than a measurement exercise, and so the golden test can prove the
+// checked-in table still matches its snapshot.
+const BundledUpstreamCommit = %q
+
+// Bundled returns the price table shipped in the binary.
+//
+// Returns a copy: the rows are package state shared by every Registry, and a
+// caller that appended to the original would corrupt every later NewTable.
+func Bundled() []Entry {
+	return append([]Entry(nil), bundledEntries...)
+}
+
+var bundledEntries = []Entry{
+`, "`", "`", commit)
+
+	for _, e := range entries {
+		fmt.Fprintf(&b, "\t{Host: %q, Model: %q, Prov: ProvBundled, Rates: Rates{\n", e.Host, e.Model)
+		fmt.Fprintf(&b, "\t\tBase: %s,\n", renderFloats(e.Rates.Base))
+		fmt.Fprintf(&b, "\t\tSet:  %s,\n", renderBools(e.Rates.Set))
+		for _, th := range e.Rates.Thresholds {
+			b.WriteString("\t\tThresholds: []ContextThreshold{{\n")
+			fmt.Fprintf(&b, "\t\t\tAbovePromptTokens: %d,\n", th.AbovePromptTokens)
+			fmt.Fprintf(&b, "\t\t\tRate:              %s,\n", renderFloats(th.Rate))
+			fmt.Fprintf(&b, "\t\t\tSet:               %s,\n", renderBools(th.Set))
+			b.WriteString("\t\t}},\n")
+		}
+		b.WriteString("\t}},\n")
+	}
+	b.WriteString("}\n")
+
+	src, err := format.Source(b.Bytes())
+	if err != nil {
+		return nil, fmt.Errorf("pricegen: generated source does not parse: %w", err)
+	}
+	return src, nil
+}
+
+var tierNames = [4]string{"TierInput", "TierCacheWrite", "TierCacheRead", "TierOutput"}
+
+func renderFloats(v [4]float64) string {
+	var parts []string
+	for i, f := range v {
+		if f == 0 {
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("%s: %s / %d", tierNames[i],
+			floatLiteral(f*tokensPerMillion), tokensPerMillion))
+	}
+	return "[numTiers]float64{" + strings.Join(parts, ", ") + "}"
+}
+
+// floatLiteral renders a Go FLOAT constant, always carrying a decimal point.
+//
+// This is load-bearing, not cosmetic. Go's untyped constant arithmetic makes
+// "15 / 1000000" integer division, which is 0 — so a whole-dollar rate like opus's
+// $15/Mtok would compile to a rate of ZERO and silently unprice the model, while
+// "3.75 / 1000000" beside it worked because one operand was already a float. That
+// is precisely the class of silent mispricing this package exists to eliminate, so
+// the numerator is never allowed to be an integer literal.
+func floatLiteral(f float64) string {
+	s := strconv.FormatFloat(f, 'g', -1, 64)
+	if !strings.ContainsAny(s, ".eE") {
+		s += ".0"
+	}
+	return s
+}
+
+func renderBools(v [4]bool) string {
+	var parts []string
+	for i, s := range v {
+		if s {
+			parts = append(parts, tierNames[i]+": true")
+		}
+	}
+	return "[numTiers]bool{" + strings.Join(parts, ", ") + "}"
+}

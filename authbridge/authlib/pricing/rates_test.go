@@ -135,3 +135,39 @@ func TestRatesAny(t *testing.T) {
 		t.Error("threshold-only Rates reported no rate")
 	}
 }
+
+func TestRatesFor_PerTierAvailability(t *testing.T) {
+	// The accessor form of the invariant: a model priced only for cache reads must
+	// report "no rate" for a cache write, not the zero value.
+	cacheReadOnly := Rates{
+		Base: [numTiers]float64{TierCacheRead: 0.38 / perMillion},
+		Set:  [numTiers]bool{TierCacheRead: true},
+	}
+	if v, ok := cacheReadOnly.For(TierCacheRead); !ok || v != 0.38/perMillion {
+		t.Errorf("For(TierCacheRead) = %v, %v; want %v, true", v, ok, 0.38/perMillion)
+	}
+	if v, ok := cacheReadOnly.For(TierCacheWrite); ok || v != 0 {
+		t.Errorf("For(TierCacheWrite) = %v, %v; want 0, false", v, ok)
+	}
+}
+
+func TestRatesFor_OutOfRangeTier(t *testing.T) {
+	if v, ok := base().For(Tier(99)); ok || v != 0 {
+		t.Errorf("For(99) = %v, %v; want 0, false", v, ok)
+	}
+	if v, ok := base().For(Tier(-1)); ok || v != 0 {
+		t.Errorf("For(-1) = %v, %v; want 0, false", v, ok)
+	}
+}
+
+func TestRatesFor_ReadsFlattenedTierAfterAt(t *testing.T) {
+	r := base()
+	r.Thresholds = []ContextThreshold{{
+		AbovePromptTokens: 200_000,
+		Rate:              [numTiers]float64{TierInput: 7.60 / perMillion},
+		Set:               [numTiers]bool{TierInput: true},
+	}}
+	if v, _ := r.At(300_000).For(TierInput); v != 7.60/perMillion {
+		t.Errorf("For after At(300000) = %v, want %v", v, 7.60/perMillion)
+	}
+}

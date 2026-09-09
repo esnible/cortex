@@ -119,6 +119,25 @@ func (r Rates) At(promptTotal int) Rates {
 	return out
 }
 
+// For returns the rate for one tier and whether a rate is actually available.
+//
+// The bool is the per-tier invariant in accessor form, and it is the whole reason
+// this is not a plain field read: Set is per tier, so a model priced only for cache
+// reads must report "no rate" for a cache write rather than the zero value. Cost
+// enforces the same rule across a whole request; consumers that publish individual
+// rates (tool-prune's per-request event) use this.
+//
+// Call it on rates from Resolve or At, which are already flattened for the
+// request's prompt size. On unflattened rates it reads the BASE tier and ignores
+// thresholds — correct for "what is this model's list rate", wrong for pricing a
+// specific request.
+func (r Rates) For(t Tier) (float64, bool) {
+	if int(t) < 0 || int(t) >= numTiers {
+		return 0, false
+	}
+	return r.Base[t], r.Set[t]
+}
+
 // any reports whether these rates price anything at all, at any prompt size.
 // NewTable uses it to reject a row that prices nothing: such a row would match
 // traffic and then resolve it as unpriced, which is indistinguishable from having
