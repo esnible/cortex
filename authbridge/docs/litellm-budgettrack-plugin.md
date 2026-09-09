@@ -171,6 +171,27 @@ See [`plugin-reference.md#emitting-session-events`](./plugin-reference.md#emitti
 for how the listener promotes `pctx.Extensions.Custom` entries to
 `SessionEvent.Plugins`.
 
+### Consumers
+
+The event's wire shape is declared once, in `authlib/costevent` (`costevent.Event`,
+published under `costevent.PluginName`). Producer and consumers share that
+declaration rather than each keeping a private copy:
+
+- **The usage aggregator** (`authlib/usage`) records `cost_usd` into
+  `Counts.CostMicros` and increments `Counts.PricedRequests`, so `/v1/usage`
+  reports the same figure this plugin enforces its budget against.
+- **`abctl`** renders the per-request figure in its events pane.
+
+Two consequences for reading `/v1/usage`. Cost is reported only for traffic this
+plugin priced, so requests it did not price appear as the gap between
+`totals.pricedRequests` and `totals.requests` — a client rendering a dollar total
+from a window where those differ must present it as partial, not complete. And
+`priced:false` means nothing at all was priced: render "cost unavailable", never
+`$0.00`, which would read as "this traffic was free".
+
+Modelled rates for traffic with no cost event arrive with the pricing resolver —
+see [`superpowers/specs/2026-09-09-pricing-consolidation-design.md`](./superpowers/specs/2026-09-09-pricing-consolidation-design.md).
+
 ## Build
 
 The plugin is included by default in `authbridge-proxy` builds. To exclude:
