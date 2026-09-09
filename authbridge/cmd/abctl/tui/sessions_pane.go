@@ -67,7 +67,14 @@ func (m *model) rebuildSessionsTable() {
 			"—",
 			fmt.Sprintf("%d", len(cached)),
 			sessionTokens(0, cached),
-			styleWarn.Render("gone"),
+			// Plain text, NOT styleWarn.Render: bubbles v1.0.0 truncates each cell
+			// with runewidth.Truncate before styling it (table.go renderRow), and
+			// runewidth is not ANSI-aware. A styled "gone" measures 11 columns
+			// against this column's width of 8, so it renders as "gon…" with the
+			// trailing reset stripped — bleeding the colour into everything after
+			// it. Invisible without a TTY, where lipgloss emits no escapes at all.
+			// The colour lives on the events-pane banner instead.
+			"gone",
 		})
 	}
 	m.sessionsTbl.SetRows(rows)

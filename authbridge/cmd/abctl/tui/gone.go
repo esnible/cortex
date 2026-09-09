@@ -75,16 +75,35 @@ func (m *model) reconcileGone(summaries []session.SessionSummary) {
 	// those two lines and every id looks familiar, soleNewSession returns "", and
 	// rekeys silently stop migrating — the events survive under the old id, so the
 	// bug shows up only as a stale duplicate bucket rather than as a failure.
-	if events, ok := m.events[session.DefaultSessionID]; ok && !serverIDs[session.DefaultSessionID] {
+	//
+	// Two further conditions narrow this to a rename, because "default vanished
+	// and one unfamiliar id appeared" is also what an eviction of default plus an
+	// unrelated new session looks like — and migrating then would file the events
+	// under a session they never belonged to. A rename keeps the list the same
+	// size, and starts from a list that actually contained "default". Neither is
+	// proof (the server does not tell us), which is why the failure mode is now
+	// merely a missed migration rather than a wrong one: declining leaves the
+	// events viewable under the old id, tombstoned by the loop below.
+	if events, ok := m.events[session.DefaultSessionID]; ok && !serverIDs[session.DefaultSessionID] &&
+		len(summaries) == len(m.sessions) && hasSession(m.sessions, session.DefaultSessionID) {
 		if newID := soleNewSession(serverIDs, m.sessions); newID != "" {
 			m.migrateSession(session.DefaultSessionID, newID, events)
 		}
 	}
 
-	for id := range m.events {
+	for id, cached := range m.events {
 		if serverIDs[id] {
 			// Live again — drop any stale tombstone.
 			delete(m.gone, id)
+			continue
+		}
+		if len(cached) == 0 {
+			// A key with no events. snapshotLoadedMsg assigns m.events[id]
+			// unconditionally, so drilling into a session that has nothing yet
+			// creates the key with an empty slice. Tombstoning it would render
+			// "id — 0 — gone": a row advertising retained events that do not exist,
+			// held until the user selects something else. The tombstone is justified
+			// by abctl holding the only copy; with no copy there is nothing to hold.
 			continue
 		}
 		if _, already := m.gone[id]; already {
@@ -101,6 +120,16 @@ func (m *model) reconcileGone(summaries []session.SessionSummary) {
 			m.gone[id] = goneEvicted
 		}
 	}
+}
+
+// hasSession reports whether summaries contains id.
+func hasSession(summaries []session.SessionSummary, id string) bool {
+	for _, s := range summaries {
+		if s.ID == id {
+			return true
+		}
+	}
+	return false
 }
 
 // soleNewSession returns the id the store rekeyed to, or "" when that cannot be
@@ -127,16 +156,22 @@ func soleNewSession(serverIDs map[string]bool, prev []session.SessionSummary) st
 }
 
 // migrateSession moves cached events from oldID to newID, mirroring the store's
-// Rekey. It will not clobber an existing cache under newID: the store's own
-// Rekey is a no-op when newID already exists, so the events there are already
-// the authoritative copy.
+// Rekey. It never clobbers an existing cache under newID, and never deletes
+// oldID's events unless they were successfully moved — see the early return.
 func (m *model) migrateSession(oldID, newID string, events []pipeline.SessionEvent) {
-	if _, exists := m.events[newID]; !exists {
-		for i := range events {
-			events[i].SessionID = newID
-		}
-		m.events[newID] = events
+	if _, exists := m.events[newID]; exists {
+		// Already holding a cache under newID. Do NOT drop oldID's events: this is
+		// the one place a delete could still lose the only copy of a history, which
+		// is exactly what this file exists to prevent. Leaving them alone lets
+		// reconcileGone's loop tombstone oldID on its own, so they stay viewable.
+		// (The server's own Rekey is a no-op in this situation, but abctl's cache is
+		// not the server's store — that distinction is the whole point here.)
+		return
 	}
+	for i := range events {
+		events[i].SessionID = newID
+	}
+	m.events[newID] = events
 	delete(m.events, oldID)
 	delete(m.gone, oldID)
 	if m.selectedSess == oldID {

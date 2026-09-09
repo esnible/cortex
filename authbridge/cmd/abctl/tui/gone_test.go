@@ -5,6 +5,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
+
 	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
 	"github.com/rossoctl/cortex/authbridge/authlib/session"
 )
@@ -104,6 +107,42 @@ func TestGoneSessionStaysInSessionsTable(t *testing.T) {
 	}
 }
 
+// The gap that let an ANSI-styled table cell through: every other test here
+// asserts on Rows() DATA, which never exercises rendering, and CI has no TTY —
+// lipgloss emits no escape sequences when its profile is Ascii, so a styled cell
+// measures its visible width and truncation is a no-op.
+//
+// This forces a colour profile, renders the real View(), and asserts the label
+// survives. bubbles v1.0.0 truncates each cell with runewidth.Truncate BEFORE
+// styling (table.go renderRow); runewidth is not ANSI-aware, so a styled "gone"
+// measures 11 against the ACTIVE column's width of 8 and renders as "gon…" with
+// the closing reset stripped, bleeding colour into every later cell.
+func TestGoneMarker_SurvivesRenderingUnderColor(t *testing.T) {
+	orig := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.ANSI256)
+	t.Cleanup(func() { lipgloss.SetColorProfile(orig) })
+
+	m := newTestGoneModel(t, "vanished")
+	m.pane = paneSessions
+	m.width, m.height = 200, 40
+	m.Update(sessionsLoadedMsg{})
+	m.rebuildSessionsTable()
+
+	view := m.sessionsTbl.View()
+	if !strings.Contains(view, "gone") {
+		t.Errorf("the gone marker did not survive rendering; got truncated or mangled:\n%s", view)
+	}
+	if strings.Contains(view, "gon…") {
+		t.Error("the gone marker was truncated mid-label — a styled cell is being " +
+			"measured with its escape bytes counted against the column width")
+	}
+	// An odd number of SGR introducers without matching resets is how the colour
+	// bleed manifests: Truncate drops the trailing \x1b[0m.
+	if opens, resets := strings.Count(view, "\x1b["), strings.Count(view, "\x1b[0m"); opens > 0 && resets == 0 {
+		t.Errorf("styled output has %d escape sequences and no resets — colour will bleed", opens)
+	}
+}
+
 // Traffic resuming under the same id proves the session is live again.
 func TestReappearingSession_ClearsTombstone(t *testing.T) {
 	m := newTestGoneModel(t, "s")
@@ -192,6 +231,90 @@ func TestRekeyDetection_RunsBeforeSessionsIsReplaced(t *testing.T) {
 	}
 	if _, stale := m.events[session.DefaultSessionID]; stale {
 		t.Error("old bucket left behind as a duplicate")
+	}
+}
+
+// migrateSession must not delete the source when it declines to migrate. When
+// newID is already cached the move is skipped, and an unconditional
+// delete(m.events, oldID) would discard the default bucket with no migration and
+// no tombstone — the one unrecoverable deletion path this file exists to remove.
+func TestMigrateDeclined_DoesNotDropTheSource(t *testing.T) {
+	m := newTestGoneModel(t, session.DefaultSessionID)
+	// Already holding a cache under the target id.
+	m.events["ctx-42"] = make([]pipeline.SessionEvent, 1)
+
+	m.migrateSession(session.DefaultSessionID, "ctx-42", m.events[session.DefaultSessionID])
+
+	if got := len(m.events[session.DefaultSessionID]); got != 3 {
+		t.Errorf("source events dropped without being migrated: got %d, want 3", got)
+	}
+	if got := len(m.events["ctx-42"]); got != 1 {
+		t.Errorf("existing target cache was clobbered: got %d, want 1", got)
+	}
+}
+
+// And the declined case still leaves the source reachable: reconcileGone's loop
+// tombstones it, so the events stay viewable under the old id.
+func TestMigrateDeclined_TombstonesTheSource(t *testing.T) {
+	m := newTestGoneModel(t, session.DefaultSessionID)
+	m.events["ctx-42"] = make([]pipeline.SessionEvent, 1)
+	m.sessions = []session.SessionSummary{{ID: session.DefaultSessionID}, {ID: "ctx-42"}}
+
+	m.Update(sessionsLoadedMsg{{ID: "ctx-42", UpdatedAt: time.Now()}})
+
+	if len(m.events[session.DefaultSessionID]) != 3 {
+		t.Fatal("source events were dropped")
+	}
+	if _, ok := m.gone[session.DefaultSessionID]; !ok {
+		t.Error("source was neither migrated nor tombstoned — retained but unreachable")
+	}
+}
+
+// A cache key with no events must not be tombstoned. snapshotLoadedMsg assigns
+// m.events[id] unconditionally, so drilling into an empty session creates the key;
+// a tombstone there renders "id — 0 — gone", advertising events that do not exist.
+func TestEmptyCacheKey_IsNotTombstoned(t *testing.T) {
+	m := newTestGoneModel(t, "real")
+	m.events["empty"] = nil
+
+	m.Update(sessionsLoadedMsg{})
+
+	if _, ok := m.gone["empty"]; ok {
+		t.Error("a session with no cached events was tombstoned")
+	}
+	if _, ok := m.gone["real"]; !ok {
+		t.Error("the session that does hold events was not tombstoned")
+	}
+	for _, r := range m.sessionsTbl.Rows() {
+		if r[0] == "empty" {
+			t.Errorf("empty session rendered a tombstone row: %v", r)
+		}
+	}
+}
+
+// An eviction of "default" plus an unrelated new session looks exactly like a
+// rename to a naive check: default gone, one unfamiliar id present. Migrating
+// then would file the events under a session they never belonged to. The list
+// shrinking (2 previous, 2 now, but one of the previous was itself evicted) is
+// the tell — here the list grows past what a rename could produce.
+func TestEvictionPlusNewSession_IsNotTreatedAsRekey(t *testing.T) {
+	m := newTestGoneModel(t, session.DefaultSessionID)
+	// Previously: default only. Now: two unrelated sessions, default evicted.
+	m.sessions = []session.SessionSummary{{ID: session.DefaultSessionID}}
+
+	m.Update(sessionsLoadedMsg{
+		{ID: "other", UpdatedAt: time.Now()},
+		{ID: "unrelated", UpdatedAt: time.Now()},
+	})
+
+	if _, ok := m.events["other"]; ok {
+		t.Error("events migrated to an unrelated session id")
+	}
+	if len(m.events[session.DefaultSessionID]) != 3 {
+		t.Error("events left the default bucket without a real rename")
+	}
+	if _, ok := m.gone[session.DefaultSessionID]; !ok {
+		t.Error("default should be tombstoned, not silently migrated")
 	}
 }
 
