@@ -30,19 +30,30 @@ permissions:
 # checksums.txt from whichever finished last — which users meet as "checksum
 # verification failed", an alarming message for what is really a publish race.
 # Superseding is right for a rolling channel: only the newest tip matters.
+# event_name is in the group, not just the ref: github.ref is refs/heads/main for BOTH a
+# push to main and a workflow_dispatch (which defaults to the default branch), so a ref-
+# only group let someone clicking "Run workflow" cancel a merge build mid-upload.
 concurrency:
-  group: release-binaries-${{ github.ref }}
+  group: release-binaries-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
   release-binaries:
     runs-on: ubuntu-latest
     # The developer channel is off until a release containing the newest_release()
-    # v-tag filter exists. Publishing a `main` release before that would make the
-    # DEFAULT curl|sh die, because the released copy of install.sh is what every
-    # one-liner bootstraps into. Set MAIN_CHANNEL_ENABLED=true in repo variables
-    # after cutting that release. workflow_dispatch stays ungated: it publishes
-    # nothing, it only uploads artifacts.
+    # v-tag filter exists. Set MAIN_CHANNEL_ENABLED=true in repo variables after
+    # cutting that release.
+    #
+    # Precisely what that protects, because an earlier version of this comment
+    # overstated it: the DEFAULT one-liner is safe as soon as main carries the filter,
+    # since it resolves a v-tag and re-execs the released copy, and that copy then hits
+    # `case "${SCRIPT_REF}" in v*)` and never calls newest_release at all. What needs a
+    # filtered release is anyone invoking a RELEASED copy as the parent — including the
+    # pinned one-liner this script prints in its own abctl-too-old message. An
+    # unfiltered parent resolves the rolling release as its version and installs
+    # unreleased binaries.
+    #
+    # workflow_dispatch stays ungated: it publishes nothing, it only uploads artifacts.
     if: >-
       github.ref_type == 'tag'
       || github.event_name == 'workflow_dispatch'
@@ -201,6 +212,12 @@ jobs:
               gh api --method PATCH "repos/${GITHUB_REPOSITORY}/git/refs/tags/${TAG}" \
                 -f sha="${GITHUB_SHA}" -F force=true >/dev/null
             fi
+            # --clobber replaces same-named assets but never deletes others, so if a
+            # proxy_variants entry is ever retired its *_main-latest_* archive lingers
+            # while checksums.txt stops listing it: downloadable but unverifiable. The
+            # installer is unaffected (it fetches two exact names and needs two checksum
+            # lines), so this is a note rather than a prune — delete stale assets by hand
+            # when retiring a variant.
             gh release upload "${TAG}" dist/*.tar.gz dist/checksums.txt --clobber
           else
             prerelease=""
@@ -209,7 +226,13 @@ jobs:
             case "${TAG}" in
               main-latest | *-rc* | *-alpha* | *-beta*) prerelease="--prerelease" ;;
             esac
+            # --target "${GITHUB_SHA}": without it the API defaults target_commitish to
+            # the repository's default branch at call time, not the commit that was
+            # built. Usually the same on a main push, but it is exactly the drift the
+            # PATCH above exists to prevent — and it made the FIRST publish create the
+            # tag at the wrong commit, so the two paths disagreed.
             gh release create "${TAG}" dist/*.tar.gz dist/checksums.txt \
+              --target "${GITHUB_SHA}" \
               --title "${TAG}" --notes "${notes}" ${prerelease}
           fi
 

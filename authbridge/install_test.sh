@@ -174,7 +174,18 @@ with_resolve_version() { # version_ref fixture-path
 		sed -n '/^resolve_version()/,/^}/p' "${INSTALL_SH}"
 		printf 'resolve_version "%s"\n' "${_ref}"
 	} >"${TMP}/rv.sh"
-	sh "${TMP}/rv.sh" 2>/dev/null
+	# stderr goes to a file rather than being discarded or leaked: two cases below assert
+	# on the warnings it carries, and letting it reach the terminal would scatter
+	# "Resolving newest release..." through the suite's own output.
+	sh "${TMP}/rv.sh" 2>"${TMP}/rv.err"
+}
+
+# with_resolve_version_stderr is the same probe, returning stderr instead of stdout —
+# the warnings are the behaviour under test here, and they must not reach stdout because
+# stdout IS the resolved version.
+with_resolve_version_stderr() { # version_ref fixture-path
+	with_resolve_version "$1" "$2" >/dev/null
+	cat "${TMP}/rv.err"
 }
 
 fixture rv_releases.json <<'EOF'
@@ -192,14 +203,21 @@ check "--ref=main installs the channel tag" "${CHANNEL_TAG}" "$(with_resolve_ver
 # page, so it is what someone types after seeing it there.
 check "--ref=CHANNEL_TAG resolves the same" "${CHANNEL_TAG}" "$(with_resolve_version "${CHANNEL_TAG}" "${FIXTURE}")"
 
+check "--ref=v0.7.0-alpha.4 installs that release" "v0.7.0-alpha.4" "$(with_resolve_version v0.7.0-alpha.4 "${FIXTURE}")"
+
 # An empty VERSION_REF means "nobody named anything installable" and must resolve the
 # newest RELEASE. It must never fall through to the channel: that is what the bootstrap
-# passes when the API was unreachable, and the whole point is that a rate-limited plain
+# passes when the API was unreachable, and the point is that a rate-limited plain
 # one-liner does not silently receive an unreleased build. Asserted here at the function
 # level and again against the real bootstrap block further down.
 check "empty version ref resolves a RELEASE, never the channel" "v0.7.0-alpha.7" "$(with_resolve_version "" "${FIXTURE}")"
-check "--ref=v0.7.0-alpha.4 installs that release" "v0.7.0-alpha.4" "$(with_resolve_version v0.7.0-alpha.4 "${FIXTURE}")"
-check "no ref resolves the newest v-tag" "v0.7.0-alpha.7" "$(with_resolve_version "" "${FIXTURE}")"
+
+# A branch or a SHA has no published binaries, so the newest release is the only option
+# — but it must SAY so, or it is indistinguishable from the plain one-liner and someone
+# testing a branch gets a mixed set with nothing to attribute it to.
+_st=0; _err=$(with_resolve_version_stderr feat/my-branch "${FIXTURE}") || _st=$?
+check "a branch ref warns that binaries come from a release" "1" "$(printf '%s\n' "${_err}" | grep -c 'no binaries are published for feat/my-branch')"
+check "an empty ref warns nothing" "0" "$(printf '%s\n' "$(with_resolve_version_stderr "" "${FIXTURE}")" | grep -c 'no binaries are published')"
 
 # stdout must be the version and nothing else. info() writes to stdout
 # (install.sh:81), so an un-redirected progress line inside resolve_version would be
@@ -219,9 +237,18 @@ check "stdout is exactly the version" "v0.7.0-alpha.7" "${_out}"
 # The failure mode is not "the var still works" — it is a message telling someone
 # to set a var the script no longer reads. Three sites advised AUTHBRIDGE_VERSION.
 
+# Each removed var is now mentioned on exactly ONE line, and that line rejects it. The
+# earlier "zero occurrences" assertion was the wrong shape: ignoring a var someone still
+# has set is a silent wrong answer, which is what this script's style exists to avoid, so
+# a guard that dies is correct and has to be allowed to mention the name.
 for _v in AUTHBRIDGE_VERSION AUTHBRIDGE_REF AUTHBRIDGE_INSTALL_ONLY; do
-	_hits=$(grep -c "${_v}" "${INSTALL_SH}" || true)
-	check "${_v} is gone from install.sh entirely" "0" "${_hits}"
+	_guard=$(grep -c "^\[ -z \"\${${_v}:-}\" \] || die" "${INSTALL_SH}" || true)
+	check "${_v} has a guard that dies" "1" "${_guard}"
+	# Expanded ONLY on the guard line. A line count would fail on prose that merely
+	# names the var, which comments legitimately do; what matters is that nothing else
+	# reads it to decide anything.
+	_elsewhere=$(grep -v "^\[ -z \"\${${_v}:-}\" \] || die" "${INSTALL_SH}" | grep -c "\${${_v}" || true)
+	check "${_v} is not expanded anywhere else" "0" "${_elsewhere}"
 done
 
 for _v in AUTHBRIDGE_SKIP_DOWNLOAD AUTHBRIDGE_SCRIPT_REF; do
@@ -249,7 +276,20 @@ with_bootstrap() { # want_ref http_code_for_script_fetch newest_release_output
 		printf 'newest_release() { [ -n "%s" ] || return 1; printf "%%s\\n" "%s"; }\n' "${_newest}" "${_newest}"
 		# curl here is only the raw.githubusercontent fetch of the released script; -w
 		# makes the real one print the status code, so the stub prints the scenario's.
-		printf 'curl() { printf "%%s" "%s"; }\n' "${_http}"
+		#
+		# It must also WRITE the file, because the real curl does (-o "${boot}") and the
+		# branch under test is `[ "${http}" = "200" ] && [ -s "${boot}" ]`. A stub that
+		# only echoed the code left ${boot} empty, so the 200 arm was unreachable and
+		# every scenario silently fell through to the failure handling below — including
+		# the one asserting that a transport failure refuses to run main.
+		printf 'curl() {\n'
+		printf '  _out=""; _prev=""\n'
+		# shellcheck disable=SC2016 # literal on purpose: expanded by the probe, not here.
+		printf '  for _a in "$@"; do [ "${_prev}" = "-o" ] && _out="${_a}"; _prev="${_a}"; done\n'
+		# shellcheck disable=SC2016 # same.
+		printf '  [ -z "${_out}" ] || printf "#!/bin/sh\\nprintf \\"REEXECED\\\\n\\"\\nexit 0\\n" > "${_out}"\n'
+		printf '  printf "%%s" "%s"\n' "${_http}"
+		printf '}\n'
 		# shellcheck disable=SC2016 # literal on purpose: these expand in the
 		# generated probe, not here. Same reason install.sh disables SC2016.
 		printf 'mktemp() { printf "%%s\\n" "${TMPDIR:-/tmp}/boot.$$"; }\n'
@@ -285,6 +325,20 @@ check "--ref=CHANNEL_TAG behaves as --ref=main" \
 # the one path where the user was most explicit about X.
 check "--ref=v0.5.0 with a 404 script: script=main, install v0.5.0" \
 	"script=main version=v0.5.0" "$(with_bootstrap v0.5.0 404 v0.7.0-alpha.7)"
+
+# A transport failure is NOT a 404. We cannot tell whether a released installer exists,
+# so running main instead would break the exact guarantee the bootstrap provides — the
+# script has to refuse. This is the security-relevant arm and it was unreachable through
+# the harness until the curl stub started writing the file the real one writes.
+check "--ref=v0.5.0 with a transport failure refuses to run main" \
+	"DIED" "$(with_bootstrap v0.5.0 000 v0.7.0-alpha.7)"
+
+# HTTP 200 re-execs the released copy and exits with its status rather than continuing in
+# this process. Asserted on the child's OWN output, not on the absence of the probe's:
+# an empty result would also be produced by the probe dying early, which is exactly the
+# kind of vacuous pass that hid the unreachable arm above.
+check "--ref=v0.5.0 with a 200 script re-execs into it" \
+	"REEXECED" "$(with_bootstrap v0.5.0 200 v0.7.0-alpha.7)"
 
 printf '\n%s passed, %s failed\n' "${PASS}" "${FAIL}"
 [ "${FAIL}" = "0" ]

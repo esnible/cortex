@@ -46,8 +46,13 @@ curl -fsSL https://raw.githubusercontent.com/rossoctl/cortex/main/authbridge/ins
   | sh -s -- --claude-code --ref=main
 ```
 
-`--ref=X` means "install X" — both the installer script and the binaries. Every push
-to `main` rebuilds a rolling pre-release, so this tracks the tip.
+`--ref=X` means "install X" — both the installer script and the binaries — for any X
+that has published binaries: `main` and any `vX.Y.Z` release. Every push to `main`
+rebuilds a rolling pre-release, so `--ref=main` tracks the tip.
+
+`--ref=` also accepts a branch or a commit, but no binaries are published for those, so
+you get that ref's *script* with the newest *release's* binaries. The installer warns
+when that happens rather than leaving you to infer it.
 
 Each binary reports its own build: `abctl --version` → `main-a1b2c3d`. Quote that,
 not "main", in a bug report — the channel moves under you.
@@ -74,12 +79,19 @@ binaries beside them.
 
 ### Enabling the channel (one-time, maintainers)
 
-The rolling release must not exist before a cut release contains the
-`newest_release()` v-tag filter — the released copy of `install.sh` is what every
-`curl | sh` bootstraps into, and an unfiltered copy dies when it sees a non-version
-tag at the top of the release list. So: merge, cut a release, then set the repo
-variable `MAIN_CHANNEL_ENABLED=true` (Settings → Secrets and variables → Actions →
-Variables). The next push to `main` publishes it.
+Merge, **cut a release**, then set the repo variable `MAIN_CHANNEL_ENABLED=true`
+(Settings → Secrets and variables → Actions → Variables). The next push to `main`
+publishes the rolling release.
+
+The middle step is load-bearing, though not for the reason it first appears. The default
+one-liner is safe as soon as `main` carries the `newest_release()` v-tag filter: it
+resolves a `v` tag, re-execs that released copy, and the copy then matches
+`case "${SCRIPT_REF}" in v*)` and never calls `newest_release` at all. What needs a
+*filtered release* is anyone running a **released** copy as the parent — including the
+pinned one-liner this installer prints in its own "abctl is too old" message. An
+unfiltered parent resolves the rolling release as its version and installs unreleased
+binaries. Cutting a release first stops that window growing; it cannot fix copies already
+published.
 
 ## Issues
 

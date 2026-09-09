@@ -142,6 +142,16 @@ for arg in "$@"; do
 		*) die "unknown option: $arg (try --claude-code, --install-only, --local, --ref=REF, --yes, or no argument)" ;;
 	esac
 done
+# Removed knobs die rather than being ignored. Left set in someone's shell,
+# AUTHBRIDGE_INSTALL_ONLY=1 would silently do a FULL install and AUTHBRIDGE_VERSION
+# would silently install the newest release instead of the pin. Both are wrong answers,
+# and this script's whole standard is that a surprise becomes an error instead. Each
+# message names the flag that replaced it, echoing the value back so the fix is
+# copy-pasteable.
+[ -z "${AUTHBRIDGE_INSTALL_ONLY:-}" ] || die "AUTHBRIDGE_INSTALL_ONLY is no longer read. Pass --install-only instead."
+[ -z "${AUTHBRIDGE_VERSION:-}" ] || die "AUTHBRIDGE_VERSION is no longer read. Pass --ref=${AUTHBRIDGE_VERSION} instead."
+[ -z "${AUTHBRIDGE_REF:-}" ] || die "AUTHBRIDGE_REF is no longer read. Pass --ref=${AUTHBRIDGE_REF} instead."
+
 command -v curl >/dev/null 2>&1 || die "curl is required"
 command -v tar  >/dev/null 2>&1 || die "tar is required"
 
@@ -202,14 +212,16 @@ newest_release() {
 	printf '%s\n' "${_tag}"
 }
 
-# resolve_version prints the release tag whose binaries should be installed, given
-# the ref this script came from.
+# resolve_version prints the release tag whose binaries should be installed, given the
+# ref the USER asked to install (VERSION_REF). Not the ref this script came from —
+# conflating those two is what let the default one-liner reach the channel, so the
+# distinction is worth keeping visible in the name.
 #
 # One rule: --ref=X installs X. That was not true before — `--ref=v0.7.0-alpha.4`
 # set script and binaries, while `--ref=main` set only the script, because there
 # was no `main` release to download from. Now that the developer channel publishes
 # one, the special case disappears rather than growing a second flag.
-resolve_version() { # script_ref
+resolve_version() { # version_ref
 	# Takes VERSION_REF, not SCRIPT_REF. Empty means "nobody named anything
 	# installable" — resolve the newest release, and fail loudly if that is not
 	# possible. It must never mean "fall back to the channel": rate limiting alone
@@ -223,6 +235,13 @@ resolve_version() { # script_ref
 		main | "${CHANNEL_TAG}") printf '%s\n' "${CHANNEL_TAG}" ;;
 		v*) printf '%s\n' "$1" ;;
 		*)
+			# A ref that is neither channel nor release tag: a branch, or a SHA. No
+			# binaries are published for those, so the newest release is the only
+			# option — but say so. Silent, this is byte-identical to the plain
+			# one-liner, and someone testing a feature branch gets that branch's
+			# SCRIPT against release BINARIES with nothing to attribute it to. Same
+			# principle the 404 fallback states: name the surprise.
+			[ -z "$1" ] || warn "no binaries are published for ${1}; using this script from ${1} with binaries from the newest release"
 			# >&2 deliberately: this function's stdout IS the resolved version, and
 			# info() writes to stdout (see its definition above). Without the
 			# redirect the progress line lands inside `version` and corrupts every
