@@ -318,6 +318,57 @@ func TestEvictionPlusNewSession_IsNotTreatedAsRekey(t *testing.T) {
 	}
 }
 
+// forgetGoneExcept frees other tombstones, and the sessions table renders its
+// tombstone rows from m.gone — so the table must be rebuilt at that call site.
+//
+// Without the rebuild the freed session keeps a row for up to one 2s refresh, and
+// the row lies: it still shows the event count from before the cache was dropped.
+// Backing out and selecting it then lands on an empty events pane AND flashes a
+// 404, because the snapshot guard keys off m.gone[id] — which was just deleted for
+// exactly that id, so it no longer looks gone.
+func TestForgetGone_RebuildsSessionsTable(t *testing.T) {
+	m := newTestGoneModel(t, "keep")
+	m.events["freed"] = make([]pipeline.SessionEvent, 3)
+	m.Update(sessionsLoadedMsg{})
+	m.rebuildSessionsTable()
+	if len(m.sessionsTbl.Rows()) != 2 {
+		t.Fatalf("precondition: want 2 tombstone rows, got %d", len(m.sessionsTbl.Rows()))
+	}
+
+	// Drive the REAL handler, so removing the rebuild from keys.go fails here. A
+	// test that called rebuildSessionsTable itself would pass either way.
+	m.pane = paneSessions
+	for i, r := range m.sessionsTbl.Rows() {
+		if r[0] == "keep" {
+			m.sessionsTbl.SetCursor(i)
+		}
+	}
+	m.handleKey(keyRune('l')) // enter/right/l on the sessions pane
+	if m.selectedSess != "keep" {
+		t.Fatalf("precondition: handler did not open \"keep\" (got %q)", m.selectedSess)
+	}
+
+	for _, r := range m.sessionsTbl.Rows() {
+		if r[0] == "freed" {
+			t.Errorf("freed tombstone still has a row advertising %q events, "+
+				"but its cache holds %d", r[2], len(m.events["freed"]))
+		}
+	}
+	if _, ok := m.gone["keep"]; !ok {
+		t.Error("the opened session lost its tombstone, so the snapshot guard " +
+			"can no longer suppress a 404 fetch")
+	}
+	var keptRow bool
+	for _, r := range m.sessionsTbl.Rows() {
+		if r[0] == "keep" {
+			keptRow = true
+		}
+	}
+	if !keptRow {
+		t.Error("the opened session lost its row; its retained events are unreachable")
+	}
+}
+
 // Two unseen ids at once cannot identify which inherited "default". Guessing
 // would be worse than holding still: the events stay viewable under the old id
 // either way, just marked gone.

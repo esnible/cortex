@@ -414,6 +414,14 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 			// demonstrably stopped being what they are looking at — the one
 			// reliable cue for when cached events stopped mattering.
 			m.forgetGoneExcept(id)
+			// forgetGoneExcept mutates m.gone, and the sessions table renders its
+			// tombstone rows from that map — so rebuild it here rather than waiting
+			// for the 2s refresh. Otherwise a freed tombstone keeps a row that still
+			// advertises its old event count, and backing out and selecting it lands
+			// on an empty events pane plus a 404 error-flash from the snapshot fetch
+			// (the :418 guard below does not catch it: the tombstone for THAT id was
+			// freed, so it no longer looks gone).
+			m.rebuildSessionsTable()
 			m.rebuildEventsTable()
 			if _, gone := m.gone[id]; gone {
 				// No server-side session to snapshot: the fetch would 404 and
