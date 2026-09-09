@@ -8,6 +8,8 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"syscall"
 )
 
@@ -47,9 +49,10 @@ import (
 const TrustBundleName = "bundle.crt"
 
 // systemRootFiles are the locations that ship a concatenated PEM of the
-// platform's trusted roots. Mirrors the list crypto/x509, OpenSSL, curl and git
-// probe, so the bundle we assemble is the same trust set the tool would have
-// used had we not overridden it.
+// platform's trusted roots: the concatenated bundles distributions ship. Consulted
+// AFTER SSL_CERT_FILE and BEFORE the cert directories, matching the order
+// crypto/x509 and OpenSSL use — see findSystemRootsFrom, which owns that order and
+// is where the claim about matching the tools' own trust set actually holds.
 //
 // macOS has no such file for its keychain, but Apple ships LibreSSL's copy at
 // /etc/ssl/cert.pem, which is the same list — and the tools that need this
@@ -118,7 +121,7 @@ func EnsureTrustBundle(caDir string) (string, error) {
 		return "", fmt.Errorf("tlsbridge: read bridge CA %s: %w", caPath, err)
 	}
 	bundlePath := filepath.Join(caDir, TrustBundleName)
-	rootsPath, rootsPEM, err := findSystemRoots()
+	rootsPath, rootsPEM, err := findSystemRootsFrom(bundlePath)
 	if err != nil {
 		// A bundle from an earlier boot is deliberately LEFT IN PLACE, and the
 		// error names it so the caller's warning can too.
@@ -183,17 +186,119 @@ func isNotWritable(err error) bool {
 // the question. Some minimal images also ship an empty placeholder at a
 // well-known path, and that is caught by the same check.
 func findSystemRoots() (string, []byte, error) {
+	return findSystemRootsFrom("")
+}
+
+// findSystemRootsFrom is findSystemRoots with the bundle path we are about to write,
+// so it can refuse to treat its own output as a platform root source. Pass "" when
+// there is nothing to exclude.
+//
+// Order matters and mirrors the consumers rather than convenience:
+//
+//  1. SSL_CERT_FILE — crypto/x509 does `files = []string{f}` when it is set
+//     (root_unix.go), replacing the built-in list entirely; OpenSSL and LibreSSL
+//     honour it too. A host that sets it has told every tool where its trust lives.
+//  2. systemRootFiles — the concatenated bundles distributions ship.
+//  3. SSL_CERT_DIR, else the standard cert directories — hosts that populate
+//     /etc/ssl/certs/ as hashed symlinks WITHOUT also shipping
+//     ca-certificates.crt match nothing in step 2. Before this, such a host got
+//     ErrNoSystemRoots and a warning that there was "no safe file to point at",
+//     on a machine with a complete trust store — which reads as a Cortex bug.
+func findSystemRootsFrom(exclude string) (string, []byte, error) {
+	if f := os.Getenv("SSL_CERT_FILE"); f != "" && !sameFile(f, exclude) {
+		if data, err := os.ReadFile(f); err == nil && parseable(data) { //nolint:gosec // operator-supplied
+			return f, data, nil
+		}
+	}
 	for _, p := range systemRootFiles {
-		data, err := os.ReadFile(p) //nolint:gosec // fixed list of well-known paths
-		if err != nil {
+		if sameFile(p, exclude) {
 			continue
 		}
-		if !x509.NewCertPool().AppendCertsFromPEM(data) {
+		data, err := os.ReadFile(p) //nolint:gosec // fixed list of well-known paths
+		if err != nil || !parseable(data) {
 			continue
 		}
 		return p, data, nil
 	}
+	dirs := certDirectories
+	if d := os.Getenv("SSL_CERT_DIR"); d != "" {
+		// OpenSSL and BoringSSL both split on ":", and so does crypto/x509.
+		dirs = strings.Split(d, ":")
+	}
+	for _, dir := range dirs {
+		if data, err := concatCertDir(dir, exclude); err == nil && parseable(data) {
+			return dir, data, nil
+		}
+	}
 	return "", nil, ErrNoSystemRoots
+}
+
+// certDirectories mirrors crypto/x509's list for the same platforms. Only consulted
+// when no concatenated bundle was found.
+var certDirectories = []string{
+	"/etc/ssl/certs",               // SLES10/11, Debian, Ubuntu, Alpine
+	"/etc/pki/tls/certs",           // Fedora, RHEL
+	"/system/etc/security/cacerts", // Android
+}
+
+// concatCertDir joins every parseable certificate file in dir. Files are sorted so
+// the output is stable across boots — the caller skips the write when content is
+// unchanged, and an unstable order would rewrite the bundle on every start.
+func concatCertDir(dir, exclude string) ([]byte, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(entries))
+	for _, e := range entries {
+		names = append(names, e.Name())
+	}
+	sort.Strings(names)
+	var buf bytes.Buffer
+	for _, name := range names {
+		full := filepath.Join(dir, name)
+		if sameFile(full, exclude) {
+			continue
+		}
+		data, rerr := os.ReadFile(full) //nolint:gosec // operator-supplied directory
+		if rerr != nil || !parseable(data) {
+			// Hashed-symlink dirs also hold .0 CRL files and dangling links.
+			continue
+		}
+		buf.Write(ensureTrailingNewline(data))
+	}
+	if buf.Len() == 0 {
+		return nil, ErrNoSystemRoots
+	}
+	return buf.Bytes(), nil
+}
+
+// parseable reports whether data holds at least one certificate x509 can use.
+func parseable(data []byte) bool {
+	return x509.NewCertPool().AppendCertsFromPEM(data)
+}
+
+// sameFile reports whether a and b name the same file, so the bundle we are about to
+// write is never read back in as a "platform root" source. Without this, a proxy
+// started with SSL_CERT_FILE pointing at its own bundle.crt would re-embed the
+// previous bundle on every boot, and a CA rotated out of ca.crt would stay trusted
+// indefinitely — the one trust-lifetime bug this file exists to prevent.
+func sameFile(a, b string) bool {
+	if a == "" || b == "" {
+		return false
+	}
+	if filepath.Clean(a) == filepath.Clean(b) {
+		return true
+	}
+	fa, err := os.Stat(a)
+	if err != nil {
+		return false
+	}
+	fb, err := os.Stat(b)
+	if err != nil {
+		return false
+	}
+	return os.SameFile(fa, fb)
 }
 
 // ensureTrailingNewline guards the concatenation boundary: a PEM file whose last

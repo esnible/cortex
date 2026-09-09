@@ -789,3 +789,34 @@ func TestDarwinGoNoteNamesTheKeychainRemedy(t *testing.T) {
 		t.Error("note overstates the scope")
 	}
 }
+
+// TestManualUninstallDocListsEveryManagedKey pins docs/laptop-service.md against
+// managedKeys.
+//
+// The doc's manual-uninstall fallback tells a user which keys to delete by hand. It
+// said "three" while managedKeys held seven, and four of the missing ones point at
+// bundle.crt — which the same procedure deletes a step earlier. Since those four
+// REPLACE their tool's trust store rather than extending it, following the doc left
+// git, curl and Python failing every TLS call. The count had already drifted once, so
+// it is pinned rather than trusted.
+func TestManualUninstallDocListsEveryManagedKey(t *testing.T) {
+	doc, err := os.ReadFile(filepath.Join("..", "..", "docs", "laptop-service.md"))
+	if err != nil {
+		t.Fatalf("cannot read the laptop-service doc: %v", err)
+	}
+	body := string(doc)
+	for _, k := range managedKeys {
+		if !strings.Contains(body, k) {
+			t.Errorf("laptop-service.md does not mention %s; a user following the "+
+				"manual-uninstall steps would leave it behind", k)
+		}
+	}
+	// And it must not still claim a count, which is what went stale. Naming the
+	// number in prose invites exactly this drift.
+	for _, stale := range []string{"the three Cortex keys", "three keys"} {
+		if strings.Contains(body, stale) {
+			t.Errorf("laptop-service.md still says %q; managedKeys has %d entries",
+				stale, len(managedKeys))
+		}
+	}
+}

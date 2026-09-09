@@ -259,5 +259,24 @@ systemctl --user disable --now cortex.service
 rm -f ~/.config/systemd/user/cortex.service
 ```
 
-Then delete the three Cortex keys from the `env` block of
-`~/.claude/settings.json` yourself.
+Then delete the Cortex keys from the `env` block of `~/.claude/settings.json`
+yourself. There are **seven**:
+
+```
+HTTPS_PROXY
+NODE_EXTRA_CA_CERTS
+SSL_CERT_FILE
+GIT_SSL_CAINFO
+REQUESTS_CA_BUNDLE
+CURL_CA_BUNDLE
+CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC
+```
+
+**Remove all seven, and do it before `rm -rf ~/.cortex`.** The middle four point at
+`~/.cortex/ca/bundle.crt`, and unlike `NODE_EXTRA_CA_CERTS` each of them *replaces*
+its tool's trust store rather than adding to it. Leave them behind with the file
+deleted and git, curl and Python fail **every** TLS call — including calls that have
+nothing to do with Cortex — with `error setting certificate verify locations`, on a
+machine you believe you have just cleaned. `abctl claude-code disable` removes all
+seven in the right order, which is why it is step 1 above; this list is only for when
+that binary is already gone.
