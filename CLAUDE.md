@@ -11,20 +11,19 @@ This file provides context for Claude (AI assistant) when working with the `cort
   index. Before starting work:
 
   ```sh
-  git fetch https://github.com/rossoctl/cortex.git main
-  # This bootstrap necessarily runs in the shared top-level checkout, so its
-  # FETCH_HEAD is shared too. Capture the commit rather than reading it twice.
-  base=$(git rev-parse --short FETCH_HEAD) && echo "$base"
-  git worktree add .worktrees/<topic> -b <branch> "$base"
+  # Fetch into a ref only you write, so nothing can move it underneath you.
+  git fetch https://github.com/rossoctl/cortex.git main:refs/base/<topic>
+  git worktree add .worktrees/<topic> -b <branch> refs/base/<topic>
   ```
 
   Then stay in that directory. Leave the top-level checkout alone — treat it as a
   reference copy someone else may be using. When the branch is merged or abandoned, tear
-  down both halves:
+  down all three things you created:
 
   ```sh
   git worktree remove .worktrees/<topic>   # --force if untracked files remain
-  git branch -d <branch>                   # -D if you abandoned it unmerged
+  git branch -d <branch>
+  git update-ref -d refs/base/<topic>
   ```
 
   `remove` cleans up its own bookkeeping, so `git worktree prune` is not needed here —
@@ -33,14 +32,21 @@ This file provides context for Claude (AI assistant) when working with the `cort
   name fail. Deleting the worktree directory instead of removing it is worse: the branch
   stays checked out indefinitely.
 
+  When `branch -d` answers *not fully merged*, that is usually not what happened. It
+  judges reachability from the HEAD of whichever tree you run it in, which is normally
+  the top-level checkout you were told not to touch — so it is simply behind. PRs land
+  here as merge commits, so bring `main` up to date and `-d` will accept the branch.
+  Save `-D` for work you really are discarding: it drops unpushed commits silently.
+
   Three things learned the hard way:
-  - **Capture the base commit; do not name `FETCH_HEAD` twice.** `FETCH_HEAD` is
-    per-worktree, but the bootstrap above has to run in the shared top-level checkout, so
-    every session fetching there writes that one file. A concurrent fetch between your
-    `rev-parse` and your `worktree add` moves it underneath you: the verification passes
-    and you branch from the wrong commit anyway. That is how `CLAUDE.md` got reverted
-    mid-session to a pre-rename state. Once you are inside your own worktree,
-    `FETCH_HEAD` is private and this stops being a concern.
+  - **Fetch into your own ref; never branch from `FETCH_HEAD`.** `FETCH_HEAD` is
+    per-worktree, but this bootstrap has to run in the shared top-level checkout, so
+    every session fetching there writes that one file — and a fetch landing between your
+    reading it and your using it hands you a different commit than the one you checked.
+    That is how `CLAUDE.md` got reverted mid-session to a pre-rename state. Nothing but
+    you writes `refs/base/<topic>`, so there is no window to lose and no verification
+    step to remember. Do not use `refs/worktree/` for this — git reserves that namespace
+    for per-worktree refs.
   - **A refused `worktree add` does not always mean another session holds the branch.**
     `-b <branch>` also fails when the branch merely exists with nothing checking it out —
     which is what a `worktree remove` without the matching `branch -d` leaves behind.
