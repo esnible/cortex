@@ -59,6 +59,7 @@ import (
 	"net"
 	"os"
 	"path"
+	"regexp"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -205,7 +206,7 @@ func (p *LineageTelemetry) Capabilities() pipeline.PluginCapabilities {
 		// The contract is cited major.minor only, deliberately: patch
 		// revisions (v1.5.x) clarify prose and never change span semantics,
 		// so a patch bump must not imply a producer change.
-		Description: "Emits two facts-only lineage spans per HTTP exchange (wire contract v1.6).",
+		Description: "Emits two facts-only lineage spans per HTTP exchange (wire contract v1.7).",
 	}
 }
 
@@ -237,7 +238,8 @@ func (p *LineageTelemetry) Init(ctx context.Context) error {
 	// degrades honestly (abandoned / NULL / parent.source=wire or none).
 	// Identity is the fact's subject — it has no degraded form, and a shared
 	// placeholder would collapse every unidentified pod onto one entity row
-	// (entity id = uuid5("{kind}:{self.id}"), and entities is upsert-only).
+	// (entity id = uuid5("{kind}:{namespace}/{self.id}"), and entities is
+	// upsert-only).
 	//
 	// Failing closed is scoped to the span, not the process. An Init error
 	// fails Pipeline.Start and the binary exits, every plugin in the chain
@@ -254,13 +256,29 @@ func (p *LineageTelemetry) Init(ctx context.Context) error {
 	// self_id, which no amount of waiting fixes; both return before the gRPC
 	// client and batch-span-processor goroutine below exist, so a refused
 	// start leaks nothing.
+	//
+	// The namespace — the other half of identity (config.go, Namespace) —
+	// is resolved FIRST. It is cheap, unconditional and needs no waiting
+	// (an inline value is known when the config is rendered; a file value
+	// sits where the kubelet projected it before this container started),
+	// so a refusal happens before the identity switch can log a poller it
+	// would never start, and before any goroutine or connection exists.
+	ns, err := resolveNamespace(p.cfg)
+	if err != nil {
+		return err
+	}
+	p.cfg.Namespace = ns
+
 	var pending string // self_id_file left for the poller to resolve
 	switch {
 	case p.cfg.SelfID != "":
 		// Same reading as the file path: a blank value carries no identity
-		// and would key an entity on whitespace at the consumer.
+		// and would key an entity on whitespace at the consumer — and so
+		// does a value made only of separators ("/"), which serviceLabel
+		// returns as-is: a subject with no name is no subject (the #761
+		// round-6 question, answered here).
 		p.selfID = strings.TrimSpace(p.cfg.SelfID)
-		if p.selfID == "" {
+		if !hasIdentity(p.selfID) {
 			return fmt.Errorf("lineage-telemetry: self_id %q carries no identity", p.cfg.SelfID)
 		}
 	case p.cfg.SelfIDFile != "":
@@ -356,11 +374,11 @@ func (p *LineageTelemetry) Init(ctx context.Context) error {
 		bgCtx, cancel := context.WithCancel(context.Background())
 		p.bgCancel.Store(&cancel)
 		go p.awaitIdentity(bgCtx, pending, identityPollInterval)
-		slog.Info("lineage-telemetry: initialized, not ready until self_id_file resolves", "endpoint", endpoint, "self_id_file", pending)
+		slog.Info("lineage-telemetry: initialized, not ready until self_id_file resolves", "endpoint", endpoint, "self_id_file", pending, "namespace", p.cfg.Namespace)
 		return nil
 	}
 	p.ready.Store(true)
-	slog.Info("lineage-telemetry: initialized", "endpoint", endpoint, "self_id", p.selfID)
+	slog.Info("lineage-telemetry: initialized", "endpoint", endpoint, "self_id", p.selfID, "namespace", p.cfg.Namespace)
 	return nil
 }
 
@@ -400,7 +418,7 @@ func (p *LineageTelemetry) awaitIdentity(ctx context.Context, path string, every
 				p.ready.Store(false)
 				return
 			}
-			slog.Info("lineage-telemetry: identity loaded from self_id_file; recording spans", "path", path, "self_id", id)
+			slog.Info("lineage-telemetry: identity loaded from self_id_file; recording spans", "path", path, "self_id", id, "namespace", p.cfg.Namespace)
 			return
 		}
 		if attempts++; logExportFailure(attempts) {
@@ -419,11 +437,16 @@ func readIdentityFile(path string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	if id := strings.TrimSpace(raw); id != "" {
+	if id := strings.TrimSpace(raw); hasIdentity(id) {
 		return id, nil
 	}
 	return "", fmt.Errorf("file %s carries no identity", path)
 }
+
+// hasIdentity is the one rule behind both identity sources: an identity is
+// a string with at least one non-empty "/"-segment, so serviceLabel has a
+// name to emit. Blank, and separator-only values such as "/", carry none.
+func hasIdentity(id string) bool { return strings.Trim(id, "/") != "" }
 
 // newTracerProvider builds the provider Init installs. AlwaysSample is
 // explicit and deliberate: lineage is an audit record, and under the SDK
@@ -900,7 +923,14 @@ func spanKindFor(dir pipeline.Direction) trace.SpanKind {
 func (p *LineageTelemetry) baseAttrs(pctx *pipeline.Context, self, protocol string) []attribute.KeyValue {
 	attrs := []attribute.KeyValue{
 		attribute.String("lineage.direction", pctx.Direction.String()),
-		p.capped("lineage.self.id", self),
+		// The two identity facts are not capped: an identity that reached the
+		// wire truncated would key the pod, at the consumer, on a name that is
+		// not its own. max_attr_bytes exists for caller-controlled values;
+		// both of these are operator configuration (self_id / self_id_file,
+		// namespace / namespace_file), and the namespace is bounded to a DNS
+		// label by Init besides.
+		attribute.String("lineage.self.id", self),
+		attribute.String("lineage.self.namespace", p.cfg.Namespace),
 		attribute.String("lineage.protocol", protocol),
 	}
 	if pctx.Host != "" {
@@ -1062,6 +1092,44 @@ func mcpTool(pctx *pipeline.Context) string {
 	return ""
 }
 
+// dnsLabel is the RFC 1123 label shape a Kubernetes namespace must have —
+// the same check the attach kit applies to NAMESPACE before rendering it.
+var dnsLabel = regexp.MustCompile(`^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$`)
+
+// resolveNamespace yields the namespace fact from the config: the inline
+// key first, else namespace_file — read once, synchronously. There is no
+// poller, unlike self_id_file: the file this knob exists for is the one the
+// kubelet projects from the pod's own metadata before any container starts,
+// so an absent file is a wrong path or a missing mount, not a race.
+//
+// The value is trimmed of surrounding whitespace and must be an RFC 1123
+// DNS label — the only shape a namespace can have. The consumer composes the
+// entity key as "{kind}:{namespace}/{self.id}", so a "/" would make the key
+// ambiguous, and a value longer than a label could reach the wire capped;
+// both are refused here rather than emitted. Nothing is guessed: no source
+// at all, an empty value, or a value of the wrong shape all refuse to start.
+func resolveNamespace(cfg Config) (string, error) {
+	ns, source := strings.TrimSpace(cfg.Namespace), "namespace"
+	if ns == "" && cfg.NamespaceFile != "" {
+		// ReadCredentialFile already trims; absent or zero-length is its error.
+		raw, err := config.ReadCredentialFile(cfg.NamespaceFile)
+		if err != nil {
+			return "", fmt.Errorf("lineage-telemetry: namespace_file %q: %w", cfg.NamespaceFile, err)
+		}
+		if raw == "" {
+			return "", fmt.Errorf("lineage-telemetry: namespace_file %q carries no namespace", cfg.NamespaceFile)
+		}
+		ns, source = raw, "namespace_file "+cfg.NamespaceFile
+	}
+	if ns == "" {
+		return "", errors.New("lineage-telemetry: namespace is required (this workload's Kubernetes namespace): set namespace, or namespace_file to a file the kubelet projects")
+	}
+	if !dnsLabel.MatchString(ns) {
+		return "", fmt.Errorf("lineage-telemetry: %s: %q is not a DNS label (lowercase letters, digits and '-', 1-63 chars)", source, ns)
+	}
+	return ns, nil
+}
+
 // serviceLabel reduces a SPIFFE ID to its last non-empty path segment, or
 // returns selfID as-is if it is not a SPIFFE URI. Used for the lineage.self.id
 // fact and span names. The reduction is normative (contract §4): the consumer
@@ -1071,7 +1139,8 @@ func mcpTool(pctx *pipeline.Context) string {
 //	"spiffe://trust-domain/ns/team1/sa/weather-service" → "weather-service"
 //	"weather-service" → "weather-service"
 //	"spiffe://trust-domain/ns/team1/sa/agent/" → "agent"   (trailing separator skipped)
-//	"/" → "/"   (no non-empty segment: the input is returned unchanged)
+//	"/" → "/"   (no non-empty segment: the input is returned unchanged;
+//	             Init never admits such a value — see hasIdentity)
 //
 // selfID is never empty at the only call site: OnRequest runs only once ready,
 // and readiness is stored only after an identity resolved (Init or its

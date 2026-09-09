@@ -50,7 +50,10 @@
 # Variables:
 #   NAME            (required) the target Deployment; also names the ConfigMap
 #                   (authbridge-lineage-config-NAME) and defaults SELF_ID
-#   NAMESPACE       default team1
+#   NAMESPACE       default team1; also emitted as the plugin's namespace key
+#                   (lineage.self.namespace on every span — the other half of
+#                   the entity identity, required by the plugin since cortex
+#                   contract v1.7)
 #   SELF_ID         lineage identity on every span (default NAME)
 #   APP_CONTAINER   the app container to set LINEAGE_PROPAGATE=1 on. MUST name
 #                   an existing container: a strategic merge ADDS a stub for an
@@ -249,7 +252,8 @@ build_plugin_entry() {
             config:
               otel_endpoint: "'"${OTEL_ENDPOINT}"'"
               capture_io: '"${CAPTURE_IO}"'
-              self_id: "'"${SELF_ID}"'"'
+              self_id: "'"${SELF_ID}"'"
+              namespace: "'"${NAMESPACE}"'"'
     # The plugin's own default applies when unset; an explicit value is emitted.
     [ -z "$MAX_PAYLOAD_BYTES" ] || lineage_plugin="${lineage_plugin}
               max_payload_bytes: ${MAX_PAYLOAD_BYTES}"

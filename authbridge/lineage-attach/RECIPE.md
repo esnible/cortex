@@ -87,7 +87,7 @@ run the back-out line printed above, then read the sidecar log (step 4).
 ```sh
 kubectl -n $NS logs deploy/$DEPLOY -c envoy-proxy | grep 'lineage-telemetry: initialized'
 ```
-Pass: `… endpoint=<otel_endpoint> self_id=<deploy>`.
+Pass: `… endpoint=<otel_endpoint> self_id=<deploy> namespace=<ns>`.
 
 Then one request **from inside the cluster** (a port-forward bypasses the sidecar) with a trace id you choose:
 ```sh
