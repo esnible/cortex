@@ -12,27 +12,38 @@ This file provides context for Claude (AI assistant) when working with the `cort
 
   ```sh
   git fetch https://github.com/rossoctl/cortex.git main
-  # Capture the commit now. FETCH_HEAD is one file per repository, not per
-  # worktree, so reading it twice can hand you two different commits.
+  # This bootstrap necessarily runs in the shared top-level checkout, so its
+  # FETCH_HEAD is shared too. Capture the commit rather than reading it twice.
   base=$(git rev-parse --short FETCH_HEAD) && echo "$base"
   git worktree add .worktrees/<topic> -b <branch> "$base"
   ```
 
   Then stay in that directory. Leave the top-level checkout alone — treat it as a
-  reference copy someone else may be using. When the branch is merged or abandoned,
-  clean up after yourself: `git worktree remove .worktrees/<topic>` (add `--force` if it
-  still has untracked files), then `git worktree prune`. An abandoned worktree keeps its
-  branch checked out forever, which is what turns the next session's `worktree add` into
-  a puzzling failure.
+  reference copy someone else may be using. When the branch is merged or abandoned, tear
+  down both halves:
+
+  ```sh
+  git worktree remove .worktrees/<topic>   # --force if untracked files remain
+  git branch -d <branch>                   # -D if you abandoned it unmerged
+  ```
+
+  `remove` cleans up its own bookkeeping, so `git worktree prune` is not needed here —
+  that is for a worktree directory someone deleted by hand. What `remove` does leave is
+  the branch, and a leftover branch is enough to make the next `worktree add -b` of that
+  name fail. Deleting the worktree directory instead of removing it is worse: the branch
+  stays checked out indefinitely.
 
   Three things learned the hard way:
-  - **Capture the base commit; do not name `FETCH_HEAD` twice.** A concurrent fetch
-    between your `rev-parse` and your `worktree add` moves it underneath you, so the
-    verification passes and you still branch from the wrong commit. A stale one has
-    already reverted `CLAUDE.md` mid-session to a pre-rename state.
+  - **Capture the base commit; do not name `FETCH_HEAD` twice.** `FETCH_HEAD` is
+    per-worktree, but the bootstrap above has to run in the shared top-level checkout, so
+    every session fetching there writes that one file. A concurrent fetch between your
+    `rev-parse` and your `worktree add` moves it underneath you: the verification passes
+    and you branch from the wrong commit anyway. That is how `CLAUDE.md` got reverted
+    mid-session to a pre-rename state. Once you are inside your own worktree,
+    `FETCH_HEAD` is private and this stops being a concern.
   - **A refused `worktree add` does not always mean another session holds the branch.**
-    `-b <branch>` also fails when the branch merely exists with nothing checking it out
-    — including branches left behind by worktrees that were deleted rather than removed.
+    `-b <branch>` also fails when the branch merely exists with nothing checking it out —
+    which is what a `worktree remove` without the matching `branch -d` leaves behind.
     `git worktree list` says who actually holds what; the error text does not. When it
     does show a live worktree on that branch, the refusal is a feature: pick another
     name, do not force past it.
