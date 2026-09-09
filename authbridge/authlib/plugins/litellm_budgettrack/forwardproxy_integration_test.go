@@ -7,11 +7,14 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
 	fwd "github.com/rossoctl/cortex/authbridge/authlib/listener/forwardproxy"
 	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
+	"github.com/rossoctl/cortex/authbridge/authlib/plugins/inferenceparser"
+	"github.com/rossoctl/cortex/authbridge/authlib/pricing"
 	"github.com/rossoctl/cortex/authbridge/authlib/session"
 )
 
@@ -45,17 +48,21 @@ func TestForwardProxyStreamedSSEUpdatesLedger(t *testing.T) {
 	t.Cleanup(upstream.Close)
 
 	spend := filepath.Join(t.TempDir(), "spend.json")
-	p := New()
-	raw, _ := json.Marshal(budgetTrackConfig{
-		SpendFile: spend, MaxBudget: 5, InputCostPerToken: 1e-6, OutputCostPerToken: 5e-6,
+	p := configurePriced(t, 5, map[pricing.Tier]float64{
+		pricing.TierInput:  1e-6,
+		pricing.TierOutput: 5e-6,
 	})
-	if err := p.Configure(raw); err != nil {
-		t.Fatalf("Configure: %v", err)
-	}
+	p.cfg.SpendFile = spend
+	raw, _ := json.Marshal(budgetTrackConfig{SpendFile: spend, MaxBudget: 5})
 	// WrapConfigured is what the real build applies; it preserves StreamingResponder.
 	wrapped := pipeline.WrapConfigured(p, raw)
 
-	pipe, err := pipeline.New([]pipeline.Plugin{wrapped})
+	// inference-parser sits AFTER budget-track, which is what RequiresLater
+	// declares. The response pass walks the chain in reverse, so this order makes
+	// the parser fold each frame BEFORE budget-track settles the cost on the
+	// terminal one. Reversing these two silently unprices the response — which is
+	// the failure this test caught and RequiresLater now prevents at build time.
+	pipe, err := pipeline.New([]pipeline.Plugin{wrapped, inferenceparser.NewInferenceParser()})
 	if err != nil {
 		t.Fatalf("pipeline.New: %v", err)
 	}
@@ -73,7 +80,11 @@ func TestForwardProxyStreamedSSEUpdatesLedger(t *testing.T) {
 
 	pu, _ := url.Parse(proxy.URL)
 	client := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(pu)}}
-	req, err := http.NewRequestWithContext(t.Context(), http.MethodGet, upstream.URL+"/v1/messages", nil)
+	body := `{"model":"claude-opus-5","stream":true,"messages":[{"role":"user","content":"hi"}]}`
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, upstream.URL+"/v1/messages", strings.NewReader(body))
+	if err == nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
 	if err != nil {
 		t.Fatalf("new request: %v", err)
 	}

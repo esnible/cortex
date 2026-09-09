@@ -11,7 +11,7 @@ import (
 // wrapping the real build applies — the gap that unit tests calling
 // OnResponseFrame directly cannot catch.
 func TestPipelineDetectsStreamingResponder(t *testing.T) {
-	raw, _ := json.Marshal(budgetTrackConfig{SpendFile: t.TempDir() + "/s.json", MaxBudget: 5, InputCostPerToken: 1e-6})
+	raw, _ := json.Marshal(budgetTrackConfig{SpendFile: t.TempDir() + "/s.json", MaxBudget: 5})
 	p := New()
 	if err := p.Configure(raw); err != nil {
 		t.Fatal(err)

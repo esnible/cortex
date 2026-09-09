@@ -44,9 +44,9 @@ const (
 // conventions.
 //
 // Adding a new IdP:
-//   1. Create a new file (e.g. provider_okta.go)
-//   2. Implement IdPProvider
-//   3. Call RegisterProvider() in an init() function
+//  1. Create a new file (e.g. provider_okta.go)
+//  2. Implement IdPProvider
+//  3. Call RegisterProvider() in an init() function
 //
 // The init() auto-registration pattern means any provider file that
 // is compiled into the binary is automatically available — no central

@@ -10,6 +10,7 @@ import (
 	"github.com/rossoctl/cortex/authbridge/authlib/costevent"
 	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
 	"github.com/rossoctl/cortex/authbridge/authlib/plugins/inferenceparser"
+	"github.com/rossoctl/cortex/authbridge/authlib/pricing"
 )
 
 // TestSSEEquivalence is the regression guard for the riskiest change in the
@@ -205,24 +206,36 @@ func primeInference(t *testing.T, pctx *pipeline.Context, frames []string) {
 
 // newPricedBudgetTrack builds a configured plugin with the test rates.
 //
-// PRE-MIGRATION SHIM: rates come from the plugin's own four config knobs. When
-// those are deleted this becomes a resolver injection, and nothing else in this
-// file may change — that is the point of the file.
+// POST-MIGRATION: rates arrive by resolver injection, as plugins.BuildWithDeps
+// does in production. This shim is the only thing in this file that changed with
+// the migration — the recorded costs above were not touched, which is what makes
+// them an equivalence proof rather than a fresh expectation.
 func newPricedBudgetTrack(t *testing.T) *BudgetTrack {
 	t.Helper()
 	p := New()
-	cfg := map[string]any{
-		"spend_file":                 spendFile(t),
-		"max_budget":                 1000.0,
-		"input_cost_per_token":       rateInput,
-		"cache_write_cost_per_token": rateCacheWrite,
-		"cache_read_cost_per_token":  rateCacheRead,
-		"output_cost_per_token":      rateOutput,
-	}
-	raw, err := json.Marshal(cfg)
+	raw, err := json.Marshal(map[string]any{
+		"spend_file": spendFile(t),
+		"max_budget": 1000.0,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
+	var r pricing.Rates
+	for tier, v := range map[pricing.Tier]float64{
+		pricing.TierInput:      rateInput,
+		pricing.TierCacheWrite: rateCacheWrite,
+		pricing.TierCacheRead:  rateCacheRead,
+		pricing.TierOutput:     rateOutput,
+	} {
+		r.Base[tier], r.Set[tier] = v, true
+	}
+	tab, err := pricing.NewTable([]pricing.Entry{
+		{Host: "*", Model: "*", Rates: r, Prov: pricing.ProvConfigured},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.SetPricingResolver(pricing.NewRegistry(tab))
 	if err := p.Configure(raw); err != nil {
 		t.Fatalf("Configure: %v", err)
 	}

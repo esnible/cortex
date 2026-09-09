@@ -144,4 +144,3 @@ func TestBuild_ConfigureError(t *testing.T) {
 		t.Errorf("error %q does not name the offending plugin", err)
 	}
 }
-

@@ -43,6 +43,18 @@ type Event struct {
 	Source        string  `json:"source"`
 	DailyTotalUSD float64 `json:"daily_total_usd"`
 	DailyMaxUSD   float64 `json:"daily_max_usd"`
+
+	// Provenance names where the figure came from: "authoritative" when the
+	// gateway reported it, otherwise the rate table's own level ("configured",
+	// "discovered", "bundled"). See authlib/pricing.Provenance.
+	//
+	// ADDITIVE, and omitempty, so a consumer written against the four original
+	// fields keeps decoding unchanged and an event from an older producer decodes
+	// here with an empty Provenance. Source is retained rather than replaced for
+	// the same reason: it already ships, and its two values still answer a
+	// different question — WHICH PATH priced this (header vs token counts) rather
+	// than how much to trust the rates.
+	Provenance string `json:"provenance,omitempty"`
 }
 
 // Micros converts CostUSD to millionths of a dollar, rounded to nearest.

@@ -209,6 +209,7 @@ func cloneCatalog(in []CatalogEntry) []CatalogEntry {
 		caps := in[i].Capabilities
 		caps.Requires = append([]string(nil), in[i].Capabilities.Requires...)
 		caps.RequiresAny = append([]string(nil), in[i].Capabilities.RequiresAny...)
+		caps.RequiresLater = append([]string(nil), in[i].Capabilities.RequiresLater...)
 		out[i] = CatalogEntry{
 			Name:         in[i].Name,
 			Capabilities: caps,
@@ -308,6 +309,11 @@ func BuildWithSPIFFE(entries []config.PluginEntry, p *spiffe.Provider, opts ...p
 //
 //   - Requires: every named plugin must appear at a lower index in
 //     the chain. Missing or misordered is an error.
+//   - RequiresLater: every named plugin must appear at a HIGHER index.
+//     The mirror of Requires, for dependencies on another plugin's
+//     response-phase output — the response pass walks the chain in
+//     reverse, so "runs before me on the response" means "later in the
+//     chain".
 //   - RequiresAny: at least one named plugin must appear at a lower
 //     index. Any named plugin that IS present must also be at a
 //     lower index.
@@ -345,6 +351,23 @@ func validateRelationships(ps []pipeline.Plugin) error {
 				errs = append(errs, fmt.Sprintf(
 					"plugin %q requires %q earlier in the chain, but %q appears at position %d (this plugin is at %d)",
 					p.Name(), req, req, j, i))
+			}
+		}
+
+		// RequiresLater — hard AND, mirrored ordering. The response passes walk
+		// the chain in reverse, so a dependency on another plugin's response-phase
+		// output needs that plugin at a HIGHER index.
+		for _, req := range caps.RequiresLater {
+			j, present := positions[req]
+			switch {
+			case !present:
+				errs = append(errs, fmt.Sprintf(
+					"plugin %q requires %q later in the chain, but %q is not configured",
+					p.Name(), req, req))
+			case j <= i:
+				errs = append(errs, fmt.Sprintf(
+					"plugin %q requires %q later in the chain (it reads what %q publishes while folding response frames, and the response pass runs in reverse), but %q appears at position %d (this plugin is at %d)",
+					p.Name(), req, req, req, j, i))
 			}
 		}
 

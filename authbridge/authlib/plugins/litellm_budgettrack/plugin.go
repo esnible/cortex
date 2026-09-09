@@ -17,7 +17,6 @@
 package litellm_budgettrack
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -31,6 +30,7 @@ import (
 	"github.com/rossoctl/cortex/authbridge/authlib/costevent"
 	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
 	"github.com/rossoctl/cortex/authbridge/authlib/plugins"
+	"github.com/rossoctl/cortex/authbridge/authlib/pricing"
 )
 
 // Response cost headers emitted by LiteLLM.
@@ -49,56 +49,32 @@ const (
 type budgetTrackConfig struct {
 	SpendFile string  `json:"spend_file" required:"true" description:"Path to the JSON spend ledger file."`
 	MaxBudget float64 `json:"max_budget" required:"true" description:"Daily budget in USD."`
-	// InputCostPerToken / OutputCostPerToken price streamed responses whose
-	// header cost is 0 (the total is unknown when streaming headers are sent).
-	// USD per token; optional. When both are zero, streamed responses cannot be
-	// priced and contribute 0 to the ledger.
-	InputCostPerToken  float64 `json:"input_cost_per_token" description:"USD per uncached input token, for pricing streamed responses."`
-	OutputCostPerToken float64 `json:"output_cost_per_token" description:"USD per output/completion token, for pricing streamed responses."`
-	// Prompt-cache tiers are priced separately: providers charge a premium to
-	// WRITE a cache entry and a steep discount to READ one (see
-	// pipeline/extensions.go). When unset (0) each defaults to
-	// InputCostPerToken, reproducing a flat rate — which overstates cache-heavy
-	// traffic (e.g. Claude Code) by up to ~10×. Set them for accurate pricing.
-	CacheWriteCostPerToken float64 `json:"cache_write_cost_per_token" description:"USD per cache-write (creation) input token; defaults to input_cost_per_token."`
-	CacheReadCostPerToken  float64 `json:"cache_read_cost_per_token" description:"USD per cache-read input token; defaults to input_cost_per_token."`
+
+	// There are deliberately no rate knobs here any more.
+	//
+	// Four of them (input / output / cache_write / cache_read per token) used to
+	// price streamed responses, duplicating both the rates in tool-prune's config
+	// and the token parser in inference-parser. Rates now come from the top-level
+	// `pricing:` section via authlib/pricing, which also gives them endpoint
+	// scoping — the same model bills differently per gateway, and a per-plugin
+	// table had no way to say so.
 }
 
-// cacheWriteRate / cacheReadRate return the effective per-token rate for each
-// cache tier, defaulting to the uncached input rate when unset (0).
-func (c budgetTrackConfig) cacheWriteRate() float64 {
-	if c.CacheWriteCostPerToken > 0 {
-		return c.CacheWriteCostPerToken
-	}
-	return c.InputCostPerToken
-}
-
-func (c budgetTrackConfig) cacheReadRate() float64 {
-	if c.CacheReadCostPerToken > 0 {
-		return c.CacheReadCostPerToken
-	}
-	return c.InputCostPerToken
-}
-
-// stateKey names the per-request scratch holding token usage accumulated across
-// streaming frames until the terminal frame prices it.
+// stateKey names the per-request scratch holding the settle guard.
 const stateKey = "litellm-budget-track"
+
+// settleState records that the terminal frame already priced this request.
+//
+// It no longer accumulates token counts. The plugin used to run its own SSE parser
+// to gather them, duplicating inference-parser frame for frame; it now reads the
+// counts that parser publishes, so all that is left to remember is exactly-once.
+type settleState struct {
+	settled bool
+}
 
 // The per-response cost event this plugin publishes lives in authlib/costevent:
 // the usage aggregator and abctl both decode it, so the shape belongs where all
 // three can share one declaration rather than in this package.
-
-// usageState accumulates the largest token counts seen across a stream's
-// frames. Anthropic reports input_tokens in message_start and the cumulative
-// output_tokens in the final message_delta, so taking the max of each yields
-// the final totals; OpenAI reports both together in its terminal usage chunk.
-type usageState struct {
-	uncachedInputTokens int
-	cacheWriteTokens    int // cache_creation_input_tokens
-	cacheReadTokens     int // cache_read_input_tokens
-	outputTokens        int
-	settled             bool // terminal frame already priced this request (exactly-once)
-}
 
 type spendLedger struct {
 	Date       string  `json:"date"`
@@ -111,7 +87,14 @@ type BudgetTrack struct {
 	cfg    budgetTrackConfig
 	mu     sync.Mutex
 	ledger spendLedger
+
+	// rates is the process rate table, injected before Configure. Read only
+	// through costOf, which guards the nil interface.
+	rates pricing.Resolver
 }
+
+// SetPricingResolver implements pricing.ResolverConsumer.
+func (p *BudgetTrack) SetPricingResolver(r pricing.Resolver) { p.rates = r }
 
 // New creates an unconfigured BudgetTrack plugin instance.
 func New() *BudgetTrack { return &BudgetTrack{} }
@@ -131,8 +114,21 @@ func (p *BudgetTrack) Capabilities() pipeline.PluginCapabilities {
 		// streamed accounting silently records nothing (or double-charges if
 		// Envoy is statically configured BUFFERED). The proxy listeners gate on
 		// HasStreamingResponders() and are unaffected. Mirrors inference-parser.
-		ReadsBody:   true,
-		Description: "Track LLM cost (response header or streamed usage) and enforce a daily budget.",
+		ReadsBody: true,
+		// RequiresLater, NOT Requires — the direction is the whole point.
+		//
+		// This plugin prices the per-tier token counts inference-parser publishes
+		// while folding response frames. The response passes walk the chain in
+		// REVERSE (pipeline.RunResponseFrame), so the parser must sit at a HIGHER
+		// index to fold each frame before this plugin settles the cost on the
+		// terminal one. Declaring Requires would enforce the opposite order and
+		// leave every streamed response unpriced, with nothing reporting that the
+		// counts were missed.
+		//
+		// BREAKING: a pipeline listing litellm-budget-track without
+		// inference-parser AFTER it now fails to build. Needs a release note.
+		RequiresLater: []string{"inference-parser"},
+		Description:   "Track LLM cost (response header or priced token usage) and enforce a daily budget.",
 	}
 }
 
@@ -145,19 +141,6 @@ func (p *BudgetTrack) Configure(raw json.RawMessage) error {
 	}
 	if p.cfg.MaxBudget <= 0 {
 		return fmt.Errorf("litellm-budget-track: max_budget must be > 0")
-	}
-	// Per-token rates must be finite and non-negative. A negative rate would make
-	// a streamed request's cost negative, which accumulate() drops — so the request
-	// would silently neither charge budget nor record a call. Reject at config time.
-	for name, rate := range map[string]float64{
-		"input_cost_per_token":       p.cfg.InputCostPerToken,
-		"output_cost_per_token":      p.cfg.OutputCostPerToken,
-		"cache_write_cost_per_token": p.cfg.CacheWriteCostPerToken,
-		"cache_read_cost_per_token":  p.cfg.CacheReadCostPerToken,
-	} {
-		if rate < 0 || math.IsNaN(rate) || math.IsInf(rate, 0) {
-			return fmt.Errorf("litellm-budget-track: %s must be finite and >= 0", name)
-		}
 	}
 	p.loadLedger()
 	return nil
@@ -184,7 +167,7 @@ func (p *BudgetTrack) OnRequest(_ context.Context, pctx *pipeline.Context) pipel
 func (p *BudgetTrack) OnResponse(_ context.Context, pctx *pipeline.Context) pipeline.Action {
 	if cost, _ := headerCost(pctx); cost > 0 {
 		if total, ok := p.accumulate(cost); ok {
-			p.emitCost(pctx, cost, costevent.SourceGatewayHeader, total)
+			p.emitCost(pctx, cost, costevent.SourceGatewayHeader, total, pricing.ProvAuthoritative)
 		}
 	}
 	return pipeline.Action{Type: pipeline.Continue}
@@ -195,27 +178,6 @@ func (p *BudgetTrack) OnResponse(_ context.Context, pctx *pipeline.Context) pipe
 // response-header cost when present (non-streaming), otherwise the parsed
 // usage times the configured per-token rates (streaming).
 func (p *BudgetTrack) OnResponseFrame(_ context.Context, pctx *pipeline.Context, frame []byte, last bool) pipeline.Action {
-	if u, ok := parseFrameUsage(frame); ok {
-		st := pipeline.GetState[usageState](pctx, stateKey)
-		if st == nil {
-			st = &usageState{}
-			pipeline.SetState(pctx, stateKey, st)
-		}
-		// Max per bucket across frames: Anthropic reports uncached input in
-		// message_start and the finalized cache counts + output in message_delta.
-		if u.uncached > st.uncachedInputTokens {
-			st.uncachedInputTokens = u.uncached
-		}
-		if u.cacheWrite > st.cacheWriteTokens {
-			st.cacheWriteTokens = u.cacheWrite
-		}
-		if u.cacheRead > st.cacheReadTokens {
-			st.cacheReadTokens = u.cacheRead
-		}
-		if u.output > st.outputTokens {
-			st.outputTokens = u.output
-		}
-	}
 	if !last {
 		return pipeline.Action{Type: pipeline.Continue}
 	}
@@ -224,9 +186,9 @@ func (p *BudgetTrack) OnResponseFrame(_ context.Context, pctx *pipeline.Context,
 	// unconditionally (a header-only response never allocated it above) so the
 	// guard also covers that path — a listener that dispatches last=true twice
 	// (e.g. extproc header + buffered-body phases) must not double-charge.
-	st := pipeline.GetState[usageState](pctx, stateKey)
+	st := pipeline.GetState[settleState](pctx, stateKey)
 	if st == nil {
-		st = &usageState{}
+		st = &settleState{}
 		pipeline.SetState(pctx, stateKey, st)
 	}
 	if st.settled {
@@ -236,6 +198,9 @@ func (p *BudgetTrack) OnResponseFrame(_ context.Context, pctx *pipeline.Context,
 
 	cost, present := headerCost(pctx)
 	source := costevent.SourceGatewayHeader
+	// A header cost is a settled figure the gateway reported, not a rate we looked
+	// up — the strongest provenance there is.
+	provenance := pricing.ProvAuthoritative
 	if cost <= 0 {
 		// Fall back to per-token pricing only when there is no authoritative
 		// header cost: the header is absent, or this is a streamed response
@@ -243,19 +208,29 @@ func (p *BudgetTrack) OnResponseFrame(_ context.Context, pctx *pipeline.Context,
 		// response is a genuine free call (cache hit / error) — charge nothing,
 		// don't invent a cost from the usage block.
 		if !present || isEventStream(pctx) {
-			// Price each prompt-cache tier at its own rate; cache rates default
-			// to the uncached input rate when unset. Flat pricing would overstate
-			// cache-heavy traffic (Claude Code) by up to ~10×.
-			cost = float64(st.uncachedInputTokens)*p.cfg.InputCostPerToken +
-				float64(st.cacheWriteTokens)*p.cfg.cacheWriteRate() +
-				float64(st.cacheReadTokens)*p.cfg.cacheReadRate() +
-				float64(st.outputTokens)*p.cfg.OutputCostPerToken
-			source = costevent.SourceUsageFallback
+			// Price the per-tier counts inference-parser published, through the
+			// process rate table scoped to this request's endpoint.
+			//
+			// The plugin used to run its own SSE parser to gather those counts,
+			// folding the same frames inference-parser had already folded, and to
+			// hold its own four rates. Both are gone: one parser, one rate table,
+			// one place tokens become dollars.
+			usage := pricing.UsageFromInference(pctx.Extensions.Inference)
+			model := ""
+			if pctx.Extensions.Inference != nil {
+				model = pctx.Extensions.Inference.Model
+			}
+			micros, prov, priced := p.costOf(pctx.Host, model, usage)
+			if priced {
+				cost = float64(micros) / 1e6
+				source = costevent.SourceUsageFallback
+				provenance = prov
+			}
 		}
 	}
 	if cost > 0 {
 		if total, ok := p.accumulate(cost); ok {
-			p.emitCost(pctx, cost, source, total)
+			p.emitCost(pctx, cost, source, total, provenance)
 		}
 	}
 	return pipeline.Action{Type: pipeline.Continue}
@@ -283,7 +258,7 @@ func (p *BudgetTrack) accumulate(cost float64) (dailyTotal float64, added bool) 
 
 // emitCost writes the costEvent to pctx.Extensions.Custom; the listener
 // forwards it to SessionEvent.Plugins under the plugin name.
-func (p *BudgetTrack) emitCost(pctx *pipeline.Context, cost float64, source string, dailyTotal float64) {
+func (p *BudgetTrack) emitCost(pctx *pipeline.Context, cost float64, source string, dailyTotal float64, prov pricing.Provenance) {
 	if pctx.Extensions.Custom == nil {
 		pctx.Extensions.Custom = map[string]any{}
 	}
@@ -292,7 +267,29 @@ func (p *BudgetTrack) emitCost(pctx *pipeline.Context, cost float64, source stri
 		Source:        source,
 		DailyTotalUSD: dailyTotal,
 		DailyMaxUSD:   p.cfg.MaxBudget,
+		Provenance:    prov.String(),
 	}
+}
+
+// costOf prices usage through the injected rate table.
+//
+// The nil guard is on the INTERFACE, which is the trap: an un-injected plugin holds
+// a nil interface and calling a method on it panics, where a nil *pricing.Registry
+// would have been safe. tool-prune hit exactly this and its fail-open masked the
+// panic as silently-disabled pruning.
+func (p *BudgetTrack) costOf(host, model string, u pricing.Usage) (micros int64, prov pricing.Provenance, ok bool) {
+	if p.rates == nil {
+		return 0, pricing.ProvNone, false
+	}
+	rates, prov := p.rates.Resolve(host, model, u.PromptTotal())
+	if prov == pricing.ProvNone {
+		return 0, pricing.ProvNone, false
+	}
+	micros, ok = pricing.Cost(rates, u)
+	if !ok {
+		return 0, pricing.ProvNone, false
+	}
+	return micros, prov, true
 }
 
 // headerCost returns the usable positive cost reported in the response headers
@@ -329,88 +326,6 @@ func isEventStream(pctx *pipeline.Context) bool {
 	}
 	return strings.EqualFold(strings.TrimSpace(ct), "text/event-stream")
 }
-
-// frameUsage is the per-prompt-cache-tier token breakdown extracted from a
-// response frame. Uncached input, cache writes, and cache reads are kept
-// separate because providers price them very differently.
-type frameUsage struct {
-	uncached   int // uncached input / OpenAI prompt tokens
-	cacheWrite int // cache_creation_input_tokens
-	cacheRead  int // cache_read_input_tokens
-	output     int // output / completion tokens
-}
-
-// parseFrameUsage extracts the token usage breakdown from a response frame,
-// covering Anthropic (usage, or message.usage in message_start) and OpenAI
-// (usage.prompt_tokens / completion_tokens). Returns the largest count seen per
-// bucket, and whether any usage was found.
-//
-// The listener's sseframe reader strips the "data:" prefix and returns the
-// bare payload, so a streamed frame arrives as raw JSON. The buffered
-// application/json path also delivers the whole body as one raw-JSON frame.
-// We therefore try the frame as JSON directly, and also scan any "data:"
-// lines for the case a frame still carries SSE framing.
-func parseFrameUsage(frame []byte) (fu frameUsage, found bool) {
-	consider := func(b []byte) {
-		b = bytes.TrimSpace(b)
-		if len(b) == 0 || b[0] != '{' {
-			return
-		}
-		var ev struct {
-			Usage   *usageJSON `json:"usage"`
-			Message *struct {
-				Usage *usageJSON `json:"usage"`
-			} `json:"message"`
-		}
-		if json.Unmarshal(b, &ev) != nil {
-			return
-		}
-		u := ev.Usage
-		if u == nil && ev.Message != nil {
-			u = ev.Message.Usage // Anthropic message_start nests usage
-		}
-		if u == nil {
-			return
-		}
-		if v := u.uncachedInput(); v > fu.uncached {
-			fu.uncached, found = v, true
-		}
-		if v := u.CacheCreationInputTokens; v > fu.cacheWrite {
-			fu.cacheWrite, found = v, true
-		}
-		if v := u.CacheReadInputTokens; v > fu.cacheRead {
-			fu.cacheRead, found = v, true
-		}
-		if v := u.outputTotal(); v > fu.output {
-			fu.output, found = v, true
-		}
-	}
-
-	consider(frame) // bare-JSON frame (sseframe payload, or buffered body)
-	for _, line := range bytes.Split(frame, []byte("\n")) {
-		if line = bytes.TrimSpace(line); bytes.HasPrefix(line, []byte("data:")) {
-			consider(bytes.TrimPrefix(line, []byte("data:")))
-		}
-	}
-	return fu, found
-}
-
-// usageJSON accepts both Anthropic and OpenAI usage shapes.
-type usageJSON struct {
-	InputTokens              int `json:"input_tokens"`
-	OutputTokens             int `json:"output_tokens"`
-	CacheCreationInputTokens int `json:"cache_creation_input_tokens"`
-	CacheReadInputTokens     int `json:"cache_read_input_tokens"`
-	PromptTokens             int `json:"prompt_tokens"`
-	CompletionTokens         int `json:"completion_tokens"`
-}
-
-// uncachedInput is the input NOT served from / written to cache. Anthropic's
-// input_tokens excludes the cache_* counts; OpenAI's prompt_tokens carries no
-// cache split, so it counts as uncached.
-func (u usageJSON) uncachedInput() int { return u.InputTokens + u.PromptTokens }
-
-func (u usageJSON) outputTotal() int { return u.OutputTokens + u.CompletionTokens }
 
 func (p *BudgetTrack) todayUTC() string {
 	return time.Now().UTC().Format("2006-01-02")
