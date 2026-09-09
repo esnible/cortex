@@ -1,0 +1,184 @@
+package tui
+
+import (
+	"strings"
+	"testing"
+
+	"github.com/charmbracelet/lipgloss"
+
+	"github.com/rossoctl/cortex/authbridge/cmd/abctl/apiclient"
+)
+
+// Quit and help must survive at every terminal width. The events footer runs ~135
+// columns, so an 80-column terminal cut the tail — and the tail is exactly where
+// [?] and [q] were, the pair a stuck user reaches for.
+func TestFitHintLine_KeepsQuitAndHelpAtEveryWidth(t *testing.T) {
+	m := &model{pane: paneEvents, eventColumns: defaultColumnSelection()}
+	full := m.helpView()
+
+	for _, width := range []int{200, 140, 120, 100, 80, 60, 40, 24, 20} {
+		got := fitHintLine(full, width)
+		if lipgloss.Width(got) > width {
+			t.Errorf("width %d: hint is %d columns:\n%q", width, lipgloss.Width(got), got)
+		}
+		if !strings.Contains(got, "[q] quit") {
+			t.Errorf("width %d: lost [q] quit:\n%q", width, got)
+		}
+		// Help is the complete reference, so it outlives every specialised hint.
+		if width >= 24 && !strings.Contains(got, "[?] keys") {
+			t.Errorf("width %d: lost [?] keys:\n%q", width, got)
+		}
+	}
+}
+
+// A truncated line says so. Without the marker, a missing hint reads as a key that
+// does not exist rather than one that did not fit.
+func TestFitHintLine_MarksTruncation(t *testing.T) {
+	m := &model{pane: paneEvents, eventColumns: defaultColumnSelection()}
+	full := m.helpView()
+
+	if got := fitHintLine(full, 60); !strings.HasPrefix(got, "…") {
+		t.Errorf("truncated line does not start with an ellipsis: %q", got)
+	}
+	// And an untruncated line does not claim to be.
+	wide := fitHintLine(full, 400)
+	if strings.HasPrefix(wide, "…") {
+		t.Errorf("untruncated line marked as truncated: %q", wide)
+	}
+	if wide != full {
+		t.Error("a line that fits was altered")
+	}
+}
+
+// Dropping is from the front, so the hints that survive are the ones helpView put
+// last. Ordering and trimming are two halves of one mechanism.
+func TestFitHintLine_DropsFromTheFront(t *testing.T) {
+	m := &model{pane: paneEvents, eventColumns: defaultColumnSelection()}
+	got := fitHintLine(m.helpView(), 60)
+
+	// The specialised, pane-specific keys go first.
+	for _, gone := range []string{"[↑↓] nav", "[c] columns", "[u] usage"} {
+		if strings.Contains(got, gone) {
+			t.Errorf("width 60 kept %q, which should have been dropped: %q", gone, got)
+		}
+	}
+}
+
+// Every pane's footer must fit, not only the events one — the others are shorter
+// but the guard should hold for all of them.
+func TestFitHintLine_EveryPaneFitsAt80(t *testing.T) {
+	for _, pane := range []paneID{
+		paneNamespaces, panePods, paneSessions, paneEvents,
+		paneDetail, paneUsage, panePipeline, panePluginDetail, paneCatalog,
+	} {
+		m := &model{pane: pane, eventColumns: defaultColumnSelection()}
+		got := fitHintLine(m.helpView(), 80)
+		if lipgloss.Width(got) > 80 {
+			t.Errorf("pane %v: hint is %d columns at 80:\n%q", pane, lipgloss.Width(got), got)
+		}
+		if !strings.Contains(got, "[q] quit") {
+			t.Errorf("pane %v: lost [q] quit at 80 columns:\n%q", pane, got)
+		}
+	}
+}
+
+// A zero width means the size is not known yet (before the first WindowSizeMsg);
+// pass the line through rather than trimming it to nothing.
+func TestFitHintLine_UnknownWidthIsUnchanged(t *testing.T) {
+	m := &model{pane: paneEvents, eventColumns: defaultColumnSelection()}
+	full := m.helpView()
+	if got := fitHintLine(full, 0); got != full {
+		t.Error("zero width altered the hint line")
+	}
+}
+
+// The optional notices — hidden-message and dropped-column counts — must not
+// outlive the keys that let a user act on them.
+//
+// They were appended AFTER "[q] quit", and fitHintLine drops from the front, so at
+// width 40 the footer read "… · → 1 more column ([c] to choose)" with no way to
+// quit or open help. A notice is worth less than the keys it refers to.
+func TestFitHintLine_NoticesNeverOutliveQuit(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		setup func(*model)
+	}{
+		{"dropped columns", func(m *model) { m.eventColsDropped = 1 }},
+		{"many dropped columns", func(m *model) { m.eventColsDropped = 7 }},
+		{"hidden messages", func(m *model) { m.hideInactive = true; m.hiddenInactive = 42 }},
+		{"both notices", func(m *model) {
+			m.eventColsDropped = 3
+			m.hideInactive = true
+			m.hiddenInactive = 9
+		}},
+	} {
+		m := &model{pane: paneEvents, eventColumns: defaultColumnSelection()}
+		tc.setup(m)
+		full := m.helpView()
+
+		for _, width := range []int{120, 80, 60, 40, 30, 20} {
+			got := fitHintLine(full, width)
+			if lipgloss.Width(got) > width {
+				t.Errorf("%s at %d: %d columns:\n%q", tc.name, width, lipgloss.Width(got), got)
+			}
+			if !strings.Contains(got, "[q] quit") {
+				t.Errorf("%s at %d: lost [q] quit:\n%q", tc.name, width, got)
+			}
+			if width >= 24 && !strings.Contains(got, "[?] keys") {
+				t.Errorf("%s at %d: lost [?] keys:\n%q", tc.name, width, got)
+			}
+		}
+	}
+}
+
+// A wide terminal still shows the notice — moving it earlier must not lose it.
+func TestFooter_NoticesStillAppearWhenThereIsRoom(t *testing.T) {
+	m := &model{pane: paneEvents, eventColumns: defaultColumnSelection()}
+	m.eventColsDropped = 2
+	m.hideInactive = true
+	m.hiddenInactive = 5
+
+	got := fitHintLine(m.helpView(), 220)
+	for _, want := range []string{"2 more columns", "5 hidden", "[?] keys", "[q] quit"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("wide footer omits %q:\n%q", want, got)
+		}
+	}
+}
+
+// The pipeline pane appended its unmet-deps notice the same way, so it had the
+// same defect. Pre-existing rather than introduced here, but identical in kind.
+func TestFitHintLine_PipelineNoticeNeverOutlivesQuit(t *testing.T) {
+	// A populated pipeline with one genuinely unmet dependency, so the
+	// "%d plugin%s with unmet deps" branch is actually taken. With a nil pipeline
+	// unmetDepsCount() returns 0 and this test asserted only the plain panePipeline
+	// footer — which TestEveryPaneFitsAt80 already covers, so the notice this test
+	// is named for went unexercised.
+	m := &model{pane: panePipeline, pipeline: &apiclient.PipelineView{
+		Outbound: []apiclient.PipelinePlugin{
+			{Name: "token-exchange", Direction: "outbound", Position: 0,
+				Requires: []string{"jwt-validation"}},
+		},
+	}}
+	if n := m.unmetDepsCount(); n == 0 {
+		t.Fatal("fixture produced no unmet deps, so the notice branch is not exercised")
+	}
+	full := m.helpView()
+	if !strings.Contains(full, "unmet deps") {
+		t.Fatalf("footer lacks the unmet-deps notice this test is named for:\n%q", full)
+	}
+	// lipgloss.Width, not len([]rune(...)): fitHintLine measures display columns, so
+	// the test has to measure the same thing. They agree for today's hints (↑ and ↓
+	// are width 1), but a hint with a genuinely wide glyph would overflow the footer
+	// while a rune count still read it as fitting — which is the exact failure this
+	// test exists to catch.
+	for _, width := range []int{80, 60, 40, 24} {
+		got := fitHintLine(full, width)
+		if !strings.Contains(got, "[q] quit") {
+			t.Errorf("width %d: lost [q] quit:\n%q", width, got)
+		}
+		if lipgloss.Width(got) > width {
+			t.Errorf("width %d: %d columns:\n%q", width, lipgloss.Width(got), got)
+		}
+	}
+}

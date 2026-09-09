@@ -115,7 +115,15 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 	// events timeline it charts the session being read, from the session picker
 	// it charts everything. Suppressed while filtering, where `u` is a character
 	// the user is typing — the same reasoning as the `?` overlay above.
-	if msg.String() == "u" && !m.filtering && m.editState.phase == editPhaseDone {
+	//
+	// Gated on !m.colPicker as well: this handler sits above the picker block, so
+	// without it `u` reached openUsage while m.colPicker stayed true — View() drew
+	// the picker popup over the Usage pane, paneUsage's own m/w/b/s bindings went
+	// live underneath it, and `esc` then closed the picker onto Usage instead of the
+	// events timeline the picker was opened from. (`?` above is deliberately NOT
+	// gated: it layers help over the picker without changing panes, and closing it
+	// restores the picker.)
+	if msg.String() == "u" && !m.filtering && !m.colPicker && m.editState.phase == editPhaseDone {
 		switch m.pane {
 		case paneEvents, paneDetail:
 			if m.selectedSess != "" {
@@ -124,6 +132,73 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 		case paneSessions:
 			return m.openUsage("")
 		}
+	}
+
+	// The column picker owns the keyboard while it is up, so ↑↓/space cannot also
+	// move the table cursor underneath it. Checked before pane dispatch for the
+	// same reason the help overlay is.
+	//
+	// Scoped to paneEvents, mirroring the condition that opens it: no KEY can change
+	// panes underneath the picker, but a MESSAGE still can — the sessionsMsg handler
+	// drops to paneSessions when the selected session disappears server-side, which
+	// left this block swallowing enter/j/k over an inert sessions table. Gating on
+	// the pane covers that and any future transition, where clearing the flag in one
+	// handler would only fix today's path.
+	if m.colPicker && m.pane == paneEvents && !m.filtering {
+		switch msg.String() {
+		case "q", "ctrl+c":
+			// Quit stays live. A modal that traps the user until they find its exit
+			// is worse than one that closes on the key they already reach for, and
+			// `q` means quit everywhere else in abctl. Falls through to the global
+			// handler rather than being reimplemented here.
+		case "c", "esc", "enter":
+			m.colPicker = false
+			return nil
+		case "up", "k":
+			if m.colCursor > 0 {
+				m.colCursor--
+			}
+			return nil
+		case "down", "j":
+			if m.colCursor < len(eventColumns)-1 {
+				m.colCursor++
+			}
+			return nil
+		case " ", "x":
+			// Toggle. selectedColumns falls back to the defaults when the set is
+			// empty, so turning everything off cannot leave an unrecoverable blank
+			// pane.
+			id := eventColumns[m.colCursor].id
+			m.eventColumns[id] = !m.eventColumns[id]
+			// Make that fallback visible in the checkboxes rather than only in the
+			// table. Without this, emptying the selection drew twelve `[ ]` boxes over
+			// a table showing twelve default columns — the one state the fallback
+			// exists to rescue was also the state where the picker misreported what is
+			// on screen, and the `(no room)` markers vanished too since they are gated
+			// on the selection.
+			if !anyColumnSelected(m.eventColumns) {
+				m.eventColumns = defaultColumnSelection()
+			}
+			m.rebuildEventsTable()
+			return nil
+		case "r":
+			m.eventColumns = defaultColumnSelection()
+			m.rebuildEventsTable()
+			return nil
+		default:
+			// Everything else is swallowed: the popup is modal, so a stray key must
+			// not move the table cursor underneath it.
+			return nil
+		}
+	}
+
+	// `c` opens the column picker from the events timeline. Suppressed while
+	// filtering, where `c` is a character being typed — the same reasoning as `?`
+	// and `u`.
+	if msg.String() == "c" && m.pane == paneEvents && !m.filtering &&
+		m.editState.phase == editPhaseDone {
+		m.colPicker = true
+		return nil
 	}
 
 	// Picker panes handle their own keys before session-view logic.
@@ -596,31 +671,52 @@ func (m *model) helpView() string {
 		if m.hideInactive {
 			skipHint = "[s] show all"
 		}
-		base := "[↑↓] nav  [b/f] page  [↵] detail  [u] usage  [esc] back  [/] filter  " + skipHint + "  [p] pause  [?] keys  [q] quit"
-		// Surface the hidden-message count so a filtered timeline doesn't
-		// look like data loss. Only annotate when hiding is on AND at
-		// least one message was hidden.
+		// Ordered by what must survive truncation, not by how the keys group. The
+		// footer runs 135 columns and an 80-column terminal cuts the tail, so
+		// anything after the cut is invisible — [?] keys and [q] quit were both
+		// past it, which is the pair a stuck user reaches for. They now sit at the
+		// end, and the escapable/discoverable keys ahead of them, with the
+		// specialised ones first to be lost.
+		base := "[↑↓] nav  [b/f] page  [↵] detail  [c] columns  [u] usage  " +
+			skipHint + "  [p] pause  [/] filter  [esc] back"
+
+		// Notices go BEFORE the essential hints, not after.
+		//
+		// fitHintLine drops from the front, so anything appended past "[q] quit"
+		// outlives it — at width 40 the footer read "… · → 1 more column ([c] to
+		// choose)" with no way to quit or reach help. A notice is worth less than
+		// the keys that let a user act on it.
+		//
+		// Surface the hidden-message count so a filtered timeline doesn't look like
+		// data loss. Only when hiding is on AND at least one message was hidden.
 		if m.hideInactive && m.hiddenInactive > 0 {
-			base = fmt.Sprintf("%s  ·  %d hidden",
-				base, m.hiddenInactive)
+			base = fmt.Sprintf("%s  ·  %d hidden", base, m.hiddenInactive)
 		}
-		return base
+		// Columns that did not fit — the whole reason issue #866 was filed: HOST was
+		// declared but never visible, and nothing said the table had been clipped.
+		if m.eventColsDropped > 0 {
+			base = fmt.Sprintf("%s  ·  → %d more column%s ([c] to choose)",
+				base, m.eventColsDropped, plural(m.eventColsDropped))
+		}
+		return base + "  [?] keys  [q] quit"
 	case paneDetail:
 		return "[↑↓] scroll  [y] yank  [u] usage  [esc] back  [?] keys  [q] quit"
 	case panePipeline:
 		var base string
 		if m.parentCtx != nil {
-			base = "[↑↓] nav  [↵] plugin detail  [e] edit  [tab] sessions  [esc] pods  [?] keys  [q] quit"
+			base = "[↑↓] nav  [↵] plugin detail  [e] edit  [tab] sessions  [esc] pods"
 		} else {
-			base = "[↑↓] nav  [↵] plugin detail  [e] edit  [tab] sessions  [?] keys  [q] quit"
+			base = "[↑↓] nav  [↵] plugin detail  [e] edit  [tab] sessions"
 		}
-		// Surface a count of plugins with unmet dependencies so a single
-		// "✗" in the DEPS column doesn't get lost in a long list.
+		// Surface a count of plugins with unmet dependencies so a single "✗" in the
+		// DEPS column doesn't get lost in a long list. Before the essential hints,
+		// for the reason given in the paneEvents case: fitHintLine drops from the
+		// front, so a notice appended past "[q] quit" outlives it.
 		if n := m.unmetDepsCount(); n > 0 {
 			base = fmt.Sprintf("%s  ·  %d plugin%s with unmet deps",
 				base, n, plural(n))
 		}
-		return base
+		return base + "  [?] keys  [q] quit"
 	case panePluginDetail:
 		return "[↑↓] scroll  [esc] back  [?] keys  [q] quit"
 	case paneUsage:

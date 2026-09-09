@@ -3,7 +3,6 @@ package tui
 import (
 	"fmt"
 	"net"
-	"strconv"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/table"
@@ -17,30 +16,13 @@ import (
 // now safe because per-cell ANSI coloring was removed from this table.
 func newEventsTable() table.Model {
 	t := table.New(
-		table.WithColumns([]table.Column{
-			{Title: "#", Width: 4},
-			{Title: "TIME", Width: 12},
-			{Title: "DIR", Width: 4},
-			{Title: "PHASE", Width: 7},
-			{Title: "ACTION", Width: actionColWidth},
-			{Title: "PLUGIN", Width: 18},
-			// methodColWidth rather than 22: the widest realistic value is a model
-			// name ("claude-opus-5"), and the columns freed pay for splitting
-			// TOKENS and COST apart below.
-			{Title: "METHOD", Width: methodColWidth},
-			{Title: "STATUS", Width: 7},
-			{Title: "DURATION", Width: 10},
-			// 17, not 15: sized for a SEVEN-digit prompt, "1,048,576(−12.3k)".
-			// Million-token contexts are in service, and bubbles truncates a cell
-			// at the column width, so 15 rendered "1,048,576(−1…" — dropping the
-			// saving, which is the half of this cell that appears nowhere else.
-			{Title: "TOKENS", Width: 17},
-			// 19 fits the widest cell the formatter can produce:
-			// "<$0.0001(−<$0.0001)", where both halves fell under the
-			// four-decimal floor. The ordinary shape is "$0.2546(−$0.0037)" at 17.
-			{Title: "COST", Width: 19},
-			{Title: "HOST", Width: 20},
-		}),
+		// One definition, not two. This used to hold a hand-written twelve-entry
+		// copy of eventColumns' widths — harmless, because the first
+		// rebuildEventsTable overwrites it via SetColumns, which is exactly what
+		// made it a hazard: a width changed in one place and not the other produced
+		// no symptom at all. The rationale for the non-obvious widths now lives
+		// beside the widths that actually decide, in eventColumns.
+		table.WithColumns(tableColumns(selectedColumns(defaultColumnSelection()))),
 		table.WithFocused(true),
 	)
 	t.SetStyles(tableStyles())
@@ -105,11 +87,17 @@ func (m *model) rebuildEventsTable() {
 	// exchange is read off the timeline.
 	ids, partner := computeEventPairs(eventRows)
 
+	// One selection per rebuild, fitted to the terminal. Both the header and every
+	// row cell come from `cols`, so they cannot disagree.
+	cols, dropped := fitColumns(selectedColumns(m.eventColumns), m.width)
+	m.eventColsDropped = dropped
+
+	// Rows are built first and handed to the table together with their columns at
+	// the end of this function — see the note there on why the order matters.
 	rows := make([]table.Row, 0, len(eventRows))
 	m.visibleRows = m.visibleRows[:0]
 	m.hiddenInactive = 0
 	for i, er := range eventRows {
-		ev := er.event
 		if m.filter != "" && !matchEventRow(er, m.filter) {
 			continue
 		}
@@ -124,36 +112,44 @@ func (m *model) rebuildEventsTable() {
 			continue
 		}
 
+		// Cells come from the selected columns, in their order — see
+		// events_columns.go. Previously this was a positional table.Row literal
+		// parallel to a []table.Column slice, so inserting a column meant editing
+		// both in step and a mismatch shifted every later cell under the wrong
+		// heading.
+		//
+		// PHASE carries no bracket glyphs. They were box-drawing corners (┌/│/└)
+		// meant to visually connect a request to its response, and they could only
+		// ever be correct for exchanges that NEST. Concurrent requests cross
+		// instead: A starts, B starts, A ends, B ends — for which a tree has no
+		// notation, so both rows claimed to contain each other and the output was
+		// actively misleading. The # column pairs exchanges exactly (by the
+		// proxy-stamped RequestID), which is what the glyphs approximated.
+		// One rowAction per row, reusing the invs computed for hideInactive above:
+		// the ACTION and PLUGIN cells read this result rather than each recomputing
+		// the pair and discarding half of it.
 		action, plugin := rowAction(er, invs)
-		var idCell string
-		if id, ok := ids[ev]; ok {
-			idCell = strconv.Itoa(id)
+		cc := cellContext{
+			m: m, rows: eventRows, partner: partner, i: i, row: er, ids: ids,
+			invs: invs, action: action, plugin: plugin,
 		}
-		// PHASE carries no bracket glyphs. They were box-drawing corners
-		// (┌/│/└) meant to visually connect a request to its response, and they
-		// could only ever be correct for exchanges that NEST. Concurrent
-		// requests cross instead: A starts, B starts, A ends, B ends — for
-		// which a tree has no notation, so both rows claimed to contain each
-		// other and the output was actively misleading. The # column pairs
-		// exchanges exactly (by the proxy-stamped RequestID), which is what the
-		// glyphs were a lossy approximation of.
-		phaseCell := shortPhase(ev.Phase)
-		rows = append(rows, table.Row{
-			idCell,
-			ev.At.Format("15:04:05.00"),
-			shortDirection(ev.Direction),
-			phaseCell,
-			action,
-			truncStr(plugin, 18),
-			eventMethod(*ev),
-			statusCell(*ev),
-			durationCell(*ev),
-			m.tokensCell(eventRows, partner, i, ev),
-			m.costCell(eventRows, partner, i, ev),
-			truncStr(ev.Host, 20),
-		})
+		row := make(table.Row, 0, len(cols))
+		for _, c := range cols {
+			cc.width = c.width
+			row = append(row, c.cell(cc))
+		}
+		rows = append(rows, row)
 		m.visibleRows = append(m.visibleRows, er)
 	}
+	// Clear, set columns, then set the matching rows.
+	//
+	// SetColumns calls UpdateViewport, which re-renders whatever rows are loaded,
+	// and bubbles' renderRow walks the ROW's cells while indexing m.cols[i] — so a
+	// row with more cells than there are columns reads past the end and panics
+	// ("index out of range [10] with length 10"). Toggling a column off is exactly
+	// that. Clearing first leaves SetColumns nothing to mis-render.
+	m.eventsTbl.SetRows(nil)
+	m.eventsTbl.SetColumns(tableColumns(cols))
 	m.eventsTbl.SetRows(rows)
 
 	// Auto-follow: if user was at the bottom, stay at the bottom. Otherwise

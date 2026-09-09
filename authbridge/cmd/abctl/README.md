@@ -94,10 +94,25 @@ The UI has these top-level panes. `Enter` drills in; `Esc` backs out.
 - **Sessions** (default): table of active sessions in the store, most
   recently updated first. Columns: ID, updated (relative), event count,
   active marker.
-- **Events**: per-session event table. Columns: time, direction (in/out),
-  phase (req/resp), protocol (a2a/mcp/inf), method or model, HTTP status,
-  duration, host. Live-updates while in view — if the cursor is on the
-  last row, it auto-follows new events.
+- **Events**: per-session event table. `c` opens a column picker — a popup with
+  a checkbox and a one-line description per column, since twelve abbreviated
+  headers are not self-describing.
+
+  All twelve together need ~168 terminal columns, so the table drops what does
+  not fit and the footer says how many (`→ N more columns`). Columns carry a
+  keep rank rather than being equally expendable: DIR, DURATION, TOKENS and COST
+  give way first, while `#` and HOST survive longest. That is what makes HOST
+  usable at 80 columns despite being last in display order — it is the column
+  most people open this pane for.
+
+  All twelve are on by default: `#` (exchange number, shared by a request
+  and its response), TIME, DIR, PHASE, ACTION, PLUGIN, METHOD, STATUS,
+  DURATION, TOKENS, COST, HOST. On a narrow terminal the low-ranked ones
+  are hidden rather than turned off, so widening the window brings them
+  back without touching the picker.
+
+  Live-updates while in view — if the cursor is on the last row, it
+  auto-follows new events.
 - **Detail**: pretty-printed JSON of a single event. Scroll with arrow
   keys; `y` yanks to `/tmp/abctl-event-<timestamp>.json` and flashes the
   path in the footer.
@@ -175,6 +190,7 @@ Layered on top of all of them:
 | `Esc` | sessions, pipeline | (picker mode) tear down port-forward and back to pods |
 | `/` | sessions, events | filter (substring match; Enter commits, Esc cancels) |
 | `s` | events | toggle skip-row visibility (default: hidden; the events footer shows the hidden count) |
+| `c` | events | open the column picker (`↑↓`/`jk` move, `space`/`x` toggle, `r` reset, `Esc`/`Enter`/`c` close) |
 | `p` | any | pause/resume stream |
 | `y` | detail | yank event JSON to `/tmp` |
 | `g` / `G` | lists | jump to top / bottom |

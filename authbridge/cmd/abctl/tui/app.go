@@ -228,7 +228,20 @@ type model struct {
 	// UI state.
 	pane paneID
 	// usage is the Usage pane's view state (metric, window, scope, snapshot).
-	usage        usageState
+	usage usageState
+
+	// eventColumns is which events-table columns are shown. Keyed by a stable id
+	// rather than an index, so a future column inserted in the middle does not
+	// silently change what an existing selection means.
+	eventColumns map[eventColumnID]bool
+	// eventColsDropped is how many selected columns did not fit the terminal on the
+	// last rebuild. Surfaced in the footer: with every column on the table needs
+	// ~168 columns, and the excess was clipped with nothing saying so (#866).
+	eventColsDropped int
+	// colPicker is open while `c` owns the keyboard; colCursor is the highlighted
+	// column within it.
+	colPicker    bool
+	colCursor    int
 	selectedSess string
 	filter       string
 	filtering    bool
@@ -361,6 +374,7 @@ func New(ctx context.Context, c *apiclient.Client) tea.Model {
 		cancel:       cancel,
 		events:       make(map[string][]pipeline.SessionEvent),
 		pane:         paneSessions,
+		eventColumns: defaultColumnSelection(),
 		sessionsTbl:  newSessionsTable(),
 		eventsTbl:    newEventsTable(),
 		pipelineTbl:  newPipelineTable(),
@@ -612,6 +626,15 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.selectedSess != "" && !serverIDs[m.selectedSess] && m.pane != paneSessions {
 			m.selectedSess = ""
 			m.pane = paneSessions
+			// Close the picker with the pane it belongs to.
+			//
+			// The paneEvents gates on the key block and in View() make it inert and
+			// invisible while the user is on the sessions table, but the flag itself
+			// outlived the pane: pressing enter on another session put m.pane back to
+			// paneEvents and the popup the user never reopened was there again, owning
+			// the keyboard until they found esc. Gating covers "drawn over the wrong
+			// pane"; this covers the return trip.
+			m.colPicker = false
 		}
 		m.sessions = []session.SessionSummary(msg)
 		m.connState.phase = connOpen
@@ -1089,6 +1112,13 @@ func (m *model) View() string {
 	if m.helpVisible {
 		return overlayCenter(base, renderHelpOverlay(m.helpVp, m.width, m.height), m.width, m.height)
 	}
+	// Same paneEvents scoping as the key block: an async pane change must not leave
+	// the popup drawn over a pane it does not belong to.
+	if m.colPicker && m.pane == paneEvents {
+		return overlayCenter(base,
+			renderColumnPicker(m.eventColumns, m.colCursor, m.width, m.height),
+			m.width, m.height)
+	}
 	return base
 }
 
@@ -1118,6 +1148,10 @@ func (m *model) paneView() string {
 		if m.pickerErr != "" {
 			footer = "error: " + m.pickerErr + "    " + footer
 		}
+		// Fitted like the session-view footer: an error prefix can push even a
+		// short picker hint past the terminal width, and a wrapped footer costs a
+		// row of the table above it.
+		footer = fitHintLine(footer, m.width)
 		return lipgloss.JoinVertical(lipgloss.Left,
 			styleTitle.Render(title),
 			body,
@@ -1131,6 +1165,10 @@ func (m *model) paneView() string {
 		if m.pickerErr != "" {
 			footer = "error: " + m.pickerErr + "    " + footer
 		}
+		// Fitted like the session-view footer: an error prefix can push even a
+		// short picker hint past the terminal width, and a wrapped footer costs a
+		// row of the table above it.
+		footer = fitHintLine(footer, m.width)
 		return lipgloss.JoinVertical(lipgloss.Left,
 			styleTitle.Render(title),
 			body,
