@@ -77,11 +77,29 @@ does the same thing, since that is the title the Releases page shows. CI moves t
 the published commit on every merge, so the release's "Source code" archives match the
 binaries beside them.
 
+If you have `AUTHBRIDGE_VERSION`, `AUTHBRIDGE_REF`, or `AUTHBRIDGE_INSTALL_ONLY` exported
+in a shell profile, unset them. They are no longer read, and the installer now refuses to
+run rather than quietly ignoring them — so a stale export fails the **default** one-liner
+even though you passed no flags. The error names the flag that replaced it and echoes your
+value back, so the fix is copy-pasteable.
+
 ### Enabling the channel (one-time, maintainers)
 
 Merge, **cut a release**, then set the repo variable `MAIN_CHANNEL_ENABLED=true`
 (Settings → Secrets and variables → Actions → Variables). The next push to `main`
 publishes the rolling release.
+
+Two things to check deliberately before flipping it, because both become live at that
+moment and are inert until then:
+
+- **`release-binaries.yaml` holds `contents: write` on every `main` push**, not just on
+  tag pushes. It builds only first-party code with SHA-pinned actions, but that is a
+  wider blast radius than before. If you want it narrower, split build (`contents: read`)
+  from publish (`contents: write`) and pass `dist/` between them as an artifact.
+- **The job moves the `main-latest` tag** on each publish. That is the one destructive
+  operation in the workflow. It is guarded to the rolling tag, and `install_test.sh`
+  asserts no `${TAG}` comparison in the workflow names anything other than
+  `CHANNEL_TAG`, so a `v*` release cannot become movable by a rename going unnoticed.
 
 The middle step is load-bearing, though not for the reason it first appears. The default
 one-liner is safe as soon as `main` carries the `newest_release()` v-tag filter: it

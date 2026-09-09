@@ -59,7 +59,20 @@ jobs:
       || github.event_name == 'workflow_dispatch'
       || vars.MAIN_CHANNEL_ENABLED == 'true'
     permissions:
-      contents: write  # create the Release and upload assets (tag + main pushes)
+      # create/update the Release, upload assets, and move the rolling tag.
+      #
+      # This is reachable on every `main` push now, not only on tag pushes, so the blast
+      # radius of a compromised step in this job is larger than it was. Nothing here is
+      # known-wrong — the job builds only first-party code and every action is SHA-pinned
+      # — but the scope change deserves a look at the moment it starts mattering, which
+      # is when MAIN_CHANNEL_ENABLED flips rather than when this merges. It is listed as
+      # a pre-enable check in CONTRIBUTING for that reason.
+      #
+      # If that look wants a smaller surface, the shape is splitting build (contents:
+      # read) from publish (contents: write) and passing dist/ between them as an
+      # artifact. Not done here: it is a restructuring, not a fix, and the gate keeps
+      # this inert until someone decides.
+      contents: write
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1

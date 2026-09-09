@@ -340,5 +340,32 @@ check "--ref=v0.5.0 with a transport failure refuses to run main" \
 check "--ref=v0.5.0 with a 200 script re-execs into it" \
 	"REEXECED" "$(with_bootstrap v0.5.0 200 v0.7.0-alpha.7)"
 
+# --- the channel tag is one string, in two files ---
+#
+# install.sh owns CHANNEL_TAG and every test above reads it out of the script rather than
+# restating it, so a rename cannot leave a stale expectation passing. That discipline
+# stopped at the workflow boundary: CI had its own bare literal with a comment asking a
+# human to keep them equal. Rename CHANNEL_TAG and every test here would still pass while
+# the channel broke in the only way users see — the installer requesting main-next_*
+# assets from a release publishing main-latest_*, i.e. a 404 on download.
+#
+# The workflow is also where the one destructive operation lives: the tag move is guarded
+# by that same literal, so a drift makes a v* release movable.
+WORKFLOW="${SCRIPT_DIR}/../.github/workflows/release-binaries.yaml"
+if [ -f "${WORKFLOW}" ]; then
+	check "CI publishes the tag install.sh asks for" "1" \
+		"$(grep -c "TAG=\"${CHANNEL_TAG}\"" "${WORKFLOW}" || true)"
+	# Every `[ "${TAG}" = ... ]` in the workflow must name CHANNEL_TAG. Counting matches
+	# would be brittle — there are legitimately two today, the release-notes switch and
+	# the tag-move guard — so assert the absence of any comparison against a DIFFERENT
+	# literal instead. That is the invariant: no branch keyed on a stale channel name.
+	check "no TAG comparison names a different tag" "0" \
+		"$(grep -oE '\[ "\$\{TAG\}" = "[^"]*" \]' "${WORKFLOW}" | grep -cv "\"${CHANNEL_TAG}\"" || true)"
+	check "at least one TAG comparison names CHANNEL_TAG" "1" \
+		"$(grep -oE '\[ "\$\{TAG\}" = "[^"]*" \]' "${WORKFLOW}" | grep -c "\"${CHANNEL_TAG}\"" | awk '$1>0{print 1; exit} {print 0}')"
+else
+	check "release-binaries.yaml is where expected" "found" "missing at ${WORKFLOW}"
+fi
+
 printf '\n%s passed, %s failed\n' "${PASS}" "${FAIL}"
 [ "${FAIL}" = "0" ]
