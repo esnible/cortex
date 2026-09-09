@@ -48,6 +48,26 @@ type Decision struct {
 // proxy log as `reason=handshake-fail` — plus the sibling registries that fail
 // the same way for the same reason.
 //
+// What this costs, stated plainly because "no plugin can read it" is only the
+// upside half of the ledger: several of these hosts accept arbitrary uploads.
+// *.github.com globs gist. and uploads.; *.githubusercontent.com is user
+// content; ghcr.io takes blob pushes; storage.googleapis.com is object storage.
+// Those are exactly where an agent would put data it wanted to exfiltrate, and
+// terminating TLS was the only point at which such a payload was ever visible.
+// After this change they are opaque tunnels: a session event still records the
+// CONNECT host and byte counts, but not one byte of the body.
+//
+// That is accepted rather than overlooked. The traffic could not be inspected
+// reliably anyway — before this list, an untrusting client's first request to any
+// of these hosts failed and the host was then auto-skipped for ten minutes (see
+// SkipSet below), so interception was intermittent and its absence silent. The
+// control that actually remains for egress is allow-listing which hosts a
+// workload may reach at all — iptables / NetworkPolicy in-cluster, and
+// listener.skip_hosts plus the egress gate for the proxy — not TLS inspection of
+// hosts whose bodies no plugin parses. A deployment that needs payload
+// visibility on a specific host should set passthrough_hosts explicitly and
+// arrange for its clients to trust the CA.
+//
 // NEVER add an inference or tool endpoint here. api.anthropic.com,
 // api.openai.com, generativelanguage.googleapis.com, a LiteLLM gateway, an MCP
 // server: those are the entire point of the bridge, and skipping one silently
@@ -81,8 +101,17 @@ var DefaultPassthroughHosts = []string{
 	"pypi.org",
 	"*.pythonhosted.org",
 	"registry.npmjs.org",
+	// crates.io is the exact host; the glob covers index. (the sparse index, the
+	// default registry protocol since Rust 1.70 — so `cargo build` hits it on
+	// every resolve) and static. (the .crate downloads).
 	"crates.io",
-	"static.crates.io",
+	"*.crates.io",
+	// Docker Hub, for parity with ghcr.io above: registry-1. and auth. under the
+	// glob, and the blob CDN, which is a separate domain in the same way
+	// storage.googleapis.com is for Go modules.
+	"docker.io",
+	"*.docker.io",
+	"production.cloudflare.docker.com",
 }
 
 // NewDecision compiles the interception policy. It returns an error for an

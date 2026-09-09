@@ -319,3 +319,47 @@ func TestEnsureTrustBundle_SplicesPEMSafely(t *testing.T) {
 		t.Error("roots lost across the splice boundary")
 	}
 }
+
+// TestEnsureTrustBundle_ReadOnlyCADirIsClassified: in a cluster ca_dir is a
+// mounted cert-manager Secret and Kubernetes mounts those read-only, so the write
+// cannot succeed there. That is the normal outcome, not a fault — the caller keys
+// off ErrCADirNotWritable to log it at Debug rather than warning about four
+// laptop-only environment variables on every production boot.
+func TestEnsureTrustBundle_ReadOnlyCADirIsClassified(t *testing.T) {
+	withSystemRoots(t, realPEM(t))
+	dir := caDirWith(t, realPEM(t))
+
+	// 0500: readable and traversable, not writable — what a Secret mount looks
+	// like to this process. Restored in cleanup so t.TempDir can remove it.
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+
+	_, err := EnsureTrustBundle(dir)
+	if err == nil {
+		t.Skip("write succeeded despite a 0500 ca_dir (running as root?)")
+	}
+	if !errors.Is(err, ErrCADirNotWritable) {
+		t.Errorf("error = %v, want it to wrap ErrCADirNotWritable so the caller can "+
+			"demote it; otherwise every in-cluster boot warns", err)
+	}
+	// It must NOT be mistaken for the missing-roots case, which is a real problem.
+	if errors.Is(err, ErrNoSystemRoots) {
+		t.Error("a read-only ca_dir must not report as missing system roots")
+	}
+}
+
+// TestEnsureTrustBundle_OtherWriteErrorsStayLoud is the other side: only the
+// filesystem refusing the write is demoted. A missing root store is a genuine
+// misconfiguration and must keep warning.
+func TestEnsureTrustBundle_OtherWriteErrorsStayLoud(t *testing.T) {
+	withSystemRoots(t, nil)
+	_, err := EnsureTrustBundle(caDirWith(t, realPEM(t)))
+	if errors.Is(err, ErrCADirNotWritable) {
+		t.Errorf("missing roots misclassified as unwritable ca_dir: %v", err)
+	}
+	if !errors.Is(err, ErrNoSystemRoots) {
+		t.Errorf("error = %v, want ErrNoSystemRoots", err)
+	}
+}

@@ -5,8 +5,10 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"syscall"
 )
 
 // TrustBundleName is the file EnsureTrustBundle writes inside a CA dir. It holds
@@ -16,7 +18,7 @@ import (
 // is ADDITIVE. Node's NODE_EXTRA_CA_CERTS is — the name says so — but almost
 // every other tool REPLACES its trust store with what you point it at:
 //
-//	SSL_CERT_FILE      Go (gh, abctl, any Go CLI)
+//	SSL_CERT_FILE      Go (gh, abctl, any Go CLI) — Linux/CI only, see below
 //	GIT_SSL_CAINFO     git
 //	REQUESTS_CA_BUNDLE Python requests
 //	CURL_CA_BUNDLE     curl
@@ -24,10 +26,24 @@ import (
 // Pointing those at ca.crt makes the process trust the bridge CA and NOTHING
 // else, so every direct (unproxied) TLS connection fails. Go's own loader is
 // explicit about it — crypto/x509 root_unix.go does `files = []string{f}` when
-// SSL_CERT_FILE is set, discarding the defaults. The failure is platform-split
-// and therefore easy to ship by accident: macOS uses root_darwin.go and the
-// platform verifier, so a bare ca.crt appears to work there while breaking
-// every Linux machine and CI runner.
+// SSL_CERT_FILE is set, discarding the defaults.
+//
+// SSL_CERT_FILE DOES NOTHING ON macOS, so on that platform this bundle serves
+// git, curl and Python but not Go. root_unix.go, the file quoted above, is built
+// for `linux || freebsd || …` and excludes darwin; darwin's loadSystemRoots
+// returns a `systemPool: true` sentinel that reads no file at all, and verify.go
+// then routes any program that has not set RootCAs to systemVerify —
+// Security.framework, keychain only. No environment variable reaches it.
+//
+// That is worth stating precisely because the obvious reading is the wrong way
+// round: it is NOT that darwin honours the variable and a bare CA happens to be
+// harmless there. The variable is ignored outright, which is why a bare ca.crt
+// looks fine on a Mac and breaks every Linux machine and CI runner.
+//
+// A Go program that wants the bridge CA on macOS has to opt in in-process, via
+// x509.SystemCertPool() plus AppendCertsFromPEM — verify.go falls through to the
+// pure-Go verifier with those extra roots when the platform verifier fails. That
+// is available to code we compile and not to a third-party binary like gh.
 const TrustBundleName = "bundle.crt"
 
 // systemRootFiles are the locations that ship a concatenated PEM of the
@@ -59,6 +75,18 @@ var systemRootFiles = []string{
 // bridge", which is a visible, recoverable failure. The inverse — silently
 // distrusting the public internet — is neither.
 var ErrNoSystemRoots = errors.New("tlsbridge: no system root bundle found")
+
+// ErrCADirNotWritable means the bundle could not be written because ca_dir is
+// read-only or otherwise not writable by this process.
+//
+// Distinguished from every other failure because it is the NORMAL, expected
+// outcome in-cluster and must not be reported as a problem there. In a cluster
+// ca_dir is an operator-mounted cert-manager Secret, and Kubernetes mounts Secret
+// volumes read-only, so the write cannot succeed — while a sidecar has no use for
+// the bundle anyway: it exists so a developer's git/curl/Python can verify a
+// laptop bridge. Without this distinction the caller warns about four
+// laptop-only environment variables on every production boot.
+var ErrCADirNotWritable = errors.New("tlsbridge: ca_dir is not writable")
 
 // EnsureTrustBundle writes <caDir>/bundle.crt as the bridge CA (<caDir>/ca.crt)
 // followed by the platform's trusted roots, and returns its path.
@@ -123,9 +151,25 @@ func EnsureTrustBundle(caDir string) (string, error) {
 	// 0644 like ca.crt: this is public trust material, and every tool reading it
 	// runs as the user or as another service account.
 	if werr := atomicWriteFile(bundlePath, buf.Bytes(), 0o644); werr != nil {
+		// A read-only ca_dir is the in-cluster norm, not a fault: classify it so
+		// the caller can report it at the right level instead of warning about
+		// laptop tooling on every production start.
+		if isNotWritable(werr) {
+			return "", fmt.Errorf("%w: %s: %w", ErrCADirNotWritable, bundlePath, werr)
+		}
 		return "", fmt.Errorf("tlsbridge: write trust bundle %s: %w", bundlePath, werr)
 	}
 	return bundlePath, nil
+}
+
+// isNotWritable reports whether err is the filesystem refusing the write, as
+// opposed to any other I/O failure.
+//
+// EROFS covers a read-only mount (a Kubernetes Secret volume), EACCES/EPERM a
+// directory this user cannot write. fs.ErrPermission catches the latter pair
+// portably; EROFS has no fs sentinel and is matched directly.
+func isNotWritable(err error) bool {
+	return errors.Is(err, fs.ErrPermission) || errors.Is(err, syscall.EROFS)
 }
 
 // findSystemRoots returns the first entry in systemRootFiles that is readable
