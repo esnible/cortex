@@ -11,6 +11,8 @@ on:
   push:
     tags:
       - 'v*'
+    branches:
+      - main
   workflow_dispatch:
     inputs:
       tag:
@@ -21,17 +23,62 @@ on:
 permissions:
   contents: read
 
+# Scoped by ref, because main-latest is the first FIXED, reused release target this
+# repo has had: every v* tag is unique, so two runs never contended for the same
+# assets before. Two merges inside one build window would otherwise have both runs
+# uploading 17 files with --clobber, interleaving into a mixed asset set plus a
+# checksums.txt from whichever finished last — which users meet as "checksum
+# verification failed", an alarming message for what is really a publish race.
+# Superseding is right for a rolling channel: only the newest tip matters.
+# event_name is in the group, not just the ref: github.ref is refs/heads/main for BOTH a
+# push to main and a workflow_dispatch (which defaults to the default branch), so a ref-
+# only group let someone clicking "Run workflow" cancel a merge build mid-upload.
+concurrency:
+  group: release-binaries-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   release-binaries:
     runs-on: ubuntu-latest
+    # The developer channel is off until a release containing the newest_release()
+    # v-tag filter exists. Set MAIN_CHANNEL_ENABLED=true in repo variables after
+    # cutting that release.
+    #
+    # Precisely what that protects, because an earlier version of this comment
+    # overstated it: the DEFAULT one-liner is safe as soon as main carries the filter,
+    # since it resolves a v-tag and re-execs the released copy, and that copy then hits
+    # `case "${SCRIPT_REF}" in v*)` and never calls newest_release at all. What needs a
+    # filtered release is anyone invoking a RELEASED copy as the parent — including the
+    # pinned one-liner this script prints in its own abctl-too-old message. An
+    # unfiltered parent resolves the rolling release as its version and installs
+    # unreleased binaries.
+    #
+    # workflow_dispatch stays ungated: it publishes nothing, it only uploads artifacts.
+    if: >-
+      github.ref_type == 'tag'
+      || github.event_name == 'workflow_dispatch'
+      || vars.MAIN_CHANNEL_ENABLED == 'true'
     permissions:
-      contents: write  # create the Release and upload assets (tag pushes only)
+      # create/update the Release, upload assets, and move the rolling tag.
+      #
+      # This is reachable on every `main` push now, not only on tag pushes, so the blast
+      # radius of a compromised step in this job is larger than it was. Nothing here is
+      # known-wrong — the job builds only first-party code and every action is SHA-pinned
+      # — but the scope change deserves a look at the moment it starts mattering, which
+      # is when MAIN_CHANNEL_ENABLED flips rather than when this merges. It is listed as
+      # a pre-enable check in CONTRIBUTING for that reason.
+      #
+      # If that look wants a smaller surface, the shape is splitting build (contents:
+      # read) from publish (contents: write) and passing dist/ between them as an
+      # artifact. Not done here: it is a restructuring, not a fix, and the gate keeps
+      # this inert until someone decides.
+      contents: write
     steps:
       - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Set up Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v5
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
           go-version-file: authbridge/cmd/authbridge-proxy/go.mod
 
@@ -42,11 +89,36 @@ jobs:
         run: |
           set -euo pipefail
           if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            TAG="${GITHUB_REF_NAME}"
             VERSION="${GITHUB_REF_NAME}"
+          elif [ "${GITHUB_REF_NAME}" = "main" ] && [ "${GITHUB_EVENT_NAME}" = "push" ]; then
+            # TAG names the rolling release and the assets, so the download URL is
+            # predictable. VERSION identifies the build, and the two must differ:
+            # abctl's serviceIsCurrent compares the stamp recorded in the installed
+            # launchd unit against the running binary to decide whether `service
+            # install` is a no-op. A constant stamp would report "Already current"
+            # while the old binary kept running — hiding upgrades on the one channel
+            # that changes every merge.
+            #
+            # "main-latest", not "main": a GitHub release needs a git tag, and a tag
+            # named `main` collides with the branch. Verified — `git rev-parse main`
+            # then resolves to the tag, every git command warns that the refname is
+            # ambiguous, and the tag freezes at the first publish while the branch
+            # moves on. Must match CHANNEL_TAG in authbridge/install.sh.
+            TAG="main-latest"
+            VERSION="main-$(printf '%s' "${GITHUB_SHA}" | cut -c1-7)"
           else
+            TAG="${INPUT_TAG:-dev}"
             VERSION="${INPUT_TAG:-dev}"
           fi
-          echo "Building version ${VERSION}"
+          echo "Building ${VERSION} for release ${TAG}"
+          # Hand both to later steps rather than re-deriving them there. The publish
+          # step used GITHUB_REF_NAME, which is "main" on a main push — it would have
+          # published to the wrong tag the moment the two stopped being equal.
+          {
+            echo "TAG=${TAG}"
+            echo "VERSION=${VERSION}"
+          } >> "${GITHUB_ENV}"
           mkdir -p dist
 
           # authbridge-proxy variants: "<suffix>:<build-tags>". Empty
@@ -64,7 +136,10 @@ jobs:
           build_proxy() {
             local variant="$1" tags="$2" os="$3" arch="$4"
             local suffix=""; [ -n "${variant}" ] && suffix="-${variant}"
-            local archive="dist/authbridge-proxy${suffix}_${VERSION}_${os}_${arch}.tar.gz"
+            # ${TAG}, not ${VERSION}: the filename has to match the download URL the
+            # installer builds from the release tag. They are the same string for a
+            # v* tag and differ only on the rolling channel release.
+            local archive="dist/authbridge-proxy${suffix}_${TAG}_${os}_${arch}.tar.gz"
             echo "==> authbridge-proxy${suffix} ${os}/${arch}"
             ( cd authbridge/cmd/authbridge-proxy && \
               GOWORK=off CGO_ENABLED=0 GOOS="${os}" GOARCH="${arch}" \
@@ -85,7 +160,7 @@ jobs:
               go build -trimpath \
                 -ldflags "-s -w -X main.version=${VERSION}" \
                 -o "${GITHUB_WORKSPACE}/dist/abctl" . )
-            tar -C dist -czf "dist/abctl_${VERSION}_${os}_${arch}.tar.gz" abctl
+            tar -C dist -czf "dist/abctl_${TAG}_${os}_${arch}.tar.gz" abctl
             rm -f dist/abctl
 
             for entry in "${proxy_variants[@]}"; do
@@ -96,12 +171,21 @@ jobs:
           ls -l dist
 
       - name: Publish to GitHub Release
-        if: github.ref_type == 'tag'
+        # A main push publishes too, which is the whole point of the channel; the
+        # job-level gate already requires MAIN_CHANNEL_ENABLED for that path.
+        #
+        # `event_name == 'push'` ALONE, deliberately. A tag push already satisfies it,
+        # so adding `ref_type == 'tag'` bought nothing except one bad case: dispatching
+        # this workflow against a tag ref gives ref_type=='tag' with
+        # event_name=='workflow_dispatch', which published and --clobbered that
+        # release's assets. The dry run is supposed to publish nothing.
+        if: github.event_name == 'push'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          TAG="${GITHUB_REF_NAME}"
+          # TAG comes from the build step via GITHUB_ENV — one derivation, not two.
+          [ -n "${TAG:-}" ] || { echo "TAG not set by the build step" >&2; exit 1; }
           # Build release notes one line at a time so no single string
           # exceeds yamllint's 150-char cap. Single-quoted arguments keep
           # backticks literal (no shell expansion).
@@ -117,17 +201,59 @@ jobs:
           add ''
           add 'Verify downloads with `sha256sum -c checksums.txt`. On macOS, clear the'
           add 'Gatekeeper quarantine after extracting: `xattr -dr com.apple.quarantine ./abctl`.'
+          # The rolling release is not a release, and its notes should not read like
+          # one — someone landing on it from a search result needs to know that
+          # before they install it.
+          if [ "${TAG}" = "main-latest" ]; then
+            notes=""
+            add 'Unreleased build from the tip of `main`, rebuilt on every merge. Not a release.'
+            add ''
+            add 'Install with:'
+            add '    curl -fsSL https://raw.githubusercontent.com/rossoctl/cortex/main/authbridge/install.sh | sh -s -- --ref=main'
+            add ''
+            add 'Each binary reports its own build (`abctl --version` -> `main-<sha>`). For a'
+            add 'supported install, use the newest `v*` release instead.'
+          fi
           if gh release view "${TAG}" >/dev/null 2>&1; then
+            # Uploading assets does not move the tag, so on a REUSED tag the release
+            # would keep pointing at its first-publish commit forever: the "Source
+            # code" archives and the commit shown on the release page would drift
+            # further from the binaries beside them on every merge. Renaming the tag to
+            # main-latest fixed ref ambiguity with the branch; it did nothing about
+            # freezing. Only for the rolling tag — a v* release must never be moved.
+            if [ "${TAG}" = "main-latest" ]; then
+              gh api --method PATCH "repos/${GITHUB_REPOSITORY}/git/refs/tags/${TAG}" \
+                -f sha="${GITHUB_SHA}" -F force=true >/dev/null
+            fi
+            # --clobber replaces same-named assets but never deletes others, so if a
+            # proxy_variants entry is ever retired its *_main-latest_* archive lingers
+            # while checksums.txt stops listing it: downloadable but unverifiable. The
+            # installer is unaffected (it fetches two exact names and needs two checksum
+            # lines), so this is a note rather than a prune — delete stale assets by hand
+            # when retiring a variant.
             gh release upload "${TAG}" dist/*.tar.gz dist/checksums.txt --clobber
           else
             prerelease=""
-            case "${TAG}" in *-rc*|*-alpha*|*-beta*) prerelease="--prerelease" ;; esac
+            # `main` belongs here or the rolling release takes GitHub's "Latest"
+            # badge, displacing the newest real release.
+            case "${TAG}" in
+              main-latest | *-rc* | *-alpha* | *-beta*) prerelease="--prerelease" ;;
+            esac
+            # --target "${GITHUB_SHA}": without it the API defaults target_commitish to
+            # the repository's default branch at call time, not the commit that was
+            # built. Usually the same on a main push, but it is exactly the drift the
+            # PATCH above exists to prevent — and it made the FIRST publish create the
+            # tag at the wrong commit, so the two paths disagreed.
             gh release create "${TAG}" dist/*.tar.gz dist/checksums.txt \
+              --target "${GITHUB_SHA}" \
               --title "${TAG}" --notes "${notes}" ${prerelease}
           fi
 
       - name: Upload dry-run artifacts
-        if: github.ref_type != 'tag'
+        # workflow_dispatch only. `!= 'tag'` also matched a main push, which now
+        # publishes a real release — it would have uploaded a redundant artifact
+        # copy of every asset on every merge.
+        if: github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v4
         with:
           name: release-binaries

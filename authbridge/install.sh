@@ -33,19 +33,17 @@
 # --demo -> --local alias is different: that flag really did ship.)
 #
 # Flags rather than env vars: written `VAR=1 curl ... | sh` the variable reaches
-# curl, not sh, so the script runs without it. `sh -s -- --flag` has no such
-# failure mode. The env vars below still work.
+# curl, not sh, so the script runs without it — the failure mode is silent, and
+# `sh -s -- --flag` does not have it. That is why the env aliases for --ref and
+# --install-only were removed rather than kept as a second spelling: they were the
+# form most likely to be typed and least likely to work.
 #
 # By default this script re-runs the copy from the newest RELEASE rather than
 # executing whatever is currently on main — main is unstable by definition, and a
 # `curl | sh` should not be the first thing to run a change nobody has released.
 # --ref=main opts back in; --ref=vX.Y.Z pins.
 #
-# Environment:
-#   AUTHBRIDGE_REF=REF          same as --ref
-#   AUTHBRIDGE_VERSION=vX.Y.Z   install binaries from a specific release
-#                               (default: the release this script came from)
-#   AUTHBRIDGE_INSTALL_ONLY=1   same as --install-only
+# Environment (maintainer testing only — not part of the documented interface):
 #   AUTHBRIDGE_SKIP_DOWNLOAD=1  use the already-installed binaries in ~/.local/bin
 #                               instead of downloading (re-run setup offline)
 # set -eu, not -euo pipefail: this is POSIX sh (the documented entry point is
@@ -54,6 +52,15 @@
 set -eu
 
 REPO="rossoctl/cortex"
+# CHANNEL_TAG is the release the developer channel's assets hang off. Deliberately
+# NOT "main": a GitHub release needs a git tag, and a tag named `main` would collide
+# with the branch. Verified consequences of that collision — `git rev-parse main`
+# resolves to the TAG, not the branch, and every git command warns "refname 'main' is
+# ambiguous". The tag would also freeze at the first publish (uploading assets does
+# not move it) while the branch moved on, so anything resolving `main` as a revision
+# would silently read a stale commit. `--ref=main` is still what people type; only
+# the tag underneath differs.
+CHANNEL_TAG="main-latest"
 BIN_DIR="${HOME}/.local/bin"
 # Every file Cortex writes for this user lives here: config, CA, keys, logs,
 # pidfiles. One directory to inspect, back up, or delete.
@@ -104,17 +111,10 @@ Options:
                    it runs as plain `claude` with no environment variables
   --local          the default, spelled out
   --yes, -y        do not prompt; answer yes to configuring Claude Code
-  --ref=REF        take THIS SCRIPT from a git ref instead of the newest release
-                   (e.g. --ref=main for unreleased changes, --ref=v0.7.0-alpha.4
-                   to pin). Binaries come from the same release unless
-                   AUTHBRIDGE_VERSION says otherwise.
+  --ref=REF        install from a git ref instead of the newest release — both
+                   this script and the binaries (e.g. --ref=main for unreleased
+                   changes, --ref=v0.7.0-alpha.4 to pin)
   -h, --help       this text
-
-Environment:
-  AUTHBRIDGE_VERSION=vX.Y.Z   install a specific release tag (default: newest)
-  AUTHBRIDGE_INSTALL_ONLY=1   same as --install-only
-  AUTHBRIDGE_SKIP_DOWNLOAD=1  use the binaries already in ~/.local/bin instead of
-                              downloading (re-run setup offline)
 
 After installing, to cut Claude Code's token cost:
   abctl tools scan --write ~/.cortex/config.yaml
@@ -125,12 +125,13 @@ USAGE
 MODE=local
 WIRE_CLAUDE_CODE=""
 ASSUME_YES=""
+WANT_REF=""
 for arg in "$@"; do
 	case "$arg" in
 		--install-only) MODE=install-only ;;
 		--claude-code) WIRE_CLAUDE_CODE=1 ;;
 		--yes | -y) ASSUME_YES=1 ;;
-		--ref=*) AUTHBRIDGE_REF="${arg#*=}" ;;
+		--ref=*) WANT_REF="${arg#*=}" ;;
 		# --local is the default; accepted so writing it out explicitly works, and
 		# so it mirrors the proxy flag of the same name.
 		--local) MODE=local ;;
@@ -141,19 +142,24 @@ for arg in "$@"; do
 		*) die "unknown option: $arg (try --claude-code, --install-only, --local, --ref=REF, --yes, or no argument)" ;;
 	esac
 done
-# Env form kept working; the flag wins if both are given.
-if [ "${AUTHBRIDGE_INSTALL_ONLY:-}" = "1" ] && [ "$MODE" = "local" ]; then
-	MODE=install-only
-fi
+# Removed knobs die rather than being ignored. Left set in someone's shell,
+# AUTHBRIDGE_INSTALL_ONLY=1 would silently do a FULL install and AUTHBRIDGE_VERSION
+# would silently install the newest release instead of the pin. Both are wrong answers,
+# and this script's whole standard is that a surprise becomes an error instead. Each
+# message names the flag that replaced it, echoing the value back so the fix is
+# copy-pasteable.
+[ -z "${AUTHBRIDGE_INSTALL_ONLY:-}" ] || die "AUTHBRIDGE_INSTALL_ONLY is no longer read. Pass --install-only instead."
+[ -z "${AUTHBRIDGE_VERSION:-}" ] || die "AUTHBRIDGE_VERSION is no longer read. Pass --ref=${AUTHBRIDGE_VERSION} instead."
+[ -z "${AUTHBRIDGE_REF:-}" ] || die "AUTHBRIDGE_REF is no longer read. Pass --ref=${AUTHBRIDGE_REF} instead."
 
 command -v curl >/dev/null 2>&1 || die "curl is required"
 command -v tar  >/dev/null 2>&1 || die "tar is required"
 
-# newest_release prints the newest release tag, prereleases included.
+# newest_release prints the newest VERSION release tag, prereleases included.
 # `releases/latest` excludes prereleases and this project ships them, so list
-# releases (newest first) and take the first tag_name.
+# releases (newest first) and take the first tag that looks like a version.
 newest_release() {
-	# Three steps, each doing one thing that cannot silently go wrong:
+	# Four steps, each doing one thing that cannot silently go wrong:
 	#
 	#   tr ',{}' '\n'   put every JSON field on its own line, so nothing greedy can
 	#                   run past the field it was aimed at. Without this the old
@@ -161,36 +167,89 @@ newest_release() {
 	#                   against a COMPACT response the whole array is one line, the
 	#                   greedy .* runs to the LAST tag_name, and it returns the OLDEST
 	#                   release. Verified — it yields v0.3.1 from compact JSON.
-	#   grep -m1 ...    match tag_name only where it is a KEY (anchored, colon after).
+	#   grep '"tag_name":'
+	#                   match tag_name only where it is a KEY (anchored, colon after).
 	#                   An unanchored match is hijacked by any release whose name or
 	#                   body contains the text "tag_name", and release bodies are ours
-	#                   to author.
+	#                   to author. Every tag, not just the first — the -m1 belongs on
+	#                   the value filter below, so that what gets picked is the first
+	#                   VERSION tag rather than merely the first tag.
 	#   cut -d'"' -f4   take the value by position, not by pattern.
+	#   grep -m1 '^v[0-9]'
+	#                   the developer channel's rolling `main` release sorts first
+	#                   until the next tagged release (the API sorts by created_at,
+	#                   which is fixed at creation). Taking the first entry blindly
+	#                   would hand `main` to someone who never asked for it, and the
+	#                   shape check below would then reject it and kill the install
+	#                   outright. Skipping non-version tags keeps the channel
+	#                   invisible to the default path.
 	#
-	# Then check the shape: a tag looks like v<digit>... Anything else means the API
-	# returned something we did not expect — an error page, a rate-limit body, a schema
-	# change — and the right move is to say so, not to build a download URL out of it.
-	# This is the difference that matters: a surprise becomes an error instead of a
-	# wrong answer.
+	# ?per_page=10 for the same reason: one page has to contain a version tag even
+	# with rolling releases ahead of it. Ten is headroom, not a calculation — there is
+	# one rolling release, so two would do.
+	#
+	# The shape check is now a backstop rather than the filter. Reaching it with a
+	# non-version tag is impossible; reaching it EMPTY is not, and means no version tag
+	# in ten releases — an error page, a rate-limit body, a schema change. Fail rather
+	# than build a download URL out of it. No warning here: the only reachable failure
+	# is "nothing matched", and naming `main` at someone who never mentioned it is
+	# noise. The caller already dies with actionable advice.
 	#
 	# Not jq (not installed everywhere) and not gh (a far larger dependency than a
 	# curl|sh installer should require; this script needs curl, tar and a checksum tool).
 	# Not /releases/latest either: it excludes prereleases, and this project ships them,
 	# so it names a tag from January. Listing releases asks what we actually mean — the
 	# newest release, whatever its flags.
-	_tag=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases?per_page=1" 2>/dev/null \
+	_tag=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases?per_page=10" 2>/dev/null \
 		| tr ',{}' '\n' \
-		| grep -m1 '^[[:space:]]*"tag_name"[[:space:]]*:' \
-		| cut -d'"' -f4)
+		| grep '^[[:space:]]*"tag_name"[[:space:]]*:' \
+		| cut -d'"' -f4 \
+		| grep -m1 '^v[0-9]')
 	case "${_tag}" in
 		v[0-9]*) ;;
-		'') return 1 ;;
-		*)
-			warn "the release API returned an unexpected tag: ${_tag}"
-			return 1
-			;;
+		*) return 1 ;;
 	esac
 	printf '%s\n' "${_tag}"
+}
+
+# resolve_version prints the release tag whose binaries should be installed, given the
+# ref the USER asked to install (VERSION_REF). Not the ref this script came from —
+# conflating those two is what let the default one-liner reach the channel, so the
+# distinction is worth keeping visible in the name.
+#
+# One rule: --ref=X installs X. That was not true before — `--ref=v0.7.0-alpha.4`
+# set script and binaries, while `--ref=main` set only the script, because there
+# was no `main` release to download from. Now that the developer channel publishes
+# one, the special case disappears rather than growing a second flag.
+resolve_version() { # version_ref
+	# Takes VERSION_REF, not SCRIPT_REF. Empty means "nobody named anything
+	# installable" — resolve the newest release, and fail loudly if that is not
+	# possible. It must never mean "fall back to the channel": rate limiting alone
+	# would then hand unreleased builds to people who ran the plain one-liner.
+	#
+	# Both channel spellings land on CHANNEL_TAG. The assets live there rather than on
+	# a tag called `main` — see its definition for why — so the ref someone types, the
+	# tag the assets hang off, and the binary's own stamp are three different strings,
+	# deliberately.
+	case "$1" in
+		main | "${CHANNEL_TAG}") printf '%s\n' "${CHANNEL_TAG}" ;;
+		v*) printf '%s\n' "$1" ;;
+		*)
+			# A ref that is neither channel nor release tag: a branch, or a SHA. No
+			# binaries are published for those, so the newest release is the only
+			# option — but say so. Silent, this is byte-identical to the plain
+			# one-liner, and someone testing a feature branch gets that branch's
+			# SCRIPT against release BINARIES with nothing to attribute it to. Same
+			# principle the 404 fallback states: name the surprise.
+			[ -z "$1" ] || warn "no binaries are published for ${1}; using this script from ${1} with binaries from the newest release"
+			# >&2 deliberately: this function's stdout IS the resolved version, and
+			# info() writes to stdout (see its definition above). Without the
+			# redirect the progress line lands inside `version` and corrupts every
+			# download URL.
+			info "Resolving newest release..." >&2
+			newest_release || return 1
+			;;
+	esac
 }
 
 # ere_escape quotes the ERE metacharacters in a literal so it matches exactly.
@@ -213,17 +272,33 @@ ere_escape() {
 # SCRIPT_REF names the ref this copy came from and doubles as the recursion guard:
 # the child sees it set and does not bootstrap again.
 SCRIPT_REF="${AUTHBRIDGE_SCRIPT_REF:-}"
+# VERSION_REF answers "what did the user ask to INSTALL". SCRIPT_REF answers a
+# different question — "which copy of this script is running" — and the two diverge on
+# every fallback below. Reading one for the other is how the default one-liner ended up
+# able to install channel binaries: three separate situations all set SCRIPT_REF=main,
+# and only one of them was a request for unreleased builds.
+VERSION_REF="${SCRIPT_REF}"
 if [ -z "${SCRIPT_REF}" ]; then
-	want_ref="${AUTHBRIDGE_REF:-}"
+	want_ref="${WANT_REF:-}"
 	if [ -z "${want_ref}" ]; then
 		want_ref="$(newest_release)" || true
 	fi
 	if [ -z "${want_ref}" ]; then
+		# Could not ask: offline, rate-limited, 5xx. Fall back to THIS copy of the
+		# script, but deliberately NOT to channel binaries. Whoever ran the plain
+		# one-liner asked for a release, so VERSION_REF is cleared and resolution below
+		# still hunts for the newest v-tag — failing loudly if it cannot find one,
+		# which beats silently installing an unreleased build.
 		warn "could not resolve the newest release; continuing with the copy from main"
 		SCRIPT_REF="main"
-	elif [ "${want_ref}" = "main" ]; then
-		# Explicitly asked for main: this copy already is main.
+		VERSION_REF=""
+	elif [ "${want_ref}" = "main" ] || [ "${want_ref}" = "${CHANNEL_TAG}" ]; then
+		# Explicitly asked for the channel, by either name. `main` is the documented
+		# spelling; CHANNEL_TAG is what the Releases page shows, so someone who saw the
+		# title there will type that instead and must get the same thing. This copy
+		# already is main, so there is nothing to re-exec.
 		SCRIPT_REF="main"
+		VERSION_REF="main"
 	else
 		# Rebuild the argument list without --ref: it is meta, consumed here, and a
 		# released script from before --ref existed rejects it as an unknown option.
@@ -269,8 +344,13 @@ if [ -z "${SCRIPT_REF}" ]; then
 			# A release from before this script existed under that name. Falling
 			# back beats refusing to install, but name the copy that is running so
 			# a surprise is attributable.
+			#
+			# VERSION_REF keeps the pin: running main's SCRIPT is the fallback,
+			# changing which BINARIES get installed is not. `--ref=X installs X`
+			# has to survive this branch or the flag means nothing here.
 			warn "${want_ref} has no authbridge/install.sh (HTTP 404); continuing with the copy from main"
 			SCRIPT_REF="main"
+			VERSION_REF="${want_ref}"
 		else
 			# Blocked, offline, rate-limited, proxied, 5xx. We cannot tell whether a
 			# released installer exists, so do not quietly run main instead.
@@ -361,19 +441,10 @@ if [ "${AUTHBRIDGE_SKIP_DOWNLOAD:-}" = "1" ]; then
 else
 
 # --- resolve the release tag ---
-version="${AUTHBRIDGE_VERSION:-}"
-if [ -z "$version" ]; then
-	# Default the binaries to the same release this script came from, so the
-	# script and the binaries it installs are one tested set rather than two
-	# independently-moving things.
-	case "${SCRIPT_REF}" in
-		v*) version="${SCRIPT_REF}" ;;
-		*)
-			info "Resolving newest release..."
-			version=$(newest_release) || die "could not resolve the newest release (set AUTHBRIDGE_VERSION=vX.Y.Z)"
-			;;
-	esac
-fi
+# The binaries default to the same ref this script came from, so the script and the
+# binaries it installs are one tested set rather than two independently-moving things.
+version=$(resolve_version "${VERSION_REF}") \
+	|| die "could not resolve the newest release (pass --ref=vX.Y.Z to pin one)"
 
 # --- download + verify ---
 tmp=$(mktemp -d)
@@ -588,12 +659,12 @@ if ! "${BIN_DIR}/abctl" service status >/dev/null 2>&1 &&
   in order to start Cortex. Either use the installer that shipped with it:
     curl -fsSL https://raw.githubusercontent.com/${REPO}/${version}/authbridge/install.sh | sh
   or install newer binaries with this script:
-    AUTHBRIDGE_VERSION=<newer tag>"
+    --ref=<newer tag>"
 			;;
 		*)
 			die "the abctl in ${BIN_DIR} has no 'service' command, which this installer
   needs in order to start Cortex. Install a newer one — drop
-  AUTHBRIDGE_SKIP_DOWNLOAD, or point AUTHBRIDGE_VERSION at a release that has it."
+  AUTHBRIDGE_SKIP_DOWNLOAD, or pass --ref=<a release that has it>."
 			;;
 	esac
 fi

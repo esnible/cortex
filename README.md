@@ -35,7 +35,10 @@ Your agent's calls stream into `abctl`. Cortex only reads them; nothing is rewri
 `~/.cortex/ca/ca.crt`.
 
 The install URL is on `main`, but the script re-runs the copy from the newest
-**release**, so `curl | sh` does not execute unreleased code. `--ref` overrides that.
+**release**, so `curl | sh` does not execute unreleased code. `--ref` overrides that for
+both halves — script and binaries: `--ref=vX.Y.Z` pins a release, and `--ref=main`
+installs the unreleased tip
+([CONTRIBUTING.md](./CONTRIBUTING.md#installing-an-unreleased-build)).
 
 ## What else Cortex does
 

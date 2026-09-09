@@ -37,6 +37,80 @@ pre-commit install
 cd authbridge/proxy-init && make docker-build-init
 ```
 
+## Installing an unreleased build
+
+A fix merged to `main` is installable immediately, without waiting for a release:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/rossoctl/cortex/main/authbridge/install.sh \
+  | sh -s -- --claude-code --ref=main
+```
+
+`--ref=X` means "install X" — both the installer script and the binaries — for any X
+that has published binaries: `main` and any `vX.Y.Z` release. Every push to `main`
+rebuilds a rolling pre-release, so `--ref=main` tracks the tip.
+
+`--ref=` also accepts a branch or a commit, but no binaries are published for those, so
+you get that ref's *script* with the newest *release's* binaries. The installer warns
+when that happens rather than leaving you to infer it.
+
+Each binary reports its own build: `abctl --version` → `main-a1b2c3d`. Quote that,
+not "main", in a bug report — the channel moves under you.
+
+Three things to know:
+
+- **Every `--ref=main` run replaces and restarts the service.** The installed build
+  never matches the requested `main`, so the installer always re-downloads and
+  `service install` always reinstalls. That cuts any running Claude Code session,
+  because `HTTPS_PROXY` is fixed in each session's environment at startup.
+- **`checksums.txt` rolls with the assets.** The installer fetches assets and
+  checksums in the same run, so verification is sound. Downloading them hours apart
+  will mismatch.
+- **The plain one-liner takes you back.** Running it without `--ref` reinstalls the
+  newest release and reinstalls the service, so there is no stuck state to clean up.
+
+The rolling release is tagged `main-latest`, not `main`. A GitHub release needs a git
+tag, and a tag named `main` would collide with the branch — `git rev-parse main` would
+then resolve to the tag rather than the branch, and every git command in the repo would
+warn that the name is ambiguous. `--ref=main` is the spelling to use, but `--ref=main-latest`
+does the same thing, since that is the title the Releases page shows. CI moves the tag to
+the published commit on every merge, so the release's "Source code" archives match the
+binaries beside them.
+
+If you have `AUTHBRIDGE_VERSION`, `AUTHBRIDGE_REF`, or `AUTHBRIDGE_INSTALL_ONLY` exported
+in a shell profile, unset them. They are no longer read, and the installer now refuses to
+run rather than quietly ignoring them — so a stale export fails the **default** one-liner
+even though you passed no flags. The error names the flag that replaced it and echoes your
+value back, so the fix is copy-pasteable.
+
+### Enabling the channel (one-time, maintainers)
+
+Merge, **cut a release**, then set the repo variable `MAIN_CHANNEL_ENABLED=true`
+(Settings → Secrets and variables → Actions → Variables). The next push to `main`
+publishes the rolling release.
+
+Two things to check deliberately before flipping it, because both become live at that
+moment and are inert until then:
+
+- **`release-binaries.yaml` holds `contents: write` on every `main` push**, not just on
+  tag pushes. It builds only first-party code with SHA-pinned actions, but that is a
+  wider blast radius than before. If you want it narrower, split build (`contents: read`)
+  from publish (`contents: write`) and pass `dist/` between them as an artifact.
+- **The job moves the `main-latest` tag** on each publish. That is the one destructive
+  operation in the workflow. It is guarded to the rolling tag, and `install_test.sh`
+  asserts no `${TAG}` comparison in the workflow names anything other than
+  `CHANNEL_TAG`, so a `v*` release cannot become movable by a rename going unnoticed.
+
+The middle step is load-bearing, though not for the reason it first appears. The default
+one-liner is safe as soon as `main` carries the `newest_release()` v-tag filter: it
+resolves a `v` tag, re-execs that released copy, and the copy then matches
+`case "${SCRIPT_REF}" in v*)` and never calls `newest_release` at all. What needs a
+*filtered release* is anyone running a **released** copy as the parent — including the
+pinned one-liner this installer prints in its own "abctl is too old" message. An
+unfiltered parent resolves the rolling release as its version and installs unreleased
+binaries. Cutting a release first stops that window growing; it cannot fix copies already
+published.
+
 ## Issues
 
 Prioritization for pull requests is given to those that address and resolve existing GitHub issues. Utilize the available issue labels to identify meaningful and relevant issues to work on.
