@@ -2,6 +2,7 @@ package tlsbridge
 
 import (
 	"bytes"
+	"crypto/x509"
 	"errors"
 	"os"
 	"path/filepath"
@@ -9,48 +10,81 @@ import (
 	"testing"
 )
 
-// fakeCA and fakeRoots stand in for real PEM: EnsureTrustBundle concatenates
-// rather than parses, so the bytes only need the BEGIN marker findSystemRoots
-// looks for.
-const (
-	fakeCA    = "-----BEGIN CERTIFICATE-----\nCORTEXCA\n-----END CERTIFICATE-----\n"
-	fakeRoots = "-----BEGIN CERTIFICATE-----\nPUBLICROOT\n-----END CERTIFICATE-----\n"
-)
+// realPEM mints an actual certificate, because findSystemRoots parses rather
+// than pattern-matches: a stand-in with the right BEGIN line no longer passes,
+// which is the point of that check. Each call has its own key, so two results are
+// distinguishable by bytes without re-parsing.
+func realPEM(t *testing.T) []byte {
+	t.Helper()
+	_, _, certPEM, _, err := genSelfSignedCA()
+	if err != nil {
+		t.Fatalf("genSelfSignedCA: %v", err)
+	}
+	return certPEM
+}
 
 // withSystemRoots points the package at a temp root store for the duration of a
-// test, so a test's outcome does not depend on what the host happens to ship.
-func withSystemRoots(t *testing.T, contents string) {
+// test, so an outcome never depends on what the host happens to ship. Passing nil
+// means "no root store on this machine".
+func withSystemRoots(t *testing.T, pem []byte) {
 	t.Helper()
 	orig := systemRootFiles
 	t.Cleanup(func() { systemRootFiles = orig })
-	if contents == "" {
+	if pem == nil {
 		systemRootFiles = []string{filepath.Join(t.TempDir(), "absent.pem")}
 		return
 	}
 	p := filepath.Join(t.TempDir(), "roots.pem")
-	if err := os.WriteFile(p, []byte(contents), 0o644); err != nil {
+	if err := os.WriteFile(p, pem, 0o644); err != nil {
 		t.Fatal(err)
 	}
 	systemRootFiles = []string{p}
 }
 
-func caDirWith(t *testing.T, ca string) string {
+// caDirWith builds a ca_dir holding ca.crt, or an empty one when pem is nil.
+func caDirWith(t *testing.T, pem []byte) string {
 	t.Helper()
 	dir := t.TempDir()
-	if ca != "" {
-		if err := os.WriteFile(filepath.Join(dir, "ca.crt"), []byte(ca), 0o644); err != nil {
+	if pem != nil {
+		if err := os.WriteFile(filepath.Join(dir, "ca.crt"), pem, 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
 	return dir
 }
 
+func countCerts(t *testing.T, pem []byte) int {
+	t.Helper()
+	var n int
+	rest := pem
+	for {
+		var block []byte
+		block, rest = nextCertBlock(rest)
+		if block == nil {
+			return n
+		}
+		n++
+	}
+}
+
+// nextCertBlock is a minimal PEM scanner: enough to count CERTIFICATE blocks
+// without pulling encoding/pem semantics into an assertion.
+func nextCertBlock(b []byte) (block, rest []byte) {
+	const begin = "-----BEGIN CERTIFICATE-----"
+	i := bytes.Index(b, []byte(begin))
+	if i < 0 {
+		return nil, nil
+	}
+	return b[i : i+len(begin)], b[i+len(begin):]
+}
+
 // TestEnsureTrustBundle_ContainsBothTrustSets is the whole point: a tool pointed
 // at this file must trust the bridge AND the public internet. A bundle holding
 // only one of them is the bug.
 func TestEnsureTrustBundle_ContainsBothTrustSets(t *testing.T) {
-	withSystemRoots(t, fakeRoots)
-	dir := caDirWith(t, fakeCA)
+	ca, roots := realPEM(t), realPEM(t)
+	withSystemRoots(t, roots)
+	dir := caDirWith(t, ca)
 
 	path, err := EnsureTrustBundle(dir)
 	if err != nil {
@@ -63,18 +97,22 @@ func TestEnsureTrustBundle_ContainsBothTrustSets(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Contains(data, []byte("CORTEXCA")) {
+	if !bytes.Contains(data, ca) {
 		t.Error("bundle is missing the bridge CA")
 	}
-	if !bytes.Contains(data, []byte("PUBLICROOT")) {
+	if !bytes.Contains(data, roots) {
 		t.Error("bundle is missing the platform roots — every direct TLS call would fail")
 	}
-	if n := strings.Count(string(data), "BEGIN CERTIFICATE"); n != 2 {
+	if n := countCerts(t, data); n != 2 {
 		t.Errorf("certificate count = %d, want 2", n)
 	}
 	// CA first, so a verifier finds it without walking the public roots.
-	if bytes.Index(data, []byte("CORTEXCA")) > bytes.Index(data, []byte("PUBLICROOT")) {
+	if bytes.Index(data, ca) > bytes.Index(data, roots) {
 		t.Error("bridge CA should precede the platform roots")
+	}
+	// The result must be usable as a trust store, not merely well-formed text.
+	if !x509.NewCertPool().AppendCertsFromPEM(data) {
+		t.Error("assembled bundle does not parse as a cert pool")
 	}
 }
 
@@ -83,8 +121,8 @@ func TestEnsureTrustBundle_ContainsBothTrustSets(t *testing.T) {
 // one private CA — silently distrusting the public internet, which is far worse
 // than not being able to verify the bridge.
 func TestEnsureTrustBundle_NoSystemRootsWritesNothing(t *testing.T) {
-	withSystemRoots(t, "")
-	dir := caDirWith(t, fakeCA)
+	withSystemRoots(t, nil)
+	dir := caDirWith(t, realPEM(t))
 
 	_, err := EnsureTrustBundle(dir)
 	if !errors.Is(err, ErrNoSystemRoots) {
@@ -95,30 +133,89 @@ func TestEnsureTrustBundle_NoSystemRootsWritesNothing(t *testing.T) {
 	}
 }
 
-// TestEnsureTrustBundle_EmptyRootFileIsSkipped: some minimal images ship an empty
-// placeholder at a well-known path. Accepting it would produce a CA-only bundle
-// by a different route than the check above.
-func TestEnsureTrustBundle_EmptyRootFileIsSkipped(t *testing.T) {
+// TestEnsureTrustBundle_KeepsAStaleBundleAndSaysSo: when the root store vanishes
+// but a bundle from an earlier boot exists, that bundle is LEFT IN PLACE and the
+// error names it.
+//
+// Deleting it would be worse than the staleness: four env vars point at this file
+// and each replaces its tool's trust store, so an absent bundle does not fall back
+// to the platform roots — it fails every TLS call. The error text is the only
+// signal an operator gets, so it has to mention the file.
+func TestEnsureTrustBundle_KeepsAStaleBundleAndSaysSo(t *testing.T) {
+	ca, roots := realPEM(t), realPEM(t)
+	withSystemRoots(t, roots)
+	dir := caDirWith(t, ca)
+
+	path, err := EnsureTrustBundle(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// The host's root store disappears.
+	withSystemRoots(t, nil)
+	_, err = EnsureTrustBundle(dir)
+	if !errors.Is(err, ErrNoSystemRoots) {
+		t.Fatalf("error = %v, want it to wrap ErrNoSystemRoots", err)
+	}
+	if !strings.Contains(err.Error(), TrustBundleName) {
+		t.Errorf("error does not name the stale bundle, so nothing surfaces it: %v", err)
+	}
+	after, rerr := os.ReadFile(path)
+	if rerr != nil {
+		t.Fatalf("the stale bundle was removed, which breaks every tool pointed at it: %v", rerr)
+	}
+	if !bytes.Equal(before, after) {
+		t.Error("the stale bundle was modified")
+	}
+}
+
+// TestEnsureTrustBundle_SkipsUnparseableRootFiles: a file carrying the BEGIN line
+// but a corrupt body passed the old substring check and produced a bundle with no
+// usable public roots — the CA-only trust store by another route. Some minimal
+// images also ship an empty placeholder at a well-known path.
+func TestEnsureTrustBundle_SkipsUnparseableRootFiles(t *testing.T) {
 	orig := systemRootFiles
 	t.Cleanup(func() { systemRootFiles = orig })
-	empty := filepath.Join(t.TempDir(), "empty.pem")
+	dir := t.TempDir()
+
+	empty := filepath.Join(dir, "empty.pem")
 	if err := os.WriteFile(empty, []byte("# no certs here\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	real := filepath.Join(t.TempDir(), "real.pem")
-	if err := os.WriteFile(real, []byte(fakeRoots), 0o644); err != nil {
+	// Header present, body garbage: the case a substring check accepts.
+	corrupt := filepath.Join(dir, "corrupt.pem")
+	corruptPEM := "-----BEGIN CERTIFICATE-----\nnot base64 at all!!\n-----END CERTIFICATE-----\n"
+	if err := os.WriteFile(corrupt, []byte(corruptPEM), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	systemRootFiles = []string{empty, real}
+	roots := realPEM(t)
+	good := filepath.Join(dir, "good.pem")
+	if err := os.WriteFile(good, roots, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	systemRootFiles = []string{empty, corrupt, good}
 
-	dir := caDirWith(t, fakeCA)
-	path, err := EnsureTrustBundle(dir)
+	ca := realPEM(t)
+	path, err := EnsureTrustBundle(caDirWith(t, ca))
 	if err != nil {
 		t.Fatalf("EnsureTrustBundle: %v", err)
 	}
 	data, _ := os.ReadFile(path)
-	if !bytes.Contains(data, []byte("PUBLICROOT")) {
-		t.Error("skipped past the empty placeholder to the real store, but the roots are absent")
+	if !bytes.Contains(data, roots) {
+		t.Error("skipped past the unusable files but the real roots are absent")
+	}
+	if bytes.Contains(data, []byte("not base64 at all")) {
+		t.Error("the corrupt file was accepted as a root store")
+	}
+
+	// With ONLY unusable candidates, nothing is written.
+	systemRootFiles = []string{empty, corrupt}
+	if _, err := EnsureTrustBundle(caDirWith(t, ca)); !errors.Is(err, ErrNoSystemRoots) {
+		t.Errorf("error = %v, want ErrNoSystemRoots when every candidate is unparseable", err)
 	}
 }
 
@@ -126,8 +223,8 @@ func TestEnsureTrustBundle_EmptyRootFileIsSkipped(t *testing.T) {
 // must not be rewritten — that would churn the mtime and disturb a reader holding
 // it open.
 func TestEnsureTrustBundle_Idempotent(t *testing.T) {
-	withSystemRoots(t, fakeRoots)
-	dir := caDirWith(t, fakeCA)
+	withSystemRoots(t, realPEM(t))
+	dir := caDirWith(t, realPEM(t))
 
 	path, err := EnsureTrustBundle(dir)
 	if err != nil {
@@ -153,25 +250,26 @@ func TestEnsureTrustBundle_Idempotent(t *testing.T) {
 // stale bundle after the CA is regenerated would leave every tool unable to verify
 // the bridge, with a file that looks present and correct.
 func TestEnsureTrustBundle_RewritesAfterCARotation(t *testing.T) {
-	withSystemRoots(t, fakeRoots)
-	dir := caDirWith(t, fakeCA)
+	withSystemRoots(t, realPEM(t))
+	first := realPEM(t)
+	dir := caDirWith(t, first)
 
 	path, err := EnsureTrustBundle(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	rotated := "-----BEGIN CERTIFICATE-----\nROTATEDCA\n-----END CERTIFICATE-----\n"
-	if werr := os.WriteFile(filepath.Join(dir, "ca.crt"), []byte(rotated), 0o644); werr != nil {
+	rotated := realPEM(t)
+	if werr := os.WriteFile(filepath.Join(dir, "ca.crt"), rotated, 0o644); werr != nil {
 		t.Fatal(werr)
 	}
 	if _, err = EnsureTrustBundle(dir); err != nil {
 		t.Fatal(err)
 	}
 	data, _ := os.ReadFile(path)
-	if !bytes.Contains(data, []byte("ROTATEDCA")) {
+	if !bytes.Contains(data, rotated) {
 		t.Error("bundle still holds the old CA after rotation")
 	}
-	if bytes.Contains(data, []byte("CORTEXCA")) {
+	if bytes.Contains(data, first) {
 		t.Error("bundle kept the superseded CA")
 	}
 }
@@ -180,8 +278,8 @@ func TestEnsureTrustBundle_RewritesAfterCARotation(t *testing.T) {
 // in, and writing the platform roots alone would produce a file that verifies
 // everything EXCEPT the bridge — passing silently while parsing nothing.
 func TestEnsureTrustBundle_MissingCAFails(t *testing.T) {
-	withSystemRoots(t, fakeRoots)
-	dir := caDirWith(t, "")
+	withSystemRoots(t, realPEM(t))
+	dir := caDirWith(t, nil)
 
 	if _, err := EnsureTrustBundle(dir); err == nil {
 		t.Fatal("missing ca.crt should be an error")
@@ -198,18 +296,26 @@ func TestEnsureTrustBundle_MissingCAFails(t *testing.T) {
 // newline would otherwise join its END line to the next BEGIN, and every
 // certificate after the splice silently fails to parse.
 func TestEnsureTrustBundle_SplicesPEMSafely(t *testing.T) {
-	withSystemRoots(t, fakeRoots)
-	dir := caDirWith(t, strings.TrimSuffix(fakeCA, "\n")) // no trailing newline
+	roots := realPEM(t)
+	withSystemRoots(t, roots)
+	ca := realPEM(t)
+	dir := caDirWith(t, bytes.TrimRight(ca, "\n")) // no trailing newline
 
 	path, err := EnsureTrustBundle(dir)
 	if err != nil {
 		t.Fatal(err)
 	}
 	data, _ := os.ReadFile(path)
-	if bytes.Contains(data, []byte("-----END CERTIFICATE-------")) {
-		t.Fatalf("PEM boundaries were spliced:\n%s", data)
-	}
-	if n := strings.Count(string(data), "BEGIN CERTIFICATE"); n != 2 {
+	if n := countCerts(t, data); n != 2 {
 		t.Errorf("certificate count = %d, want 2", n)
+	}
+	// The real check: both certs still load. A splice leaves valid-looking text
+	// that parses to fewer certs than it appears to hold.
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(data) {
+		t.Fatal("spliced bundle does not parse at all")
+	}
+	if !bytes.Contains(data, roots) {
+		t.Error("roots lost across the splice boundary")
 	}
 }

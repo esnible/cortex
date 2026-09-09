@@ -2,6 +2,7 @@ package tlsbridge
 
 import (
 	"bytes"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"os"
@@ -88,8 +89,23 @@ func EnsureTrustBundle(caDir string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("tlsbridge: read bridge CA %s: %w", caPath, err)
 	}
+	bundlePath := filepath.Join(caDir, TrustBundleName)
 	rootsPath, rootsPEM, err := findSystemRoots()
 	if err != nil {
+		// A bundle from an earlier boot is deliberately LEFT IN PLACE, and the
+		// error names it so the caller's warning can too.
+		//
+		// Deleting it would be worse than the staleness it removes. Four env vars
+		// point at this file, and each REPLACES its tool's trust store, so an
+		// absent bundle does not fall back to the platform roots — git, curl and
+		// Python fail every TLS call outright ("error setting certificate verify
+		// locations"). That trades a slightly outdated root list for total loss of
+		// egress, on a path that is already only reached when the host's own root
+		// store cannot be found.
+		if _, serr := os.Stat(bundlePath); serr == nil {
+			return "", fmt.Errorf("%w; keeping the existing %s, whose platform roots are now "+
+				"unverifiable and may include roots this host no longer trusts", err, bundlePath)
+		}
 		return "", err
 	}
 
@@ -101,7 +117,6 @@ func EnsureTrustBundle(caDir string) (string, error) {
 	buf.WriteString("# --- platform roots from " + rootsPath + " ---\n")
 	buf.Write(ensureTrailingNewline(rootsPEM))
 
-	bundlePath := filepath.Join(caDir, TrustBundleName)
 	if existing, rerr := os.ReadFile(bundlePath); rerr == nil && bytes.Equal(existing, buf.Bytes()) {
 		return bundlePath, nil
 	}
@@ -113,17 +128,23 @@ func EnsureTrustBundle(caDir string) (string, error) {
 	return bundlePath, nil
 }
 
-// findSystemRoots returns the first readable entry in systemRootFiles along with
-// its contents. A file that exists but holds no certificate is skipped rather
-// than accepted: some minimal images ship an empty placeholder, and treating
-// that as success would produce a CA-only bundle by a different route.
+// findSystemRoots returns the first entry in systemRootFiles that is readable
+// AND holds at least one certificate Go can parse.
+//
+// Parsing, rather than looking for the BEGIN line: a file containing the header
+// but truncated or corrupt body would pass a substring check and produce a
+// bundle with the bridge CA and no usable public roots — which is the CA-only
+// trust store this whole mechanism exists to avoid, arrived at by a different
+// route. AppendCertsFromPEM reports whether anything parsed, which is exactly
+// the question. Some minimal images also ship an empty placeholder at a
+// well-known path, and that is caught by the same check.
 func findSystemRoots() (string, []byte, error) {
 	for _, p := range systemRootFiles {
 		data, err := os.ReadFile(p) //nolint:gosec // fixed list of well-known paths
 		if err != nil {
 			continue
 		}
-		if !bytes.Contains(data, []byte("-----BEGIN CERTIFICATE-----")) {
+		if !x509.NewCertPool().AppendCertsFromPEM(data) {
 			continue
 		}
 		return p, data, nil

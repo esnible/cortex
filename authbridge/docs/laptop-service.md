@@ -203,10 +203,30 @@ ls ~/.cortex 2>/dev/null                    # should print nothing
 ```
 
 The CA that step 3 removes was only ever trusted through the CA variables in
-`~/.claude/settings.json` — Cortex never adds it to the system or login keychain, so
-there is nothing to clean up there. `bundle.crt` lives in the same directory and is
-derived from `ca.crt` plus a copy of the public roots, so removing `~/.cortex` takes
-it with them; it holds no private key and grants nothing on its own.
+`~/.claude/settings.json` — *Cortex* never adds it to the system or login keychain.
+`bundle.crt` lives in the same directory and is derived from `ca.crt` plus a copy of
+the public roots, so removing `~/.cortex` takes it with them; it holds no private
+key and grants nothing on its own.
+
+**On macOS, if you followed the Go-tools step above** and ran
+`security add-trusted-cert` yourself, that trust setting is the one thing outside
+`~/.cortex` and outside `~/.claude/settings.json`, so it outlives both. Deleting the
+CA file does not withdraw it — the keychain holds its own copy. Remove it too:
+
+```sh
+security delete-certificate -c authbridge-tls-bridge-ca \
+  ~/Library/Keychains/login.keychain-db
+```
+
+Check whether it is there at all with:
+
+```sh
+security find-certificate -c authbridge-tls-bridge-ca ~/Library/Keychains/login.keychain-db
+```
+
+Leaving it behind means a CA whose private key you have deleted stays trusted for
+TLS — harmless in itself, since nothing can sign with it any more, but it is trust
+you did not intend to keep.
 
 #### If `abctl` is already gone
 
