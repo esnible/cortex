@@ -2,7 +2,6 @@ package plugins
 
 import (
 	"fmt"
-	"log/slog"
 	"sort"
 	"strings"
 	"sync"
@@ -274,43 +273,11 @@ func factoryFor(name string) (PluginFactory, bool) {
 //
 // Unknown plugin names fail fast with an error that lists every
 // currently-registered plugin — typo-catching diagnostic.
+//
+// Injects nothing. A thin wrapper over BuildWithDeps, which is the single
+// implementation; see there for the Configure and injection contract.
 func Build(entries []config.PluginEntry, opts ...pipeline.Option) (*pipeline.Pipeline, error) {
-	ps := make([]pipeline.Plugin, 0, len(entries))
-	policies := make([]pipeline.ErrorPolicy, 0, len(entries))
-	for _, e := range entries {
-		// ErrorPolicyOff removes the plugin from the running pipeline
-		// entirely — no Configure, no Init, no dispatch. Operators use
-		// off as a kill-switch without deleting the entry from YAML,
-		// which makes re-enabling a one-line edit.
-		if e.OnError.Resolved() == pipeline.ErrorPolicyOff {
-			continue
-		}
-		factory, ok := factoryFor(e.Name)
-		if !ok {
-			pluginNames := RegisteredPlugins()
-			if len(pluginNames) == 0 {
-				slog.Warn("No registered plugins -- Build with --tags or use `go run .` to enable")
-			}
-			return nil, fmt.Errorf("unknown plugin %q (registered: %v)", e.Name, pluginNames)
-		}
-		p := factory()
-		if c, ok := p.(pipeline.Configurable); ok {
-			if err := c.Configure(e.Config); err != nil {
-				return nil, fmt.Errorf("configure %q: %w", e.Name, err)
-			}
-			// Wrap so the session API can surface the raw config on /v1/pipeline.
-			p = pipeline.WrapConfigured(p, e.Config)
-		} else if len(e.Config) > 0 {
-			return nil, fmt.Errorf("plugin %q does not accept configuration", e.Name)
-		}
-		ps = append(ps, p)
-		policies = append(policies, e.OnError.Resolved())
-	}
-	if err := validateRelationships(ps); err != nil {
-		return nil, err
-	}
-	opts = append(opts, pipeline.WithPolicies(policies...))
-	return pipeline.New(ps, opts...)
+	return BuildWithDeps(entries, Deps{}, opts...)
 }
 
 // BuildWithSPIFFE is Build plus dependency injection of the framework
@@ -323,48 +290,12 @@ func Build(entries []config.PluginEntry, opts ...pipeline.Option) (*pipeline.Pip
 // consumer plugins are NOT called (their SetSPIFFEProvider is skipped).
 //
 // Plugins that don't implement ProviderConsumer are unaffected.
+//
+// A thin wrapper over BuildWithDeps. It survives as a named entry point because
+// four binaries call it; new dependencies go through Deps rather than growing a
+// third builder.
 func BuildWithSPIFFE(entries []config.PluginEntry, p *spiffe.Provider, opts ...pipeline.Option) (*pipeline.Pipeline, error) {
-	ps := make([]pipeline.Plugin, 0, len(entries))
-	policies := make([]pipeline.ErrorPolicy, 0, len(entries))
-	for _, e := range entries {
-		// ErrorPolicyOff removes the plugin from the running pipeline
-		// entirely — same kill-switch semantics as Build.
-		if e.OnError.Resolved() == pipeline.ErrorPolicyOff {
-			continue
-		}
-		factory, ok := factoryFor(e.Name)
-		if !ok {
-			pluginNames := RegisteredPlugins()
-			if len(pluginNames) == 0 {
-				slog.Warn("No registered plugins -- Build with --tags or use `go run .` to enable")
-			}
-			return nil, fmt.Errorf("unknown plugin %q (registered: %v)", e.Name, pluginNames)
-		}
-		plugin := factory()
-		// Inject the framework SPIFFE Provider BEFORE Configure runs so
-		// the plugin's Configure logic can reach the provider's sources
-		// directly. Skip when no Provider was supplied (nil) — the
-		// caller has opted out of SPIFFE for this build.
-		if c, ok := plugin.(spiffe.ProviderConsumer); ok && p != nil {
-			c.SetSPIFFEProvider(p)
-		}
-		if c, ok := plugin.(pipeline.Configurable); ok {
-			if err := c.Configure(e.Config); err != nil {
-				return nil, fmt.Errorf("configure %q: %w", e.Name, err)
-			}
-			// Wrap so the session API can surface the raw config on /v1/pipeline.
-			plugin = pipeline.WrapConfigured(plugin, e.Config)
-		} else if len(e.Config) > 0 {
-			return nil, fmt.Errorf("plugin %q does not accept configuration", e.Name)
-		}
-		ps = append(ps, plugin)
-		policies = append(policies, e.OnError.Resolved())
-	}
-	if err := validateRelationships(ps); err != nil {
-		return nil, err
-	}
-	opts = append(opts, pipeline.WithPolicies(policies...))
-	return pipeline.New(ps, opts...)
+	return BuildWithDeps(entries, Deps{SPIFFE: p}, opts...)
 }
 
 // validateRelationships checks every plugin's Requires / RequiresAny
