@@ -410,7 +410,16 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 			}
 			m.selectedSess = id
 			m.pane = paneEvents
+			// Now that the user has chosen, any OTHER tombstoned session has
+			// demonstrably stopped being what they are looking at — the one
+			// reliable cue for when cached events stopped mattering.
+			m.forgetGoneExcept(id)
 			m.rebuildEventsTable()
+			if _, gone := m.gone[id]; gone {
+				// No server-side session to snapshot: the fetch would 404 and
+				// flash an error over the events we deliberately kept.
+				return nil
+			}
 			// Snapshot in case the stream hasn't yet delivered history.
 			return m.snapshotCmd(id)
 		case paneEvents:

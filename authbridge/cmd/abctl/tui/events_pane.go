@@ -67,6 +67,11 @@ func (m *model) rebuildEventsTable() {
 		if len(distinctInboundIdentities(events)) > 0 {
 			h -= identityBannerHeight
 		}
+		// The gone notice is one rendered line and stacks above the identity
+		// banner; reclaim it too or the last row falls off-screen.
+		if _, gone := m.gone[m.selectedSess]; gone {
+			h -= goneBannerHeight
+		}
 		if h < 3 {
 			h = 3
 		}

@@ -11,9 +11,9 @@ and read individual events as pretty-printed JSON.
 │ ID                       UPDATED    EVENTS  ACTIVE             │
 │ ► ctx-abc-1234…          3s ago     42      ●                  │
 │   ctx-def-5678…          18m ago    15                         │
-│   default                1h ago     8                          │
+│   default                —          8      gone                │
 │                                                                 │
-│ ● connected   2.1 ev/s   drops: 0                              │
+│ ● connected   2.1 ev/s                                         │
 │ [↑↓/jk] nav  [↵] drill  [/] filter  [?] keys  [q] quit         │
 └─────────────────────────────────────────────────────────────────┘
 ```
@@ -93,7 +93,8 @@ The UI has these top-level panes. `Enter` drills in; `Esc` backs out.
 
 - **Sessions** (default): table of active sessions in the store, most
   recently updated first. Columns: ID, updated (relative), event count,
-  active marker.
+  active marker. Sessions the server has stopped listing are kept at the
+  bottom marked `gone` — see [Retention](#retention).
 - **Events**: per-session event table. `c` opens a column picker — a popup with
   a checkbox and a one-line description per column, since twelve abbreviated
   headers are not self-describing.
@@ -172,6 +173,30 @@ Layered on top of all of them:
   appears in the overlay's footer only when the content overflows; the
   close hint stays pinned there at every scroll position. Resizing the
   terminal re-ranges the body without losing your place.
+
+### Retention
+
+The session store is in-memory and per-pod: it does not survive a proxy
+restart, and it evicts the oldest session once `session.max_sessions`
+(default 100) is exceeded. When that happens `abctl`'s cached copy of the
+events is the **only** copy left.
+
+So a session leaving the server's list does not remove anything from the
+UI. The events stay viewable, you stay in the pane you were reading, and a
+banner names what ended the live feed:
+
+- `proxy restarted — no longer live` — the list came back empty.
+- `session no longer on server (evicted)` — it vanished while others stayed.
+
+The notice deliberately does not say "expired": time-based expiry is off by
+default (`session.ttl` defaults to never), so it is almost never the cause.
+
+Cached events for a `gone` session are released when you select a
+*different* session — the point at which they have demonstrably stopped
+being what you were looking at. The one exception is a rekey, where the
+store renames the bootstrap `default` bucket to the server-assigned
+context id: those events follow the new id instead, and so does your
+selection.
 
 ## Keybindings
 

@@ -70,9 +70,14 @@ type connStateInfo struct {
 	err       error
 }
 
-// maxEventsPerSession caps per-session event retention in the TUI. Matches
-// the server's default maxEvents cap so we don't hold more than the server
-// itself does.
+// maxEventsPerSession caps per-session event retention in the TUI.
+//
+// This does NOT match the server's default max_events (500) — it is deliberately
+// twice it. The comment here used to claim they matched, which was never true.
+// Holding more than the server is the useful direction: the store is in-memory
+// and per-pod, so after a restart or an eviction abctl's buffer is the only
+// surviving copy of that history (see gone.go). Bounded all the same, since a
+// deep buffer times a few visited sessions is still small.
 const maxEventsPerSession = 1000
 
 // flashDuration is how long a one-shot status message (e.g. yank
@@ -216,11 +221,17 @@ type model struct {
 	// Data caches.
 	sessions []session.SessionSummary
 	events   map[string][]pipeline.SessionEvent // sessionID → ring buffer
-	eventCt  uint64                             // monotonic counter
+
+	// gone marks sessions whose events are still cached but which the server
+	// no longer lists — evicted under maxSessions, or lost to a proxy restart.
+	// The cached events stay viewable (that is the whole point of a debugging
+	// tool: it shows what it saw, and the store is per-pod and non-persistent,
+	// so abctl's copy is the only copy). The value is why, for the banner.
+	gone     map[string]goneReason
+	eventCt  uint64 // monotonic counter
 	lastTick time.Time
 	lastCt   uint64
 	rate     float64
-	drops    uint64
 
 	// Connection status.
 	connState connStateInfo
@@ -425,6 +436,8 @@ func (m *model) backToPodsPane() {
 	m.streamCh = nil
 	m.sessions = nil
 	m.events = make(map[string][]pipeline.SessionEvent)
+	// Tombstones describe the old pod's store; nothing to carry over.
+	m.gone = nil
 	// A different pod is a different aggregator: keep the view options the
 	// operator chose, drop the data they described.
 	m.usage.snap = nil
@@ -437,7 +450,6 @@ func (m *model) backToPodsPane() {
 	m.eventCt = 0
 	m.lastCt = 0
 	m.rate = 0
-	m.drops = 0
 	m.pipeline = nil
 	// Drop the cached /v1/plugins snapshot too — a different pod is a
 	// different framework instance with potentially different plugin
@@ -445,6 +457,13 @@ func (m *model) backToPodsPane() {
 	m.catalog = nil
 	m.catalogTbl.SetRows(nil)
 	m.previousPane = paneNone
+	// Close the picker with the pane it belongs to. The paneEvents gates on the
+	// key block and in View() make it inert and invisible once we leave, but the
+	// flag itself would outlive the pane: entering a session on the next pod puts
+	// m.pane back to paneEvents and the popup the user never reopened would be
+	// there again, owning the keyboard until they found esc. Gating covers "drawn
+	// over the wrong pane"; this covers the return trip.
+	m.colPicker = false
 	m.detailEvent = nil
 	m.detailPlugin = nil
 	m.selectedSess = ""
@@ -609,33 +628,13 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tickCmd()
 
 	case sessionsLoadedMsg:
-		// Server list is authoritative. Reconcile: drop cached events for
-		// sessions the server no longer knows about (typically the
-		// bootstrap "default" bucket after rekey). If the focused session
-		// disappeared, back out to the sessions pane so the user isn't
-		// stranded on an empty events view.
-		serverIDs := make(map[string]bool, len(msg))
-		for _, s := range msg {
-			serverIDs[s.ID] = true
-		}
-		for id := range m.events {
-			if !serverIDs[id] {
-				delete(m.events, id)
-			}
-		}
-		if m.selectedSess != "" && !serverIDs[m.selectedSess] && m.pane != paneSessions {
-			m.selectedSess = ""
-			m.pane = paneSessions
-			// Close the picker with the pane it belongs to.
-			//
-			// The paneEvents gates on the key block and in View() make it inert and
-			// invisible while the user is on the sessions table, but the flag itself
-			// outlived the pane: pressing enter on another session put m.pane back to
-			// paneEvents and the popup the user never reopened was there again, owning
-			// the keyboard until they found esc. Gating covers "drawn over the wrong
-			// pane"; this covers the return trip.
-			m.colPicker = false
-		}
+		// The server list is authoritative about what is LIVE, not about what is
+		// viewable. A session leaving the list means new events will stop arriving
+		// for it; it does not mean the events already on screen stopped being worth
+		// reading. So nothing is deleted here and the focused pane is never changed
+		// out from under the user — see reconcileGone for the reasoning and for the
+		// one case (rekey) where cached events legitimately move.
+		m.reconcileGone(msg)
 		m.sessions = []session.SessionSummary(msg)
 		m.connState.phase = connOpen
 		m.rebuildSessionsTable()
@@ -1075,6 +1074,10 @@ func (m *model) handleStreamEvent(ev apiclient.StreamEvent) {
 	}
 	e := *ev.Event
 	m.eventCt++
+	// A live event is proof the session is back (traffic resumed, or the same id
+	// after a restart). Clear the tombstone now rather than waiting up to one
+	// refresh interval for the list to agree.
+	delete(m.gone, e.SessionID)
 	buf := m.events[e.SessionID]
 	buf = append(buf, e)
 	if len(buf) > maxEventsPerSession {
@@ -1189,6 +1192,12 @@ func (m *model) paneView() string {
 		body = m.eventsTbl.View()
 		if banner := identityBanner(m.events[m.selectedSess]); banner != "" {
 			body = banner + "\n" + body
+		}
+		// Above the identity banner: the session is no longer live. Says which
+		// mechanism ended it, since the user's next move differs for a restart
+		// (reattach) and an eviction (raise max_sessions).
+		if reason, ok := m.gone[m.selectedSess]; ok {
+			body = goneBanner(reason, m.width) + "\n" + body
 		}
 	case paneDetail:
 		title = fmt.Sprintf("abctl · %s · event", trunc(m.selectedSess, 24))

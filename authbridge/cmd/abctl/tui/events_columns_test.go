@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -698,10 +699,11 @@ func TestFitColumns_ZeroDroppedMeansItFits(t *testing.T) {
 }
 
 // The picker must not own the keyboard, or draw itself, over a pane it does not
-// belong to. No KEY can switch panes underneath it, but a MESSAGE can: the
-// sessionsMsg handler drops to paneSessions when the selected session disappears
-// server-side, which left the popup drawn over the sessions table with its key
-// block swallowing enter/j/k — an inert pane until the user guessed esc.
+// belong to. No KEY can switch panes underneath it, but a MESSAGE can: a pod
+// teardown leaves paneEvents asynchronously, which left the popup drawn over the
+// pane below with its key block swallowing enter/j/k — an inert pane until the
+// user guessed esc. (This used to cite the sessionsLoadedMsg bounce to
+// paneSessions; that bounce was removed on purpose — see gone.go.)
 func TestColumnPicker_DoesNotStrandOnAnAsyncPaneChange(t *testing.T) {
 	m := newTestEventsModel(t)
 	m.handleKey(keyRune('c'))
@@ -730,8 +732,8 @@ func TestColumnPicker_DoesNotStrandOnAnAsyncPaneChange(t *testing.T) {
 
 // The picker must close with the pane it belongs to, not merely go quiet.
 //
-// The paneEvents gates make it inert and invisible while the user is bounced to
-// the sessions table, but the flag outlived the pane: pressing enter on another
+// The paneEvents gates make it inert and invisible while the user is away from
+// the events table, but the flag outlived the pane: pressing enter on another
 // session restored paneEvents and the popup was back without the user reopening
 // it, owning the keyboard until they found esc. Gating covers "drawn over the
 // wrong pane"; this covers the return trip.
@@ -743,12 +745,20 @@ func TestColumnPicker_DoesNotReturnAfterAnAsyncPaneChange(t *testing.T) {
 		t.Fatal("picker did not open")
 	}
 
-	// Drive the REAL handler, not a hand-set flag: the focused session disappears
-	// from the server's list, and sessionsLoadedMsg backs out to paneSessions. A
-	// test that assigned m.colPicker itself would pass without the fix.
-	m.Update(sessionsLoadedMsg{})
-	if m.pane != paneSessions {
-		t.Fatalf("handler did not back out to paneSessions (pane=%v)", m.pane)
+	// Drive the REAL transition, not a hand-set flag: backToPodsPane tears the
+	// session view down and leaves paneEvents. A test that assigned m.colPicker
+	// itself would pass without the fix.
+	//
+	// This used to drive sessionsLoadedMsg with an empty list, which back then
+	// bounced the user to paneSessions. That bounce is gone on purpose (see
+	// gone.go): a session leaving the server's list no longer moves the user or
+	// discards their events. The picker's lifecycle bug this test guards is
+	// unrelated to which transition triggers it, so it now uses the async pane
+	// change that remains.
+	m.parentCtx = context.Background() // backToPodsPane re-derives ctx from it
+	m.backToPodsPane()
+	if m.pane == paneEvents {
+		t.Fatalf("backToPodsPane left us on paneEvents (pane=%v)", m.pane)
 	}
 	if strings.Contains(m.View(), "COLUMNS") {
 		t.Error("popup still drawn over the sessions pane")

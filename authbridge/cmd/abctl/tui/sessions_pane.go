@@ -36,7 +36,7 @@ func (m *model) rebuildSessionsTable() {
 		prev = rows[m.sessionsTbl.Cursor()][0]
 	}
 	now := time.Now()
-	rows := make([]table.Row, 0, len(m.sessions))
+	rows := make([]table.Row, 0, len(m.sessions)+len(m.gone))
 	for _, s := range m.sessions {
 		if m.filter != "" && !strings.Contains(s.ID, m.filter) {
 			continue
@@ -51,6 +51,23 @@ func (m *model) rebuildSessionsTable() {
 			fmt.Sprintf("%d", s.EventCount),
 			sessionTokens(s.TotalTokens, m.events[s.ID]),
 			active,
+		})
+	}
+	// Tombstones. The server has stopped listing these, but abctl still holds
+	// their events — so they have to stay reachable here, or the events would be
+	// retained and yet unnavigable. Marked "gone" in the active column and
+	// counted from the local cache, since no server summary exists any more.
+	for _, id := range m.goneIDs() {
+		if m.filter != "" && !strings.Contains(id, m.filter) {
+			continue
+		}
+		cached := m.events[id]
+		rows = append(rows, table.Row{
+			id,
+			"—",
+			fmt.Sprintf("%d", len(cached)),
+			sessionTokens(0, cached),
+			styleWarn.Render("gone"),
 		})
 	}
 	m.sessionsTbl.SetRows(rows)

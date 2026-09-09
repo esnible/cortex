@@ -8,7 +8,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// footerView renders the bottom two lines: status (connection + rate + drops
+// footerView renders the bottom two lines: status (connection + rate
 // + optional transient flash) and a context-sensitive keybinding hint. No
 // lipgloss borders; parent view handles the frame.
 func (m *model) footerView() string {
@@ -35,14 +35,15 @@ func (m *model) footerView() string {
 
 	status.WriteString(styleMuted.Render("  "))
 
-	// Rate + drops.
+	// Rate. A "drops: N" indicator used to sit here, fed by m.drops — which was
+	// never incremented anywhere, so it read "drops: 0" unconditionally. That is
+	// worse than showing nothing: the one indicator an operator would check to
+	// tell "the stream lost events" from "nothing happened" was hardcoded to
+	// reassure. The store does drop events when a subscriber's channel fills
+	// (authlib/session/store.go publishLocked) but reports it only to the
+	// server's own slog, so a truthful counter needs the count on the wire
+	// first. Removed until then.
 	status.WriteString(styleMuted.Render(fmt.Sprintf("%.1f ev/s", m.rate)))
-	status.WriteString(styleMuted.Render("   "))
-	if m.drops > 0 {
-		status.WriteString(styleWarn.Render(fmt.Sprintf("drops: %d", m.drops)))
-	} else {
-		status.WriteString(styleMuted.Render("drops: 0"))
-	}
 	if m.paused {
 		status.WriteString(styleWarn.Render("   [paused]"))
 	}
