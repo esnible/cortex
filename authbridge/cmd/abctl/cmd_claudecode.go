@@ -251,13 +251,63 @@ func runClaudeCode(args []string, stdout, stderr io.Writer) int {
 // from the proxy that is actually running. Hardcoding 47600 here would silently
 // point Claude Code at nothing the moment someone edited their config.
 func wanted(cortexCfgPath string) (map[string]string, error) {
+	out, _, err := wantedFromConfig(cortexCfgPath)
+	return out, err
+}
+
+// bridgeEnabled reports whether cfg has an enabled TLS bridge.
+//
+// Empty Mode means disabled, per TLSBridgeConfig.Mode's own documentation, and a
+// nil TLSBridge means the block is absent entirely.
+func bridgeEnabled(cfg *config.Config) bool {
+	return cfg != nil && cfg.TLSBridge != nil && cfg.TLSBridge.Mode == "enabled"
+}
+
+// errBridgeDisabled is the shared refusal for a config whose bridge is off.
+//
+// Shared, because `abctl exec` and `abctl claude-code enable` must agree about the
+// bridge posture as well as the addresses. ca_dir is only *required* when
+// mode is "enabled" (config.Validate), so `mode: disabled` with a ca_dir set is
+// valid config that both commands used to accept — writing a CA for a bridge that
+// terminates nothing, so every https request fails verification against the real
+// upstream certificate. exec grew the check first; hoisting it here is what makes
+// "the two cannot drift" true of the posture too, not only the proxy and CA paths.
+// source names where the config came from — a file path for `claude-code enable`,
+// a stats URL for `abctl exec` — so the message points at the thing the reader can
+// actually go and change.
+func errBridgeDisabled(source string) error {
+	return fmt.Errorf("%s has no enabled TLS bridge (tls_bridge.mode must be \"enabled\");\n"+
+		"  without it Cortex terminates no TLS, so there is nothing for a client to\n"+
+		"  trust and every https request would fail verification. Enable the TLS bridge first",
+		source)
+}
+
+// wantedFromConfig is wanted plus the loaded config, so a caller needing more than
+// the three values does not parse the file twice.
+func wantedFromConfig(cortexCfgPath string) (map[string]string, *config.Config, error) {
 	cfg, err := config.Load(cortexCfgPath)
 	if err != nil {
-		return nil, fmt.Errorf("reading %s: %w", cortexCfgPath, err)
+		return nil, nil, fmt.Errorf("reading %s: %w", cortexCfgPath, err)
 	}
+	out, err := wantedFromLoaded(cfg, cortexCfgPath)
+	return out, cfg, err
+}
+
+// wantedFromLoaded is the derivation itself, over a config that is already in hand.
+//
+// Split out so `abctl exec` can feed it the config it fetched from the RUNNING
+// proxy while `claude-code enable` feeds it one read from disk. One derivation, two
+// sources: the values the two commands produce for the same Cortex cannot drift,
+// which is the property both rely on.
+// source names where cfg came from — a file path from wantedFromConfig, a stats
+// URL from execEnv — so a refusal points at the thing the reader can go and change.
+// errBridgeDisabled already took this parameter for exactly that reason; this
+// applies the same reasoning to the forward_proxy_addr refusal, which had lost the
+// path when the derivation became shared.
+func wantedFromLoaded(cfg *config.Config, source string) (map[string]string, error) {
 	addr := cfg.Listener.ForwardProxyAddr
 	if addr == "" {
-		return nil, fmt.Errorf("%s has no listener.forward_proxy_addr; Claude Code needs a forward proxy to point at", cortexCfgPath)
+		return nil, fmt.Errorf("%s has no listener.forward_proxy_addr; there is no forward proxy to point at", source)
 	}
 	// A bind address is not a URL: ":8081" and "127.0.0.1:47600" both need a host
 	// a client can actually dial.
@@ -281,7 +331,12 @@ func wanted(cortexCfgPath string) (map[string]string, error) {
 		envProxy:   "http://" + net.JoinHostPort(host, port),
 		envNoTelem: "1",
 	}
-	if cfg.TLSBridge.CADir != "" {
+	// Nil-checked: tls_bridge is an omitempty pointer, so a config without the
+	// block at all leaves it nil and dereferencing it segfaulted — `abctl
+	// claude-code enable` crashed with a stack trace on a perfectly valid config
+	// whose only fault was having no TLS bridge, which is exactly the case the
+	// caller below is written to report cleanly.
+	if cfg.TLSBridge != nil && cfg.TLSBridge.CADir != "" {
 		ca, aerr := filepath.Abs(filepath.Join(cfg.TLSBridge.CADir, "ca.crt"))
 		if aerr != nil {
 			return nil, aerr
@@ -300,9 +355,16 @@ func wanted(cortexCfgPath string) (map[string]string, error) {
 }
 
 func claudeCodeEnable2(settingsPath, cortexCfgPath, statePath string, yes bool, stdout, stderr io.Writer) int {
-	want, err := wanted(cortexCfgPath)
+	want, cfg, err := wantedFromConfig(cortexCfgPath)
 	if err != nil {
 		fmt.Fprintf(stderr, "abctl: %v\n", err)
+		return 1
+	}
+	// Same bridge-posture gate `abctl exec` applies. Without it, `mode: disabled`
+	// with a ca_dir set was written into settings.json and produced exactly the
+	// silent break the ca_dir check below exists to prevent.
+	if !bridgeEnabled(cfg) {
+		fmt.Fprintf(stderr, "abctl: %v\n", errBridgeDisabled(cortexCfgPath))
 		return 1
 	}
 	if _, ok := want[envCACerts]; !ok {
