@@ -149,5 +149,50 @@ _st=0; _out=$(with_newest_release "${FIXTURE}") || _st=$?
 set -e
 check_fails "an empty body fails" "${_st}"
 
+# --- resolve_version: --ref=X selects binaries too ---
+#
+# --ref was inconsistent: `--ref=v0.7.0-alpha.4` set script AND binaries, while
+# `--ref=main` set only the script, because there was no main release to download
+# from. One rule now covers both.
+
+with_resolve_version() { # script_ref fixture-path
+	_ref=$1; _f=$2
+	{
+		printf 'REPO=rossoctl/cortex\n'
+		printf 'warn() { printf "warning: %%s\\n" "$*" >&2; }\n'
+		printf 'die() { printf "error: %%s\\n" "$*" >&2; exit 1; }\n'
+		# info() is stubbed to match install.sh's definition EXACTLY — stdout, not
+		# stderr. Stubbing it silent (`info() { :; }`) would leave the
+		# "stdout carries no progress text" case below unable to fail, which is the
+		# one thing it exists to catch.
+		printf 'info() { printf "%%s\\n" "$*"; }\n'
+		printf 'curl() { cat "%s"; }\n' "${_f}"
+		sed -n '/^newest_release()/,/^}/p' "${INSTALL_SH}"
+		sed -n '/^resolve_version()/,/^}/p' "${INSTALL_SH}"
+		printf 'resolve_version "%s"\n' "${_ref}"
+	} >"${TMP}/rv.sh"
+	sh "${TMP}/rv.sh" 2>/dev/null
+}
+
+fixture rv_releases.json <<'EOF'
+[{"tag_name":"main"},{"tag_name":"v0.7.0-alpha.7"}]
+EOF
+check "--ref=main installs main binaries" "main" "$(with_resolve_version main "${FIXTURE}")"
+check "--ref=v0.7.0-alpha.4 installs that release" "v0.7.0-alpha.4" "$(with_resolve_version v0.7.0-alpha.4 "${FIXTURE}")"
+check "no ref resolves the newest v-tag" "v0.7.0-alpha.7" "$(with_resolve_version "" "${FIXTURE}")"
+
+# stdout must be the version and nothing else. info() writes to stdout
+# (install.sh:81), so an un-redirected progress line inside resolve_version would be
+# captured into $version and corrupt every download URL — a one-line mistake that
+# breaks every install and no other test would catch.
+# set +e around the capture: under `set -e` a bare assignment from a failing command
+# substitution aborts the whole suite, so a regression that broke resolve_version
+# would kill the run at this line instead of reporting a FAIL and carrying on.
+set +e
+_out=$(with_resolve_version "" "${FIXTURE}")
+set -e
+check "stdout carries no progress text" "1" "$(printf '%s\n' "${_out}" | wc -l | tr -d ' ')"
+check "stdout is exactly the version" "v0.7.0-alpha.7" "${_out}"
+
 printf '\n%s passed, %s failed\n' "${PASS}" "${FAIL}"
 [ "${FAIL}" = "0" ]

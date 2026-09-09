@@ -206,6 +206,27 @@ newest_release() {
 	printf '%s\n' "${_tag}"
 }
 
+# resolve_version prints the release tag whose binaries should be installed, given
+# the ref this script came from.
+#
+# One rule: --ref=X installs X. That was not true before — `--ref=v0.7.0-alpha.4`
+# set script and binaries, while `--ref=main` set only the script, because there
+# was no `main` release to download from. Now that the developer channel publishes
+# one, the special case disappears rather than growing a second flag.
+resolve_version() { # script_ref
+	case "$1" in
+		v*|main) printf '%s\n' "$1" ;;
+		*)
+			# >&2 deliberately: this function's stdout IS the resolved version, and
+			# info() writes to stdout (see its definition above). Without the
+			# redirect the progress line lands inside `version` and corrupts every
+			# download URL.
+			info "Resolving newest release..." >&2
+			newest_release || return 1
+			;;
+	esac
+}
+
 # ere_escape quotes the ERE metacharacters in a literal so it matches exactly.
 # Archive names contain dots, and an unescaped "." matches any character: the
 # pattern for abctl_v0.7.0-alpha.3_..tar.gz also accepted
@@ -374,19 +395,10 @@ if [ "${AUTHBRIDGE_SKIP_DOWNLOAD:-}" = "1" ]; then
 else
 
 # --- resolve the release tag ---
-version="${AUTHBRIDGE_VERSION:-}"
-if [ -z "$version" ]; then
-	# Default the binaries to the same release this script came from, so the
-	# script and the binaries it installs are one tested set rather than two
-	# independently-moving things.
-	case "${SCRIPT_REF}" in
-		v*) version="${SCRIPT_REF}" ;;
-		*)
-			info "Resolving newest release..."
-			version=$(newest_release) || die "could not resolve the newest release (set AUTHBRIDGE_VERSION=vX.Y.Z)"
-			;;
-	esac
-fi
+# The binaries default to the same ref this script came from, so the script and the
+# binaries it installs are one tested set rather than two independently-moving things.
+version=$(resolve_version "${SCRIPT_REF}") \
+	|| die "could not resolve the newest release (pass --ref=vX.Y.Z to pin one)"
 
 # --- download + verify ---
 tmp=$(mktemp -d)
