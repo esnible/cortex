@@ -65,7 +65,17 @@ type Counts struct {
 	PricedRequests int64 `json:"pricedRequests,omitempty"`
 }
 
-func (c *Counts) add(o Counts) {
+// Add accumulates o into c, field by field.
+//
+// Exported because consumers fold these too — abctl collapses low-volume series
+// into an "(other)" band — and an unexported version left them hand-summing the
+// fields in another module. That copy silently missed PricedRequests when it was
+// added, under a comment explaining that every field had to be carried. One
+// summation, in the same file as the struct, is the only way that stays true.
+//
+// Pointer receiver and mutating, matching how the aggregator accumulates on the
+// hot path. For a map value, read-modify-write: `v := m[k]; v.Add(o); m[k] = v`.
+func (c *Counts) Add(o Counts) {
 	c.Requests += o.Requests
 	c.Errors += o.Errors
 	c.Tokens += o.Tokens
@@ -282,9 +292,16 @@ func (a *Aggregator) Record(sessionID string, e *pipeline.SessionEvent) {
 	// Decoded before the lock, for the same reason the guards above are: it
 	// touches no aggregator state, and foldInto runs up to twice per event (the
 	// all-sessions ring and this session's ring), which would otherwise unmarshal
-	// the same JSON twice while holding mu. Near-free for a request event, whose
-	// Plugins map carries no cost key to unmarshal.
-	ec := decodeEventCost(e)
+	// the same JSON twice while holding mu.
+	//
+	// Skipped for request events, which return below without ever reaching
+	// foldInto. The cost is only ever published on the response pass, so this
+	// would find nothing anyway — but not calling it at all beats calling it and
+	// relying on that.
+	var ec eventCost
+	if e.Phase != pipeline.SessionRequest {
+		ec = decodeEventCost(e)
+	}
 
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -434,7 +451,7 @@ func (a *Aggregator) foldInto(ring []bucket, t time.Time, e *pipeline.SessionEve
 	if e.StatusCode >= 400 || e.Phase == pipeline.SessionDenied {
 		one.Errors = 1
 	}
-	b.Counts.add(one)
+	b.Counts.Add(one)
 
 	// Latency: only from events that actually carry one. A zero duration is
 	// "not measured", not "instant", and folding it in would drag the mean down.
@@ -527,7 +544,7 @@ func addLabel(m *map[string]Counts, key string, c Counts) {
 		key = overflowLabel
 	}
 	cur := (*m)[key]
-	cur.add(c)
+	cur.Add(c)
 	(*m)[key] = cur
 }
 

@@ -151,7 +151,7 @@ func fold(src []Bucket, width time.Duration) []Bucket {
 		series := map[string]Counts{}
 
 		for _, b := range src[i:end] {
-			acc.Counts.add(b.Counts)
+			acc.Counts.Add(b.Counts)
 			// Weighted by LatSamples, not Requests: the source mean was computed
 			// over measured requests only, so reconstituting with Requests would
 			// re-introduce the dilution latStats exists to avoid.
@@ -166,7 +166,7 @@ func fold(src []Bucket, width time.Duration) []Bucket {
 			}
 			for k, v := range b.Series {
 				cur := series[k]
-				cur.add(v)
+				cur.Add(v)
 				series[k] = cur
 			}
 		}
@@ -242,7 +242,7 @@ func (a *Aggregator) Snapshot(window, resolution time.Duration, sessionID string
 				b.Series = src.series(group)
 			}
 		}
-		out.Totals.add(b.Counts)
+		out.Totals.Add(b.Counts)
 		out.Buckets = append(out.Buckets, b)
 	}
 	// Derived after the loop: Totals is only complete once every bucket has been

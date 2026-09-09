@@ -690,11 +690,15 @@ func TestRenderStacked_FullyUnlabelledBucketMatchesItsLegend(t *testing.T) {
 	}
 }
 
-// foldTailSeries sums usage.Counts field-wise, because Counts.add is unexported.
-// That makes it silently incomplete whenever Counts grows a field: the folded
-// "(other)" band would under-report whatever was missed. PricedRequests is the
-// case that matters most, since dropping it makes the band claim zero coverage
-// for traffic that WAS priced — i.e. report its cost as partial when it is whole.
+// The folded "(other)" band must carry every Counts field, PricedRequests
+// included: a band reporting zero coverage for traffic that WAS priced would
+// claim its cost is partial when it is whole.
+//
+// This once summed the fields by hand in this package and silently missed
+// PricedRequests when that field was added. It now delegates to usage.Counts.Add,
+// so the arithmetic lives once, beside the struct. This test covers the behaviour;
+// what makes it stay correct is the delegation, not the assertion — a field added
+// to Counts and to Add is carried here with no change to this file.
 func TestFoldTailSeries_CarriesEveryCountsField(t *testing.T) {
 	// Two series beyond keep=1, so both fold into "(other)".
 	buckets := []usage.Bucket{{

@@ -53,7 +53,7 @@ func withCost(t *testing.T, e *pipeline.SessionEvent, costUSD float64) *pipeline
 // a bool cannot express "12 of 40 requests in this window were priced".
 func TestCountsAddFoldsPricedRequests(t *testing.T) {
 	a := Counts{Requests: 10, CostMicros: 500, PricedRequests: 4}
-	a.add(Counts{Requests: 5, CostMicros: 250, PricedRequests: 3})
+	a.Add(Counts{Requests: 5, CostMicros: 250, PricedRequests: 3})
 
 	if a.Requests != 15 {
 		t.Errorf("Requests = %d, want 15", a.Requests)
