@@ -37,6 +37,47 @@ pre-commit install
 cd authbridge/proxy-init && make docker-build-init
 ```
 
+## Installing an unreleased build
+
+A fix merged to `main` is installable immediately, without waiting for a release:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/rossoctl/cortex/main/authbridge/install.sh \
+  | sh -s -- --claude-code --ref=main
+```
+
+`--ref=X` means "install X" — both the installer script and the binaries. Every push
+to `main` rebuilds a rolling pre-release, so this tracks the tip.
+
+Each binary reports its own build: `abctl --version` → `main-a1b2c3d`. Quote that,
+not "main", in a bug report — the channel moves under you.
+
+Three things to know:
+
+- **Every `--ref=main` run replaces and restarts the service.** The installed build
+  never matches the requested `main`, so the installer always re-downloads and
+  `service install` always reinstalls. That cuts any running Claude Code session,
+  because `HTTPS_PROXY` is fixed in each session's environment at startup.
+- **`checksums.txt` rolls with the assets.** The installer fetches assets and
+  checksums in the same run, so verification is sound. Downloading them hours apart
+  will mismatch.
+- **The plain one-liner takes you back.** Running it without `--ref` reinstalls the
+  newest release and reinstalls the service, so there is no stuck state to clean up.
+
+The rolling release is tagged `main-latest`, not `main`. A GitHub release needs a git
+tag, and a tag named `main` would collide with the branch — `git rev-parse main` would
+then resolve to the tag rather than the branch, and every git command in the repo would
+warn that the name is ambiguous. Only the tag differs; `--ref=main` is what you type.
+
+### Enabling the channel (one-time, maintainers)
+
+The rolling release must not exist before a cut release contains the
+`newest_release()` v-tag filter — the released copy of `install.sh` is what every
+`curl | sh` bootstraps into, and an unfiltered copy dies when it sees a non-version
+tag at the top of the release list. So: merge, cut a release, then set the repo
+variable `MAIN_CHANNEL_ENABLED=true` (Settings → Secrets and variables → Actions →
+Variables). The next push to `main` publishes it.
+
 ## Issues
 
 Prioritization for pull requests is given to those that address and resolve existing GitHub issues. Utilize the available issue labels to identify meaningful and relevant issues to work on.
