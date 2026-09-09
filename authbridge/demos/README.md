@@ -25,6 +25,8 @@ more AuthBridge capabilities.
 | **[abctl Walkthrough](weather-agent/demo-with-abctl.md)** | Reference | Watch the AuthBridge plugin pipeline live with the `abctl` TUI | Tooling only |
 | **[IBAC](ibac/README.md)** | Intermediate | Intent-Based Access Control: LLM judge denies outbound HTTP that doesn't align with the user's recorded intent. Reproduces the email-poison / prompt-injection attack from `huang195/ibac`; chat with the agent through the rossoctl UI and see the exfiltration blocked, then `make show-result` for a pipeline-level forensic | UI + kubectl |
 | **[SPARC (finance)](finance-sparc/README.md)** | Intermediate | SPARC pre-tool reflection: the `sparc` plugin blocks a hallucinated/ungrounded tool argument (an invented transaction id) before it executes and transparently asks the user to clarify, then approves the corrected call. Complements IBAC — SPARC verifies argument grounding, IBAC verifies intent alignment | UI + kubectl |
+| **[Lineage](lineage/README.md)** | Intermediate | Per-request lineage on the Weather Agent pair: attach the sidecar with the lineage attach kit and see one turn first as 19 separate traces (the app forwards no `traceparent`), then as one trace of 70 spans with one root once the app's own propagation is switched on. Deploys the two stock images plain; edits nothing else | kubectl + scripts |
+| **[Lineage attach kit](../lineage-attach/README.md)** | Reference | Attach per-request lineage to any existing Deployment: enable the `lineage-telemetry` plugin and every HTTP exchange becomes two facts-only spans (`request` + `response`, paired by `lineage.exchange.id`) sent to **any** OTLP consumer. A strategic-merge patch + ConfigMap, generated and validated; a propagate-only OTel shim for uninstrumented Python apps, activated by one env var | kubectl + scripts |
 | **[CPEX Bridge (HR)](hr-cpex/README.md)** | Advanced | CPEX/APL declarative policy: one route chains a coarse APL predicate, an embedded Cedar PDP, RFC 8693 token exchange with a post-check, PII redaction and audit plugins. Same request, different data per caller (Bob sees an SSN, Eve gets it redacted). Self-contained: its own kind cluster + namespace, deployed via `make` rather than operator injection | [kubectl (make)](hr-cpex/README.md#quick-start) |
 
 ## Recommended Path
@@ -133,8 +135,8 @@ Cluster-backed demos (everything above except the session-budget local
 walkthrough) require:
 - A Kubernetes cluster with the Rossoctl platform installed
   ([Installation Guide](https://github.com/rossoctl/rossoctl/blob/main/docs/getting-started/install.md))
-- Keycloak deployed in the `keycloak` namespace
-- SPIRE deployed (for demos using SPIFFE identity)
+- Keycloak deployed in the `keycloak` namespace (not used by the Lineage demo)
+- SPIRE deployed (for demos using SPIFFE identity; not used by the Lineage demo)
 
 UI-based demos additionally require:
 - The Rossoctl UI running at `http://rossoctl-ui.localtest.me:8080`
