@@ -12,24 +12,38 @@ This file provides context for Claude (AI assistant) when working with the `cort
 
   ```sh
   git fetch https://github.com/rossoctl/cortex.git main
-  git rev-parse --short FETCH_HEAD          # verify what you are branching from
-  git worktree add .worktrees/<topic> -b <branch> FETCH_HEAD
+  # Capture the commit now. FETCH_HEAD is one file per repository, not per
+  # worktree, so reading it twice can hand you two different commits.
+  base=$(git rev-parse --short FETCH_HEAD) && echo "$base"
+  git worktree add .worktrees/<topic> -b <branch> "$base"
   ```
 
   Then stay in that directory. Leave the top-level checkout alone — treat it as a
-  reference copy someone else may be using.
+  reference copy someone else may be using. When the branch is merged or abandoned,
+  clean up after yourself: `git worktree remove .worktrees/<topic>` (add `--force` if it
+  still has untracked files), then `git worktree prune`. An abandoned worktree keeps its
+  branch checked out forever, which is what turns the next session's `worktree add` into
+  a puzzling failure.
 
   Three things learned the hard way:
-  - **Verify `FETCH_HEAD` before branching from it.** It is shared across worktrees, so
-    a stale one silently branches from an ancient commit. That has already reverted
-    `CLAUDE.md` mid-session to a pre-rename state.
-  - **Git refuses to check out one branch in two worktrees.** That is a feature, not an
-    obstacle — if it refuses, another session has the branch.
+  - **Capture the base commit; do not name `FETCH_HEAD` twice.** A concurrent fetch
+    between your `rev-parse` and your `worktree add` moves it underneath you, so the
+    verification passes and you still branch from the wrong commit. A stale one has
+    already reverted `CLAUDE.md` mid-session to a pre-rename state.
+  - **A refused `worktree add` does not always mean another session holds the branch.**
+    `-b <branch>` also fails when the branch merely exists with nothing checking it out
+    — including branches left behind by worktrees that were deleted rather than removed.
+    `git worktree list` says who actually holds what; the error text does not. When it
+    does show a live worktree on that branch, the refusal is a feature: pick another
+    name, do not force past it.
   - **Worktrees do not isolate the running Cortex.** One `~/.cortex/config.yaml`, one
     launchd label, one proxy on `:47600`, and every session's `HTTPS_PROXY` points at
-    it. `abctl service install`, `service restart` and `--ref=main` all replace that
-    single instance and cut every other session's traffic. Coordinate before touching
-    it.
+    it. `abctl service restart` always replaces that instance and cuts every attached
+    session. `abctl service install` only does so when it has something to change or a
+    running proxy to adopt — with nothing to do it prints `Already current` and leaves
+    the proxy alone. `--ref=main` is an `install.sh` flag, not an `abctl` one; it picks
+    which installer script runs, so whether it interrupts anything depends on what that
+    install then finds. Coordinate before any of it.
 
 - **Use `Assisted-By` for attribution** — never add `Co-Authored-By`, `Generated with Claude Code`, or similar trailers. See [Commit Attribution Policy](#commit-attribution-policy) below.
 
