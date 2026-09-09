@@ -200,16 +200,60 @@ newest_release() {
 	# Not /releases/latest either: it excludes prereleases, and this project ships them,
 	# so it names a tag from January. Listing releases asks what we actually mean — the
 	# newest release, whatever its flags.
-	_tag=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases?per_page=10" 2>/dev/null \
-		| tr ',{}' '\n' \
-		| grep '^[[:space:]]*"tag_name"[[:space:]]*:' \
-		| cut -d'"' -f4 \
-		| grep -m1 '^v[0-9]')
+	# TWO sources, because one was not enough. api.github.com allows 60 requests per
+	# hour per IP unauthenticated — shared by everyone behind one NAT, and each install
+	# spends two. Exhausting it killed the documented one-liner outright and told the
+	# person to go find a version and pass --ref, which is the opposite of a one-line
+	# install. Observed on a normal laptop, not contrived.
+	_tag=$(release_tag_from_api)
+	[ -n "${_tag}" ] || _tag=$(release_tag_from_feed)
 	case "${_tag}" in
 		v[0-9]*) ;;
 		*) return 1 ;;
 	esac
 	printf '%s\n' "${_tag}"
+}
+
+# release_tag_from_api prints the newest v-tag per the releases API, or nothing.
+release_tag_from_api() {
+	# The status is captured rather than discarded so a 403 can be NAMED. Nearly always
+	# that is the unauthenticated rate limit, which is a wait-or-pin situation and not a
+	# bug — and the old message said only "could not resolve the newest release", which
+	# told nobody that waiting would fix it.
+	_body="${TMPDIR:-/tmp}/cortex-rel.$$"
+	_code=$(curl -sSL -o "${_body}" -w '%{http_code}' \
+		"https://api.github.com/repos/${REPO}/releases?per_page=10" 2>/dev/null) || _code="000"
+	if [ "${_code}" = "403" ] || [ "${_code}" = "429" ]; then
+		# Only worth saying if it is really the quota; a 403 for another reason should
+		# not be mislabelled.
+		if grep -q 'rate limit' "${_body}" 2>/dev/null; then
+			warn "GitHub's API rate limit for this network is exhausted (60/hour per IP, unauthenticated); trying the releases feed instead"
+		fi
+	fi
+	if [ "${_code}" = "200" ]; then
+		tr ',{}' '\n' <"${_body}" \
+			| grep '^[[:space:]]*"tag_name"[[:space:]]*:' \
+			| cut -d'"' -f4 \
+			| grep -m1 '^v[0-9]' || true
+	fi
+	rm -f "${_body}"
+}
+
+# release_tag_from_feed prints the newest v-tag per the releases Atom feed, or nothing.
+#
+# github.com, not api.github.com: the feed is not bound by the API's 60/hour, which is
+# the whole reason it is here. It lists releases newest-first and includes prereleases,
+# so it answers the same question the API does.
+#
+# The parse is anchored to the <title> ELEMENT rather than grepping for a version-shaped
+# line. Release notes are ours to author and appear in the same document, so an
+# unanchored match could be hijacked by a notes line that happens to start with a
+# version — the same shape of bug as the unanchored "tag_name" match this file already
+# guards against. Notes arrive HTML-escaped (&lt;p&gt;), so they cannot forge a <title>.
+release_tag_from_feed() {
+	curl -fsSL "https://github.com/${REPO}/releases.atom" 2>/dev/null \
+		| sed -n 's|.*<title>\(v[0-9][^<]*\)</title>.*|\1|p' \
+		| head -1
 }
 
 # resolve_version prints the release tag whose binaries should be installed, given the
