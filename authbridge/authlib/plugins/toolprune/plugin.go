@@ -560,18 +560,11 @@ func (p *ToolPrune) OnFinish(_ context.Context, pctx *pipeline.Context) {
 	p.m.observeSaving(tokens, t, tokens*rate, prov, inf.Model)
 }
 
-// tierOf picks the tier the pruned manifest belonged to. The manifest is in the
-// cached prefix, so a write-dominant request wrote it and a read-dominant one
-// read it; with no cache tokens reported at all it was plain input.
+// tierOf picks the tier the pruned manifest belonged to, delegating the rule to
+// authlib/pricing so the UI that renders the saving and the plugin that measures
+// it cannot disagree about which tier it came from.
 func tierOf(inf *pipeline.InferenceExtension) pricing.Tier {
-	switch {
-	case inf.CacheWriteTokens > inf.CacheReadTokens && inf.CacheWriteTokens > 0:
-		return pricing.TierCacheWrite
-	case inf.CacheReadTokens > 0:
-		return pricing.TierCacheRead
-	default:
-		return pricing.TierInput
-	}
+	return pricing.PromptTier(pricing.UsageFromInference(inf))
 }
 
 // noteDrift logs, once, any configured name absent from the first manifest the

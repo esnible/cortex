@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -344,13 +345,57 @@ func renderUsageSummary(snap *usage.Snapshot) string {
 // is the failure this coverage count exists to prevent.
 func renderCostSummary(snap *usage.Snapshot) string {
 	if !snap.Priced {
+		// Not "$0.0000". A zero cost and an unknown cost are different answers, and
+		// only one of them means the traffic was free.
 		return "COST unavailable"
 	}
 	cell := fmt.Sprintf("COST $%.4f", float64(snap.Totals.CostMicros)/1e6)
-	if snap.Totals.PricedRequests < snap.Totals.Requests {
-		cell += fmt.Sprintf(" (%d/%d priced)", snap.Totals.PricedRequests, snap.Totals.Requests)
+	if snap.Totals.PricedRequests >= snap.Totals.Requests {
+		return cell
 	}
-	return cell
+	// Partial coverage: the total covers only the priced subset, so say so, and
+	// name what is missing. "Cost is incomplete" is not actionable; the endpoint and
+	// model are exactly what an operator needs to write a pricing entry for.
+	cell += fmt.Sprintf(" (%d/%d priced", snap.Totals.PricedRequests, snap.Totals.Requests)
+	if gaps := topUnpriced(snap.UnpricedBy, 3); gaps != "" {
+		cell += "; unpriced: " + gaps
+	}
+	return cell + ")"
+}
+
+// topUnpriced names the biggest coverage gaps, largest first, capped so one
+// pathological deployment cannot push the rest of the line off screen.
+//
+// Ordered by count rather than alphabetically because an operator fixing coverage
+// wants the entry that buys the most first. Ties break on the key so the line does
+// not reshuffle between refreshes for no reason.
+func topUnpriced(by map[string]int64, max int) string {
+	if len(by) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(by))
+	for k := range by {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if by[keys[i]] != by[keys[j]] {
+			return by[keys[i]] > by[keys[j]]
+		}
+		return keys[i] < keys[j]
+	})
+	shown := keys
+	if len(shown) > max {
+		shown = shown[:max]
+	}
+	parts := make([]string, 0, len(shown))
+	for _, k := range shown {
+		parts = append(parts, fmt.Sprintf("%s x%d", k, by[k]))
+	}
+	out := strings.Join(parts, ", ")
+	if rest := len(keys) - len(shown); rest > 0 {
+		out += fmt.Sprintf(", +%d more", rest)
+	}
+	return out
 }
 
 // usageWindows are the spans the [w] key cycles.

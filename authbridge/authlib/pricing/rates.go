@@ -157,3 +157,29 @@ func (r Rates) any() bool {
 	}
 	return false
 }
+
+// PromptTier picks which prompt tier a saving on the cached prefix came out of.
+//
+// A write-dominant request wrote the prefix, a read-dominant one read it, and one
+// reporting no cache tokens at all sent it as plain input. That distinction is
+// worth more than it looks: a cache write bills at 1.25x the input rate and a read
+// at 0.1x, so identical saved tokens are worth over 12x more on a miss than a hit,
+// and reporting one blended figure would hide a factor of twelve.
+//
+// Lives here rather than in a consumer because two of them need it — the plugin
+// that measures the saving and the UI that renders it — and a second copy of this
+// rule would be a second place for it to drift.
+//
+// This assumes the saving sits inside the cached prefix, which holds for a client
+// that puts cache_control on its tool block (Claude Code does). It is the one
+// assumption to revisit for a client that lays its prompt out differently.
+func PromptTier(u Usage) Tier {
+	switch {
+	case u.CacheWrite > u.CacheRead && u.CacheWrite > 0:
+		return TierCacheWrite
+	case u.CacheRead > 0:
+		return TierCacheRead
+	default:
+		return TierInput
+	}
+}
