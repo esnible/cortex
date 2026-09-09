@@ -53,18 +53,47 @@ fixture() { # name; body on stdin. Sets $FIXTURE to the path.
 	cat >"${FIXTURE}"
 }
 
+# emit_curl_stub prints a `curl` replacement that dispatches on the URL.
+#
+# One definition, used by every probe. newest_release() has two sources now, and a stub
+# serving one body to both could not tell them apart: the feed fallback would look
+# exercised while never running. Writing this twice is the drift that has already cost
+# this file two vacuous passes.
+# shellcheck disable=SC2016 # every expression below is literal on purpose: it is
+# expanded by the generated probe, not here. One directive for the whole function beats
+# five identical ones inline.
+emit_curl_stub() { # api-fixture feed-fixture api-http-code
+	printf 'curl() {\n'
+	printf '  _u=""; for _a in "$@"; do case "$_a" in http*) _u="$_a" ;; esac; done\n'
+	printf '  _o=""; _p=""; for _a in "$@"; do [ "${_p}" = "-o" ] && _o="$_a"; _p="$_a"; done\n'
+	printf '  case "${_u}" in\n'
+	printf '    *api.github.com*)\n'
+	printf '      [ -z "${_o}" ] || cat "%s" > "${_o}"\n' "$1"
+	printf '      [ -n "${_o}" ] || cat "%s"\n' "$1"
+	printf '      printf "%%s" "%s"\n' "$3"
+	printf '      [ "%s" = "200" ] || return 22\n' "$3"
+	printf '      ;;\n'
+	printf '    *releases.atom*) cat "%s" ;;\n' "$2"
+	printf '  esac\n'
+	printf '}\n'
+}
+
 # with_newest_release runs install.sh's newest_release() against a fixture.
 #
 # The function is extracted by line range rather than sourcing install.sh, because
 # sourcing would run the whole installer. `curl` is replaced by a function so the
 # extracted code is unmodified — testing what ships, not a copy of it.
-with_newest_release() { # fixture-path
+with_newest_release() { # api-fixture-path [feed-fixture-path] [api-http-code]
 	_f=$1
+	_feed=${2:-/dev/null}
+	_code=${3:-200}
 	{
 		printf 'REPO=rossoctl/cortex\n'
 		printf 'warn() { printf "warning: %%s\\n" "$*" >&2; }\n'
-		printf 'curl() { cat "%s"; }\n' "${_f}"
+		emit_curl_stub "${_f}" "${_feed}" "${_code}"
 		sed -n '/^newest_release()/,/^}/p' "${INSTALL_SH}"
+		sed -n '/^release_tag_from_api()/,/^}/p' "${INSTALL_SH}"
+		sed -n '/^release_tag_from_feed()/,/^}/p' "${INSTALL_SH}"
 		printf 'newest_release\n'
 	} >"${TMP}/probe.sh"
 	sh "${TMP}/probe.sh" 2>/dev/null
@@ -169,8 +198,10 @@ with_resolve_version() { # version_ref fixture-path
 		# "stdout carries no progress text" case below unable to fail, which is the
 		# one thing it exists to catch.
 		printf 'info() { printf "%%s\\n" "$*"; }\n'
-		printf 'curl() { cat "%s"; }\n' "${_f}"
+		emit_curl_stub "${_f}" /dev/null 200
 		sed -n '/^newest_release()/,/^}/p' "${INSTALL_SH}"
+		sed -n '/^release_tag_from_api()/,/^}/p' "${INSTALL_SH}"
+		sed -n '/^release_tag_from_feed()/,/^}/p' "${INSTALL_SH}"
 		sed -n '/^resolve_version()/,/^}/p' "${INSTALL_SH}"
 		printf 'resolve_version "%s"\n' "${_ref}"
 	} >"${TMP}/rv.sh"
@@ -339,6 +370,82 @@ check "--ref=v0.5.0 with a transport failure refuses to run main" \
 # kind of vacuous pass that hid the unreachable arm above.
 check "--ref=v0.5.0 with a 200 script re-execs into it" \
 	"REEXECED" "$(with_bootstrap v0.5.0 200 v0.7.0-alpha.7)"
+
+# --- the one-liner survives an exhausted API quota ---
+#
+# This is the reason the feed source exists. 60 requests/hour per IP, unauthenticated,
+# shared behind NAT, two spent per install: exhausting it used to kill the documented
+# one-liner and tell the person to look up a version and pass --ref, which is the
+# opposite of a one-line install. The API failing must be invisible, not fatal.
+
+fixture feed.xml <<'EOF'
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Release notes from cortex</title>
+  <entry>
+    <title>v0.7.0-alpha.8</title>
+    <content type="html">&lt;p&gt;Prebuilt binaries&lt;/p&gt;</content>
+  </entry>
+  <entry>
+    <title>v0.7.0-alpha.7</title>
+  </entry>
+</feed>
+EOF
+FEED="${FIXTURE}"
+
+fixture ratelimit403.json <<'EOF'
+{"message":"API rate limit exceeded for 203.0.113.7.","documentation_url":"https://x"}
+EOF
+check "API 403 falls back to the feed" "v0.7.0-alpha.8" \
+	"$(with_newest_release "${FIXTURE}" "${FEED}" 403)"
+
+# The feed's own <title> is the repo's, not a release, and must not be mistaken for one.
+check "the feed's own title is not mistaken for a release" "v0.7.0-alpha.8" \
+	"$(with_newest_release "${FIXTURE}" "${FEED}" 403)"
+
+# A channel release appears in the feed too, and must be skipped there exactly as it is
+# in the API response — otherwise the fallback would reintroduce the bug the v-tag filter
+# exists to prevent.
+fixture feed_channel.xml <<'EOF'
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Release notes from cortex</title>
+  <entry><title>main-latest</title></entry>
+  <entry><title>v0.7.0-alpha.8</title></entry>
+</feed>
+EOF
+check "the feed skips the channel release" "v0.7.0-alpha.8" \
+	"$(with_newest_release "${TMP}/ratelimit403.json" "${FIXTURE}" 403)"
+
+# Release notes are ours to author and live in the same document, so a version-shaped
+# line inside them must not win. The parse is anchored to the <title> element for this
+# reason; notes arrive HTML-escaped and cannot forge one.
+fixture feed_poisoned.xml <<'EOF'
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Release notes from cortex</title>
+  <entry>
+    <title>v0.7.0-alpha.8</title>
+    <content type="html">v9.9.9-evil is not a release
+&lt;p&gt;notes&lt;/p&gt;</content>
+  </entry>
+</feed>
+EOF
+check "notes text cannot pose as a release title" "v0.7.0-alpha.8" \
+	"$(with_newest_release "${TMP}/ratelimit403.json" "${FIXTURE}" 403)"
+
+# Both sources down is the only remaining failure, and it must stay a failure rather
+# than guess.
+fixture empty_feed.xml </dev/null
+set +e
+_st=0; _out=$(with_newest_release "${TMP}/ratelimit403.json" "${FIXTURE}" 403) || _st=$?
+set -e
+check_fails "both sources failing still fails" "${_st}"
+check "and prints nothing" "" "${_out}"
+
+# A healthy API must still be used — the fallback is a fallback, not a replacement.
+fixture api_ok.json <<'EOF'
+[{"tag_name":"v0.7.0-alpha.8"},{"tag_name":"v0.7.0-alpha.7"}]
+EOF
+check "a healthy API is used without touching the feed" "v0.7.0-alpha.8" \
+	"$(with_newest_release "${FIXTURE}" /dev/null 200)"
 
 # --- the channel tag is one string, in two files ---
 #

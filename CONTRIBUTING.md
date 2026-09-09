@@ -54,6 +54,10 @@ rebuilds a rolling pre-release, so `--ref=main` tracks the tip.
 you get that ref's *script* with the newest *release's* binaries. The installer warns
 when that happens rather than leaving you to infer it.
 
+You should not need `--ref` to get a release. The plain one-liner resolves the newest
+release itself, from the releases API and — when that is unavailable — from
+`releases.atom`, which is not bound by the API's 60-requests-per-hour-per-IP limit.
+
 Each binary reports its own build: `abctl --version` → `main-a1b2c3d`. Quote that,
 not "main", in a bug report — the channel moves under you.
 
