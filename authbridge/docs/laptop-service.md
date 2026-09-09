@@ -149,6 +149,23 @@ followed by this machine's public roots. Pointing a replacing variable at `ca.cr
 would leave that tool trusting one private CA and nothing else, which breaks every
 direct TLS call it makes.
 
+### Developer tooling is not intercepted at all
+
+`gh`, `go`, `pip` and `npm` work out of the box, without trusting anything. The
+bridge ships a default `passthrough_hosts` list — GitHub, the Go module proxy and
+checksum DB, the package registries — and tunnels them rather than forging a leaf.
+
+That costs nothing. `inference-parser`, the MCP/A2A parsers and `tool-prune` all act
+on agent↔LLM and agent↔tool messages; none of them has anything to say about a
+module download. Intercepting those hosts produced no observability and broke every
+Go tool, which is the worst of both.
+
+To see the list, or to override it, set `tls_bridge.passthrough_hosts` in
+`~/.cortex/config.yaml`. An explicit list **replaces** the default rather than adding
+to it, and `passthrough_hosts: []` intercepts everything. Never list an inference
+endpoint there: it would silently remove the parsing and the token savings, with no
+error anywhere to notice it by.
+
 ### Go tools on macOS need the keychain, not a variable
 
 `SSL_CERT_FILE` — the Go one, covering `go`, `gh` and `abctl` itself — **does

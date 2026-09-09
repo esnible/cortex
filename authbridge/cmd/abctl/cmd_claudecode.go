@@ -148,10 +148,15 @@ var bundleKeys = []string{envSSLCert, envGitCA, envRequestsCA, envCurlCA}
 // the user has just been told is configured — the same "no error points at the
 // cause" problem this command exists to remove.
 func darwinGoNote(caPath string) string {
-	return "Note: on macOS, SSL_CERT_FILE cannot make Go tools (go, gh) trust the bridge.\n" +
-		"  Go reads roots from the keychain, not from any CA file, so that one variable is\n" +
-		"  inert here — git, curl and Python are fine. To cover the Go tools, trust the CA\n" +
-		"  in your login keychain:\n\n" +
+	return "Note: on macOS, SSL_CERT_FILE is inert. Go reads roots from the keychain, not\n" +
+		"  from any CA file, so that one variable does nothing here (git, curl and Python\n" +
+		"  are unaffected — they honour theirs on every platform).\n\n" +
+		"  Nothing to do in the common case: gh, go, pip and npm are not intercepted at\n" +
+		"  all, because the bridge tunnels GitHub, the Go module proxy and the package\n" +
+		"  registries by default. Their traffic holds nothing a parser can read.\n\n" +
+		"  Only if you add a host to tls_bridge.passthrough_hosts' replacement list, or\n" +
+		"  point a Go program at a bridged host, does that program need the CA — and on\n" +
+		"  macOS only the keychain can give it one:\n\n" +
 		"    security add-trusted-cert -k ~/Library/Keychains/login.keychain-db \\\n" +
 		"      -p ssl " + caPath + "\n\n" +
 		"  Undo with: security delete-certificate -c authbridge-tls-bridge-ca \\\n" +

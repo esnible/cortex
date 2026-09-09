@@ -464,10 +464,17 @@ func main() {
 				ports[p] = true
 			}
 		}
+		// A bad passthrough pattern is fatal rather than ignored: silently not
+		// matching presents as "the bridge broke my tool", with nothing tying the
+		// symptom back to the typo.
+		decision, derr := tlsbridge.NewDecision(tlsbridge.DecisionOpts{
+			Ports: ports, SkipHosts: cfg.TLSBridge.PassthroughHosts,
+		})
+		if derr != nil {
+			log.Fatalf("tls-bridge: %v", derr)
+		}
 		bridge = &tlsbridge.Engine{
-			Decision: tlsbridge.NewDecision(tlsbridge.DecisionOpts{
-				Ports: ports, SkipHosts: cfg.TLSBridge.PassthroughHosts,
-			}),
+			Decision: decision,
 			Term:     tlsbridge.NewTerminator(minter),
 			Skip:     tlsbridge.NewSkipSet(),
 			Upstream: up,
