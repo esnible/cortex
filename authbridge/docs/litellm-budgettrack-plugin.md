@@ -174,13 +174,16 @@ for how the listener promotes `pctx.Extensions.Custom` entries to
 ### Consumers
 
 The event's wire shape is declared once, in `authlib/costevent` (`costevent.Event`,
-published under `costevent.PluginName`). Producer and consumers share that
-declaration rather than each keeping a private copy:
+published under `costevent.PluginName`). Producer and consumers share that one
+declaration rather than each keeping a private copy, so a field rename is a
+compile error rather than a silently blank column:
 
 - **The usage aggregator** (`authlib/usage`) records `cost_usd` into
   `Counts.CostMicros` and increments `Counts.PricedRequests`, so `/v1/usage`
   reports the same figure this plugin enforces its budget against.
-- **`abctl`** renders the per-request figure in its events pane.
+- **`abctl`** renders the per-request figure in its events pane, and the window
+  total plus coverage in the usage footer. Its `tui.costEvent` is a type *alias*
+  for `costevent.Event`, not a copy.
 
 Two consequences for reading `/v1/usage`. Cost is reported only for traffic this
 plugin priced, so requests it did not price appear as the gap between

@@ -689,3 +689,39 @@ func TestRenderStacked_FullyUnlabelledBucketMatchesItsLegend(t *testing.T) {
 		t.Error("legend does not name the remainder band that is drawn")
 	}
 }
+
+// foldTailSeries sums usage.Counts field-wise, because Counts.add is unexported.
+// That makes it silently incomplete whenever Counts grows a field: the folded
+// "(other)" band would under-report whatever was missed. PricedRequests is the
+// case that matters most, since dropping it makes the band claim zero coverage
+// for traffic that WAS priced — i.e. report its cost as partial when it is whole.
+func TestFoldTailSeries_CarriesEveryCountsField(t *testing.T) {
+	// Two series beyond keep=1, so both fold into "(other)".
+	buckets := []usage.Bucket{{
+		Counts: usage.Counts{Requests: 30, Errors: 3, Tokens: 3000, CostMicros: 900, PricedRequests: 21},
+		Series: map[string]usage.Counts{
+			"keep-me": {Requests: 10, Errors: 1, Tokens: 1000, CostMicros: 300, PricedRequests: 7},
+			"tail-a":  {Requests: 12, Errors: 1, Tokens: 1200, CostMicros: 400, PricedRequests: 9},
+			"tail-b":  {Requests: 8, Errors: 1, Tokens: 800, CostMicros: 200, PricedRequests: 5},
+		},
+	}}
+
+	// Ordered as the caller supplies them; keep=1 retains only the first, so
+	// tail-a and tail-b fold into "(other)".
+	series := []seriesKey{
+		{label: "keep-me", total: 10},
+		{label: "tail-a", total: 12},
+		{label: "tail-b", total: 8},
+	}
+
+	_, out := foldTailSeries(buckets, series, 1)
+	other, ok := out[0].Series[tailLabel]
+	if !ok {
+		t.Fatalf("no %q band; series = %v", tailLabel, out[0].Series)
+	}
+
+	want := usage.Counts{Requests: 20, Errors: 2, Tokens: 2000, CostMicros: 600, PricedRequests: 14}
+	if other != want {
+		t.Errorf("folded %q = %+v, want %+v", tailLabel, other, want)
+	}
+}
