@@ -67,7 +67,10 @@ Three things to know:
 The rolling release is tagged `main-latest`, not `main`. A GitHub release needs a git
 tag, and a tag named `main` would collide with the branch — `git rev-parse main` would
 then resolve to the tag rather than the branch, and every git command in the repo would
-warn that the name is ambiguous. Only the tag differs; `--ref=main` is what you type.
+warn that the name is ambiguous. `--ref=main` is the spelling to use, but `--ref=main-latest`
+does the same thing, since that is the title the Releases page shows. CI moves the tag to
+the published commit on every merge, so the release's "Source code" archives match the
+binaries beside them.
 
 ### Enabling the channel (one-time, maintainers)
 

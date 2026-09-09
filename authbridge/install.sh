@@ -210,20 +210,17 @@ newest_release() {
 # was no `main` release to download from. Now that the developer channel publishes
 # one, the special case disappears rather than growing a second flag.
 resolve_version() { # script_ref
-	# Only an EXPLICIT --ref=main selects channel binaries. The bootstrap also sets
-	# SCRIPT_REF=main when it falls back to this copy — API unreachable, or the release
-	# it wanted has no install.sh. That means "run main's script", not "install main's
-	# binaries", and conflating the two hands an unreleased build to someone who asked
-	# for a release. Rate limiting makes that path reachable, not theoretical.
+	# Takes VERSION_REF, not SCRIPT_REF. Empty means "nobody named anything
+	# installable" — resolve the newest release, and fail loudly if that is not
+	# possible. It must never mean "fall back to the channel": rate limiting alone
+	# would then hand unreleased builds to people who ran the plain one-liner.
 	#
-	# The assets live on CHANNEL_TAG, not on a tag called `main` — see its definition
-	# for why. The ref someone types, the tag the assets hang off, and the binary's own
-	# stamp are three different strings, deliberately.
-	if [ "$1" = "main" ] && [ "${CHANNEL_REQUESTED:-}" = "1" ]; then
-		printf '%s\n' "${CHANNEL_TAG}"
-		return 0
-	fi
+	# Both channel spellings land on CHANNEL_TAG. The assets live there rather than on
+	# a tag called `main` — see its definition for why — so the ref someone types, the
+	# tag the assets hang off, and the binary's own stamp are three different strings,
+	# deliberately.
 	case "$1" in
+		main | "${CHANNEL_TAG}") printf '%s\n' "${CHANNEL_TAG}" ;;
 		v*) printf '%s\n' "$1" ;;
 		*)
 			# >&2 deliberately: this function's stdout IS the resolved version, and
@@ -256,6 +253,12 @@ ere_escape() {
 # SCRIPT_REF names the ref this copy came from and doubles as the recursion guard:
 # the child sees it set and does not bootstrap again.
 SCRIPT_REF="${AUTHBRIDGE_SCRIPT_REF:-}"
+# VERSION_REF answers "what did the user ask to INSTALL". SCRIPT_REF answers a
+# different question — "which copy of this script is running" — and the two diverge on
+# every fallback below. Reading one for the other is how the default one-liner ended up
+# able to install channel binaries: three separate situations all set SCRIPT_REF=main,
+# and only one of them was a request for unreleased builds.
+VERSION_REF="${SCRIPT_REF}"
 if [ -z "${SCRIPT_REF}" ]; then
 	want_ref="${WANT_REF:-}"
 	if [ -z "${want_ref}" ]; then
@@ -264,16 +267,19 @@ if [ -z "${SCRIPT_REF}" ]; then
 	if [ -z "${want_ref}" ]; then
 		# Could not ask: offline, rate-limited, 5xx. Fall back to THIS copy of the
 		# script, but deliberately NOT to channel binaries. Whoever ran the plain
-		# one-liner asked for a release, so CHANNEL_REQUESTED stays unset and version
-		# resolution below still hunts for the newest v-tag — failing loudly if it
-		# cannot find one, which beats silently installing an unreleased build.
+		# one-liner asked for a release, so VERSION_REF is cleared and resolution below
+		# still hunts for the newest v-tag — failing loudly if it cannot find one,
+		# which beats silently installing an unreleased build.
 		warn "could not resolve the newest release; continuing with the copy from main"
 		SCRIPT_REF="main"
-	elif [ "${want_ref}" = "main" ]; then
-		# Explicitly asked for main: this copy already is main, and channel binaries
-		# are what was requested. This is the ONLY branch that sets CHANNEL_REQUESTED.
+		VERSION_REF=""
+	elif [ "${want_ref}" = "main" ] || [ "${want_ref}" = "${CHANNEL_TAG}" ]; then
+		# Explicitly asked for the channel, by either name. `main` is the documented
+		# spelling; CHANNEL_TAG is what the Releases page shows, so someone who saw the
+		# title there will type that instead and must get the same thing. This copy
+		# already is main, so there is nothing to re-exec.
 		SCRIPT_REF="main"
-		CHANNEL_REQUESTED=1
+		VERSION_REF="main"
 	else
 		# Rebuild the argument list without --ref: it is meta, consumed here, and a
 		# released script from before --ref existed rejects it as an unknown option.
@@ -319,11 +325,13 @@ if [ -z "${SCRIPT_REF}" ]; then
 			# A release from before this script existed under that name. Falling
 			# back beats refusing to install, but name the copy that is running so
 			# a surprise is attributable.
-			# Same reasoning as the unreachable-API fallback above: running main's
-			# SCRIPT is the fallback, installing main's BINARIES is not.
-			# CHANNEL_REQUESTED stays unset.
+			#
+			# VERSION_REF keeps the pin: running main's SCRIPT is the fallback,
+			# changing which BINARIES get installed is not. `--ref=X installs X`
+			# has to survive this branch or the flag means nothing here.
 			warn "${want_ref} has no authbridge/install.sh (HTTP 404); continuing with the copy from main"
 			SCRIPT_REF="main"
+			VERSION_REF="${want_ref}"
 		else
 			# Blocked, offline, rate-limited, proxied, 5xx. We cannot tell whether a
 			# released installer exists, so do not quietly run main instead.
@@ -416,7 +424,7 @@ else
 # --- resolve the release tag ---
 # The binaries default to the same ref this script came from, so the script and the
 # binaries it installs are one tested set rather than two independently-moving things.
-version=$(resolve_version "${SCRIPT_REF}") \
+version=$(resolve_version "${VERSION_REF}") \
 	|| die "could not resolve the newest release (pass --ref=vX.Y.Z to pin one)"
 
 # --- download + verify ---

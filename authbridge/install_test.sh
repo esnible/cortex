@@ -155,8 +155,8 @@ check_fails "an empty body fails" "${_st}"
 # `--ref=main` set only the script, because there was no main release to download
 # from. One rule now covers both.
 
-with_resolve_version() { # script_ref fixture-path [channel_requested]
-	_ref=$1; _f=$2; _req=${3:-}
+with_resolve_version() { # version_ref fixture-path
+	_ref=$1; _f=$2
 	{
 		printf 'REPO=rossoctl/cortex\n'
 		# CHANNEL_TAG is read out of install.sh, not restated here, so this probe
@@ -172,7 +172,6 @@ with_resolve_version() { # script_ref fixture-path [channel_requested]
 		printf 'curl() { cat "%s"; }\n' "${_f}"
 		sed -n '/^newest_release()/,/^}/p' "${INSTALL_SH}"
 		sed -n '/^resolve_version()/,/^}/p' "${INSTALL_SH}"
-		printf 'CHANNEL_REQUESTED=%s\n' "${_req}"
 		printf 'resolve_version "%s"\n' "${_ref}"
 	} >"${TMP}/rv.sh"
 	sh "${TMP}/rv.sh" 2>/dev/null
@@ -187,15 +186,18 @@ EOF
 # hardcode it, or renaming the channel silently passes a stale test.
 CHANNEL_TAG=$(sed -n 's/^CHANNEL_TAG="\(.*\)"$/\1/p' "${INSTALL_SH}")
 check "install.sh defines a non-colliding CHANNEL_TAG" "1" "$(printf '%s' "${CHANNEL_TAG}" | grep -c '^main-' || true)"
-check "--ref=main installs the channel tag" "${CHANNEL_TAG}" "$(with_resolve_version main "${FIXTURE}" 1)"
+check "--ref=main installs the channel tag" "${CHANNEL_TAG}" "$(with_resolve_version main "${FIXTURE}")"
 
-# The bootstrap sets SCRIPT_REF=main for TWO other reasons: the release API was
-# unreachable, and the wanted release has no install.sh. Both mean "run main's script";
-# neither means "install main's binaries". Without this distinction a rate-limited user
-# who ran the plain one-liner silently received an unreleased build — and rate limiting
-# is reachable, not theoretical. Guarding on the literal "main" alone is what caused it,
-# so the test pins the fallback, not just the happy path.
-check "fallback to main's script still installs a RELEASE" "v0.7.0-alpha.7" "$(with_resolve_version main "${FIXTURE}")"
+# Both channel spellings resolve identically — CHANNEL_TAG is the title on the Releases
+# page, so it is what someone types after seeing it there.
+check "--ref=CHANNEL_TAG resolves the same" "${CHANNEL_TAG}" "$(with_resolve_version "${CHANNEL_TAG}" "${FIXTURE}")"
+
+# An empty VERSION_REF means "nobody named anything installable" and must resolve the
+# newest RELEASE. It must never fall through to the channel: that is what the bootstrap
+# passes when the API was unreachable, and the whole point is that a rate-limited plain
+# one-liner does not silently receive an unreleased build. Asserted here at the function
+# level and again against the real bootstrap block further down.
+check "empty version ref resolves a RELEASE, never the channel" "v0.7.0-alpha.7" "$(with_resolve_version "" "${FIXTURE}")"
 check "--ref=v0.7.0-alpha.4 installs that release" "v0.7.0-alpha.4" "$(with_resolve_version v0.7.0-alpha.4 "${FIXTURE}")"
 check "no ref resolves the newest v-tag" "v0.7.0-alpha.7" "$(with_resolve_version "" "${FIXTURE}")"
 
@@ -226,6 +228,63 @@ for _v in AUTHBRIDGE_SKIP_DOWNLOAD AUTHBRIDGE_SCRIPT_REF; do
 	_hits=$(grep -c "${_v}" "${INSTALL_SH}" || true)
 	check_fails "${_v} is still present" "${_hits}"
 done
+
+
+# --- bootstrap: which script runs vs which binaries get installed ---
+#
+# These two questions have different answers on every fallback, and conflating them let
+# the DEFAULT one-liner install channel binaries. The resolve_version cases above cannot
+# catch that: in isolation main -> CHANNEL_TAG is correct. The bug was in the bootstrap
+# deciding to pass "main" at all. So extract the bootstrap block itself and assert the
+# pair it produces.
+with_bootstrap() { # want_ref http_code_for_script_fetch newest_release_output
+	_want=$1; _http=$2; _newest=$3
+	_start=$(awk '/^SCRIPT_REF="\$\{AUTHBRIDGE_SCRIPT_REF:-\}"/{print NR; exit}' "${INSTALL_SH}")
+	_end=$(awk -v s="${_start}" 'NR>=s && /^fi$/{print NR; exit}' "${INSTALL_SH}")
+	{
+		printf 'REPO=rossoctl/cortex\n'
+		sed -n '/^CHANNEL_TAG=/p' "${INSTALL_SH}"
+		printf 'info() { :; }\nwarn() { :; }\ndie() { printf "DIED\\n"; exit 1; }\n'
+		# newest_release: empty output + non-zero mimics an unreachable/rate-limited API.
+		printf 'newest_release() { [ -n "%s" ] || return 1; printf "%%s\\n" "%s"; }\n' "${_newest}" "${_newest}"
+		# curl here is only the raw.githubusercontent fetch of the released script; -w
+		# makes the real one print the status code, so the stub prints the scenario's.
+		printf 'curl() { printf "%%s" "%s"; }\n' "${_http}"
+		# shellcheck disable=SC2016 # literal on purpose: these expand in the
+		# generated probe, not here. Same reason install.sh disables SC2016.
+		printf 'mktemp() { printf "%%s\\n" "${TMPDIR:-/tmp}/boot.$$"; }\n'
+		printf 'AUTHBRIDGE_SCRIPT_REF=""\nWANT_REF="%s"\n' "${_want}"
+		sed -n "${_start},${_end}p" "${INSTALL_SH}"
+		# shellcheck disable=SC2016 # same: the probe prints its own variables.
+		printf 'printf "script=%%s version=%%s\\n" "${SCRIPT_REF}" "${VERSION_REF}"\n'
+	} >"${TMP}/bs.sh"
+	sh "${TMP}/bs.sh" 2>/dev/null
+}
+
+# The plain one-liner while the release API is unreachable. VERSION_REF must be empty so
+# resolution still hunts for a release and fails loudly — NOT the channel. This is the
+# regression: before the channel existed this path died with "could not resolve the
+# newest release"; keying resolution on SCRIPT_REF turned it into a silent unreleased
+# install. Unauthenticated api.github.com is 60 req/hr per IP, so it is routine from
+# behind NAT, not a corner case.
+check "API unreachable, no --ref: script=main, nothing to install" \
+	"script=main version=" "$(with_bootstrap "" 000 "")"
+
+# --ref=main, the documented spelling.
+check "--ref=main: script=main, install main" \
+	"script=main version=main" "$(with_bootstrap main 000 v0.7.0-alpha.7)"
+
+# --ref=<CHANNEL_TAG>, which is the title shown on the Releases page, so someone will
+# type it after seeing it there. It must mean the same thing as --ref=main rather than
+# bootstrapping that tag's frozen script and then installing newest-release binaries.
+check "--ref=CHANNEL_TAG behaves as --ref=main" \
+	"script=main version=main" "$(with_bootstrap "${CHANNEL_TAG}" 000 v0.7.0-alpha.7)"
+
+# A pinned release whose tag predates authbridge/install.sh: fall back to main's SCRIPT,
+# but keep the pin for the BINARIES. Losing it here would break "--ref=X installs X" on
+# the one path where the user was most explicit about X.
+check "--ref=v0.5.0 with a 404 script: script=main, install v0.5.0" \
+	"script=main version=v0.5.0" "$(with_bootstrap v0.5.0 404 v0.7.0-alpha.7)"
 
 printf '\n%s passed, %s failed\n' "${PASS}" "${FAIL}"
 [ "${FAIL}" = "0" ]

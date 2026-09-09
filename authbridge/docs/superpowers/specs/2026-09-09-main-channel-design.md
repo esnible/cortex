@@ -99,10 +99,19 @@ consequences —
   installer. Confirming it would have required creating the colliding tag on a
   real repo.
 
-Only the tag changes. `--ref=main` remains what a developer types;
-`resolve_version` maps it to `CHANNEL_TAG` (`install.sh`), and the CI workflow
-must use the same string. The test suite reads the constant out of `install.sh`
-rather than restating it, so a rename cannot leave a stale expectation passing.
+`--ref=main` remains what a developer types; `resolve_version` maps it to
+`CHANNEL_TAG` (`install.sh`), and the CI workflow must use the same string. The
+test suite reads the constant out of `install.sh` rather than restating it, so a
+rename cannot leave a stale expectation passing.
+
+Two things review added on top of the rename. `--ref=main-latest` must behave
+identically to `--ref=main`, because `main-latest` is a real tag and it is the
+title the Releases page shows — a developer who saw it there will type it.
+And renaming addressed ref *ambiguity* only: the tag still froze at its
+first-publish commit, because uploading assets never moves it, so the release's
+source archives drifted from the binaries beside them. CI now moves the rolling
+tag before uploading. Neither is optional for the channel to behave as
+"`--ref=X` installs X".
 
 **On D3.** `--ref` is inconsistent *today*: `--ref=v0.7.0-alpha.4` sets both halves
 (`v*) version="${SCRIPT_REF}"`), while `--ref=main` sets only the script because there is

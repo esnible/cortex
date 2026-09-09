@@ -23,6 +23,17 @@ on:
 permissions:
   contents: read
 
+# Scoped by ref, because main-latest is the first FIXED, reused release target this
+# repo has had: every v* tag is unique, so two runs never contended for the same
+# assets before. Two merges inside one build window would otherwise have both runs
+# uploading 17 files with --clobber, interleaving into a mixed asset set plus a
+# checksums.txt from whichever finished last — which users meet as "checksum
+# verification failed", an alarming message for what is really a publish race.
+# Superseding is right for a rolling channel: only the newest tip matters.
+concurrency:
+  group: release-binaries-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   release-binaries:
     runs-on: ubuntu-latest
@@ -40,10 +51,10 @@ jobs:
       contents: write  # create the Release and upload assets (tag + main pushes)
     steps:
       - name: Checkout
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Set up Go
-        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v5
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
           go-version-file: authbridge/cmd/authbridge-proxy/go.mod
 
@@ -136,10 +147,15 @@ jobs:
           ls -l dist
 
       - name: Publish to GitHub Release
-        # A main push publishes too, which is the whole point of the channel. The
-        # job-level gate already requires MAIN_CHANNEL_ENABLED for that path;
-        # repeating ref_type here keeps workflow_dispatch from ever publishing.
-        if: github.ref_type == 'tag' || github.event_name == 'push'
+        # A main push publishes too, which is the whole point of the channel; the
+        # job-level gate already requires MAIN_CHANNEL_ENABLED for that path.
+        #
+        # `event_name == 'push'` ALONE, deliberately. A tag push already satisfies it,
+        # so adding `ref_type == 'tag'` bought nothing except one bad case: dispatching
+        # this workflow against a tag ref gives ref_type=='tag' with
+        # event_name=='workflow_dispatch', which published and --clobbered that
+        # release's assets. The dry run is supposed to publish nothing.
+        if: github.event_name == 'push'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -175,6 +191,16 @@ jobs:
             add 'supported install, use the newest `v*` release instead.'
           fi
           if gh release view "${TAG}" >/dev/null 2>&1; then
+            # Uploading assets does not move the tag, so on a REUSED tag the release
+            # would keep pointing at its first-publish commit forever: the "Source
+            # code" archives and the commit shown on the release page would drift
+            # further from the binaries beside them on every merge. Renaming the tag to
+            # main-latest fixed ref ambiguity with the branch; it did nothing about
+            # freezing. Only for the rolling tag — a v* release must never be moved.
+            if [ "${TAG}" = "main-latest" ]; then
+              gh api --method PATCH "repos/${GITHUB_REPOSITORY}/git/refs/tags/${TAG}" \
+                -f sha="${GITHUB_SHA}" -F force=true >/dev/null
+            fi
             gh release upload "${TAG}" dist/*.tar.gz dist/checksums.txt --clobber
           else
             prerelease=""
