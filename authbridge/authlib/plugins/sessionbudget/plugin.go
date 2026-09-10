@@ -118,18 +118,39 @@ func (p *SessionBudget) Name() string { return "session-budget" }
 
 func (p *SessionBudget) Capabilities() pipeline.PluginCapabilities {
 	return pipeline.PluginCapabilities{
-		// The package doc has always stated this constraint — "must run before
-		// inference-parser in the declared plugin order (response path is
-		// reverse)" — but as prose, which builds cleanly when violated. It is the
-		// same hazard RequiresLater was added for: this plugin reads the token
-		// counts inference-parser finalizes on the response pass, and that pass
-		// walks the chain in reverse, so the parser must sit at a HIGHER index.
+		// Declared only when a limit actually depends on the parser's output.
 		//
-		// Violated, the budget reads zero counts and never fires, which looks
-		// exactly like a session that stayed inside its limits.
-		RequiresLater: []string{"inference-parser"},
+		// The package doc has always stated the constraint — "must run before
+		// inference-parser in the declared plugin order (response path is reverse)" —
+		// but as prose, which builds cleanly when violated. Violated, a token or call
+		// budget reads zero counts and never fires, which looks exactly like a
+		// session that stayed inside its limits.
+		//
+		// CONDITIONAL, though, because max_duration_seconds is enforced entirely on
+		// the request path and never touches Extensions.Inference. A duration-only
+		// budget legitimately runs without the parser, and an unconditional
+		// requirement would refuse to build a configuration that works today. This is
+		// safe to read here: validateRelationships calls Capabilities AFTER Configure,
+		// so p.cfg is populated.
+		RequiresLater: p.parserDependentLimits(),
 		Description:   "Enforce per-session token, call, and duration budgets via Redis.",
 	}
+}
+
+// parserDependentLimits names inference-parser when, and only when, a configured
+// limit is counted from what that parser publishes on the response.
+//
+// Duration is excluded deliberately: it is wall-clock, enforced on the request path,
+// and needs nothing from the response.
+func (p *SessionBudget) parserDependentLimits() []string {
+	c := p.cfg
+	countsTokensOrCalls := c.MaxTokens > 0 || c.MaxCalls > 0 ||
+		c.MaxInputTokens > 0 || c.MaxCacheReadTokens > 0 || c.MaxCacheWriteTokens > 0 ||
+		c.MaxOutputTokens > 0 || c.MaxReasoningTokens > 0
+	if !countsTokensOrCalls {
+		return nil
+	}
+	return []string{"inference-parser"}
 }
 
 func (p *SessionBudget) Configure(raw json.RawMessage) error {

@@ -7,13 +7,18 @@
 //   - Non-streaming responses carry the cost in a response header
 //     (x-litellm-response-cost, or the pre-discount -original variant), read
 //     on the terminal frame.
-//   - Streaming responses (text/event-stream — what Claude Code's
-//     /v1/messages uses) report cost 0 in the header because the total is not
-//     known when the headers are sent. For these, the plugin parses the token
-//     usage out of the terminal SSE events (Anthropic message_delta /
-//     message_stop, or OpenAI's final chunk usage) and prices it from the
-//     configured per-token rates. Streaming cost tracking is therefore active
-//     only when input_cost_per_token / output_cost_per_token are configured.
+//
+//   - Streaming responses (text/event-stream — what Claude Code's /v1/messages
+//     uses) report cost 0 in the header because the total is not known when the
+//     headers are sent. That zero is a placeholder, not an answer. For these the
+//     plugin prices the per-tier token counts inference-parser publishes, using the
+//     top-level `pricing:` section.
+//
+//     The plugin no longer carries rate options of its own. input_cost_per_token
+//     and its three siblings were REMOVED, and a config still setting them now
+//     fails to start with the field named — see docs/litellm-budgettrack-plugin.md.
+//     It also requires inference-parser LATER in the chain, because the response
+//     pass runs in reverse; see Capabilities.
 package litellm_budgettrack
 
 import (
@@ -145,6 +150,12 @@ func (p *BudgetTrack) Configure(raw json.RawMessage) error {
 	if err := dec.Decode(&p.cfg); err != nil {
 		return fmt.Errorf("litellm-budget-track config: %w (rates moved to the top-level `pricing:` section; see docs/litellm-budgettrack-plugin.md)", err)
 	}
+	// Decode stops at the first JSON value, so trailing content was silently
+	// accepted — a regression from json.Unmarshal, which rejected it. Switching to a
+	// decoder to gain DisallowUnknownFields must not loosen this.
+	if dec.More() {
+		return fmt.Errorf("litellm-budget-track config: unexpected trailing content after the config object")
+	}
 	if p.cfg.SpendFile == "" {
 		return fmt.Errorf("litellm-budget-track: spend_file is required")
 	}
@@ -174,7 +185,7 @@ func (p *BudgetTrack) OnRequest(_ context.Context, pctx *pipeline.Context) pipel
 // so pipeline.RunResponse skips it and OnResponseFrame drives accumulation
 // instead; this remains for listeners that only call OnResponse.
 func (p *BudgetTrack) OnResponse(_ context.Context, pctx *pipeline.Context) pipeline.Action {
-	if cost, _ := headerCost(pctx); cost > 0 {
+	if cost, st := headerCost(pctx); st == headerPositive && cost > 0 {
 		if total, ok := p.accumulate(cost); ok {
 			p.emitCost(pctx, cost, costevent.SourceGatewayHeader, total, pricing.ProvAuthoritative)
 		}
@@ -205,18 +216,22 @@ func (p *BudgetTrack) OnResponseFrame(_ context.Context, pctx *pipeline.Context,
 	}
 	st.settled = true
 
-	cost, present := headerCost(pctx)
+	cost, state := headerCost(pctx)
 	source := costevent.SourceGatewayHeader
 	// A header cost is a settled figure the gateway reported, not a rate we looked
 	// up — the strongest provenance there is.
 	provenance := pricing.ProvAuthoritative
-	if cost <= 0 {
+	// A zero on a stream is LiteLLM's placeholder, not an answer, so it falls back
+	// like an absent header. A zero on a non-streamed response IS an answer.
+	streamedPlaceholder := state == headerZero && isEventStream(pctx)
+	declaredFree := state == headerZero && !streamedPlaceholder
+	if state != headerPositive {
 		// Fall back to per-token pricing only when there is no authoritative
 		// header cost: the header is absent, or this is a streamed response
 		// (where LiteLLM always reports 0). A present "0" on a non-streamed
 		// response is a genuine free call (cache hit / error) — charge nothing,
 		// don't invent a cost from the usage block.
-		if !present || isEventStream(pctx) {
+		if !declaredFree {
 			// Price the per-tier counts inference-parser published, through the
 			// process rate table scoped to this request's endpoint.
 			//
@@ -242,12 +257,18 @@ func (p *BudgetTrack) OnResponseFrame(_ context.Context, pctx *pipeline.Context,
 		if total, ok := p.accumulate(cost); ok {
 			p.emitCost(pctx, cost, source, total, provenance)
 		}
-	case present:
-		// The gateway reported a cost and it was zero — a genuine free call: a cache
-		// hit, or an error it declined to charge for. Nothing is added to the ledger,
-		// but the event is still published so downstream knows this was PRICED at
-		// zero. Without it the usage aggregator finds no figure, falls through to its
-		// rate table, and invents a cost for a call the gateway declared free.
+	case declaredFree:
+		// The gateway reported a parsed, finite, exactly-zero cost on a NON-streamed
+		// response: a genuine free call — a cache hit, or an error it declined to
+		// charge for. Nothing is added to the ledger, but the event is published so
+		// downstream knows this was PRICED at zero rather than unpriced. Without it
+		// the aggregator finds no figure and invents a cost for a call the gateway
+		// declared free.
+		//
+		// Deliberately NOT reached for an unusable header, nor for a stream whose
+		// usage fallback failed to price. Those are unpriced, and claiming them as
+		// settled zeros would count them toward coverage and drop them from the
+		// unpriced list — the inverse of the bug this branch fixes.
 		p.emitSettledZero(pctx)
 	}
 	return pipeline.Action{Type: pipeline.Continue}
@@ -329,28 +350,49 @@ func (p *BudgetTrack) costOf(host, model string, u pricing.Usage) (micros int64,
 	return micros, prov, true
 }
 
-// headerCost returns the usable positive cost reported in the response headers
-// and whether a cost header was present at all. present distinguishes "no
-// header" (fall back to usage pricing) from "header says 0" (a genuine free
-// call — cache hit / error — that must NOT be re-priced from usage). A present
-// but non-positive/non-finite header yields (0, true).
-func headerCost(pctx *pipeline.Context) (cost float64, present bool) {
+// headerCostState says what the gateway's cost header actually told us. A bool
+// could not carry this, and collapsing these cases caused a real defect: every
+// state below except headerPositive returned (0, true), so "the gateway declared
+// this call free" was indistinguishable from "the header was garbage" and from
+// "this is a stream, where LiteLLM always stamps 0 as a placeholder". Publishing a
+// settled zero for all of them counted unpriced traffic as priced.
+type headerCostState int
+
+const (
+	// headerAbsent: no cost header at all. Price from token usage.
+	headerAbsent headerCostState = iota
+	// headerUnusable: a header was present but could not be believed — unparseable,
+	// negative, NaN or Inf. NOT a declaration of anything, so it must not suppress
+	// the usage fallback and must never publish a settled zero.
+	headerUnusable
+	// headerZero: present, parsed, finite and exactly zero. On a NON-streamed
+	// response this is the gateway saying the call was free — a cache hit, or an
+	// error it declined to charge for. On a streamed response it means nothing:
+	// LiteLLM stamps 0 there by design because the total is unknown when headers
+	// are sent.
+	headerZero
+	// headerPositive: a usable figure.
+	headerPositive
+)
+
+// headerCost returns the cost the gateway reported and what kind of answer it was.
+func headerCost(pctx *pipeline.Context) (cost float64, state headerCostState) {
 	costStr := pctx.ResponseHeaders.Get(responseCostHeader)
 	if costStr == "" {
 		// Anthropic /v1/messages (and newer LiteLLM) omit the bare header.
 		costStr = pctx.ResponseHeaders.Get(responseCostOriginalHeader)
 	}
 	if costStr == "" {
-		return 0, false
+		return 0, headerAbsent
 	}
 	c, err := strconv.ParseFloat(costStr, 64)
-	// strconv.ParseFloat accepts "NaN" / "Inf"; reject non-finite (and
-	// non-positive) so a garbage or zero header does not poison the ledger. The
-	// header was still present, so report that.
-	if err != nil || c <= 0 || math.IsNaN(c) || math.IsInf(c, 0) {
-		return 0, true
+	if err != nil || math.IsNaN(c) || math.IsInf(c, 0) || c < 0 {
+		return 0, headerUnusable
 	}
-	return c, true
+	if c == 0 {
+		return 0, headerZero
+	}
+	return c, headerPositive
 }
 
 // isEventStream reports whether the response is a text/event-stream (SSE) — the

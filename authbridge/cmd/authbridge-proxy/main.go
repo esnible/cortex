@@ -275,21 +275,14 @@ func main() {
 	}
 
 	// The pricing registry is built ONCE, here, deliberately outside
-	// buildPipelines. The reloader re-invokes that closure on every config change,
+	// buildPipelines, and starts EMPTY: buildPipelines loads the config and swaps
+	// the real table in before anything reads it. The reloader re-invokes that closure on every config change,
 	// but the usage aggregator that shares these rates is created further down and
 	// outlives every rebuild — so a registry reconstructed per pipeline would leave
 	// the aggregator holding a stale table forever, and /v1/usage would silently
 	// disagree with the plugins about what a request cost. The table is swapped in
 	// place instead; the pointer never changes. See pricing.Registry.
 	pricingRegistry := pricing.NewRegistry(nil)
-	if tab, err := pricing.Build(bootCfg.Pricing); err != nil {
-		// Unreachable in practice: config.Validate already built this table and
-		// rejected a bad section. Fatal rather than ignored so the two can never
-		// drift into a state where startup succeeds with no rates at all.
-		log.Fatalf("pricing table: %v", err)
-	} else {
-		pricingRegistry.Swap(tab)
-	}
 
 	// This binary is hardcoded to proxy-sidecar. Rejecting other modes
 	// early gives operators a clear boot-time error instead of silently

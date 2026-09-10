@@ -166,8 +166,22 @@ The spend file (`spend-authbridge.json`) is a simple JSON object:
 Each priced response surfaces on the session-event stream at
 `SessionEvent.Plugins["litellm-budget-track"]`, so consumers can read
 per-response cost without duplicating the pricing math or reading the file
-ledger. Unpriced responses (missing header + no per-token rates configured, or a
-zero-cost cache hit) produce no event.
+ledger.
+
+**A zero-cost cache hit now DOES produce an event** — this line previously said the
+opposite, and it was the one case that mattered. A gateway that reports a parsed,
+finite, exactly-zero cost on a non-streamed response is *declaring the call free*,
+which is a different answer from nobody having priced it. The event carries
+`settled: true` so the usage aggregator does not fall through to its rate table and
+invent a cost for it.
+
+An event is NOT emitted when the response is genuinely unpriced: no usable header
+*and* no rate covering the tiers it used. That silence is deliberate — it is what
+lets `/v1/usage` name the endpoint and model in `unpricedBy`. A header that is
+unparseable, negative or non-finite counts as unpriced, not as a declared zero: a
+garbage header says nothing about whether the call was free. Nor does a zero on a
+*streamed* response, where LiteLLM stamps 0 by design because the total is unknown
+when headers are sent.
 
 | Field | Type | Meaning |
 |-------|------|---------|
@@ -175,6 +189,11 @@ zero-cost cache hit) produce no event.
 | `source` | string | `"gateway-header"` (authoritative — LiteLLM stamped the header) or `"usage-fallback"` (priced from token counters, used for streamed responses whose header always reports 0). |
 | `daily_total_usd` | float64 | Ledger total after this response was added. |
 | `daily_max_usd` | float64 | Configured daily cap (`max_budget`). |
+| `provenance` | string | Where the figure came from: `"authoritative"` (the gateway reported it), or the rate table's level — `"configured"`, `"discovered"`, `"bundled"`. Omitted when absent. |
+| `settled` | bool | `true` when the producer settled this figure deliberately, **including a zero**. Distinguishes "this call was free" from "nobody priced this", which a bare `cost_usd: 0` cannot. Omitted when false. |
+
+Both trailing fields are **additive**: the four above them are unchanged, and a
+consumer that knows only those four decodes an event from either version unaltered.
 
 See [`plugin-reference.md#emitting-session-events`](./plugin-reference.md#emitting-session-events)
 for how the listener promotes `pctx.Extensions.Custom` entries to
