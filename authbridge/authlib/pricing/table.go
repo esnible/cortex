@@ -43,7 +43,18 @@ type row struct {
 type modelMatcher struct {
 	pattern string
 	g       glob.Glob
-	exact   bool // no metacharacters: names exactly one model
+	// gPrefixed matches the same pattern behind a provider prefix, so a literal
+	// key also matches "anthropic/<key>" and "aws/<key>".
+	//
+	// This is load-bearing, not a convenience. A metacharacter-free key compiles to
+	// a literal matcher, so "claude-opus-4-1" did not match
+	// "anthropic/claude-opus-4-1"; that name fell through to the family glob, which
+	// carries the NEWEST member's rates. The result was the exact error the
+	// generated table exists to fix — opus-4-1 priced at opus-5's $5/Mtok instead
+	// of $15 — for every gateway that echoes a provider-prefixed model name, and
+	// long-context thresholds were lost the same way.
+	gPrefixed glob.Glob
+	exact     bool // no metacharacters: names exactly one model
 }
 
 // globMeta are the characters that make a pattern a glob rather than a literal.
@@ -55,17 +66,32 @@ func compileModel(pattern string) (modelMatcher, error) {
 	if err != nil {
 		return modelMatcher{}, fmt.Errorf("pricing: model pattern %q: %w", pattern, err)
 	}
-	return modelMatcher{
-		pattern: lower,
-		g:       g,
-		exact:   !strings.ContainsAny(lower, globMeta),
-	}, nil
+	// Only literal keys get the prefix-tolerant form. A pattern that already
+	// contains metacharacters is the operator's own business, and silently
+	// widening it would make "claude-*" match "vertex_ai/claude-*" against their
+	// intent.
+	exact := !strings.ContainsAny(lower, globMeta)
+	m := modelMatcher{pattern: lower, g: g, exact: exact}
+	if exact {
+		gp, err := glob.Compile("*/" + lower)
+		if err != nil {
+			return modelMatcher{}, fmt.Errorf("pricing: model pattern %q: %w", pattern, err)
+		}
+		m.gPrefixed = gp
+	}
+	return m, nil
 }
 
 // match lower-cases the subject because gateways vary in how they echo model
 // names, and a case mismatch would silently unprice the traffic rather than fail
 // visibly (toolprune/plugin.go:224-226).
-func (m modelMatcher) match(model string) bool { return m.g.Match(strings.ToLower(model)) }
+func (m modelMatcher) match(model string) bool {
+	lower := strings.ToLower(model)
+	if m.g.Match(lower) {
+		return true
+	}
+	return m.gPrefixed != nil && m.gPrefixed.Match(lower)
+}
 
 // specificity ranks how tightly a row names its target, for tie-breaks WITHIN one
 // provenance level.
@@ -78,8 +104,18 @@ func (m modelMatcher) match(model string) bool { return m.g.Match(strings.ToLowe
 // so two equally specific rows resolve the same way across restarts instead of
 // whichever map iteration reached first.
 type specificity struct {
-	namedHost  bool
-	hostLen    int
+	namedHost bool
+	// exactHost is true when the host pattern is a literal, so the host it names
+	// beats a glob that merely covers it.
+	//
+	// Its absence was a live defect: at equal pattern length the final tie-break
+	// decided, and "*" (0x2A) sorts before any letter, so "*.internal" beat
+	// "a.internal" for traffic to a.internal — in either slice order. An operator
+	// pinning one discounted gateway beside a broader "*.internal" block silently
+	// got the broad rate.
+	exactHost bool
+	hostLen   int
+
 	exactModel bool
 	modelLen   int
 	pattern    string
@@ -89,6 +125,8 @@ func (s specificity) beats(o specificity) bool {
 	switch {
 	case s.namedHost != o.namedHost:
 		return s.namedHost
+	case s.exactHost != o.exactHost:
+		return s.exactHost
 	case s.hostLen != o.hostLen:
 		return s.hostLen > o.hostLen
 	case s.exactModel != o.exactModel:
@@ -130,8 +168,14 @@ func NewTable(entries []Entry) (*Table, error) {
 			rates: e.Rates,
 			prov:  e.Prov,
 			spec: specificity{
-				namedHost:  !anyHost(host),
-				hostLen:    len(host),
+				namedHost: !anyHost(host),
+				exactHost: !anyHost(host) && !strings.ContainsAny(host, globMeta),
+				// Zero for a catch-all, so "*" and "" rank identically — the docs
+				// promise they mean the same thing, but len("*") is 1 and len("") is
+				// 0, and hostLen is compared before the model axis, so a
+				// {"*", "*"} row used to beat a {"", "claude-opus-5"} row: a
+				// catch-all shadowing an exact model.
+				hostLen:    hostRankLen(host),
 				exactModel: m.exact,
 				modelLen:   len(m.pattern),
 				pattern:    host + "\x00" + m.pattern,

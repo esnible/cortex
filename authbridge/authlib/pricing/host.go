@@ -33,6 +33,19 @@ func hostKey(host string) string {
 // operator writes when they mean it.
 func anyHost(pattern string) bool { return pattern == "" || pattern == "*" }
 
+// hostRankLen is the length used when ranking host patterns, zero for any spelling
+// of a catch-all.
+//
+// "" and "*" are documented as identical, but len("*") is 1 and len("") is 0, and
+// host length is compared before the model axis — so a {"*", "*"} row outranked a
+// {"", "claude-opus-5"} row, letting a catch-all shadow an exact model.
+func hostRankLen(host string) int {
+	if anyHost(host) {
+		return 0
+	}
+	return len(host)
+}
+
 // matchHost reports whether endpoint matches pattern, with the port stripped.
 //
 // path.Match rather than the model matcher's gobwas/glob, deliberately: host

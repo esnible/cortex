@@ -6,8 +6,12 @@
 // LIST prices for the first-party Anthropic endpoint. A gateway that bills below
 // list — most internal LiteLLM deployments do — is OVERSTATED by this table, and
 // an operator corrects it with a host-scoped `pricing:` entry, which outranks
-// anything bundled. Rates are written in the unit providers publish, dollars per
-// million tokens, divided by a constant so the compiler folds each one exactly.
+// anything bundled.
+//
+// Rates are USD per TOKEN, emitted as the shortest decimal that round-trips back to
+// the identical float64. They are deliberately NOT written as a per-million value
+// divided by a constant: that form read better but was lossy, so some rates could
+// not be reproduced by regenerating and the golden test became unfixable.
 
 package pricing
 
@@ -36,155 +40,155 @@ func Bundled() []Entry {
 
 var bundledEntries = []Entry{
 	{Host: "*", Model: "claude-3-7-sonnet-20250219", Prov: ProvBundled, Rates: Rates{
-		Base: [numTiers]float64{TierInput: 3.0 / 1000000, TierCacheWrite: 3.75 / 1000000, TierCacheRead: 0.3 / 1000000, TierOutput: 15.0 / 1000000},
+		Base: [numTiers]float64{TierInput: 3e-06, TierCacheWrite: 3.75e-06, TierCacheRead: 3e-07, TierOutput: 1.5e-05},
 		Set:  [numTiers]bool{TierInput: true, TierCacheWrite: true, TierCacheRead: true, TierOutput: true},
 	}},
 	{Host: "*", Model: "claude-3-haiku-20240307", Prov: ProvBundled, Rates: Rates{
-		Base: [numTiers]float64{TierInput: 0.25 / 1000000, TierCacheWrite: 0.3 / 1000000, TierCacheRead: 0.03 / 1000000, TierOutput: 1.25 / 1000000},
+		Base: [numTiers]float64{TierInput: 2.5e-07, TierCacheWrite: 3e-07, TierCacheRead: 3e-08, TierOutput: 1.25e-06},
 		Set:  [numTiers]bool{TierInput: true, TierCacheWrite: true, TierCacheRead: true, TierOutput: true},
 	}},
 	{Host: "*", Model: "claude-3-opus-20240229", Prov: ProvBundled, Rates: Rates{
-		Base: [numTiers]float64{TierInput: 15.0 / 1000000, TierCacheWrite: 18.75 / 1000000, TierCacheRead: 1.5 / 1000000, TierOutput: 75.0 / 1000000},
+		Base: [numTiers]float64{TierInput: 1.5e-05, TierCacheWrite: 1.875e-05, TierCacheRead: 1.5e-06, TierOutput: 7.5e-05},
 		Set:  [numTiers]bool{TierInput: true, TierCacheWrite: true, TierCacheRead: true, TierOutput: true},
 	}},
 	{Host: "*", Model: "claude-4-opus-20250514", Prov: ProvBundled, Rates: Rates{
-		Base: [numTiers]float64{TierInput: 15.0 / 1000000, TierCacheWrite: 18.75 / 1000000, TierCacheRead: 1.5 / 1000000, TierOutput: 75.0 / 1000000},
+		Base: [numTiers]float64{TierInput: 1.5e-05, TierCacheWrite: 1.875e-05, TierCacheRead: 1.5e-06, TierOutput: 7.5e-05},
 		Set:  [numTiers]bool{TierInput: true, TierCacheWrite: true, TierCacheRead: true, TierOutput: true},
 	}},
 	{Host: "*", Model: "claude-4-sonnet-20250514", Prov: ProvBundled, Rates: Rates{
-		Base: [numTiers]float64{TierInput: 3.0 / 1000000, TierCacheWrite: 3.75 / 1000000, TierCacheRead: 0.3 / 1000000, TierOutput: 15.0 / 1000000},
+		Base: [numTiers]float64{TierInput: 3e-06, TierCacheWrite: 3.75e-06, TierCacheRead: 3e-07, TierOutput: 1.5e-05},
 		Set:  [numTiers]bool{TierInput: true, TierCacheWrite: true, TierCacheRead: true, TierOutput: true},
 		Thresholds: []ContextThreshold{{
 			AbovePromptTokens: 200000,
-			Rate:              [numTiers]float64{TierInput: 6.0 / 1000000, TierCacheWrite: 7.5 / 1000000, TierCacheRead: 0.6 / 1000000, TierOutput: 22.5 / 1000000},
+			Rate:              [numTiers]float64{TierInput: 6e-06, TierCacheWrite: 7.5e-06, TierCacheRead: 6e-07, TierOutput: 2.25e-05},
 			Set:               [numTiers]bool{TierInput: true, TierCacheWrite: true, TierCacheRead: true, TierOutput: true},
 		}},
 	}},
 	{Host: "*", Model: "claude-fable-5", Prov: ProvBundled, Rates: Rates{
-		Base: [numTiers]float64{TierInput: 10.0 / 1000000, TierCacheWrite: 12.5 / 1000000, TierCacheRead: 1.0 / 1000000, TierOutput: 50.0 / 1000000},
+		Base: [numTiers]float64{TierInput: 1e-05, TierCacheWrite: 1.25e-05, TierCacheRead: 1e-06, TierOutput: 5e-05},
 		Set:  [numTiers]bool{TierInput: true, TierCacheWrite: true, TierCacheRead: true, TierOutput: true},
 	}},
 	{Host: "*", Model: "claude-fable-5-1", Prov: ProvBundled, Rates: Rates{
-		Base: [numTiers]float64{TierInput: 10.0 / 1000000, TierCacheWrite: 12.5 / 1000000, TierCacheRead: 0.25 / 1000000, TierOutput: 50.0 / 1000000},
+		Base: [numTiers]float64{TierInput: 1e-05, TierCacheWrite: 1.25e-05, TierCacheRead: 2.5e-07, TierOutput: 5e-05},
 		Set:  [numTiers]bool{TierInput: true, TierCacheWrite: true, TierCacheRead: true, TierOutput: true},
 	}},
 	{Host: "*", Model: "claude-haiku-4-5", Prov: ProvBundled, Rates: Rates{
-		Base: [numTiers]float64{TierInput: 1.0 / 1000000, TierCacheWrite: 1.25 / 1000000, TierCacheRead: 0.09999999999999999 / 1000000, TierOutput: 5.0 / 1000000},
+		Base: [numTiers]float64{TierInput: 1e-06, TierCacheWrite: 1.25e-06, TierCacheRead: 1e-07, TierOutput: 5e-06},
 		Set:  [numTiers]bool{TierInput: true, TierCacheWrite: true, TierCacheRead: true, TierOutput: true},
 	}},
 	{Host: "*", Model: "claude-haiku-4-5-20251001", Prov: ProvBundled, Rates: Rates{
-		Base: [numTiers]float64{TierInput: 1.0 / 1000000, TierCacheWrite: 1.25 / 1000000, TierCacheRead: 0.09999999999999999 / 1000000, TierOutput: 5.0 / 1000000},
+		Base: [numTiers]float64{TierInput: 1e-06, TierCacheWrite: 1.25e-06, TierCacheRead: 1e-07, TierOutput: 5e-06},
 		Set:  [numTiers]bool{TierInput: true, TierCacheWrite: true, TierCacheRead: true, TierOutput: true},
 	}},
 	{Host: "*", Model: "claude-mythos-5", Prov: ProvBundled, Rates: Rates{
-		Base: [numTiers]float64{TierInput: 10.0 / 1000000, TierCacheWrite: 12.5 / 1000000, TierCacheRead: 1.0 / 1000000, TierOutput: 50.0 / 1000000},
+		Base: [numTiers]float64{TierInput: 1e-05, TierCacheWrite: 1.25e-05, TierCacheRead: 1e-06, TierOutput: 5e-05},
 		Set:  [numTiers]bool{TierInput: true, TierCacheWrite: true, TierCacheRead: true, TierOutput: true},
 	}},
 	{Host: "*", Model: "claude-mythos-5-1", Prov: ProvBundled, Rates: Rates{
-		Base: [numTiers]float64{TierInput: 10.0 / 1000000, TierCacheWrite: 12.5 / 1000000, TierCacheRead: 0.25 / 1000000, TierOutput: 50.0 / 1000000},
+		Base: [numTiers]float64{TierInput: 1e-05, TierCacheWrite: 1.25e-05, TierCacheRead: 2.5e-07, TierOutput: 5e-05},
 		Set:  [numTiers]bool{TierInput: true, TierCacheWrite: true, TierCacheRead: true, TierOutput: true},
 	}},
 	{Host: "*", Model: "claude-mythos-preview", Prov: ProvBundled, Rates: Rates{
-		Base: [numTiers]float64{TierInput: 10.0 / 1000000, TierCacheWrite: 12.5 / 1000000, TierCacheRead: 1.0 / 1000000, TierOutput: 50.0 / 1000000},
+		Base: [numTiers]float64{TierInput: 1e-05, TierCacheWrite: 1.25e-05, TierCacheRead: 1e-06, TierOutput: 5e-05},
 		Set:  [numTiers]bool{TierInput: true, TierCacheWrite: true, TierCacheRead: true, TierOutput: true},
 	}},
 	{Host: "*", Model: "claude-opus-4-1", Prov: ProvBundled, Rates: Rates{
-		Base: [numTiers]float64{TierInput: 15.0 / 1000000, TierCacheWrite: 18.75 / 1000000, TierCacheRead: 1.5 / 1000000, TierOutput: 75.0 / 1000000},
+		Base: [numTiers]float64{TierInput: 1.5e-05, TierCacheWrite: 1.875e-05, TierCacheRead: 1.5e-06, TierOutput: 7.5e-05},
 		Set:  [numTiers]bool{TierInput: true, TierCacheWrite: true, TierCacheRead: true, TierOutput: true},
 	}},
 	{Host: "*", Model: "claude-opus-4-1-20250805", Prov: ProvBundled, Rates: Rates{
-		Base: [numTiers]float64{TierInput: 15.0 / 1000000, TierCacheWrite: 18.75 / 1000000, TierCacheRead: 1.5 / 1000000, TierOutput: 75.0 / 1000000},
+		Base: [numTiers]float64{TierInput: 1.5e-05, TierCacheWrite: 1.875e-05, TierCacheRead: 1.5e-06, TierOutput: 7.5e-05},
 		Set:  [numTiers]bool{TierInput: true, TierCacheWrite: true, TierCacheRead: true, TierOutput: true},
 	}},
 	{Host: "*", Model: "claude-opus-4-20250514", Prov: ProvBundled, Rates: Rates{
-		Base: [numTiers]float64{TierInput: 15.0 / 1000000, TierCacheWrite: 18.75 / 1000000, TierCacheRead: 1.5 / 1000000, TierOutput: 75.0 / 1000000},
+		Base: [numTiers]float64{TierInput: 1.5e-05, TierCacheWrite: 1.875e-05, TierCacheRead: 1.5e-06, TierOutput: 7.5e-05},
 		Set:  [numTiers]bool{TierInput: true, TierCacheWrite: true, TierCacheRead: true, TierOutput: true},
 	}},
 	{Host: "*", Model: "claude-opus-4-5", Prov: ProvBundled, Rates: Rates{
-		Base: [numTiers]float64{TierInput: 5.0 / 1000000, TierCacheWrite: 6.25 / 1000000, TierCacheRead: 0.5 / 1000000, TierOutput: 25.0 / 1000000},
+		Base: [numTiers]float64{TierInput: 5e-06, TierCacheWrite: 6.25e-06, TierCacheRead: 5e-07, TierOutput: 2.5e-05},
 		Set:  [numTiers]bool{TierInput: true, TierCacheWrite: true, TierCacheRead: true, TierOutput: true},
 	}},
 	{Host: "*", Model: "claude-opus-4-5-20251101", Prov: ProvBundled, Rates: Rates{
-		Base: [numTiers]float64{TierInput: 5.0 / 1000000, TierCacheWrite: 6.25 / 1000000, TierCacheRead: 0.5 / 1000000, TierOutput: 25.0 / 1000000},
+		Base: [numTiers]float64{TierInput: 5e-06, TierCacheWrite: 6.25e-06, TierCacheRead: 5e-07, TierOutput: 2.5e-05},
 		Set:  [numTiers]bool{TierInput: true, TierCacheWrite: true, TierCacheRead: true, TierOutput: true},
 	}},
 	{Host: "*", Model: "claude-opus-4-6", Prov: ProvBundled, Rates: Rates{
-		Base: [numTiers]float64{TierInput: 5.0 / 1000000, TierCacheWrite: 6.25 / 1000000, TierCacheRead: 0.5 / 1000000, TierOutput: 25.0 / 1000000},
+		Base: [numTiers]float64{TierInput: 5e-06, TierCacheWrite: 6.25e-06, TierCacheRead: 5e-07, TierOutput: 2.5e-05},
 		Set:  [numTiers]bool{TierInput: true, TierCacheWrite: true, TierCacheRead: true, TierOutput: true},
 	}},
 	{Host: "*", Model: "claude-opus-4-6-20260205", Prov: ProvBundled, Rates: Rates{
-		Base: [numTiers]float64{TierInput: 5.0 / 1000000, TierCacheWrite: 6.25 / 1000000, TierCacheRead: 0.5 / 1000000, TierOutput: 25.0 / 1000000},
+		Base: [numTiers]float64{TierInput: 5e-06, TierCacheWrite: 6.25e-06, TierCacheRead: 5e-07, TierOutput: 2.5e-05},
 		Set:  [numTiers]bool{TierInput: true, TierCacheWrite: true, TierCacheRead: true, TierOutput: true},
 	}},
 	{Host: "*", Model: "claude-opus-4-7", Prov: ProvBundled, Rates: Rates{
-		Base: [numTiers]float64{TierInput: 5.0 / 1000000, TierCacheWrite: 6.25 / 1000000, TierCacheRead: 0.5 / 1000000, TierOutput: 25.0 / 1000000},
+		Base: [numTiers]float64{TierInput: 5e-06, TierCacheWrite: 6.25e-06, TierCacheRead: 5e-07, TierOutput: 2.5e-05},
 		Set:  [numTiers]bool{TierInput: true, TierCacheWrite: true, TierCacheRead: true, TierOutput: true},
 	}},
 	{Host: "*", Model: "claude-opus-4-7-20260416", Prov: ProvBundled, Rates: Rates{
-		Base: [numTiers]float64{TierInput: 5.0 / 1000000, TierCacheWrite: 6.25 / 1000000, TierCacheRead: 0.5 / 1000000, TierOutput: 25.0 / 1000000},
+		Base: [numTiers]float64{TierInput: 5e-06, TierCacheWrite: 6.25e-06, TierCacheRead: 5e-07, TierOutput: 2.5e-05},
 		Set:  [numTiers]bool{TierInput: true, TierCacheWrite: true, TierCacheRead: true, TierOutput: true},
 	}},
 	{Host: "*", Model: "claude-opus-4-8", Prov: ProvBundled, Rates: Rates{
-		Base: [numTiers]float64{TierInput: 5.0 / 1000000, TierCacheWrite: 6.25 / 1000000, TierCacheRead: 0.5 / 1000000, TierOutput: 25.0 / 1000000},
+		Base: [numTiers]float64{TierInput: 5e-06, TierCacheWrite: 6.25e-06, TierCacheRead: 5e-07, TierOutput: 2.5e-05},
 		Set:  [numTiers]bool{TierInput: true, TierCacheWrite: true, TierCacheRead: true, TierOutput: true},
 	}},
 	{Host: "*", Model: "claude-opus-5", Prov: ProvBundled, Rates: Rates{
-		Base: [numTiers]float64{TierInput: 5.0 / 1000000, TierCacheWrite: 6.25 / 1000000, TierCacheRead: 0.5 / 1000000, TierOutput: 25.0 / 1000000},
+		Base: [numTiers]float64{TierInput: 5e-06, TierCacheWrite: 6.25e-06, TierCacheRead: 5e-07, TierOutput: 2.5e-05},
 		Set:  [numTiers]bool{TierInput: true, TierCacheWrite: true, TierCacheRead: true, TierOutput: true},
 	}},
 	{Host: "*", Model: "claude-sonnet-4-20250514", Prov: ProvBundled, Rates: Rates{
-		Base: [numTiers]float64{TierInput: 3.0 / 1000000, TierCacheWrite: 3.75 / 1000000, TierCacheRead: 0.3 / 1000000, TierOutput: 15.0 / 1000000},
+		Base: [numTiers]float64{TierInput: 3e-06, TierCacheWrite: 3.75e-06, TierCacheRead: 3e-07, TierOutput: 1.5e-05},
 		Set:  [numTiers]bool{TierInput: true, TierCacheWrite: true, TierCacheRead: true, TierOutput: true},
 		Thresholds: []ContextThreshold{{
 			AbovePromptTokens: 200000,
-			Rate:              [numTiers]float64{TierInput: 6.0 / 1000000, TierCacheWrite: 7.5 / 1000000, TierCacheRead: 0.6 / 1000000, TierOutput: 22.5 / 1000000},
+			Rate:              [numTiers]float64{TierInput: 6e-06, TierCacheWrite: 7.5e-06, TierCacheRead: 6e-07, TierOutput: 2.25e-05},
 			Set:               [numTiers]bool{TierInput: true, TierCacheWrite: true, TierCacheRead: true, TierOutput: true},
 		}},
 	}},
 	{Host: "*", Model: "claude-sonnet-4-5", Prov: ProvBundled, Rates: Rates{
-		Base: [numTiers]float64{TierInput: 3.0 / 1000000, TierCacheWrite: 3.75 / 1000000, TierCacheRead: 0.3 / 1000000, TierOutput: 15.0 / 1000000},
+		Base: [numTiers]float64{TierInput: 3e-06, TierCacheWrite: 3.75e-06, TierCacheRead: 3e-07, TierOutput: 1.5e-05},
 		Set:  [numTiers]bool{TierInput: true, TierCacheWrite: true, TierCacheRead: true, TierOutput: true},
 		Thresholds: []ContextThreshold{{
 			AbovePromptTokens: 200000,
-			Rate:              [numTiers]float64{TierInput: 6.0 / 1000000, TierCacheWrite: 7.5 / 1000000, TierCacheRead: 0.6 / 1000000, TierOutput: 22.5 / 1000000},
+			Rate:              [numTiers]float64{TierInput: 6e-06, TierCacheWrite: 7.5e-06, TierCacheRead: 6e-07, TierOutput: 2.25e-05},
 			Set:               [numTiers]bool{TierInput: true, TierCacheWrite: true, TierCacheRead: true, TierOutput: true},
 		}},
 	}},
 	{Host: "*", Model: "claude-sonnet-4-5-20250929", Prov: ProvBundled, Rates: Rates{
-		Base: [numTiers]float64{TierInput: 3.0 / 1000000, TierCacheWrite: 3.75 / 1000000, TierCacheRead: 0.3 / 1000000, TierOutput: 15.0 / 1000000},
+		Base: [numTiers]float64{TierInput: 3e-06, TierCacheWrite: 3.75e-06, TierCacheRead: 3e-07, TierOutput: 1.5e-05},
 		Set:  [numTiers]bool{TierInput: true, TierCacheWrite: true, TierCacheRead: true, TierOutput: true},
 		Thresholds: []ContextThreshold{{
 			AbovePromptTokens: 200000,
-			Rate:              [numTiers]float64{TierInput: 6.0 / 1000000, TierCacheWrite: 7.5 / 1000000, TierCacheRead: 0.6 / 1000000, TierOutput: 22.5 / 1000000},
+			Rate:              [numTiers]float64{TierInput: 6e-06, TierCacheWrite: 7.5e-06, TierCacheRead: 6e-07, TierOutput: 2.25e-05},
 			Set:               [numTiers]bool{TierInput: true, TierCacheWrite: true, TierCacheRead: true, TierOutput: true},
 		}},
 	}},
 	{Host: "*", Model: "claude-sonnet-4-6", Prov: ProvBundled, Rates: Rates{
-		Base: [numTiers]float64{TierInput: 3.0 / 1000000, TierCacheWrite: 3.75 / 1000000, TierCacheRead: 0.3 / 1000000, TierOutput: 15.0 / 1000000},
+		Base: [numTiers]float64{TierInput: 3e-06, TierCacheWrite: 3.75e-06, TierCacheRead: 3e-07, TierOutput: 1.5e-05},
 		Set:  [numTiers]bool{TierInput: true, TierCacheWrite: true, TierCacheRead: true, TierOutput: true},
 	}},
 	{Host: "*", Model: "claude-sonnet-5", Prov: ProvBundled, Rates: Rates{
-		Base: [numTiers]float64{TierInput: 2.0 / 1000000, TierCacheWrite: 2.5 / 1000000, TierCacheRead: 0.19999999999999998 / 1000000, TierOutput: 10.0 / 1000000},
+		Base: [numTiers]float64{TierInput: 2e-06, TierCacheWrite: 2.5e-06, TierCacheRead: 2e-07, TierOutput: 1e-05},
 		Set:  [numTiers]bool{TierInput: true, TierCacheWrite: true, TierCacheRead: true, TierOutput: true},
 	}},
-	{Host: "*", Model: "*claude-fable-*", Prov: ProvBundled, Rates: Rates{
-		Base: [numTiers]float64{TierInput: 10.0 / 1000000, TierCacheWrite: 12.5 / 1000000, TierCacheRead: 0.25 / 1000000, TierOutput: 50.0 / 1000000},
+	{Host: "*", Model: "*claude-*fable-*", Prov: ProvBundled, Rates: Rates{
+		Base: [numTiers]float64{TierInput: 1e-05, TierCacheWrite: 1.25e-05, TierCacheRead: 2.5e-07, TierOutput: 5e-05},
 		Set:  [numTiers]bool{TierInput: true, TierCacheWrite: true, TierCacheRead: true, TierOutput: true},
 	}},
-	{Host: "*", Model: "*claude-haiku-*", Prov: ProvBundled, Rates: Rates{
-		Base: [numTiers]float64{TierInput: 1.0 / 1000000, TierCacheWrite: 1.25 / 1000000, TierCacheRead: 0.09999999999999999 / 1000000, TierOutput: 5.0 / 1000000},
+	{Host: "*", Model: "*claude-*haiku-*", Prov: ProvBundled, Rates: Rates{
+		Base: [numTiers]float64{TierInput: 1e-06, TierCacheWrite: 1.25e-06, TierCacheRead: 1e-07, TierOutput: 5e-06},
 		Set:  [numTiers]bool{TierInput: true, TierCacheWrite: true, TierCacheRead: true, TierOutput: true},
 	}},
-	{Host: "*", Model: "*claude-mythos-*", Prov: ProvBundled, Rates: Rates{
-		Base: [numTiers]float64{TierInput: 10.0 / 1000000, TierCacheWrite: 12.5 / 1000000, TierCacheRead: 0.25 / 1000000, TierOutput: 50.0 / 1000000},
+	{Host: "*", Model: "*claude-*mythos-*", Prov: ProvBundled, Rates: Rates{
+		Base: [numTiers]float64{TierInput: 1e-05, TierCacheWrite: 1.25e-05, TierCacheRead: 2.5e-07, TierOutput: 5e-05},
 		Set:  [numTiers]bool{TierInput: true, TierCacheWrite: true, TierCacheRead: true, TierOutput: true},
 	}},
-	{Host: "*", Model: "*claude-opus-*", Prov: ProvBundled, Rates: Rates{
-		Base: [numTiers]float64{TierInput: 5.0 / 1000000, TierCacheWrite: 6.25 / 1000000, TierCacheRead: 0.5 / 1000000, TierOutput: 25.0 / 1000000},
+	{Host: "*", Model: "*claude-*opus-*", Prov: ProvBundled, Rates: Rates{
+		Base: [numTiers]float64{TierInput: 5e-06, TierCacheWrite: 6.25e-06, TierCacheRead: 5e-07, TierOutput: 2.5e-05},
 		Set:  [numTiers]bool{TierInput: true, TierCacheWrite: true, TierCacheRead: true, TierOutput: true},
 	}},
-	{Host: "*", Model: "*claude-sonnet-*", Prov: ProvBundled, Rates: Rates{
-		Base: [numTiers]float64{TierInput: 2.0 / 1000000, TierCacheWrite: 2.5 / 1000000, TierCacheRead: 0.19999999999999998 / 1000000, TierOutput: 10.0 / 1000000},
+	{Host: "*", Model: "*claude-*sonnet-*", Prov: ProvBundled, Rates: Rates{
+		Base: [numTiers]float64{TierInput: 2e-06, TierCacheWrite: 2.5e-06, TierCacheRead: 2e-07, TierOutput: 1e-05},
 		Set:  [numTiers]bool{TierInput: true, TierCacheWrite: true, TierCacheRead: true, TierOutput: true},
 	}},
 }

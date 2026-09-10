@@ -145,8 +145,13 @@ func Entries(raw []byte) ([]pricing.Entry, error) {
 			continue
 		}
 		out = append(out, pricing.Entry{
-			Host:  "*",
-			Model: "*claude-" + fam + "-*",
+			Host: "*",
+			// "*claude-*<fam>-*", not "*claude-<fam>-*": LiteLLM uses both
+			// orderings — "claude-opus-4-1" (family first) and
+			// "claude-3-opus-20240229" (version first) — and the narrower glob
+			// matched only the first, so version-first names outside the exact rows
+			// dropped out of the total entirely.
+			Model: "*claude-*" + fam + "-*",
 			Rates: rates,
 			Prov:  pricing.ProvBundled,
 		})
@@ -262,8 +267,12 @@ func Render(entries []pricing.Entry, commit string) ([]byte, error) {
 // LIST prices for the first-party Anthropic endpoint. A gateway that bills below
 // list — most internal LiteLLM deployments do — is OVERSTATED by this table, and
 // an operator corrects it with a host-scoped %spricing:%s entry, which outranks
-// anything bundled. Rates are written in the unit providers publish, dollars per
-// million tokens, divided by a constant so the compiler folds each one exactly.
+// anything bundled.
+//
+// Rates are USD per TOKEN, emitted as the shortest decimal that round-trips back to
+// the identical float64. They are deliberately NOT written as a per-million value
+// divided by a constant: that form read better but was lossy, so some rates could
+// not be reproduced by regenerating and the golden test became unfixable.
 
 package pricing
 
@@ -323,20 +332,29 @@ func renderFloats(v [4]float64) string {
 		if f == 0 {
 			continue
 		}
-		parts = append(parts, fmt.Sprintf("%s: %s / %d", tierNames[i],
-			floatLiteral(f*tokensPerMillion), tokensPerMillion))
+		parts = append(parts, fmt.Sprintf("%s: %s", tierNames[i], floatLiteral(f)))
 	}
 	return "[numTiers]float64{" + strings.Join(parts, ", ") + "}"
 }
 
-// floatLiteral renders a Go FLOAT constant, always carrying a decimal point.
+// floatLiteral renders a Go FLOAT constant that round-trips exactly.
 //
-// This is load-bearing, not cosmetic. Go's untyped constant arithmetic makes
-// "15 / 1000000" integer division, which is 0 — so a whole-dollar rate like opus's
-// $15/Mtok would compile to a rate of ZERO and silently unprice the model, while
-// "3.75 / 1000000" beside it worked because one operand was already a float. That
-// is precisely the class of silent mispricing this package exists to eliminate, so
-// the numerator is never allowed to be an integer literal.
+// The rate is emitted as the per-TOKEN value it actually is, not as a per-million
+// value divided by a constant. The divided form read better but was lossy: the
+// shortest decimal for f*1e6 does not always round-trip back through the division,
+// so upstream 2.1000000000000003e-08 folded to 2.1e-08 and five committed rows
+// carried 0.09999999999999999 while the file header claimed exact folding. Worse,
+// the golden test compares against the parsed upstream value with DeepEqual, so any
+// such rate failed a comparison that regenerating reproduced identically — a
+// failure fixable only by the hand-edit the same test forbids.
+//
+// 'g' with precision -1 is Go's shortest representation that parses back to the
+// identical float64, which is exactly the property needed.
+//
+// The decimal point still matters: Go's untyped constant arithmetic would make an
+// integer literal integer-divide, and an earlier version of this generator emitted
+// "15 / 1000000" — integer division, folding to ZERO, silently unpricing every
+// whole-dollar rate while the fractional rate beside it worked.
 func floatLiteral(f float64) string {
 	s := strconv.FormatFloat(f, 'g', -1, 64)
 	if !strings.ContainsAny(s, ".eE") {
