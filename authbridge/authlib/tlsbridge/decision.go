@@ -60,7 +60,12 @@ type Decision struct {
 // That is accepted rather than overlooked. The traffic could not be inspected
 // reliably anyway — before this list, an untrusting client's first request to any
 // of these hosts failed and the host was then auto-skipped for ten minutes (see
-// SkipSet below), so interception was intermittent and its absence silent. The
+// SkipSet below), so interception was intermittent and its absence silent. Both
+// halves of that have since been addressed: the absence now carries a reason
+// (SessionEvent.TunnelReason), and the intermittency is bounded by a window that
+// starts short and is cleared outright by any client that does trust the CA. The
+// list stays, because a tunnel chosen on purpose still beats one arrived at by
+// failure. The
 // control that actually remains for egress is allow-listing which hosts a
 // workload may reach at all — iptables / NetworkPolicy in-cluster, and
 // listener.skip_hosts plus the egress gate for the proxy — not TLS inspection of
@@ -188,13 +193,34 @@ func looksLikeTLSRecord(b []byte) bool {
 }
 
 const (
-	// skipTTL bounds how long an auto-skipped host stays skipped before the
-	// bridge re-attempts interception (self-healing: a transiently-pinned or
-	// rotated client gets another chance). skipMax caps the set so a flood of
-	// distinct SNIs (each rejecting the forged leaf) cannot grow it unbounded —
-	// since scope removal routes ALL eligible egress through here.
-	skipTTL = 10 * time.Minute
-	skipMax = 4096
+	// skipBackoffBase is the FIRST skip window after a host's leaf is rejected, and
+	// skipTTL is the ceiling it doubles up to. Both matter, for opposite cases.
+	//
+	// The window is collateral: it suppresses interception for every client of that
+	// host, not just the one that rejected us — the set is keyed by host, and there is
+	// no durable client identity to key it by (a source port changes per connection,
+	// and peer-PID has no portable API over TCP). So on a machine where one agent
+	// holds a stale CA and the rest are fine, a long window costs the healthy ones all
+	// their observability. Ten minutes of it, re-armed on every attempt, is how a
+	// laptop lost 99% of the visibility on one host for two hours.
+	//
+	// Starting short and doubling separates the two situations without needing to tell
+	// the clients apart:
+	//
+	//   mixed clients   a success CLEARS the entry, so the counter never climbs and
+	//                   windows stay near the base — the healthy client is visible
+	//                   again seconds after a stale one trips it.
+	//   pinned host     nothing ever succeeds, so it escalates to skipTTL and settles
+	//                   at today's behaviour. That is the case the skip was built for
+	//                   and it must not regress: a fixed short window would break such
+	//                   a client's handshake every 30s forever.
+	//
+	// The cost is borne by the misconfigured client — its forged handshake fails once
+	// per window rather than once per ten minutes — which is the right way round, and
+	// it now gets a warning naming itself and the CA.
+	skipBackoffBase = 30 * time.Second
+	skipTTL         = 10 * time.Minute
+	skipMax         = 4096
 )
 
 // SkipSet is the runtime auto-skip set (hosts whose minted leaf the client
@@ -204,46 +230,108 @@ type SkipSet struct {
 	mu  sync.RWMutex
 	ttl time.Duration
 	max int
-	m   map[string]time.Time // host -> expiry
+	m   map[string]skipEntry
+}
+
+// skipEntry is one skipped host: when the window ends, and how many consecutive
+// rejections have set it. failures drives the backoff and is what a success discards.
+type skipEntry struct {
+	expiry   time.Time
+	failures int
 }
 
 func NewSkipSet() *SkipSet {
-	return &SkipSet{ttl: skipTTL, max: skipMax, m: map[string]time.Time{}}
+	return &SkipSet{ttl: skipTTL, max: skipMax, m: map[string]skipEntry{}}
 }
 
-func (s *SkipSet) Add(host string) {
+// backoffFor is the window after n consecutive failures: base, doubling, capped at ttl.
+// Shifting past 63 would wrap, so the cap is applied on the count first — a host that
+// has failed sixty times is at the ceiling either way.
+func (s *SkipSet) backoffFor(n int) time.Duration {
+	if n < 1 {
+		n = 1
+	}
+	if n > 32 {
+		return s.ttl
+	}
+	d := skipBackoffBase << (n - 1)
+	if d > s.ttl || d <= 0 {
+		return s.ttl
+	}
+	return d
+}
+
+// Fail records that a client rejected this host's minted leaf, extending the skip
+// window. Consecutive failures back off; a Succeed in between resets the count.
+func (s *SkipSet) Fail(host string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := time.Now()
 	if len(s.m) >= s.max {
 		// Purge expired entries; if still full, drop the earliest-expiring one.
-		// Add is cold (only fires when a minted leaf is rejected), so an O(n)
+		// Fail is cold (only fires when a minted leaf is rejected), so an O(n)
 		// sweep here is cheap.
 		var oldestK string
 		var oldestT time.Time
-		for k, exp := range s.m {
-			if !exp.After(now) {
+		for k, e := range s.m {
+			if !e.expiry.After(now) {
 				delete(s.m, k)
 				continue
 			}
-			if oldestK == "" || exp.Before(oldestT) {
-				oldestK, oldestT = k, exp
+			if oldestK == "" || e.expiry.Before(oldestT) {
+				oldestK, oldestT = k, e.expiry
 			}
 		}
 		if len(s.m) >= s.max && oldestK != "" {
 			delete(s.m, oldestK)
 		}
 	}
+	// An expired entry starts over rather than continuing to escalate: the window
+	// having elapsed with no further rejection is evidence the problem may be gone.
+	n := 1
+	if e, ok := s.m[host]; ok && e.expiry.After(now) {
+		n = e.failures + 1
+	}
 	// .Round(0) strips the monotonic reading so the expiry is a pure wall-clock
 	// time. Contains compares it against time.Now() via the wall clock, so an
-	// entry expires after skipTTL of real time even across a suspend (where the
+	// entry expires after its window of real time even across a suspend (where the
 	// monotonic clock freezes and would otherwise keep the host skipped longer).
-	s.m[host] = now.Add(s.ttl).Round(0)
+	s.m[host] = skipEntry{expiry: now.Add(s.backoffFor(n)).Round(0), failures: n}
+}
+
+// Succeed records that a client completed the forged handshake for this host, which
+// disproves the entry outright and clears it — count included.
+//
+// This is the signal the set never had. It only ever added entries and waited them
+// out, so a demonstrably-trusting client bridging successfully taught it nothing and
+// the next connection was still tunnelled. Clearing here is what makes the collateral
+// window seconds long instead of minutes, and it is why restarting a stale agent
+// restores observability immediately rather than after a wait.
+func (s *SkipSet) Succeed(host string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.m, host)
+}
+
+// Window is the time left on a host's skip, or zero when it is not skipped. Exported
+// for tests in dependent packages that assert on backoff; the proxy itself only ever
+// asks Contains.
+func (s *SkipSet) Window(host string) time.Duration {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	e, ok := s.m[host]
+	if !ok {
+		return 0
+	}
+	if d := time.Until(e.expiry); d > 0 {
+		return d
+	}
+	return 0
 }
 
 func (s *SkipSet) Contains(host string) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	exp, ok := s.m[host]
-	return ok && time.Now().Before(exp) // expired entries read as absent; Add reclaims them
+	e, ok := s.m[host]
+	return ok && time.Now().Before(e.expiry) // expired entries read as absent; Fail reclaims them
 }

@@ -63,18 +63,18 @@ func TestSkipSet_AutoSkip(t *testing.T) {
 	if s.Contains("h") {
 		t.Fatal("empty set should not contain h")
 	}
-	s.Add("h")
+	s.Fail("h")
 	if !s.Contains("h") {
-		t.Error("Add then Contains failed")
+		t.Error("Fail then Contains failed")
 	}
 }
 
 func TestSkipSet_TTLExpires(t *testing.T) {
 	s := NewSkipSet()
-	s.ttl = 20 * time.Millisecond // same-package test can tighten the TTL
-	s.Add("h")
+	s.ttl = 20 * time.Millisecond // same-package test can tighten the CAP
+	s.Fail("h")
 	if !s.Contains("h") {
-		t.Fatal("should contain immediately after Add")
+		t.Fatal("should contain immediately after Fail")
 	}
 	time.Sleep(40 * time.Millisecond)
 	if s.Contains("h") {
@@ -85,9 +85,9 @@ func TestSkipSet_TTLExpires(t *testing.T) {
 func TestSkipSet_Bounded(t *testing.T) {
 	s := NewSkipSet()
 	s.max = 2 // cap small; a flood of distinct SNIs must not grow it unbounded
-	s.Add("a")
-	s.Add("b")
-	s.Add("c")
+	s.Fail("a")
+	s.Fail("b")
+	s.Fail("c")
 	if len(s.m) > 2 {
 		t.Errorf("SkipSet grew past max: len=%d, want <=2", len(s.m))
 	}
@@ -216,5 +216,100 @@ func TestNewDecision_RejectsUnusablePatterns(t *testing.T) {
 	// a fatal boot error for every user.
 	if _, err := NewDecision(DecisionOpts{SkipHosts: DefaultPassthroughHosts}); err != nil {
 		t.Fatalf("DefaultPassthroughHosts does not compile: %v", err)
+	}
+}
+
+// window returns the remaining skip window for host, for asserting on backoff.
+func window(t *testing.T, s *SkipSet, host string) time.Duration {
+	t.Helper()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	e, ok := s.m[host]
+	if !ok {
+		t.Fatalf("no entry for %q", host)
+	}
+	return time.Until(e.expiry)
+}
+
+// TestSkipSet_SucceedClears is the signal the set never had.
+//
+// It only ever added entries and waited them out, so a client that demonstrably
+// trusted the CA bridging successfully taught it nothing: the next connection to that
+// host was still tunnelled. On a machine where one agent holds a stale CA and the rest
+// are fine, that is how the healthy ones lost their observability for ten minutes at a
+// time, repeatedly.
+func TestSkipSet_SucceedClears(t *testing.T) {
+	s := NewSkipSet()
+	s.Fail("h")
+	if !s.Contains("h") {
+		t.Fatal("Fail did not skip the host")
+	}
+	s.Succeed("h")
+	if s.Contains("h") {
+		t.Error("Succeed did not clear the entry; a trusting client's proof was discarded")
+	}
+}
+
+// TestSkipSet_BackoffEscalates: consecutive rejections lengthen the window, so a host
+// where NOTHING ever succeeds settles at the cap — today's behaviour, which is the
+// case the skip was built for and must not regress.
+func TestSkipSet_BackoffEscalates(t *testing.T) {
+	s := NewSkipSet()
+	var prev time.Duration
+	for i := 1; i <= 6; i++ {
+		s.Fail("h")
+		got := window(t, s, "h")
+		if got <= prev && got < s.ttl {
+			t.Errorf("failure %d: window %v did not grow past %v", i, got, prev)
+		}
+		if got > s.ttl {
+			t.Errorf("failure %d: window %v exceeds the cap %v", i, got, s.ttl)
+		}
+		prev = got
+	}
+	// Far past the doubling range: still capped, never negative from a shift overflow.
+	for i := 0; i < 40; i++ {
+		s.Fail("h")
+	}
+	if got := window(t, s, "h"); got > s.ttl || got <= 0 {
+		t.Errorf("window after many failures = %v, want 0 < w <= %v", got, s.ttl)
+	}
+}
+
+// TestSkipSet_SucceedResetsBackoff: clearing must discard the COUNT too, or a host that
+// recovered would keep escalating from wherever it left off and the mixed-client case
+// would drift toward the cap it is meant to avoid.
+func TestSkipSet_SucceedResetsBackoff(t *testing.T) {
+	s := NewSkipSet()
+	for i := 0; i < 4; i++ {
+		s.Fail("h")
+	}
+	escalated := window(t, s, "h")
+	s.Succeed("h")
+	s.Fail("h")
+	if got := window(t, s, "h"); got >= escalated {
+		t.Errorf("after Succeed the window is %v, want back near the base (was %v)", got, escalated)
+	}
+}
+
+// TestSkipSet_ExpiredEntryRestartsBackoff: a window that elapsed with no further
+// rejection is evidence the problem may be gone, so the next failure starts over
+// rather than continuing to climb.
+func TestSkipSet_ExpiredEntryRestartsBackoff(t *testing.T) {
+	s := NewSkipSet()
+	s.ttl = 40 * time.Millisecond
+	for i := 0; i < 3; i++ {
+		s.Fail("h")
+	}
+	time.Sleep(60 * time.Millisecond)
+	if s.Contains("h") {
+		t.Fatal("entry should have expired")
+	}
+	s.Fail("h")
+	s.mu.RLock()
+	n := s.m["h"].failures
+	s.mu.RUnlock()
+	if n != 1 {
+		t.Errorf("failures after an expired window = %d, want 1 (a fresh start)", n)
 	}
 }

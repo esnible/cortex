@@ -638,7 +638,7 @@ func (s *Server) bridgeServe(client net.Conn, authority, host string, rec tunnel
 	// 2) Forge + terminate downstream.
 	tconn, err := s.TLSBridge.Term.Terminate(client, hostOnly(authority))
 	if err != nil {
-		s.TLSBridge.Skip.Add(host) // pinned client → its retry will passthrough
+		s.TLSBridge.Skip.Fail(host) // this client's retry will passthrough; window backs off
 		reason := handshakeFailureReason(err)
 		// UNCONDITIONAL, and it names the client. Success elsewhere must not silence
 		// this: it used to sit behind bridgedRequests == 0, which treats CA trust as a
@@ -679,6 +679,10 @@ func (s *Server) bridgeServe(client net.Conn, authority, host string, rec tunnel
 		// case, reached from the tunnel-threshold path.
 		return true // conn is dead post-forge; nothing left to tunnel
 	}
+	// A completed forged handshake is proof a client here trusts the CA, so it clears
+	// any skip left by a different client that does not — which is what stops one stale
+	// agent suppressing this host for everyone until a window elapses.
+	s.TLSBridge.Skip.Succeed(host)
 	// Bridged: record with no reason, which is what tells abctl to fold this row into
 	// the decrypted inner request whose own action is the interesting one.
 	markBridged(rec)
