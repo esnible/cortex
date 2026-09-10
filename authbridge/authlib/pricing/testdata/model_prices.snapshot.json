@@ -1,4 +1,5 @@
 {
+  "_litellm_commit": "ee7c7e14f3dd7c4c3930a423440ec26427e2c554",
   "claude-3-7-sonnet-20250219": {
     "cache_creation_input_token_cost": 3.75e-06,
     "cache_creation_input_token_cost_above_1hr": 6e-06,

@@ -17,7 +17,15 @@ import (
 type metrics struct {
 	mu sync.Mutex
 
-	requestsSeen      uint64 // matched the path gate and carried a manifest
+	requestsSeen uint64 // matched the path gate and carried a manifest
+	// recovered counts panics the fail-open swallowed.
+	//
+	// Untracked, this plugin can stop working entirely and still look healthy: the
+	// recover() forwards the original body, so pruning silently becomes a no-op with
+	// nothing in the metrics to say so. That is not hypothetical — the pricing
+	// migration introduced a nil-interface panic on the request path, and this exact
+	// blind spot is why it presented as "pruning stopped" rather than as a crash.
+	recovered         uint64
 	requestsPruned    uint64 // body actually rewritten (enforce)
 	requestsProjected uint64 // would have been rewritten (observe)
 
@@ -88,6 +96,13 @@ func (m *metrics) record(names []string, bytesRemoved int) {
 	}
 }
 
+// recoveredPanic records that the fail-open swallowed a panic.
+func (m *metrics) recoveredPanic() {
+	m.mu.Lock()
+	m.recovered++
+	m.mu.Unlock()
+}
+
 func (m *metrics) observeSaving(tokens float64, t pricing.Tier, usd float64, prov pricing.Provenance, model string) {
 	m.mu.Lock()
 	switch t {
@@ -124,13 +139,27 @@ func (m *metrics) snapshot() []pipeline.Metric {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	// Built first, and BEFORE the nothing-happened early return below. A panic on
+	// the first request leaves requestsSeen at zero, so returning nil there would
+	// hide the row in exactly the case it exists for: a plugin that recovered
+	// immediately and has silently done nothing since.
+	var recoveredRow []pipeline.Metric
+	if m.recovered > 0 {
+		recoveredRow = []pipeline.Metric{{
+			Name:  "panics recovered",
+			Value: float64(m.recovered),
+			Unit:  "count",
+			Note:  "pruning was SKIPPED for these requests; the original body was forwarded",
+		}}
+	}
 	if m.requestsSeen == 0 && m.requestsPruned == 0 && m.requestsProjected == 0 {
-		return nil
+		return recoveredRow
 	}
 
-	out := []pipeline.Metric{
-		{Name: "requests seen", Value: float64(m.requestsSeen), Unit: "count"},
-	}
+	out := append([]pipeline.Metric(nil), recoveredRow...)
+	out = append(out,
+		pipeline.Metric{Name: "requests seen", Value: float64(m.requestsSeen), Unit: "count"},
+	)
 	// Enforce and observe are mutually exclusive in practice (one policy per
 	// plugin instance), but report whichever has fired so a mid-flight policy
 	// change is visible rather than silently blended.

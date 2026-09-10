@@ -26,11 +26,14 @@ pre-commit: ## Install pre-commit hooks (including commit-msg)
 build-proxy-init: ## Build the proxy-init iptables init container
 	cd authbridge/proxy-init && make docker-build-init
 
-pricing-table: ## Regenerate authlib/pricing's bundled price table (COMMIT=<litellm sha>)
+pricing-table: ## Regenerate the bundled price table (COMMIT=<sha> [NO_PROXY_FOR_GEN=1])
 ifndef COMMIT
 	$(error COMMIT is required. Find the latest with: curl -sS 'https://api.github.com/repos/BerriAI/litellm/commits?path=model_prices_and_context_window.json&per_page=1' | jq -r '.[0].sha')
 endif
-	@# Proxies are cleared: github.com is behind a TLS-intercepting local proxy here.
-	cd authbridge/authlib && HTTPS_PROXY= HTTP_PROXY= ALL_PROXY= \
+	@# NO_PROXY_FOR_GEN=1 clears the proxy variables for this fetch. Off by default:
+	@# "github.com is behind a TLS-intercepting proxy" was true on one developer's
+	@# machine, not a property of this repo, and hardcoding it broke the target for
+	@# anyone whose proxy is the only route out.
+	cd authbridge/authlib && $(if $(NO_PROXY_FOR_GEN),HTTPS_PROXY= HTTP_PROXY= ALL_PROXY=,) \
 		go run ./pricing/internal/gen -commit $(COMMIT) -dir ./pricing
 	cd authbridge/authlib && go test ./pricing/ -run TestBundled

@@ -246,6 +246,10 @@ func (p *ToolPrune) OnRequest(_ context.Context, pctx *pipeline.Context) (action
 	// A panic here would fail a request to save tokens. Never worth it.
 	defer func() {
 		if r := recover(); r != nil {
+			// Counted, not just logged. Fail-open means a panicking plugin looks
+			// healthy while doing nothing, and a log line scrolls away — the metric
+			// is what an operator actually sees. See metrics.recovered.
+			p.m.recoveredPanic()
 			slog.Warn("tool-prune: recovered, forwarding original body", "panic", r)
 			action = pipeline.Action{Type: pipeline.Continue}
 		}

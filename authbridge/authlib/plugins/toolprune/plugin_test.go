@@ -957,3 +957,28 @@ func TestMetrics_DollarRowsDiscloseTheyAreGross(t *testing.T) {
 		}
 	}
 }
+
+// TestMetrics_RecoveredPanicIsVisible: fail-open means a panicking plugin looks
+// healthy while doing nothing. The pricing migration introduced a nil-interface
+// panic on the request path, and this blind spot is why it presented as "pruning
+// stopped working" rather than as a crash.
+func TestMetrics_RecoveredPanicIsVisible(t *testing.T) {
+	p := configured(t, "NotebookEdit")
+	p.m.recoveredPanic()
+
+	// Reported even though no request was ever seen — a panic on the FIRST request
+	// leaves requestsSeen at zero, which is exactly when the row matters most.
+	m := findMetric(t, p.Metrics(), "panics recovered")
+	if m.Value != 1 {
+		t.Errorf("panics recovered = %v, want 1", m.Value)
+	}
+	if !strings.Contains(m.Note, "SKIPPED") {
+		t.Errorf("note = %q, want it to say pruning was skipped", m.Note)
+	}
+
+	// And it survives alongside real traffic.
+	pruneWithModel(t, withRates(t, p, pricing.Bundled()...), "claude-opus-5")
+	if m := findMetric(t, p.Metrics(), "panics recovered"); m.Value != 1 {
+		t.Errorf("panics recovered = %v after traffic, want 1", m.Value)
+	}
+}

@@ -223,3 +223,43 @@ func TestTable_DoesNotAliasCallerThresholds(t *testing.T) {
 		t.Errorf("threshold rate = %.2f/Mtok after mutating the caller's slice, want %.2f", v*tokensPerMillion, want)
 	}
 }
+
+// TestResolution_IntermediateFormWins pins the ordering the reviewer found: a wire
+// name must land on a row matching the MOST specific normalized form, not the fully
+// normalized one.
+//
+// Normalizing all the way and matching once skipped intermediate rows — ":0" came off
+// "claude-custom-v2:0" to yield an exact row, then stripping continued and landed on
+// the less specific "claude-custom".
+func TestResolution_IntermediateFormWins(t *testing.T) {
+	mk := func(model string, perM float64) Entry {
+		var r Rates
+		r.Base[TierInput], r.Set[TierInput] = perM/tokensPerMillion, true
+		return Entry{Host: "*", Model: model, Rates: r, Prov: ProvConfigured}
+	}
+	tab, err := NewTable([]Entry{mk("claude-custom-v2", 42.00), mk("claude-custom", 7.00)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rate := func(model string) float64 {
+		r, _ := tab.Resolve("h", model, 0)
+		v, _ := r.For(TierInput)
+		return v * tokensPerMillion
+	}
+
+	if got := rate("claude-custom-v2:0"); got != 42.00 {
+		t.Errorf("claude-custom-v2:0 = %.2f/Mtok, want 42.00 — stripping ran past an exact row", got)
+	}
+	// Both plain forms still resolve to themselves.
+	if got := rate("claude-custom-v2"); got != 42.00 {
+		t.Errorf("claude-custom-v2 = %.2f/Mtok, want 42.00", got)
+	}
+	if got := rate("claude-custom"); got != 7.00 {
+		t.Errorf("claude-custom = %.2f/Mtok, want 7.00", got)
+	}
+	// And the documented limit of the heuristic: an unknown version discriminator
+	// falls back rather than going unpriced. This is what makes Bedrock's -v1:0 work.
+	if got := rate("claude-custom-v9"); got != 7.00 {
+		t.Errorf("claude-custom-v9 = %.2f/Mtok, want 7.00 (documented fallback)", got)
+	}
+}

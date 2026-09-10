@@ -85,59 +85,89 @@ func compileModel(pattern string) (modelMatcher, error) {
 // match lower-cases the subject because gateways vary in how they echo model
 // names, and a case mismatch would silently unprice the traffic rather than fail
 // visibly (toolprune/plugin.go:224-226).
-func (m modelMatcher) match(model string) bool {
-	lower := strings.ToLower(strings.TrimSpace(model))
-	if m.g.Match(lower) {
-		return true
-	}
-	if m.gPrefixed != nil && m.gPrefixed.Match(lower) {
-		return true
-	}
-	// Literal keys also match a normalized form, so a gateway echoing a provider's
-	// native identifier still lands on its own version's row. Globs deliberately do
-	// NOT get this: an operator's pattern is matched against what came off the wire.
-	if m.exact {
-		if n := normalizeModelName(lower); n != lower {
-			return m.g.Match(n)
-		}
-	}
-	return false
+// modelForms holds the progressively-normalized spellings of one wire model name,
+// most specific first.
+//
+// A fixed array rather than a slice so building it costs no allocation: Resolve
+// builds one per request and every row matches against the same value.
+type modelForms struct {
+	v [5]string
+	n int
 }
 
-// normalizeModelName reduces a provider's native model identifier to the bare name
-// LiteLLM's price map keys on.
+func (f *modelForms) add(s string) {
+	if f.n > 0 && f.v[f.n-1] == s {
+		return // normalization was a no-op at this step
+	}
+	f.v[f.n] = s
+	f.n++
+}
+
+// modelNameForms yields the spellings to try, in decreasing specificity.
 //
-// The "*/"+key form alone was anchored too tightly: it tolerated a slash-delimited
-// prefix and nothing else, so Bedrock's canonical
-// "anthropic.claude-opus-4-1-20250805-v1:0" — dot-delimited prefix, "-v1:0" tail —
-// still fell through to the family glob and was priced at the newest opus rate
-// instead of its own. Same for a ":thinking" suffix and for trailing whitespace.
+// Progressive rather than all-at-once, and that ordering is the point: normalizing
+// fully and then matching once skipped rows that match an INTERMEDIATE form. With
+// rows "claude-custom-v2" and "claude-custom", the wire name "claude-custom-v2:0"
+// resolved to the latter — ":0" came off to yield an exact row, but stripping
+// continued and landed on the less specific one. Trying each form and taking the
+// first match cannot do that.
 //
-// Applied only when matching a LITERAL key, and only if it changes the string, so
-// this can widen a match but never redirect one that already succeeded.
-//
-// Order matters: the tail suffixes come off before the prefix, because both can be
-// present at once.
-func normalizeModelName(s string) string {
+// One limit is inherent to the heuristic and worth stating: nothing can distinguish
+// a version discriminator from part of a billed name without a table, so
+// "claude-custom-v9" resolves to "claude-custom"'s rate rather than being unpriced.
+// That is what makes Bedrock's "…-v1:0" work, and it is the trade being made.
+func modelNameForms(lower string) modelForms {
+	var f modelForms
+	f.add(lower)
+
+	s := lower
 	// A ":"-delimited tail is a variant selector (":thinking") or Bedrock's version
 	// discriminator (":0"), never part of the billed model name.
 	if i := strings.LastIndexByte(s, ':'); i > 0 {
 		s = s[:i]
+		f.add(s)
 	}
 	// Bedrock appends "-v<n>" after the dated name.
 	if i := strings.LastIndex(s, "-v"); i > 0 && isAllDigits(s[i+2:]) {
 		s = s[:i]
+		f.add(s)
 	}
 	// A provider prefix, delimited by "/" (aws/, anthropic/) or "." (Bedrock's
 	// anthropic.claude-...). Anthropic model names contain no dots, so cutting at
 	// the last one is safe for matching.
 	if i := strings.LastIndexByte(s, '/'); i >= 0 {
 		s = s[i+1:]
+		f.add(s)
 	}
 	if i := strings.LastIndexByte(s, '.'); i >= 0 {
 		s = s[i+1:]
+		f.add(s)
 	}
-	return s
+	return f
+}
+
+// match reports whether this pattern covers any of the forms, which are ordered
+// most-specific first by the caller.
+//
+// Only LITERAL keys are matched against the normalized forms. A pattern the operator
+// wrote with metacharacters is matched against what came off the wire, since
+// silently widening it would defeat their intent.
+func (m modelMatcher) match(f modelForms) bool {
+	if m.g.Match(f.v[0]) {
+		return true
+	}
+	if m.gPrefixed != nil && m.gPrefixed.Match(f.v[0]) {
+		return true
+	}
+	if !m.exact {
+		return false
+	}
+	for i := 1; i < f.n; i++ {
+		if m.g.Match(f.v[i]) {
+			return true
+		}
+	}
+	return false
 }
 
 func isAllDigits(s string) bool {
@@ -201,6 +231,11 @@ func (s specificity) beats(o specificity) bool {
 // anything useful.
 func NewTable(entries []Entry) (*Table, error) {
 	t := &Table{rows: make([]row, 0, len(entries))}
+	// Duplicate rows were silently first-wins, so a config listing the same model
+	// twice under one endpoint had one of its rates quietly ignored — and which one
+	// depended on entry order, which for the config path is YAML map iteration.
+	// Rejecting names the collision instead.
+	seen := make(map[string]struct{}, len(entries))
 	for _, e := range entries {
 		switch e.Prov {
 		case ProvAuthoritative:
@@ -215,6 +250,12 @@ func NewTable(entries []Entry) (*Table, error) {
 		if err != nil {
 			return nil, err
 		}
+		dupKey := strings.ToLower(e.Host) + "\x00" + m.pattern + "\x00" + e.Prov.String()
+		if _, dup := seen[dupKey]; dup {
+			return nil, fmt.Errorf("pricing: duplicate entry for host %q model %q at %s provenance; one of the two rates would be silently ignored",
+				e.Host, e.Model, e.Prov)
+		}
+		seen[dupKey] = struct{}{}
 		host := strings.ToLower(e.Host)
 		if !anyHost(host) {
 			if err := validHostPattern(host); err != nil {
@@ -272,10 +313,12 @@ func (t *Table) Resolve(endpoint, model string, promptTotal int) (Rates, Provena
 	if t == nil {
 		return Rates{}, ProvNone
 	}
+	// Built once per request, not per row: every row matches against the same forms.
+	forms := modelNameForms(strings.ToLower(strings.TrimSpace(model)))
 	var best *row
 	for i := range t.rows {
 		r := &t.rows[i]
-		if !matchHost(r.host, endpoint) || !r.model.match(model) {
+		if !matchHost(r.host, endpoint) || !r.model.match(forms) {
 			continue
 		}
 		if best == nil || r.prov > best.prov || (r.prov == best.prov && r.spec.beats(best.spec)) {

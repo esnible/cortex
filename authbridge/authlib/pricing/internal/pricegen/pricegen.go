@@ -51,12 +51,19 @@ type modelInfo struct {
 }
 
 // Filter reduces a full price map to the Anthropic-provider entries, so the
-// committed snapshot is kilobytes rather than the 2.3 MB upstream file.
+// committed snapshot is kilobytes rather than the 2.3 MB upstream file, and stamps
+// the upstream commit into it under SnapshotCommitKey.
 //
 // Idempotent: filtering an already-filtered map is a no-op, which is what lets the
 // generator and the golden test run the same Entries transform over different
 // inputs.
-func Filter(raw []byte) ([]byte, error) {
+// SnapshotCommitKey is the synthetic key the generator stamps into the snapshot so
+// the golden test can prove the snapshot and the generated table came from the SAME
+// upstream commit. Without it either file could be regenerated alone and the pair
+// would still compare equal, since both derive from whatever was fetched last.
+const SnapshotCommitKey = "_litellm_commit"
+
+func Filter(raw []byte, commit string) ([]byte, error) {
 	var all map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &all); err != nil {
 		return nil, fmt.Errorf("pricegen: parse price map: %w", err)
@@ -74,6 +81,13 @@ func Filter(raw []byte) ([]byte, error) {
 	}
 	if len(keep) == 0 {
 		return nil, fmt.Errorf("pricegen: no %s entries in the price map", AnthropicProvider)
+	}
+	if commit != "" {
+		stamp, err := json.Marshal(commit)
+		if err != nil {
+			return nil, err
+		}
+		keep[SnapshotCommitKey] = stamp
 	}
 	return json.MarshalIndent(keep, "", "  ")
 }
@@ -95,9 +109,23 @@ func Filter(raw []byte) ([]byte, error) {
 // are bundled, not authoritative, and an operator whose gateway disagrees pins it
 // in config.
 func Entries(raw []byte) ([]pricing.Entry, error) {
-	var all map[string]modelInfo
-	if err := json.Unmarshal(raw, &all); err != nil {
+	// Decoded per entry rather than as map[string]modelInfo, because the snapshot
+	// carries the generator's commit stamp as a bare string alongside the model
+	// objects, and a whole-map decode into a struct type fails on it.
+	var rawAll map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &rawAll); err != nil {
 		return nil, fmt.Errorf("pricegen: parse price map: %w", err)
+	}
+	all := make(map[string]modelInfo, len(rawAll))
+	for name, body := range rawAll {
+		if name == SnapshotCommitKey {
+			continue
+		}
+		var mi modelInfo
+		if json.Unmarshal(body, &mi) != nil {
+			continue // sample_spec and other non-model rows
+		}
+		all[name] = mi
 	}
 
 	var out []pricing.Entry
@@ -110,6 +138,9 @@ func Entries(raw []byte) ([]pricing.Entry, error) {
 	sort.Strings(names) // deterministic output regardless of map order
 
 	for _, name := range names {
+		if name == SnapshotCommitKey {
+			continue // the generator's provenance stamp, not a model
+		}
 		mi := all[name]
 		if mi.Provider != AnthropicProvider {
 			continue
@@ -371,4 +402,21 @@ func renderBools(v [4]bool) string {
 		}
 	}
 	return "[numTiers]bool{" + strings.Join(parts, ", ") + "}"
+}
+
+// SnapshotCommit reads the upstream commit stamped into a snapshot, or "" if absent.
+func SnapshotCommit(raw []byte) string {
+	var all map[string]json.RawMessage
+	if json.Unmarshal(raw, &all) != nil {
+		return ""
+	}
+	stamp, ok := all[SnapshotCommitKey]
+	if !ok {
+		return ""
+	}
+	var commit string
+	if json.Unmarshal(stamp, &commit) != nil {
+		return ""
+	}
+	return commit
 }

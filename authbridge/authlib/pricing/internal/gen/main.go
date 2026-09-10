@@ -55,7 +55,7 @@ func main() {
 		log.Fatalf("gen: %v", err)
 	}
 
-	snapshot, err := pricegen.Filter(raw)
+	snapshot, err := pricegen.Filter(raw, *commit)
 	if err != nil {
 		log.Fatalf("gen: %v", err)
 	}

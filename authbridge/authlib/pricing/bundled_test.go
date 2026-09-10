@@ -50,6 +50,26 @@ func TestBundled_MatchesSnapshot(t *testing.T) {
 	}
 }
 
+// TestBundled_SnapshotMatchesTheRecordedCommit ties the two committed files together.
+//
+// Without it either could be regenerated alone and the golden comparison would still
+// pass, since both derive from whatever was fetched last — so the pin could drift from
+// the data it claims to describe.
+func TestBundled_SnapshotMatchesTheRecordedCommit(t *testing.T) {
+	raw, err := os.ReadFile(snapshotPath)
+	if err != nil {
+		t.Fatalf("read snapshot: %v", err)
+	}
+	stamped := pricegen.SnapshotCommit(raw)
+	if stamped == "" {
+		t.Fatal("the snapshot carries no commit stamp; regenerate with `make pricing-table COMMIT=<sha>`")
+	}
+	if stamped != pricing.BundledUpstreamCommit {
+		t.Errorf("snapshot was generated from %s but the table records %s — one of the two files was regenerated alone",
+			stamped, pricing.BundledUpstreamCommit)
+	}
+}
+
 func TestBundled_UpstreamCommitIsPinned(t *testing.T) {
 	// A table that cannot say where it came from turns "refresh the rates" back
 	// into a measurement exercise, which is how the stale 4x comment survived a

@@ -42,5 +42,17 @@ func UsageFromInference(inf *pipeline.InferenceExtension) Usage {
 	if u.Output == 0 && inf.CompletionTokens > 0 {
 		u.Output = inf.CompletionTokens
 	}
+	// Last resort: a gateway that reports ONLY total_tokens. parsercommon records it
+	// in TotalTokens and leaves prompt/completion at zero, so without this the
+	// request has no usage at all and Cost treats it as unpriced — the doc above
+	// promised this fallback and did not have it.
+	//
+	// Attributed wholly to uncached input, which OVERSTATES a cache-heavy request
+	// and cannot distinguish prompt from completion. That is the only reading
+	// available when the provider reports one number, and being visibly approximate
+	// beats dropping the request out of the total.
+	if u == (Usage{}) && inf.TotalTokens > 0 {
+		u.Input = inf.TotalTokens
+	}
 	return u
 }
