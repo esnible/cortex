@@ -671,5 +671,35 @@ check "svc action: unknown non-zero, ports free -> fallback (default; Cortex sti
 check "svc action: refusal wins over ports-busy" "refused" \
 	"$(with_service_install_action 1 'refused: unsafe config' yes)"
 
+# --- the new-CA notice is gated on the CA CHANGING, not on ca.crt existing ---
+#
+# An existence check has a false negative that matters: EnsureFileSource mints when ANY
+# of tls.crt / tls.key / ca.crt is missing, not only when all three are, so a directory
+# holding ca.crt but no tls.key gets a brand-new CA while "ca.crt exists" reports the
+# machine already had one — suppressing the notice in exactly the case that needs it.
+# Verified against the real proxy: removing tls.key produced a different ca.crt hash.
+
+_fp_fn=$(sed -n '/^ca_fingerprint()/,/^}/p' "${INSTALL_SH}")
+check "the CA gate hashes rather than testing existence" "1" \
+	"$(printf '%s' "${_fp_fn}" | grep -cE 'shasum|sha256sum' >/dev/null && echo 1 || echo 0)"
+check "the notice compares before against after" "1" \
+	"$(grep -c 'ca_fp_before}" != "${ca_fp_after' "${INSTALL_SH}" || true)"
+check "no existence-only gate remains" "0" \
+	"$(grep -c 'ca_existed' "${INSTALL_SH}" || true)"
+
+# The fingerprint helper must not abort the installer when no checksum tool exists: the
+# caller assigns it bare, and a non-zero status there dies under set -e.
+_probe="${TMP}/fp.sh"
+{
+	printf 'set -eu\nca_dir=%s\n' "${TMP}/noca"
+	printf '%s\n' "${_fp_fn}"
+	printf 'fp="$(ca_fingerprint)"\nprintf "survived:[%%s]" "${fp}"\n'
+} >"${_probe}"
+mkdir -p "${TMP}/noca"
+check "fingerprint of a missing CA is empty and does not abort" "survived:[]" "$(sh "${_probe}" 2>/dev/null)"
+: >"${TMP}/noca/ca.crt"
+check "fingerprint of a present CA is non-empty" "1" \
+	"$(sh "${_probe}" 2>/dev/null | grep -c 'survived:\[.\+\]' || true)"
+
 printf '\n%s passed, %s failed\n' "${PASS}" "${FAIL}"
 [ "${FAIL}" = "0" ]

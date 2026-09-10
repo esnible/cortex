@@ -329,3 +329,50 @@ func TestSupervisionIsPlatformCorrect(t *testing.T) {
 		t.Error("systemd unit lost its own restart policy")
 	}
 }
+
+// TestBridgeCANotBefore_SilentWithoutACA: this is one advisory line in `status`, so
+// every failure to determine it must be silent. A broken or bridgeless config must
+// still let status report everything else.
+func TestBridgeCANotBefore_SilentWithoutACA(t *testing.T) {
+	dir := t.TempDir()
+
+	missing := filepath.Join(dir, "nope.yaml")
+	if nb, f := bridgeCANotBefore(missing); nb != "" || f != "" {
+		t.Errorf("missing config: got (%q,%q), want empty", nb, f)
+	}
+
+	noBridge := filepath.Join(dir, "nobridge.yaml")
+	if err := os.WriteFile(noBridge, []byte("mode: proxy-sidecar\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if nb, f := bridgeCANotBefore(noBridge); nb != "" || f != "" {
+		t.Errorf("config without a bridge: got (%q,%q), want empty", nb, f)
+	}
+
+	// A configured bridge whose ca.crt is not there yet (first boot) is also silent
+	// rather than reporting a cutoff of the zero time, which would read as 1 Jan
+	// year 1 and make every client look stale.
+	caDir := filepath.Join(dir, "ca")
+	withBridge := filepath.Join(dir, "bridge.yaml")
+	body := "mode: proxy-sidecar\ntls_bridge:\n  mode: enabled\n  ca_dir: " + caDir + "\n"
+	if err := os.WriteFile(withBridge, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if nb, _ := bridgeCANotBefore(withBridge); nb != "" {
+		t.Errorf("bridge configured but no ca.crt yet: got %q, want empty", nb)
+	}
+}
+
+// TestPortOfAddr: the value is pasted into an lsof command, so a bare port or an
+// unexpected shape must still produce something recognisable rather than "".
+func TestPortOfAddr(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"127.0.0.1:47600", "47600"},
+		{":47600", "47600"},
+		{"47600", "47600"},
+	} {
+		if got := portOfAddr(tc.in); got != tc.want {
+			t.Errorf("portOfAddr(%q) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
