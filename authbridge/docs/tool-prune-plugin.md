@@ -184,17 +184,28 @@ as a backstop, carrying the newest member's rates, so a version released after t
 table was generated still prices instead of dropping out of the total; an exact row
 always wins over its family.
 
-**The caveat direction inverted, and this matters if you had corrected for it.**
-The old globs were measured on a discounted gateway, so they *understated* anyone
-paying vendor list. The bundled table *is* vendor list, so a discounted gateway is
-now *overstated* — uniformly 1.32x on every Claude tier for the gateway those globs
-came from:
+**Figures move, and by different factors per model — not by one uniform ratio.**
 
-| family | old (measured gateway) | bundled (vendor list) |
-|---|---|---|
-| `claude-opus-*` | 3.80 / 4.75 / 0.38 | 5.00 / 6.25 / 0.50 |
-| `claude-sonnet-*` | 1.52 / 1.90 / 0.152 | 2.00 / 2.50 / 0.20 |
-| `claude-haiku-*` | 0.76 / 0.95 / 0.076 | 1.00 / 1.25 / 0.10 |
+The old table had only family globs, so every opus version was charged one rate. The
+new table has exact per-version rows that outrank globs, so the change depends on
+which version served the request. Input rate, old glob vs new exact row:
+
+| model | old (family glob) | new (exact row) | factor |
+|---|---|---|---|
+| `claude-opus-4-1` | 3.80 | 15.00 | **3.95x** |
+| `claude-opus-5` | 3.80 | 5.00 | 1.32x |
+| `claude-sonnet-4-5` | 1.52 | 3.00 | 1.97x |
+| `claude-sonnet-5` | 1.52 | 2.00 | 1.32x |
+| `claude-haiku-4-5` | 0.76 | 1.00 | 1.32x |
+| `claude-3-haiku-20240307` | 0.76 | 0.25 | **0.33x** |
+
+So the direction is not even uniform: older, more expensive models rise sharply while
+the cheapest fall. Only the newest member of each family lands on the 1.32x
+glob-to-glob ratio, because that is the rate its family glob now carries.
+
+The systematic part is what remains true: the old rates were measured on a discounted
+gateway and the new ones are vendor list, so a deployment on such a gateway is now
+overstated and should pin its endpoint.
 
 Pin your endpoint to correct it — a host-scoped entry outranks anything bundled:
 

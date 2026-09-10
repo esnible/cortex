@@ -90,6 +90,11 @@ pipeline:
         config:
           spend_file: /etc/cortex/spend-authbridge.json
           max_budget: 5.00
+      # REQUIRED, and required AFTER this plugin. The response pass walks the chain
+      # in reverse, so the parser must sit at a higher index to fold token counts
+      # before the cost is settled. A chain without it fails to build — see
+      # "Rates and ordering" below.
+      - name: inference-parser
 ```
 
 ### Pipeline placement
@@ -105,10 +110,14 @@ inbound pipeline, so a plugin left under `inbound:` there records `$0` — use `
 |-------|------|----------|-------------|
 | `spend_file` | string | yes | Path to the JSON ledger file (created if missing) |
 | `max_budget` | float | yes | Daily budget in USD (must be > 0) |
-| `input_cost_per_token` | float | no | USD per **uncached** input token; prices streamed responses (whose header cost is 0) from parsed usage |
-| `output_cost_per_token` | float | no | USD per output/completion token; prices streamed responses from parsed usage |
-| `cache_write_cost_per_token` | float | no | USD per cache-write (creation) input token; defaults to `input_cost_per_token` when unset |
-| `cache_read_cost_per_token` | float | no | USD per cache-read input token; defaults to `input_cost_per_token` when unset |
+
+**Rates are no longer options here.** The four `*_cost_per_token` fields were
+removed; they now live in the top-level `pricing:` section. A config still carrying
+them fails to start with the offending field named, rather than dropping them
+silently and switching the deployment to vendor-list rates. The old
+"cache rates default to `input_cost_per_token`" rule is gone too — a tier with no
+rate makes the request *unpriced*, because that default overstated a cache read by
+10x while still counting the request as priced.
 
 ## Ledger Format
 

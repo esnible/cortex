@@ -55,6 +55,18 @@ type Event struct {
 	// different question — WHICH PATH priced this (header vs token counts) rather
 	// than how much to trust the rates.
 	Provenance string `json:"provenance,omitempty"`
+
+	// Settled marks a figure the producer settled deliberately, INCLUDING zero.
+	//
+	// Cost of zero used to be indistinguishable from "no figure": litellm-budget-track
+	// charges nothing for a gateway that reported a present 0 cost — a genuine free
+	// call, a cache hit or an error — and then emitted no event, because it gates on
+	// cost > 0. Decode rejected CostUSD <= 0 for the same reason. So the usage
+	// aggregator saw nothing, fell through to its rate table, and FABRICATED a cost
+	// for a call the gateway had explicitly declared free, counting it as priced.
+	//
+	// A settled zero is now a real answer that suppresses the fallback.
+	Settled bool `json:"settled,omitempty"`
 }
 
 // Micros converts CostUSD to millionths of a dollar, rounded to nearest.
@@ -81,7 +93,13 @@ func Decode(e *pipeline.SessionEvent) (Event, bool) {
 		return Event{}, false
 	}
 	var ev Event
-	if err := json.Unmarshal(raw, &ev); err != nil || ev.CostUSD <= 0 {
+	if err := json.Unmarshal(raw, &ev); err != nil {
+		return Event{}, false
+	}
+	// A settled zero counts: the producer means "this call was free", which is a
+	// different answer from "nobody priced this" and must not be re-priced. Without
+	// Settled, only a positive cost was a figure at all.
+	if ev.CostUSD < 0 || (ev.CostUSD == 0 && !ev.Settled) {
 		return Event{}, false
 	}
 	return ev, true

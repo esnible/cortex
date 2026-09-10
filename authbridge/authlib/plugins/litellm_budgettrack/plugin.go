@@ -17,6 +17,7 @@
 package litellm_budgettrack
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -133,8 +134,16 @@ func (p *BudgetTrack) Capabilities() pipeline.PluginCapabilities {
 }
 
 func (p *BudgetTrack) Configure(raw json.RawMessage) error {
-	if err := json.Unmarshal(raw, &p.cfg); err != nil {
-		return fmt.Errorf("litellm-budget-track config: %w", err)
+	// DisallowUnknownFields, matching tool-prune's Configure. Without it the four
+	// rate knobs this plugin used to accept — input_cost_per_token and friends —
+	// were silently dropped from an existing config: no error, no warning, no log
+	// line, and the deployment switched to bundled vendor-list rates, which by this
+	// change's own accounting OVERSTATES a discounted gateway. An operator would
+	// see their cost figures move and have nothing pointing at the cause.
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&p.cfg); err != nil {
+		return fmt.Errorf("litellm-budget-track config: %w (rates moved to the top-level `pricing:` section; see docs/litellm-budgettrack-plugin.md)", err)
 	}
 	if p.cfg.SpendFile == "" {
 		return fmt.Errorf("litellm-budget-track: spend_file is required")
@@ -228,12 +237,39 @@ func (p *BudgetTrack) OnResponseFrame(_ context.Context, pctx *pipeline.Context,
 			}
 		}
 	}
-	if cost > 0 {
+	switch {
+	case cost > 0:
 		if total, ok := p.accumulate(cost); ok {
 			p.emitCost(pctx, cost, source, total, provenance)
 		}
+	case present:
+		// The gateway reported a cost and it was zero — a genuine free call: a cache
+		// hit, or an error it declined to charge for. Nothing is added to the ledger,
+		// but the event is still published so downstream knows this was PRICED at
+		// zero. Without it the usage aggregator finds no figure, falls through to its
+		// rate table, and invents a cost for a call the gateway declared free.
+		p.emitSettledZero(pctx)
 	}
 	return pipeline.Action{Type: pipeline.Continue}
+}
+
+// emitSettledZero publishes a zero cost the gateway actually reported, as distinct
+// from the absence of any figure.
+func (p *BudgetTrack) emitSettledZero(pctx *pipeline.Context) {
+	if pctx.Extensions.Custom == nil {
+		pctx.Extensions.Custom = map[string]any{}
+	}
+	p.mu.Lock()
+	total := p.ledger.TotalSpend
+	p.mu.Unlock()
+	pctx.Extensions.Custom[p.Name()+pipeline.PluginEventSuffix] = costevent.Event{
+		CostUSD:       0,
+		Source:        costevent.SourceGatewayHeader,
+		DailyTotalUSD: total,
+		DailyMaxUSD:   p.cfg.MaxBudget,
+		Provenance:    pricing.ProvAuthoritative.String(),
+		Settled:       true,
+	}
 }
 
 // accumulate adds one priced call to today's ledger and persists it,
@@ -268,6 +304,7 @@ func (p *BudgetTrack) emitCost(pctx *pipeline.Context, cost float64, source stri
 		DailyTotalUSD: dailyTotal,
 		DailyMaxUSD:   p.cfg.MaxBudget,
 		Provenance:    prov.String(),
+		Settled:       true,
 	}
 }
 

@@ -34,6 +34,7 @@ import (
 	"github.com/rossoctl/cortex/authbridge/authlib/config"
 	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
 	"github.com/rossoctl/cortex/authbridge/authlib/plugins"
+	"github.com/rossoctl/cortex/authbridge/authlib/pricing"
 	"github.com/rossoctl/cortex/authbridge/authlib/reloader"
 	"github.com/rossoctl/cortex/authbridge/authlib/runtimeutil"
 	"github.com/rossoctl/cortex/authbridge/authlib/session"
@@ -113,6 +114,19 @@ func main() {
 		slog.Debug("Config does not use SPIFFE")
 	}
 
+	// Built once, outside buildPipelines, because the reloader re-invokes that
+	// closure while anything sharing these rates outlives the rebuild. Without this
+	// the binary injected no resolver at all: tool-prune is linked here by default
+	// and used to ship its own rate table, so `$ saved` worked unconfigured — and
+	// config.Validate builds the pricing table and discards it, so an operator's
+	// `pricing:` block validated cleanly and was then never applied.
+	pricingRegistry := pricing.NewRegistry(nil)
+	if tab, err := pricing.Build(bootCfg.Pricing); err != nil {
+		log.Fatalf("pricing table: %v", err)
+	} else {
+		pricingRegistry.Swap(tab)
+	}
+
 	buildPipelines := func() (*pipeline.Pipeline, *pipeline.Pipeline, *config.Config, error) {
 		c, err := config.Load(*configPath)
 		if err != nil {
@@ -129,11 +143,20 @@ func main() {
 			return nil, nil, nil, err
 		}
 		config.WarnEmptyPipelines(c, slog.Default())
-		in, err := plugins.BuildWithSPIFFE(c.Pipeline.Inbound.Plugins, provider)
+		// Rates reload with the rest of the config, swapped in place so anything
+		// holding this registry from before the reload sees the new table.
+		tab, err := pricing.Build(c.Pricing)
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("pricing: %w", err)
+		}
+		pricingRegistry.Swap(tab)
+
+		deps := plugins.Deps{SPIFFE: provider, Pricing: pricingRegistry}
+		in, err := plugins.BuildWithDeps(c.Pipeline.Inbound.Plugins, deps)
 		if err != nil {
 			return nil, nil, nil, fmt.Errorf("inbound: %w", err)
 		}
-		out, err := plugins.BuildWithSPIFFE(c.Pipeline.Outbound.Plugins, provider)
+		out, err := plugins.BuildWithDeps(c.Pipeline.Outbound.Plugins, deps)
 		if err != nil {
 			return nil, nil, nil, fmt.Errorf("outbound: %w", err)
 		}

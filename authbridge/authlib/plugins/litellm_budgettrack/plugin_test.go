@@ -565,7 +565,7 @@ func TestEmitCostWireFormatIsAdditive(t *testing.T) {
 	}
 
 	// The full shape, with provenance appended last.
-	const want = `{"cost_usd":0.25,"source":"gateway-header","daily_total_usd":0.25,"daily_max_usd":10,"provenance":"authoritative"}`
+	const want = `{"cost_usd":0.25,"source":"gateway-header","daily_total_usd":0.25,"daily_max_usd":10,"provenance":"authoritative","settled":true}`
 	if string(b) != want {
 		t.Errorf("wire format changed:\n got %s\nwant %s", b, want)
 	}

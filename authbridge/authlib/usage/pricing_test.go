@@ -175,3 +175,62 @@ func TestPricing_UnpricedByFoldsAcrossBuckets(t *testing.T) {
 		t.Errorf("UnpricedBy across two buckets = %d, want 2", got)
 	}
 }
+
+// TestPricing_ErroredResponsesAreNotNamedAsGaps: snapshot.go promises UnpricedBy
+// "names the pricing entry to add". A 5xx, or a denial after the parser ran, carries
+// a model with zero tokens — so naming it would advertise a missing rate for a model
+// that already has one, and the entry an operator added would never clear the row.
+func TestPricing_ErroredResponsesAreNotNamedAsGaps(t *testing.T) {
+	now := time.Now().Truncate(BucketWidth)
+	a := New(WithClock(func() time.Time { return now }),
+		WithPricing(resolverFor(t, "claude-opus-5", 5.0/1e6, 25.0/1e6)))
+
+	// Upstream 500: the parser recorded the model, the provider reported no usage.
+	a.Record("s1", &pipeline.SessionEvent{
+		Phase:      pipeline.SessionResponse,
+		Host:       "gw.internal",
+		StatusCode: 500,
+		Inference:  &pipeline.InferenceExtension{Model: "claude-opus-5"},
+	})
+	// A denial, same shape.
+	a.Record("s1", &pipeline.SessionEvent{
+		Phase:     pipeline.SessionDenied,
+		Host:      "gw.internal",
+		Inference: &pipeline.InferenceExtension{Model: "claude-opus-5"},
+	})
+
+	snap := snapshotOf(a, now)
+	if len(snap.UnpricedBy) != 0 {
+		t.Errorf("UnpricedBy = %v, want empty — these models have a rate; the requests had no tokens", snap.UnpricedBy)
+	}
+}
+
+// TestPricing_SettledZeroIsNotRePriced: the plugin charges nothing for a gateway
+// that reported a present cost of 0 — a genuine free call. The aggregator used to
+// see no event, fall through to its rate table, and invent a cost for it.
+func TestPricing_SettledZeroIsNotRePriced(t *testing.T) {
+	now := time.Now().Truncate(BucketWidth)
+	a := New(WithClock(func() time.Time { return now }),
+		WithPricing(resolverFor(t, "claude-opus-5", 5.0/1e6, 25.0/1e6)))
+
+	ev := pricedRespEvent("gw.internal", "claude-opus-5", 1000, 500)
+	raw, err := json.Marshal(costevent.Event{
+		CostUSD: 0, Source: costevent.SourceGatewayHeader, Settled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ev.Plugins = map[string]json.RawMessage{costevent.PluginName: raw}
+	a.Record("s1", ev)
+
+	snap := snapshotOf(a, now)
+	if snap.Totals.CostMicros != 0 {
+		t.Errorf("CostMicros = %d, want 0 — the gateway declared this call free", snap.Totals.CostMicros)
+	}
+	if snap.Totals.PricedRequests != 1 {
+		t.Errorf("PricedRequests = %d, want 1 — a settled zero IS priced", snap.Totals.PricedRequests)
+	}
+	if len(snap.UnpricedBy) != 0 {
+		t.Errorf("UnpricedBy = %v, want empty", snap.UnpricedBy)
+	}
+}

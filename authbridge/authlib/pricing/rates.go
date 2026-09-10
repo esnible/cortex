@@ -1,7 +1,12 @@
 // Package pricing owns model rates and the arithmetic that turns tokens into
-// dollars. It is the single source of truth for both: before it, rates lived in
-// two plugins' configs and dollars were computed in five places, which is how a
-// stale "understates by 4x" comment survived a gateway repricing.
+// dollars. Before it, rates lived in two plugins' configs — 16 fields between them
+// — and dollars were computed in four places, which is how a stale "understates by
+// 4x" comment survived a gateway repricing.
+//
+// Cost is the only implementation of that arithmetic now. One multiplication
+// survives outside it, in tool-prune's metrics (tokens x rate for its own $ saved
+// counter), which therefore skips this package's micro quantization and can
+// disagree with the rendered figure in the last digit.
 //
 // The package holds no I/O and no provider knowledge. A rate table is built once
 // at startup and swapped atomically; resolution is a pure function of

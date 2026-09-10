@@ -8,9 +8,9 @@ import (
 
 // Config is the top-level `pricing:` section of an AuthBridge config.
 //
-// One section for the whole process, not a knob per plugin. Before this, rates
-// lived in two plugins' configs — 17 fields between them — and a deployment that
-// wanted consistent cost had to keep them in agreement by hand.
+// One section for the whole process, not a knob per plugin. Before this, rates lived
+// in two plugins' configs — 12 on tool-prune and 4 on litellm-budget-track — and a
+// deployment that wanted consistent cost had to keep them in agreement by hand.
 type Config struct {
 	// Bundled controls whether the shipped price table participates. Default TRUE:
 	// covering internal usage with no manual setup is the point, and LiteLLM's

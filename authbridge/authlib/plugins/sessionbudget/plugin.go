@@ -118,7 +118,17 @@ func (p *SessionBudget) Name() string { return "session-budget" }
 
 func (p *SessionBudget) Capabilities() pipeline.PluginCapabilities {
 	return pipeline.PluginCapabilities{
-		Description: "Enforce per-session token, call, and duration budgets via Redis.",
+		// The package doc has always stated this constraint — "must run before
+		// inference-parser in the declared plugin order (response path is
+		// reverse)" — but as prose, which builds cleanly when violated. It is the
+		// same hazard RequiresLater was added for: this plugin reads the token
+		// counts inference-parser finalizes on the response pass, and that pass
+		// walks the chain in reverse, so the parser must sit at a HIGHER index.
+		//
+		// Violated, the budget reads zero counts and never fires, which looks
+		// exactly like a session that stayed inside its limits.
+		RequiresLater: []string{"inference-parser"},
+		Description:   "Enforce per-session token, call, and duration budgets via Redis.",
 	}
 }
 

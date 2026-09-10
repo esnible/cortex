@@ -181,17 +181,29 @@ func (a *Aggregator) costOf(e *pipeline.SessionEvent) eventCost {
 	if e.Inference == nil || e.Inference.Model == "" {
 		return eventCost{}
 	}
+	u := pricing.UsageFromInference(e.Inference)
+	// A response carrying no tokens cannot be priced and is not a pricing GAP
+	// either: a 5xx, or a denial after the parser ran, reports a model with zero
+	// usage. Naming it would advertise a missing rate for a model that may well
+	// have one, and adding that entry would never make the row disappear.
+	if u == (pricing.Usage{}) {
+		return eventCost{}
+	}
 	key := e.Host + " " + e.Inference.Model
 	if a.rates == nil {
 		return eventCost{unpricedKey: key}
 	}
-	u := pricing.UsageFromInference(e.Inference)
 	rates, prov := a.rates.Resolve(e.Host, e.Inference.Model, u.PromptTotal())
 	if prov == pricing.ProvNone {
+		// No rate for this pair at all — the one case an operator fixes by adding a
+		// pricing entry, so the one case worth naming.
 		return eventCost{unpricedKey: key}
 	}
 	micros, ok := pricing.Cost(rates, u)
 	if !ok {
+		// A rate was found but it does not cover every tier this request used. Still
+		// a gap an operator can close, and naming the pair points at the entry to
+		// extend rather than to create.
 		return eventCost{unpricedKey: key}
 	}
 	return eventCost{micros: micros, priced: 1}

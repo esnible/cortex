@@ -54,11 +54,18 @@ timeline's `TOKENS / SAVED` column.
 
 ## Reading the dollar figure
 
-`$ saved` appears with no configuration, labelled `default rates`. **Read it as a
-floor.** The built-in rates were measured on a shared gateway that bills below
-vendor list; if your Claude Code talks straight to Anthropic — which it does unless
-you have set `ANTHROPIC_BASE_URL` — you pay list, so the real saving is several
-times what the column shows.
+`$ saved` appears with no configuration, labelled `bundled`. **The direction of its
+error depends on where your traffic goes, and it inverted with the consolidation.**
+
+The bundled table now ships VENDOR LIST rates, generated from LiteLLM's public price
+map. So if your Claude Code talks straight to Anthropic — which it does unless you
+have set `ANTHROPIC_BASE_URL` — the figure is *accurate*, where the hand-measured
+defaults it replaced understated it. If you point at a gateway that bills below list,
+the figure is now an *overstatement* rather than a floor. Pin that endpoint under
+`pricing.endpoints` for a figure that matches your account.
+
+The bundled table also prices each model version separately, so `claude-opus-4-1`
+($15/Mtok) and `claude-opus-5` ($5/Mtok) no longer share one family rate.
 
 Savings are reported per prompt-cache tier, never as one blended number: providers
 charge ~1.25x the input rate for a cache write and ~0.1x for a cache read, so
