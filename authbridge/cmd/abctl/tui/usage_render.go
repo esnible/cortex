@@ -350,13 +350,20 @@ func renderCostSummary(snap *usage.Snapshot) string {
 		return "COST unavailable"
 	}
 	cell := fmt.Sprintf("COST $%.4f", float64(snap.Totals.CostMicros)/1e6)
-	if snap.Totals.PricedRequests >= snap.Totals.Requests {
+	// Compared against PRICEABLE requests, not all of them. Requests counts every
+	// proxied response — MCP tool calls, health checks, anything else the sidecar
+	// handled — while only inference can ever be priced, so the old ratio left a
+	// correctly configured deployment reading "1/10 priced" forever with an empty gap
+	// list. A permanent warning with nothing to act on trains an operator to ignore
+	// the one signal that matters.
+	priceable := snap.Totals.PriceableRequests
+	if priceable == 0 || snap.Totals.PricedRequests >= priceable {
 		return cell
 	}
 	// Partial coverage: the total covers only the priced subset, so say so, and
 	// name what is missing. "Cost is incomplete" is not actionable; the endpoint and
 	// model are exactly what an operator needs to write a pricing entry for.
-	cell += fmt.Sprintf(" (%d/%d priced", snap.Totals.PricedRequests, snap.Totals.Requests)
+	cell += fmt.Sprintf(" (%d/%d priced", snap.Totals.PricedRequests, priceable)
 	if gaps := topUnpriced(snap.UnpricedBy, 3); gaps != "" {
 		cell += "; unpriced: " + gaps
 	}

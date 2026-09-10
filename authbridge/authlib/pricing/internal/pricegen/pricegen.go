@@ -71,7 +71,13 @@ func Filter(raw []byte, commit string) ([]byte, error) {
 	keep := map[string]json.RawMessage{}
 	for name, body := range all {
 		var mi modelInfo
-		if json.Unmarshal(body, &mi) != nil {
+		if err := json.Unmarshal(body, &mi); err != nil {
+			// Same reasoning as in Entries: a claude-shaped row that will not parse is
+			// a real problem, because dropping it here removes it from the snapshot
+			// too and nothing downstream can then notice it is missing.
+			if strings.HasPrefix(name, "claude") || strings.Contains(name, "/claude") {
+				return nil, fmt.Errorf("pricegen: entry %q failed to parse, which would silently drop it from the snapshot: %w", name, err)
+			}
 			continue // sample_spec and other non-model rows
 		}
 		if mi.Provider != AnthropicProvider {
@@ -117,15 +123,42 @@ func Entries(raw []byte) ([]pricing.Entry, error) {
 		return nil, fmt.Errorf("pricegen: parse price map: %w", err)
 	}
 	all := make(map[string]modelInfo, len(rawAll))
+	var skipped []string
 	for name, body := range rawAll {
 		if name == SnapshotCommitKey {
-			continue
+			continue // the generator's provenance stamp, not a model
 		}
 		var mi modelInfo
-		if json.Unmarshal(body, &mi) != nil {
-			continue // sample_spec and other non-model rows
+		if err := json.Unmarshal(body, &mi); err != nil {
+			// Recorded, not swallowed. The whole-map decode this replaced failed
+			// loudly on a malformed entry; a bare `continue` would instead drop a
+			// real model quietly, and the next regeneration would remove it from the
+			// bundled table so it resolved via a family glob or not at all.
+			//
+			// The golden test cannot catch that on its own: it compares
+			// Entries(snapshot) against a table built from the same Entries, so a
+			// dropped model disappears from both sides and the lengths still agree.
+			// Hence surfacing the names here AND the independent per-key check in
+			// bundled_test.go.
+			skipped = append(skipped, fmt.Sprintf("%s (%v)", name, err))
+			continue
 		}
 		all[name] = mi
+	}
+	sort.Strings(skipped)
+	if len(skipped) > 0 {
+		// Only rows that look like they were meant to be models are an error. Upstream
+		// carries non-model rows such as sample_spec, and those are expected.
+		var real []string
+		for _, sk := range skipped {
+			if strings.HasPrefix(sk, "claude") || strings.Contains(sk, "/claude") {
+				real = append(real, sk)
+			}
+		}
+		if len(real) > 0 {
+			return nil, fmt.Errorf("pricegen: %d claude entr(ies) failed to parse, which would silently drop them from the table: %s",
+				len(real), strings.Join(real, "; "))
+		}
 	}
 
 	var out []pricing.Entry

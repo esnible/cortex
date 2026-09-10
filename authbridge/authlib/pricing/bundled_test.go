@@ -3,9 +3,12 @@
 package pricing_test
 
 import (
+	"encoding/json"
 	"os"
 	"reflect"
 	"regexp"
+	"sort"
+	"strings"
 	"testing"
 
 	"github.com/rossoctl/cortex/authbridge/authlib/pricing"
@@ -67,6 +70,60 @@ func TestBundled_SnapshotMatchesTheRecordedCommit(t *testing.T) {
 	if stamped != pricing.BundledUpstreamCommit {
 		t.Errorf("snapshot was generated from %s but the table records %s — one of the two files was regenerated alone",
 			stamped, pricing.BundledUpstreamCommit)
+	}
+}
+
+// TestBundled_EveryAnthropicSnapshotKeyHasAnExactRow breaks the circularity in the
+// golden test above.
+//
+// That test compares Entries(snapshot) against a table built from the same Entries,
+// so a model silently dropped during decoding vanishes from BOTH sides and the length
+// check still passes. This walks the snapshot JSON directly — an independent decode
+// that shares no code with Entries — and asserts a row exists for every
+// anthropic-provider key it finds.
+func TestBundled_EveryAnthropicSnapshotKeyHasAnExactRow(t *testing.T) {
+	raw, err := os.ReadFile(snapshotPath)
+	if err != nil {
+		t.Fatalf("read snapshot: %v", err)
+	}
+	var rawAll map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &rawAll); err != nil {
+		t.Fatalf("parse snapshot: %v", err)
+	}
+
+	// Independent minimal shape: only the provider field, decoded here rather than
+	// through pricegen's own type.
+	var want []string
+	for name, body := range rawAll {
+		if name == pricegen.SnapshotCommitKey {
+			continue
+		}
+		var probe struct {
+			Provider string `json:"litellm_provider"`
+		}
+		if json.Unmarshal(body, &probe) != nil || probe.Provider != pricegen.AnthropicProvider {
+			continue
+		}
+		want = append(want, name)
+	}
+	sort.Strings(want)
+	if len(want) == 0 {
+		t.Fatal("snapshot contains no anthropic entries; the fixture is broken")
+	}
+
+	have := map[string]bool{}
+	for _, e := range pricing.Bundled() {
+		have[e.Model] = true
+	}
+	var missing []string
+	for _, name := range want {
+		if !have[strings.ToLower(name)] {
+			missing = append(missing, name)
+		}
+	}
+	if len(missing) > 0 {
+		t.Errorf("%d of %d anthropic models in the snapshot have no exact row, so they would price via a family glob or not at all: %s",
+			len(missing), len(want), strings.Join(missing, ", "))
 	}
 }
 

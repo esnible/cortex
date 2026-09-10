@@ -64,6 +64,20 @@ type Counts struct {
 	// Requests-minus-PricedRequests is the gap, correct at every resolution, and
 	// it is what stops a partial total being presented as a complete one.
 	PricedRequests int64 `json:"pricedRequests,omitempty"`
+	// PriceableRequests counts the requests that COULD be priced — those carrying a
+	// model and a non-zero token count.
+	//
+	// It exists because Requests is the wrong denominator for coverage. Requests
+	// counts every proxied response, including MCP tool calls, health checks and any
+	// other non-LLM traffic the sidecar handled, while PricedRequests can only ever
+	// cover inference. Dividing one by the other made a CORRECTLY configured
+	// deployment read "1/10 priced" forever with an empty gap list — a permanent
+	// warning with nothing to act on, which trains an operator to ignore the one
+	// signal that matters.
+	//
+	// Priced-versus-priceable is the ratio that answers "is my cost total complete",
+	// and it reaches parity when it should.
+	PriceableRequests int64 `json:"priceableRequests,omitempty"`
 }
 
 // Add accumulates o into c, field by field.
@@ -82,6 +96,7 @@ func (c *Counts) Add(o Counts) {
 	c.Tokens += o.Tokens
 	c.CostMicros += o.CostMicros
 	c.PricedRequests += o.PricedRequests
+	c.PriceableRequests += o.PriceableRequests
 }
 
 // Bucket is one BucketWidth slice of time, as served to clients.
@@ -150,6 +165,9 @@ type eventCost struct {
 	// Counts.PricedRequests as a coverage count rather than needing a separate
 	// branch at every accumulation site.
 	priced int64
+	// priceable is 1 when the request carried a model and tokens, so it belongs in
+	// the coverage denominator whether or not a rate was found.
+	priceable int64
 	// unpricedKey names the endpoint and model of a request that COULD have been
 	// priced but was not, so the gap is nameable instead of merely counted.
 	// Empty for a priced request, and empty for traffic that carries no model at
@@ -174,7 +192,7 @@ type eventCost struct {
 // and must not hold up the hot path.
 func (a *Aggregator) costOf(e *pipeline.SessionEvent) eventCost {
 	if ce, ok := costevent.Decode(e); ok {
-		return eventCost{micros: ce.Micros(), priced: 1}
+		return eventCost{micros: ce.Micros(), priced: 1, priceable: 1}
 	}
 	// Only inference traffic can be priced or named. A plain proxied request has no
 	// model and no tokens, and is neither.
@@ -191,22 +209,22 @@ func (a *Aggregator) costOf(e *pipeline.SessionEvent) eventCost {
 	}
 	key := e.Host + " " + e.Inference.Model
 	if a.rates == nil {
-		return eventCost{unpricedKey: key}
+		return eventCost{priceable: 1, unpricedKey: key}
 	}
 	rates, prov := a.rates.Resolve(e.Host, e.Inference.Model, u.PromptTotal())
 	if prov == pricing.ProvNone {
 		// No rate for this pair at all — the one case an operator fixes by adding a
 		// pricing entry, so the one case worth naming.
-		return eventCost{unpricedKey: key}
+		return eventCost{priceable: 1, unpricedKey: key}
 	}
 	micros, ok := pricing.Cost(rates, u)
 	if !ok {
 		// A rate was found but it does not cover every tier this request used. Still
 		// a gap an operator can close, and naming the pair points at the entry to
 		// extend rather than to create.
-		return eventCost{unpricedKey: key}
+		return eventCost{priceable: 1, unpricedKey: key}
 	}
-	return eventCost{micros: micros, priced: 1}
+	return eventCost{micros: micros, priced: 1, priceable: 1}
 }
 
 // Aggregator is a fixed ring of per-minute buckets. Safe for concurrent use.
@@ -512,7 +530,13 @@ func (a *Aggregator) foldInto(ring []bucket, t time.Time, e *pipeline.SessionEve
 		model = e.Inference.Model
 	}
 
-	one := Counts{Requests: 1, Tokens: tokens, CostMicros: ec.micros, PricedRequests: ec.priced}
+	one := Counts{
+		Requests:          1,
+		Tokens:            tokens,
+		CostMicros:        ec.micros,
+		PricedRequests:    ec.priced,
+		PriceableRequests: ec.priceable,
+	}
 	if ec.unpricedKey != "" {
 		addLabel(&b.byUnpriced, truncateLabel(ec.unpricedKey), Counts{Requests: 1})
 	}

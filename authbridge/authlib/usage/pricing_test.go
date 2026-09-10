@@ -234,3 +234,59 @@ func TestPricing_SettledZeroIsNotRePriced(t *testing.T) {
 		t.Errorf("UnpricedBy = %v, want empty", snap.UnpricedBy)
 	}
 }
+
+// TestPricing_PriceableExcludesNonInferenceTraffic is the coverage-denominator fix.
+//
+// Requests counts every proxied response, while only inference can ever be priced, so
+// comparing the two made a correctly configured sidecar report permanent partial
+// coverage with an empty gap list.
+func TestPricing_PriceableExcludesNonInferenceTraffic(t *testing.T) {
+	now := time.Now().Truncate(BucketWidth)
+	a := New(WithClock(func() time.Time { return now }),
+		WithPricing(resolverFor(t, "claude-opus-5", 5.0/1e6, 25.0/1e6)))
+
+	// One priced inference call plus nine MCP/health responses carrying no model.
+	a.Record("s1", pricedRespEvent("gw.internal", "claude-opus-5", 1000, 500))
+	for i := 0; i < 9; i++ {
+		a.Record("s1", &pipeline.SessionEvent{
+			Phase: pipeline.SessionResponse, Host: "tool.internal", StatusCode: 200,
+		})
+	}
+
+	snap := snapshotOf(a, now)
+	if snap.Totals.Requests != 10 {
+		t.Fatalf("Requests = %d, want 10", snap.Totals.Requests)
+	}
+	if snap.Totals.PriceableRequests != 1 {
+		t.Errorf("PriceableRequests = %d, want 1 — only the inference call could be priced", snap.Totals.PriceableRequests)
+	}
+	if snap.Totals.PricedRequests != 1 {
+		t.Errorf("PricedRequests = %d, want 1", snap.Totals.PricedRequests)
+	}
+	// Full coverage: priced == priceable, so a client must not disclose a gap.
+	if snap.Totals.PricedRequests != snap.Totals.PriceableRequests {
+		t.Error("coverage is complete but priced != priceable")
+	}
+}
+
+// TestPricing_PriceableCountsUnpricedInference: an unpriceable-for-lack-of-rate
+// request belongs in the denominator, or the gap it represents would vanish.
+func TestPricing_PriceableCountsUnpricedInference(t *testing.T) {
+	now := time.Now().Truncate(BucketWidth)
+	a := New(WithClock(func() time.Time { return now }),
+		WithPricing(resolverFor(t, "claude-opus-5", 5.0/1e6, 25.0/1e6)))
+
+	a.Record("s1", pricedRespEvent("gw.internal", "claude-opus-5", 1000, 500)) // priced
+	a.Record("s1", pricedRespEvent("api.openai.com", "gpt-5", 100, 50))        // no rate
+
+	snap := snapshotOf(a, now)
+	if snap.Totals.PriceableRequests != 2 {
+		t.Errorf("PriceableRequests = %d, want 2 — both were inference", snap.Totals.PriceableRequests)
+	}
+	if snap.Totals.PricedRequests != 1 {
+		t.Errorf("PricedRequests = %d, want 1", snap.Totals.PricedRequests)
+	}
+	if got := snap.UnpricedBy["api.openai.com gpt-5"]; got != 1 {
+		t.Errorf("UnpricedBy = %v, want the gap named", snap.UnpricedBy)
+	}
+}
