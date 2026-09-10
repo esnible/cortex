@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strings"
 )
 
 // Config is the top-level `pricing:` section of an AuthBridge config.
@@ -25,9 +26,14 @@ type Config struct {
 
 // EndpointConfig prices the models reached through one endpoint.
 type EndpointConfig struct {
-	// Host is a glob matched against the request's target host, port stripped.
-	// Empty or "*" means any endpoint.
-	Host string `yaml:"host" json:"host,omitempty"`
+	// Hosts are globs matched against the request's target host, port stripped.
+	// An empty list, or any entry of "*", means any endpoint.
+	//
+	// A list rather than a single glob because gateways commonly share a rate card:
+	// two replicas, or a service name and its external alias, bill identically, and
+	// repeating the whole models block per host invites the two copies to drift.
+	// Each host becomes its own table row.
+	Hosts []string `yaml:"hosts" json:"hosts,omitempty"`
 
 	// Models maps a model glob to its rates. Keys are matched
 	// case-insensitively, and an exact key beats a glob.
@@ -116,8 +122,18 @@ func (c *Config) entries() ([]Entry, error) {
 	var out []Entry
 	for i, ep := range c.Endpoints {
 		where := fmt.Sprintf("pricing.endpoints[%d]", i)
-		if ep.Host != "" {
-			where = fmt.Sprintf("pricing.endpoints[%d] (host %q)", i, ep.Host)
+		if len(ep.Hosts) > 0 {
+			where = fmt.Sprintf("pricing.endpoints[%d] (hosts %v)", i, ep.Hosts)
+		}
+		// An empty list means "any endpoint", which one "" row expresses.
+		hosts := ep.Hosts
+		if len(hosts) == 0 {
+			hosts = []string{""}
+		}
+		for _, h := range hosts {
+			if strings.TrimSpace(h) == "" && len(ep.Hosts) > 0 {
+				return nil, fmt.Errorf("%s: hosts contains an empty entry; omit the key entirely to mean any endpoint", where)
+			}
 		}
 		if len(ep.Models) == 0 {
 			return nil, fmt.Errorf("%s: no models configured; an endpoint block with no rates prices nothing", where)
@@ -138,12 +154,14 @@ func (c *Config) entries() ([]Entry, error) {
 			if !rates.any() {
 				return nil, fmt.Errorf("%s model %q: no rate set for any tier", where, pattern)
 			}
-			out = append(out, Entry{
-				Host:  ep.Host,
-				Model: pattern,
-				Rates: rates,
-				Prov:  ProvConfigured,
-			})
+			for _, h := range hosts {
+				out = append(out, Entry{
+					Host:  h,
+					Model: pattern,
+					Rates: rates,
+					Prov:  ProvConfigured,
+				})
+			}
 		}
 	}
 	return out, nil

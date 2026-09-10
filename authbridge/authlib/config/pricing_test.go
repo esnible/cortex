@@ -14,7 +14,7 @@ mode: proxy-sidecar
 pricing:
   bundled: false
   endpoints:
-    - host: gw.internal
+    - hosts: [gw.internal]
       models:
         "*claude-opus-*":
           input_cost_per_million: 3.80
@@ -29,7 +29,7 @@ pricing:
 	if c.Pricing.BundledEnabled() {
 		t.Error("bundled: false did not take effect")
 	}
-	if len(c.Pricing.Endpoints) != 1 || c.Pricing.Endpoints[0].Host != "gw.internal" {
+	if len(c.Pricing.Endpoints) != 1 || len(c.Pricing.Endpoints[0].Hosts) != 1 || c.Pricing.Endpoints[0].Hosts[0] != "gw.internal" {
 		t.Fatalf("endpoints = %+v", c.Pricing.Endpoints)
 	}
 	m, ok := c.Pricing.Endpoints[0].Models["*claude-opus-*"]
@@ -66,7 +66,7 @@ listener:
   roles: [forward]
 pricing:
   endpoints:
-    - host: gw.internal
+    - hosts: [gw.internal]
       models:
         "claude-opus-5":
           input_cost_per_million: 5.00
@@ -94,7 +94,7 @@ listener:
   roles: [forward]
 pricing:
   endpoints:
-    - host: gw.internal
+    - hosts: [gw.internal]
       models:
         "*": {input_cost_per_million: 3.80}
 `

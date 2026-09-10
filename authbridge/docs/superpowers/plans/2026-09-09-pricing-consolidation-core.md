@@ -1815,9 +1815,34 @@ later change cannot quietly close a seam the deferred work needs:
 - `Cost` validates rates, not just token counts — discovery's numbers arrive from a
   remote gateway and never pass through config validation.
 
-## Not in this PR
+## Phase 7 — dropped, not deferred
 
-- **Phase 7 — discovery** (`GET /model/info`, refresh loop, fail-soft, status endpoint).
-  Deferred to PR 3: it is the only phase with an outbound dependency and a credential, so it
-  wants its own review lens.
+Discovery (`GET /model/info`, refresh loop, fail-soft, status endpoint) was planned as a
+third PR, then built far enough to price its own cost honestly, then dropped.
+
+What it would have bought: not transcribing three numbers into `pricing:`. What it cost:
+a LiteLLM virtual key minted and mounted — `/model/info` sits behind `user_api_key_auth`
+(`proxy_server.py:14712-14721`), so it cannot be fetched anonymously — plus an outbound
+dependency, a refresher goroutine per endpoint, a status endpoint, and a credential
+mechanism to configure.
+
+Rates on a gateway change on the order of months. The default refresh interval the design
+landed on was 15 minutes, justified as "noticing a gateway change within a working
+session", which rather gives away how little there was to track. Eight lines of YAML pins
+a gateway and is verified to resolve correctly with the port stripped; see
+`plugin-catalog.md`.
+
+One idea considered and rejected on the way: harvesting the credential from intercepted
+traffic, since the TLS bridge already decrypts it. It only helps where the credential is
+the workload's OWN — which is exactly where it is attacker-influenced. `/model/info` is
+scoped to the presented key, so a model-influenced workload could present one whose model
+list reports near-zero rates, making its own spend read as ~0 and defeating
+`litellm-budget-track`'s daily cap. A guardrail that the guarded party can switch off is
+not a guardrail.
+
+`ProvDiscovered` remains in the provenance ordering, with no producer and a doc comment
+saying so, because the precedence is the durable decision: a rate learned from a gateway
+beats the shipped table and loses to an operator's override. Anything that later learns
+rates from a gateway has a defined place to land.
+
 - **Phase 0** already shipped as #920.

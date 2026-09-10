@@ -8,14 +8,21 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// The tests here assert that phase 7 — per-endpoint discovery via GET /model/info —
-// can be added without reopening anything in this package. They are cheap, and they
-// fail loudly if a later change quietly closes one of the seams the deferred work
-// depends on.
+// ProvDiscovered has no producer in the tree: gateway rate discovery was designed,
+// prototyped against LiteLLM's /model/info, and then deliberately dropped — the
+// benefit was avoiding the transcription of three numbers that change monthly, and
+// the cost was a virtual key to mint and mount, an outbound dependency and a refresh
+// loop. See the spec's Discovery section.
+//
+// The level stays because the PRECEDENCE is the durable decision: a rate fetched from
+// a gateway should beat the shipped table and lose to an operator's explicit override.
+// Anything that later learns rates from a gateway lands there, and these tests keep
+// the ordering and the guards honest in the meantime. They are cheap; the alternative
+// is rediscovering the ordering argument from scratch.
 
 // ProvDiscovered has to rank strictly between bundled and configured: a fetched rate
 // should beat the shipped table but lose to an operator's explicit override.
-func TestPhase7_DiscoveredRanksBetweenBundledAndConfigured(t *testing.T) {
+func TestProvenance_DiscoveredRanksBetweenBundledAndConfigured(t *testing.T) {
 	if !(ProvBundled < ProvDiscovered && ProvDiscovered < ProvConfigured) {
 		t.Fatalf("ordering broken: bundled=%d discovered=%d configured=%d",
 			ProvBundled, ProvDiscovered, ProvConfigured)
@@ -49,9 +56,10 @@ func TestPhase7_DiscoveredRanksBetweenBundledAndConfigured(t *testing.T) {
 	}
 }
 
-// A discovery client must be able to install a refreshed table without any consumer
-// re-registering. That is the whole reason Registry holds an atomic pointer.
-func TestPhase7_DiscoveryCanSwapWithoutTouchingConsumers(t *testing.T) {
+// A refreshed table must reach consumers that captured the Resolver earlier, without
+// any of them re-registering. That is the whole reason Registry holds an atomic
+// pointer, and it is what the config reloader relies on today.
+func TestRegistry_SwapReachesConsumersCapturedEarlier(t *testing.T) {
 	mk := func(perM float64, prov Provenance) *Table {
 		var r Rates
 		r.Base[TierInput], r.Set[TierInput] = perM/tokensPerMillion, true
@@ -74,10 +82,11 @@ func TestPhase7_DiscoveryCanSwapWithoutTouchingConsumers(t *testing.T) {
 	}
 }
 
-// Phase 7 adds config (endpoint credential, refresh interval). The strict decoder
-// derives its key set by reflection, so a new field must be accepted with no change
-// to strict.go — otherwise adding discovery config would start rejecting itself.
-func TestPhase7_StrictDecoderPicksUpNewFieldsAutomatically(t *testing.T) {
+// The strict decoder derives its key set by reflection rather than a hand-written
+// list, so a new config field is accepted without touching strict.go — and, more to
+// the point, a field RENAMED in Go starts being rejected in YAML loudly here rather
+// than in an operator's config.
+func TestStrict_KeySetComesFromReflection(t *testing.T) {
 	keys := yamlKeys(reflect.TypeOf(Config{}))
 	for _, want := range []string{"bundled", "endpoints"} {
 		if _, ok := keys[want]; !ok {
@@ -86,7 +95,7 @@ func TestPhase7_StrictDecoderPicksUpNewFieldsAutomatically(t *testing.T) {
 	}
 	// An endpoint block's keys likewise come from the struct, not a hand-written list.
 	epKeys := yamlKeys(reflect.TypeOf(EndpointConfig{}))
-	for _, want := range []string{"host", "models"} {
+	for _, want := range []string{"hosts", "models"} {
 		if _, ok := epKeys[want]; !ok {
 			t.Errorf("yamlKeys missed EndpointConfig field %q", want)
 		}
@@ -102,9 +111,10 @@ func TestPhase7_StrictDecoderPicksUpNewFieldsAutomatically(t *testing.T) {
 	}
 }
 
-// Cost must not trust a rate, because discovery's rates arrive from a remote gateway
-// and never pass through config validation.
-func TestPhase7_CostGuardsRemoteRates(t *testing.T) {
+// Cost must not trust a rate. Config validates what an operator writes, but nothing
+// validates a rate reaching Cost by any other route, and the per-tier arithmetic is
+// the last place to catch one.
+func TestCost_GuardsRatesFromAnySource(t *testing.T) {
 	var r Rates
 	r.Base[TierInput], r.Set[TierInput] = -1, true
 	if _, ok := Cost(r, Usage{Input: 1000}); ok {

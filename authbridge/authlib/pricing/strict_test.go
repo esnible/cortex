@@ -9,24 +9,25 @@ import (
 
 func TestStrict_RejectsTyposThatWouldSilentlyRepriceEverything(t *testing.T) {
 	for _, tc := range []struct{ name, src, want string }{{
-		// One stray letter: Host is left empty, which means ANY endpoint, and a
-		// configured entry outranks anything bundled — so rates meant for one
-		// gateway silently reprice the whole process.
-		name: "hosts instead of host",
+		// The key is `hosts` (plural, a list). A near-miss spelling would leave it
+		// empty, which means ANY endpoint — and a configured entry outranks anything
+		// bundled, so rates meant for one gateway would silently reprice the whole
+		// process off one stray letter.
+		name: "host instead of hosts",
 		src: `
 endpoints:
-  - hosts: gw.internal
+  - host: gw.internal
     models:
       "*": {input_cost_per_million: 3.80}
 `,
-		want: "hosts",
+		want: "host",
 	}, {
 		// Builds fine because another tier is set, then Cost refuses every request
 		// carrying input tokens and the endpoint drops out of the total entirely.
 		name: "misspelled tier",
 		src: `
 endpoints:
-  - host: gw.internal
+  - hosts: [gw.internal]
     models:
       "*":
         input_cost_per_milion: 3.80
@@ -41,7 +42,7 @@ endpoints:
 		name: "unknown threshold key",
 		src: `
 endpoints:
-  - host: "*"
+  - hosts: ["*"]
     models:
       "*":
         input_cost_per_million: 3.0
@@ -70,7 +71,7 @@ func TestStrict_AcceptsEveryDocumentedField(t *testing.T) {
 	src := `
 bundled: false
 endpoints:
-  - host: "gw.internal"
+  - hosts: ["gw.internal"]
     models:
       "*claude-opus-*":
         input_cost_per_million: 3.80
@@ -89,7 +90,7 @@ endpoints:
 	if err := yaml.Unmarshal([]byte(src), &c); err != nil {
 		t.Fatalf("rejected a fully-documented config: %v", err)
 	}
-	if len(c.Endpoints) != 1 || c.Endpoints[0].Host != "gw.internal" {
+	if len(c.Endpoints) != 1 || len(c.Endpoints[0].Hosts) != 1 || c.Endpoints[0].Hosts[0] != "gw.internal" {
 		t.Fatalf("decode lost data: %+v", c)
 	}
 	if len(c.Endpoints[0].Models["*claude-opus-*"].Above) != 1 {

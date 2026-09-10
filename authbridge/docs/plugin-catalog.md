@@ -352,7 +352,7 @@ pricing:
   # no setup. Set false to price only what you configure.
   bundled: true
   endpoints:
-    - host: "gw.internal"          # host glob, port stripped; "*" or omitted = any
+    - hosts: ["gw.internal"]       # host globs, port stripped; "*" or omitted = any
       models:
         "*claude-opus-*":          # model glob, matched case-insensitively
           input_cost_per_million: 3.80
@@ -364,9 +364,41 @@ pricing:
               input_cost_per_million: 7.60
 ```
 
+`hosts` is a LIST because gateways commonly share a rate card — two replicas, or a
+service name and its external alias, bill identically, and repeating the whole models
+block per host invites the two copies to drift. Each host becomes its own table row.
+
 **Rates are scoped per endpoint**, which a per-plugin table could not express: the
 same model bills differently on a discounted gateway than on the vendor endpoint,
 and only the request's target host distinguishes them.
+
+### Pinning a gateway that bills below list
+
+This is the one piece of configuration most deployments need, so it is worth stating
+plainly. The bundled table ships vendor-list prices; a gateway that bills below list is
+overstated until you pin it. Eight lines:
+
+```yaml
+pricing:
+  endpoints:
+    - hosts: ["litellm.internal*"]     # your gateway; ports are stripped before matching
+      models:
+        "*claude-opus-*":
+          input_cost_per_million: 3.80
+          cache_write_cost_per_million: 4.75
+          cache_read_cost_per_million: 0.38
+```
+
+Everything else keeps resolving from the bundled table, so `api.anthropic.com` still
+prices at vendor list while your gateway prices at yours. Check it took effect with
+`abctl`: the cost total is annotated `[configured]` rather than `[bundled]`.
+
+Rates on a gateway change on the order of months, which is why this is a static block
+rather than something fetched. Asking the gateway for its own rates via LiteLLM's
+`GET /model/info` was designed and prototyped and then dropped: it needed a virtual key
+minted and mounted, an outbound dependency and a refresh loop, to save transcribing
+three numbers. If your gateway's rates do change often, the resolution order is built
+for it — see `ProvDiscovered` in `authlib/pricing`.
 
 **Bundled rates are VENDOR LIST.** A gateway billing below list is *overstated*
 until you pin it with a host-scoped entry, which outranks anything bundled. This is

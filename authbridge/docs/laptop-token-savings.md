@@ -83,7 +83,7 @@ config:
 # pin your gateway or its figures are overstated.
 pricing:
   endpoints:
-    - host: "gw.internal"
+    - hosts: ["gw.internal"]
       models:
         "*claude-opus-*":
           input_cost_per_million: 3.80

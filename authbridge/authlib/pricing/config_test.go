@@ -41,7 +41,7 @@ func TestBuild_BundledCanBeDisabled(t *testing.T) {
 func TestBuild_ConfiguredOutranksBundled(t *testing.T) {
 	tab, err := Build(mustYAML(t, `
 endpoints:
-  - host: gw.internal
+  - hosts: [gw.internal]
     models:
       "*claude-opus-*":
         input_cost_per_million: 3.80
@@ -70,10 +70,10 @@ func TestBuild_TwoGatewaysPricedDifferently(t *testing.T) {
 	// endpoints, each with its own pricing.
 	tab, err := Build(mustYAML(t, `
 endpoints:
-  - host: gw-a.internal
+  - hosts: [gw-a.internal]
     models:
       "*": {input_cost_per_million: 3.80}
-  - host: gw-b.internal
+  - hosts: [gw-b.internal]
     models:
       "*": {input_cost_per_million: 7.60}
 `))
@@ -92,7 +92,7 @@ func TestBuild_PerTokenUnitAccepted(t *testing.T) {
 	tab, err := Build(mustYAML(t, `
 bundled: false
 endpoints:
-  - host: "*"
+  - hosts: ["*"]
     models:
       "*": {input_cost_per_token: 0.0000038}
 `))
@@ -110,7 +110,7 @@ func TestBuild_BothUnitsForOneTierIsAnError(t *testing.T) {
 	// it below rounding, and the readout gives no way to tell which was honoured.
 	_, err := Build(mustYAML(t, `
 endpoints:
-  - host: "*"
+  - hosts: ["*"]
     models:
       "claude-opus-5":
         input_cost_per_million: 5.00
@@ -130,19 +130,19 @@ func TestBuild_RejectsNegativeAndNonFiniteRates(t *testing.T) {
 	for name, src := range map[string]string{
 		"negative": `
 endpoints:
-  - host: "*"
+  - hosts: ["*"]
     models:
       "m": {input_cost_per_million: -1}
 `,
 		"nan": `
 endpoints:
-  - host: "*"
+  - hosts: ["*"]
     models:
       "m": {input_cost_per_million: .nan}
 `,
 		"inf": `
 endpoints:
-  - host: "*"
+  - hosts: ["*"]
     models:
       "m": {input_cost_per_million: .inf}
 `,
@@ -159,7 +159,7 @@ func TestBuild_ContextThresholds(t *testing.T) {
 	tab, err := Build(mustYAML(t, `
 bundled: false
 endpoints:
-  - host: "*"
+  - hosts: ["*"]
     models:
       "*":
         input_cost_per_million: 3.00
@@ -181,7 +181,7 @@ endpoints:
 func TestBuild_ThresholdNeedsAPositivePromptTokens(t *testing.T) {
 	_, err := Build(mustYAML(t, `
 endpoints:
-  - host: "*"
+  - hosts: ["*"]
     models:
       "m":
         input_cost_per_million: 3.00
@@ -201,7 +201,7 @@ func TestBuild_RejectsAModelThatPricesNothing(t *testing.T) {
 	// is indistinguishable from having no entry and hides the typo.
 	_, err := Build(mustYAML(t, `
 endpoints:
-  - host: "*"
+  - hosts: ["*"]
     models:
       "claude-opus-5": {}
 `))
@@ -216,7 +216,7 @@ endpoints:
 func TestBuild_RejectsAnEndpointWithNoModels(t *testing.T) {
 	_, err := Build(mustYAML(t, `
 endpoints:
-  - host: gw.internal
+  - hosts: [gw.internal]
 `))
 	if err == nil {
 		t.Fatal("Build accepted an endpoint with no models")
@@ -230,7 +230,7 @@ func TestBuild_ErrorNamesTheEndpointAndModel(t *testing.T) {
 	// An operator editing YAML needs to be told which row is wrong.
 	_, err := Build(mustYAML(t, `
 endpoints:
-  - host: gw.internal
+  - hosts: [gw.internal]
     models:
       "claude-[": {input_cost_per_million: 1}
 `))

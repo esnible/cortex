@@ -14,8 +14,18 @@ const (
 	// ProvBundled is the price table shipped in the binary. A starting point that
 	// needs no configuration, not a fact about the operator's account.
 	ProvBundled
-	// ProvDiscovered is a rate fetched from the gateway's own /model/info. Phase 7
-	// produces these; nothing in this PR does.
+	// ProvDiscovered is a rate learned from the gateway itself rather than configured.
+	//
+	// NOTHING PRODUCES THIS TODAY. Fetching rates from LiteLLM's /model/info was
+	// designed and prototyped, then dropped: it would have bought avoiding the
+	// transcription of three numbers that change on the order of months, and cost a
+	// virtual key to mint and mount, an outbound dependency, and a refresh loop.
+	// Pinning a gateway in `pricing:` does the same job in eight lines of YAML.
+	//
+	// The level remains because the precedence is the durable part — a rate learned
+	// from a gateway should beat the shipped table and lose to an operator's explicit
+	// override — so anything that later learns rates from one has a defined place to
+	// land. See provenance_ordering_test.go.
 	ProvDiscovered
 	// ProvConfigured is an explicit pricing.endpoints[].models entry. An override
 	// is an override, so it outranks a fetched value.
