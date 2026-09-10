@@ -166,6 +166,55 @@ followed by this machine's public roots. Pointing a replacing variable at `ca.cr
 would leave that tool trusting one private CA and nothing else, which breaks every
 direct TLS call it makes.
 
+### Everything shows as `tunnel` and no plugin ever runs
+
+`abctl observe` shows rows like this, with `tunnel` in ACTION and no method or status:
+
+```
+18:00:02  out  req  tunnel  client-rejected-ca   ete-litellm.example.com
+```
+
+The reason is in the PLUGIN column. `client-rejected-ca` means that client refused
+the bridge certificate, so nothing downstream can read the traffic. The usual cause
+is a process that **started before the CA existed**: CA files are read once at
+startup, so an agent already running when Cortex was first installed — or when
+`~/.cortex` was deleted and recreated — is holding a different CA, or none.
+
+The proxy log names the offender and the cutoff:
+
+```sh
+grep 'client-rejected-ca' ~/.cortex/proxy.log
+# ... client=127.0.0.1:58041 ca_not_before=2026-09-09T17:11:39-04:00
+#     fix=restart clients that started before ca_not_before ...
+```
+
+Map that client port to a process, then restart it:
+
+```sh
+lsof -nP -iTCP:58041          # -> COMMAND / PID
+ps -o lstart= -p <pid>        # started before ca_not_before? restart it
+```
+
+The port has to come from the log rather than a later `lsof` sweep: the connection
+is gone by the time you look, so nothing after the fact can attribute it.
+
+The other reasons you may see, and what each one asks of you:
+
+| Reason | Meaning | Act? |
+| --- | --- | --- |
+| `passthrough-host` | A host Cortex deliberately does not intercept (GitHub, module proxies, package registries). | no |
+| `passthrough-port` | Not a port the bridge watches. | no |
+| `passthrough-nontls` | The bytes were not a TLS handshake, so there was nothing to terminate. | no |
+| `skip-cached` | An earlier handshake for this host failed, so it is not intercepted for **anyone** for a few minutes. Any failed handshake seeds this, not only a CA rejection — the seeding failure logged its own reason. | look for the earlier failure in `proxy.log` |
+| `bridge-disabled` | No TLS bridge is configured. | only if you wanted one |
+| `client-hung-up` | The client vanished mid-handshake. Often a cancelled request; not evidence about trust, which is why it carries no advice. | usually no |
+| `handshake-failed` | Some other handshake failure — a version, cipher or ALPN mismatch, or Cortex failing to mint a certificate. | check `error=` in the log |
+| `origin-unverified` | **Cortex** could not verify the destination's certificate, so it declined to vouch for it. Bridging would have meant terminating TLS for a server we could not authenticate. | investigate the destination |
+
+Only `client-rejected-ca` asks you to restart anything. The others are either working as
+intended or point somewhere other than your agents — which is why the reason is worth
+reading before acting on it.
+
 ### Developer tooling is not intercepted at all
 
 `gh`, `go`, `pip` and `npm` work out of the box, without trusting anything. The

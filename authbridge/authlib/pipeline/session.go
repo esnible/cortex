@@ -149,7 +149,82 @@ type SessionEvent struct {
 	// signal rather than inferring "tunnel" from host/extension shape, which
 	// an ordinary unparsed request could otherwise mimic.
 	Tunnel bool
+
+	// TunnelReason says WHY the bytes were left opaque. Empty when Tunnel is
+	// false, and empty on a bridged CONNECT (abctl folds that row into the
+	// decrypted inner request, whose own action is the interesting one).
+	//
+	// It exists because "tunnel" with no reason is indistinguishable from a
+	// routine egress passthrough, and the two demand opposite responses: a
+	// configured passthrough is working as intended, while a client that
+	// rejected the bridge certificate means every plugin is blind to that
+	// traffic and someone has to restart something. Diagnosing the latter
+	// previously required the proxy log, the CA's NotBefore and a process
+	// listing — none of which the timeline hinted at.
+	TunnelReason TunnelReason
 }
+
+// TunnelReason is why an opaque tunnel stayed opaque.
+//
+// A named type rather than a bare string so the compiler catches a typo on the
+// producer side and on every consumer: these values are decoded from the wire,
+// enumerated in the operator docs and pinned by tests, and a misspelling in any of
+// those places would otherwise be a value that renders as itself and means nothing.
+// It marshals as a plain JSON string, so the wire contract is unchanged.
+type TunnelReason string
+
+// Tunnel reasons. Stable strings: abctl renders them and operators grep them.
+//
+// Each is at most 18 characters, which is the width of abctl's PLUGIN column
+// (events_columns.go). A longer value truncates in the cell, which would break the
+// one property that makes these useful — that the token in the timeline is the same
+// token you grep for in the proxy log.
+const (
+	// TunnelClientRejectedCA — the client sent a TLS alert rejecting our leaf, so it
+	// does not trust the bridge CA. Claimed ONLY on a "remote error: tls:
+	// bad certificate" / "unknown certificate authority", which is the peer actively
+	// refusing us. Usually a process that started before the CA was minted, since CA
+	// files are read once at startup.
+	TunnelClientRejectedCA TunnelReason = "client-rejected-ca"
+	// TunnelClientHungUp — the client disappeared mid-handshake without sending an
+	// alert. CA distrust is one cause, but so is a cancelled request or a dead
+	// socket, so this deliberately does NOT tell anyone to restart anything.
+	TunnelClientHungUp TunnelReason = "client-hung-up"
+	// TunnelHandshakeFailed — the handshake failed for some other reason: a version,
+	// cipher or ALPN mismatch, or our own certificate minting failing. Not the
+	// client's fault as far as we can tell, so it gets no client-side advice. The
+	// logged error= field carries the specific cause.
+	TunnelHandshakeFailed TunnelReason = "handshake-failed"
+	// TunnelOriginUnverified — WE could not verify the origin, so bridging would have
+	// meant vouching for a certificate we could not check.
+	TunnelOriginUnverified TunnelReason = "origin-unverified"
+	// TunnelSkipCached — an earlier handshake FAILURE for this host is still inside the
+	// skip window, so no interception was attempted at all.
+	//
+	// Deliberately does not say why that earlier attempt failed. The skip is seeded by
+	// any failed forge — a rejection, a hang-up, a cipher mismatch — because in every
+	// one of those the connection died mid-handshake and the client's retry needs a
+	// tunnel to work at all. Claiming "another client rejected the CA" here would be
+	// right only some of the time. The seeding failure logged its own specific reason
+	// when it happened; that is where the why lives.
+	//
+	// Distinct from client-rejected-ca either way: THIS client may well trust the CA
+	// and is being tunnelled because an earlier one had trouble.
+	TunnelSkipCached TunnelReason = "skip-cached"
+	// TunnelBridgeDisabled — no TLS bridge is configured.
+	TunnelBridgeDisabled TunnelReason = "bridge-disabled"
+	// TunnelPassthroughPort, TunnelPassthroughNonTLS and TunnelPassthroughHost mirror
+	// Decision.Classify's own reasons for declining to intercept. All three are
+	// working as intended.
+	TunnelPassthroughPort   TunnelReason = "passthrough-port"
+	TunnelPassthroughNonTLS TunnelReason = "passthrough-nontls"
+	TunnelPassthroughHost   TunnelReason = "passthrough-host"
+	// TunnelPassthroughUnknown is the fallback when a lower layer declines to
+	// intercept for a reason this vocabulary does not yet name. It exists so that
+	// case can never produce the EMPTY string, which a consumer reads as "bridged" —
+	// the exact opposite of what happened, and invisible in a timeline.
+	TunnelPassthroughUnknown TunnelReason = "passthrough-unknown"
+)
 
 // EventTLS describes the TLS state of a connection that produced a
 // session event. Populated by the reverse-proxy listener when mTLS is
@@ -229,27 +304,32 @@ type sessionEventWire struct {
 	DurationMs  int64                      `json:"durationMs,omitempty"`
 	TLS         *EventTLS                  `json:"tls,omitempty"`
 	Tunnel      bool                       `json:"tunnel,omitempty"`
+	// omitempty so both skew directions are safe: an old abctl ignores an unknown
+	// key, and a new abctl against an old proxy sees "" and renders exactly what it
+	// renders today.
+	TunnelReason TunnelReason `json:"tunnelReason,omitempty"`
 }
 
 func (e SessionEvent) MarshalJSON() ([]byte, error) {
 	return json.Marshal(sessionEventWire{
-		SessionID:   e.SessionID,
-		At:          e.At,
-		Direction:   e.Direction,
-		Phase:       e.Phase,
-		RequestID:   e.RequestID,
-		A2A:         e.A2A,
-		MCP:         e.MCP,
-		Inference:   e.Inference,
-		Invocations: e.Invocations,
-		Plugins:     e.Plugins,
-		Identity:    e.Identity,
-		StatusCode:  e.StatusCode,
-		Error:       e.Error,
-		Host:        e.Host,
-		DurationMs:  e.Duration.Milliseconds(),
-		TLS:         e.TLS,
-		Tunnel:      e.Tunnel,
+		SessionID:    e.SessionID,
+		At:           e.At,
+		Direction:    e.Direction,
+		Phase:        e.Phase,
+		RequestID:    e.RequestID,
+		A2A:          e.A2A,
+		MCP:          e.MCP,
+		Inference:    e.Inference,
+		Invocations:  e.Invocations,
+		Plugins:      e.Plugins,
+		Identity:     e.Identity,
+		StatusCode:   e.StatusCode,
+		Error:        e.Error,
+		Host:         e.Host,
+		DurationMs:   e.Duration.Milliseconds(),
+		TLS:          e.TLS,
+		Tunnel:       e.Tunnel,
+		TunnelReason: e.TunnelReason,
 	})
 }
 
@@ -262,23 +342,24 @@ func (e *SessionEvent) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	*e = SessionEvent{
-		SessionID:   w.SessionID,
-		At:          w.At,
-		Direction:   w.Direction,
-		Phase:       w.Phase,
-		RequestID:   w.RequestID,
-		A2A:         w.A2A,
-		MCP:         w.MCP,
-		Inference:   w.Inference,
-		Invocations: w.Invocations,
-		Plugins:     w.Plugins,
-		Identity:    w.Identity,
-		StatusCode:  w.StatusCode,
-		Error:       w.Error,
-		Host:        w.Host,
-		Duration:    time.Duration(w.DurationMs) * time.Millisecond,
-		TLS:         w.TLS,
-		Tunnel:      w.Tunnel,
+		SessionID:    w.SessionID,
+		At:           w.At,
+		Direction:    w.Direction,
+		Phase:        w.Phase,
+		RequestID:    w.RequestID,
+		A2A:          w.A2A,
+		MCP:          w.MCP,
+		Inference:    w.Inference,
+		Invocations:  w.Invocations,
+		Plugins:      w.Plugins,
+		Identity:     w.Identity,
+		StatusCode:   w.StatusCode,
+		Error:        w.Error,
+		Host:         w.Host,
+		Duration:     time.Duration(w.DurationMs) * time.Millisecond,
+		TLS:          w.TLS,
+		Tunnel:       w.Tunnel,
+		TunnelReason: w.TunnelReason,
 	}
 	return nil
 }

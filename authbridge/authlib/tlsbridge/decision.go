@@ -145,18 +145,33 @@ func (d *Decision) HandlesPort(port int) bool { return d.ports[port] }
 // bridge intercepts everything eligible on the configured ports (no in-cluster
 // vs external distinction): a port + valid-TLS-record + not-skip-listed
 // connection is terminated; anything else passes through.
+// Reasons Classify gives for declining to intercept. Exported and enumerated in
+// ClassifyReasons so a consumer that maps them can assert it covers every one —
+// otherwise adding a reason here silently produces an unmapped value downstream, and
+// an unmapped tunnel reason renders as "bridged", the opposite of the truth.
+const (
+	ReasonPort   = "port"
+	ReasonNonTLS = "non-tls"
+	ReasonSkip   = "skip"
+)
+
+// ClassifyReasons is every non-empty reason Classify can return. Keep in step with
+// the switch below; the mapping tests in dependent packages derive their coverage
+// from this slice rather than restating it.
+var ClassifyReasons = []string{ReasonPort, ReasonNonTLS, ReasonSkip}
+
 func (d *Decision) Classify(host string, port int, first []byte) (Verdict, string) {
 	if !d.ports[port] {
-		return Passthrough, "port"
+		return Passthrough, ReasonPort
 	}
 	if !looksLikeTLSRecord(first) {
-		return Passthrough, "non-tls"
+		return Passthrough, ReasonNonTLS
 	}
 	// Glob, not exact match: the tooling hosts this skips come in families
 	// (api./codeload./uploads.github.com), and Match strips the port so a caller
 	// may pass either host or host:port.
 	if d.skip.Match(host) {
-		return Passthrough, "skip"
+		return Passthrough, ReasonSkip
 	}
 	return Terminate, ""
 }

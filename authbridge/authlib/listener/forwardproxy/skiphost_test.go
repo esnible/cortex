@@ -25,8 +25,10 @@ type markerPlugin struct {
 	calls atomic.Int32
 }
 
-func (p *markerPlugin) Name() string                                  { return "marker" }
-func (p *markerPlugin) Capabilities() pipeline.PluginCapabilities     { return pipeline.PluginCapabilities{} }
+func (p *markerPlugin) Name() string { return "marker" }
+func (p *markerPlugin) Capabilities() pipeline.PluginCapabilities {
+	return pipeline.PluginCapabilities{}
+}
 func (p *markerPlugin) OnResponse(context.Context, *pipeline.Context) pipeline.Action {
 	return pipeline.Action{Type: pipeline.Continue}
 }
@@ -363,4 +365,3 @@ func TestForwardProxy_SkipHosts_CONNECT_BypassesPipeline(t *testing.T) {
 		t.Errorf("skipped CONNECT: %d session(s) recorded, want 0", len(sessions))
 	}
 }
-
