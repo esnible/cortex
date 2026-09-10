@@ -90,6 +90,11 @@ pipeline:
         config:
           spend_file: /etc/cortex/spend-authbridge.json
           max_budget: 5.00
+      # REQUIRED, and required AFTER this plugin. The response pass walks the chain
+      # in reverse, so the parser must sit at a higher index to fold token counts
+      # before the cost is settled. A chain without it fails to build — see
+      # "Rates and ordering" below.
+      - name: inference-parser
 ```
 
 ### Pipeline placement
@@ -105,10 +110,14 @@ inbound pipeline, so a plugin left under `inbound:` there records `$0` — use `
 |-------|------|----------|-------------|
 | `spend_file` | string | yes | Path to the JSON ledger file (created if missing) |
 | `max_budget` | float | yes | Daily budget in USD (must be > 0) |
-| `input_cost_per_token` | float | no | USD per **uncached** input token; prices streamed responses (whose header cost is 0) from parsed usage |
-| `output_cost_per_token` | float | no | USD per output/completion token; prices streamed responses from parsed usage |
-| `cache_write_cost_per_token` | float | no | USD per cache-write (creation) input token; defaults to `input_cost_per_token` when unset |
-| `cache_read_cost_per_token` | float | no | USD per cache-read input token; defaults to `input_cost_per_token` when unset |
+
+**Rates are no longer options here.** The four `*_cost_per_token` fields were
+removed; they now live in the top-level `pricing:` section. A config still carrying
+them fails to start with the offending field named, rather than dropping them
+silently and switching the deployment to vendor-list rates. The old
+"cache rates default to `input_cost_per_token`" rule is gone too — a tier with no
+rate makes the request *unpriced*, because that default overstated a cache read by
+10x while still counting the request as priced.
 
 ## Ledger Format
 
@@ -157,8 +166,22 @@ The spend file (`spend-authbridge.json`) is a simple JSON object:
 Each priced response surfaces on the session-event stream at
 `SessionEvent.Plugins["litellm-budget-track"]`, so consumers can read
 per-response cost without duplicating the pricing math or reading the file
-ledger. Unpriced responses (missing header + no per-token rates configured, or a
-zero-cost cache hit) produce no event.
+ledger.
+
+**A zero-cost cache hit now DOES produce an event** — this line previously said the
+opposite, and it was the one case that mattered. A gateway that reports a parsed,
+finite, exactly-zero cost on a non-streamed response is *declaring the call free*,
+which is a different answer from nobody having priced it. The event carries
+`settled: true` so the usage aggregator does not fall through to its rate table and
+invent a cost for it.
+
+An event is NOT emitted when the response is genuinely unpriced: no usable header
+*and* no rate covering the tiers it used. That silence is deliberate — it is what
+lets `/v1/usage` name the endpoint and model in `unpricedBy`. A header that is
+unparseable, negative or non-finite counts as unpriced, not as a declared zero: a
+garbage header says nothing about whether the call was free. Nor does a zero on a
+*streamed* response, where LiteLLM stamps 0 by design because the total is unknown
+when headers are sent.
 
 | Field | Type | Meaning |
 |-------|------|---------|
@@ -166,6 +189,11 @@ zero-cost cache hit) produce no event.
 | `source` | string | `"gateway-header"` (authoritative — LiteLLM stamped the header) or `"usage-fallback"` (priced from token counters, used for streamed responses whose header always reports 0). |
 | `daily_total_usd` | float64 | Ledger total after this response was added. |
 | `daily_max_usd` | float64 | Configured daily cap (`max_budget`). |
+| `provenance` | string | Where the figure came from: `"authoritative"` (the gateway reported it), or the rate table's level — `"configured"`, `"discovered"`, `"bundled"`. Omitted when absent. |
+| `settled` | bool | `true` when the producer settled this figure deliberately, **including a zero**. Distinguishes "this call was free" from "nobody priced this", which a bare `cost_usd: 0` cannot. Omitted when false. |
+
+Both trailing fields are **additive**: the four above them are unchanged, and a
+consumer that knows only those four decodes an event from either version unaltered.
 
 See [`plugin-reference.md#emitting-session-events`](./plugin-reference.md#emitting-session-events)
 for how the listener promotes `pctx.Extensions.Custom` entries to
@@ -264,3 +292,44 @@ go build ./cmd/authbridge-proxy/
 - Budget alerts at configurable thresholds (e.g., 80% warning)
 - Weekly/monthly budget periods (not just daily)
 - Integration with cortex control API for real-time budget queries
+
+
+## Rates and ordering (changed)
+
+Rates are no longer plugin options. The four `*_cost_per_token` knobs are gone; the
+plugin prices the per-tier token counts `inference-parser` publishes, through the
+top-level `pricing:` section. Its own SSE token parser is gone with them — one
+parser, one rate table, one place tokens become dollars.
+
+**BREAKING — `inference-parser` must appear AFTER this plugin in the chain.**
+
+That reads backwards and is not a typo. The response passes walk the chain in
+reverse (`pipeline.RunResponseFrame`), so the parser needs a *higher* index to fold
+each frame before this plugin settles the cost on the terminal one. The requirement
+is declared as `RequiresLater`, and a chain that gets it wrong now fails to build.
+Before that check existed, the wrong order built cleanly and silently unpriced every
+streamed response — the counts simply were not there yet.
+
+```yaml
+pipeline:
+  outbound:
+    plugins:
+      - name: litellm-budget-track   # settles cost LAST on the response pass
+      - name: inference-parser       # folds token counts FIRST on the response pass
+```
+
+Two further behaviour changes:
+
+- **Cache tiers with no rate are unpriced, not defaulted.** The old default charged
+  them at the uncached input rate, overstating a cache read by 10x while still
+  counting the request as priced — so the error was invisible. A tier that carried
+  tokens without a rate now makes the request unpriced, which is a visible gap.
+- **The ledger quantizes to micros**, because `pricing.Cost` returns integer
+  millionths so bucket addition stays exact. It costs a millionth of a dollar per
+  request and makes the ledger agree with `/v1/usage` to the last digit.
+
+The cost event gained a `provenance` field, **additively**: the original
+`cost_usd` / `source` / `daily_total_usd` / `daily_max_usd` tags are unchanged and a
+consumer that knows only those four still decodes. `source` is retained rather than
+replaced — it says which *path* priced the request (gateway header vs token counts),
+where `provenance` says how much to trust the rates.

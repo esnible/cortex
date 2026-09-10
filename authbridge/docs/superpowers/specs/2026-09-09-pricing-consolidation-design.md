@@ -298,7 +298,15 @@ shorter ones — `toolprune`'s existing rule (`plugin.go:190-209`, `pricing.go:8
 promoted unchanged. Endpoint matching uses host globs with the port stripped,
 reusing the established idiom (`sparc/collect.go:148-156`).
 
-### Discovery
+### Discovery — DROPPED
+
+**Not implemented.** Designed and prototyped, then dropped on cost/benefit: it would
+have saved transcribing three numbers that change on the order of months, and cost a
+LiteLLM virtual key minted and mounted (`/model/info` requires `user_api_key_auth`), an
+outbound dependency, a refresher goroutine and a status endpoint. Pinning a gateway in
+`pricing:` does the same job in eight lines. `ProvDiscovered` remains in the ordering
+with no producer so that any later mechanism has a defined precedence. The design below
+is kept as the record of what was evaluated.
 
 Per-endpoint, opt-in, and failure-tolerant.
 

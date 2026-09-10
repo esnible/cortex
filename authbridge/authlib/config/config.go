@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
+	"github.com/rossoctl/cortex/authbridge/authlib/pricing"
 	"gopkg.in/yaml.v3"
 )
 
@@ -41,6 +42,13 @@ type Config struct {
 	// TLSBridge, when non-nil and Enabled, terminates agent outbound TLS so the
 	// outbound pipeline sees decrypted HTTPS. See docs/.../tlsbridge-design.md.
 	TLSBridge *TLSBridgeConfig `yaml:"tls_bridge,omitempty" json:"tls_bridge,omitempty"`
+	// Pricing configures model rates for the whole process — one section rather
+	// than a knob per plugin, so cost is consistent wherever it is reported.
+	//
+	// Absent means the bundled price table alone, which is deliberate: covering
+	// internal usage with no manual setup is the point. Set `pricing.bundled:
+	// false` to price only what you configure. See authlib/pricing.
+	Pricing *pricing.Config `yaml:"pricing,omitempty" json:"pricing,omitempty"`
 }
 
 // TLSBridgeConfig configures the outbound TLS bridge (TLS termination of

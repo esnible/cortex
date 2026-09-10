@@ -4,12 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"math"
 	"strings"
 	"sync"
 	"testing"
 
 	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
+	"github.com/rossoctl/cortex/authbridge/authlib/pricing"
 )
 
 // anthropicBody is deliberately awkward: unsorted keys, odd indentation, a
@@ -371,46 +371,32 @@ func TestMetrics_AttributesSavingToTheRightTier(t *testing.T) {
 // TestPricing_DefaultsPriceKnownModelsWithoutConfig: the built-in table exists
 // so a dollar figure appears with no configuration at all — the difference
 // between a number an operator sees and one they never get around to enabling.
-func TestPricing_DefaultsPriceKnownModelsWithoutConfig(t *testing.T) {
-	p := configured(t, "NotebookEdit") // no pricing configured whatsoever
+func TestPricing_BundledRatesPriceKnownModels(t *testing.T) {
+	// The bundled table is what an operator gets with no `pricing:` section at
+	// all, since pricing.Build(nil) returns it and BuildWithDeps injects the
+	// result. Injecting it directly is the unit-test equivalent.
+	p := withRates(t, configured(t, "NotebookEdit"), pricing.Bundled()...)
 	pruneWithModel(t, p, "claude-opus-5")
 
 	m := findMetric(t, p.Metrics(), "$ saved")
 	if m.Value <= 0 {
-		t.Errorf("$ saved = %v, want a figure from the built-in rates", m.Value)
+		t.Errorf("$ saved = %v, want a figure from the bundled rates", m.Value)
 	}
-	// Provenance must travel with the number: built-in rates are
-	// gateway-specific and never refreshed, so this must not read as measured.
-	// The note must disclose three things: that the rates are built in, the
-	// DIRECTION of the error (they came from a discounted gateway, so anyone on
-	// vendor list is under-credited), and how to override. "default rates" alone
-	// reads as a rounding caveat rather than a several-fold one.
-	for _, want := range []string{"built-in rates", "understates", "pricing."} {
+	// Provenance must travel with the number, and the note must state the
+	// DIRECTION of the error, not merely that rates are built in — "built-in
+	// rates" alone reads as a rounding caveat rather than a systematic bias.
+	//
+	// That direction INVERTED with this migration, which is why the assertion
+	// changed rather than the wording being tidied. The three hand-measured family
+	// globs this replaced were taken from a discounted gateway, so they understated
+	// anyone paying vendor list. The bundled table IS vendor list, generated from
+	// LiteLLM's public map, so now it is the discounted-gateway deployment that is
+	// overstated. Same figure, opposite bias, and an operator reading the old note
+	// would correct in the wrong direction.
+	for _, want := range []string{"bundled", "overstated", "pricing.endpoints"} {
 		if !strings.Contains(m.Note, want) {
 			t.Errorf("note = %q, missing %q", m.Note, want)
 		}
-	}
-}
-
-// TestPricing_ConfigOverridesDefaults: an operator on a different gateway must
-// be able to correct a model without the built-in value leaking through, and the
-// note must stop claiming defaults were used.
-func TestPricing_ConfigOverridesDefaults(t *testing.T) {
-	base := configured(t, "NotebookEdit")
-	pruneWithModel(t, base, "claude-opus-5")
-	fromDefault := findMetric(t, base.Metrics(), "$ saved").Value
-
-	// Ten times the built-in input rate.
-	over := configuredJSON(t, `{"remove":["NotebookEdit"],
-	  "pricing":{"claude-opus-5":{"input_cost_per_token":3.8e-05,"cache_write_cost_per_token":4.75e-05}}}`)
-	pruneWithModel(t, over, "claude-opus-5")
-	m := findMetric(t, over.Metrics(), "$ saved")
-
-	if ratio := m.Value / fromDefault; ratio < 9.5 || ratio > 10.5 {
-		t.Errorf("configured/default cost ratio = %.2f, want ~10 — config must win outright", ratio)
-	}
-	if strings.Contains(m.Note, "default rates") {
-		t.Errorf("note = %q, must not claim defaults when the operator configured the model", m.Note)
 	}
 }
 
@@ -438,15 +424,9 @@ func TestPricing_UnknownModelStillUnpriced(t *testing.T) {
 // be wrong by that factor.
 func TestMetrics_TierRatesDifferBy12x(t *testing.T) {
 	cfg := func(t *testing.T) *ToolPrune {
-		p := New()
-		raw := []byte(`{"remove":["NotebookEdit"],` +
-			`"input_cost_per_token":1e-05,` +
-			`"cache_write_cost_per_token":1.25e-05,` + // 1.25x input
-			`"cache_read_cost_per_token":1e-06}`) // 0.1x input
-		if err := p.Configure(raw); err != nil {
-			t.Fatal(err)
-		}
-		return p
+		// 1.25x input for a write, 0.1x for a read — Anthropic's published ratios.
+		return withRates(t, configured(t, "NotebookEdit"),
+			anyEndpoint("*", tierRates(1e-05, 1.25e-05, 1e-06)))
 	}
 
 	write := cfg(t)
@@ -678,6 +658,41 @@ func TestPrune_PathMismatchRecordsThePath(t *testing.T) {
 }
 
 // configuredJSON builds a plugin from raw config JSON.
+// withRates injects a rate table into p, standing in for what
+// plugins.BuildWithDeps does in production. Rates reach the plugin by injection
+// now, not through its own config, so every pricing test builds a table.
+func withRates(t *testing.T, p *ToolPrune, entries ...pricing.Entry) *ToolPrune {
+	t.Helper()
+	tab, err := pricing.NewTable(entries)
+	if err != nil {
+		t.Fatalf("pricing.NewTable: %v", err)
+	}
+	p.SetPricingResolver(pricing.NewRegistry(tab))
+	return p
+}
+
+// tierRates builds prompt-tier rates from per-token values. Zero means "no rate
+// for this tier", which is not the same as a rate of zero — see pricing.Cost.
+func tierRates(input, cacheWrite, cacheRead float64) pricing.Rates {
+	var r pricing.Rates
+	for tier, v := range map[pricing.Tier]float64{
+		pricing.TierInput:      input,
+		pricing.TierCacheWrite: cacheWrite,
+		pricing.TierCacheRead:  cacheRead,
+	} {
+		if v > 0 {
+			r.Base[tier], r.Set[tier] = v, true
+		}
+	}
+	return r
+}
+
+// anyEndpoint scopes an entry to every endpoint, which is what these tests want:
+// the subject is model rates, not endpoint scoping (covered in authlib/pricing).
+func anyEndpoint(model string, r pricing.Rates) pricing.Entry {
+	return pricing.Entry{Host: "*", Model: model, Rates: r, Prov: pricing.ProvConfigured}
+}
+
 func configuredJSON(t *testing.T, raw string) *ToolPrune {
 	t.Helper()
 	p := New()
@@ -698,10 +713,16 @@ func pruneWithModel(t *testing.T, p *ToolPrune, model string) {
 	p.OnFinish(context.Background(), pctx)
 }
 
-const perModelCfg = `{"remove":["NotebookEdit"],"pricing":{
-  "claude-opus-5":       {"input_cost_per_token":1e-05,"cache_write_cost_per_token":1.25e-05,"cache_read_cost_per_token":1e-06},
-  "aws/claude-sonnet-5": {"input_cost_per_token":4e-06,"cache_write_cost_per_token":5e-06,"cache_read_cost_per_token":4e-07},
-  "aws/claude-haiku-4-5":{"input_cost_per_token":2e-06,"cache_write_cost_per_token":2.5e-06,"cache_read_cost_per_token":2e-07}}}`
+// perModelRates reproduces the Claude family's rate ratios exactly — opus 1.0x,
+// sonnet ~0.4x, haiku ~0.2x — with synthetic values, so the assertions below are
+// about the plugin honouring per-model rates rather than about any real price.
+func perModelRates() []pricing.Entry {
+	return []pricing.Entry{
+		anyEndpoint("claude-opus-5", tierRates(1e-05, 1.25e-05, 1e-06)),
+		anyEndpoint("aws/claude-sonnet-5", tierRates(4e-06, 5e-06, 4e-07)),
+		anyEndpoint("aws/claude-haiku-4-5", tierRates(2e-06, 2.5e-06, 2e-07)),
+	}
+}
 
 // TestPricing_PerModelRatesDiffer is why pricing is keyed by model. Across the
 // Claude family the input rate spans roughly 5x (opus 1.0x, sonnet ~0.4x, haiku
@@ -711,7 +732,7 @@ const perModelCfg = `{"remove":["NotebookEdit"],"pricing":{
 func TestPricing_PerModelRatesDiffer(t *testing.T) {
 	usd := map[string]float64{}
 	for _, model := range []string{"claude-opus-5", "aws/claude-sonnet-5", "aws/claude-haiku-4-5"} {
-		p := configuredJSON(t, perModelCfg)
+		p := withRates(t, configured(t, "NotebookEdit"), perModelRates()...)
 		pruneWithModel(t, p, model)
 		usd[model] = findMetric(t, p.Metrics(), "$ saved").Value
 		if usd[model] <= 0 {
@@ -730,7 +751,7 @@ func TestPricing_PerModelRatesDiffer(t *testing.T) {
 // TestPricing_UnknownModelIsCountedNotGuessed: charging an unpriced model at
 // another model's rate would be wrong by up to 5x, so it is reported as a gap.
 func TestPricing_UnknownModelIsCountedNotGuessed(t *testing.T) {
-	p := configuredJSON(t, perModelCfg)
+	p := withRates(t, configured(t, "NotebookEdit"), perModelRates()...)
 	pruneWithModel(t, p, "gcp/gemini-3-pro-preview")
 
 	ms := p.Metrics()
@@ -749,32 +770,6 @@ func TestPricing_UnknownModelIsCountedNotGuessed(t *testing.T) {
 		if m.Name == "$ saved" && m.Value != 0 {
 			t.Errorf("$ saved = %v for an unpriced model, want no charge", m.Value)
 		}
-	}
-}
-
-// TestPricing_FlatRatesActAsFallback keeps the simpler single-model config
-// working: a model absent from the table is priced at the flat rates when set.
-func TestPricing_FlatRatesActAsFallback(t *testing.T) {
-	p := configuredJSON(t, `{"remove":["NotebookEdit"],"input_cost_per_token":1e-05,
-	  "pricing":{"aws/claude-haiku-4-5":{"input_cost_per_token":2e-06}}}`)
-	pruneWithModel(t, p, "some-other-model")
-	if findMetric(t, p.Metrics(), "$ saved").Value <= 0 {
-		t.Error("a model absent from pricing should fall back to the flat rates")
-	}
-	for _, m := range p.Metrics() {
-		if m.Name == "requests unpriced" {
-			t.Error("should not be counted unpriced when a fallback rate exists")
-		}
-	}
-}
-
-// TestPricing_ModelMatchIsCaseInsensitive: gateways vary in how they echo model
-// names, and a case mismatch would silently unprice the traffic.
-func TestPricing_ModelMatchIsCaseInsensitive(t *testing.T) {
-	p := configuredJSON(t, `{"remove":["NotebookEdit"],"pricing":{"Claude-Opus-5":{"input_cost_per_token":1e-05}}}`)
-	pruneWithModel(t, p, "claude-opus-5")
-	if findMetric(t, p.Metrics(), "$ saved").Value <= 0 {
-		t.Error("model lookup should be case-insensitive")
 	}
 }
 
@@ -855,53 +850,6 @@ func TestPrune_OpenAIDialectAllRemoved(t *testing.T) {
 	var any map[string]any
 	if err := json.Unmarshal(pctx.Body, &any); err != nil {
 		t.Errorf("result is not valid JSON: %v", err)
-	}
-}
-
-// TestPricing_PartialModelConfigIsUnpriced: set() ORs the three rate fields, so a
-// model configured with only a cache-read rate used to resolve as "priced" and
-// then return 0 for a cache-write request — charging zero into the total while
-// counting toward the priced denominator, so the saving vanished with no
-// `requests unpriced` row to show it had.
-func TestPricing_PartialModelConfigIsUnpriced(t *testing.T) {
-	p := configuredJSON(t, `{"remove":["NotebookEdit"],
-	  "pricing":{"some-model":{"cache_read_cost_per_token":1e-06}}}`)
-	pruneWithModel(t, p, "some-model") // pruneWithModel finishes as a cache WRITE
-
-	gap := findMetric(t, p.Metrics(), "requests unpriced")
-	if gap.Value != 1 {
-		t.Errorf("requests unpriced = %v, want 1 — no cache-write rate is configured", gap.Value)
-	}
-	for _, m := range p.Metrics() {
-		if m.Name == "$ saved" {
-			t.Errorf("$ saved = %v, want no row rather than a zero charged into the total", m.Value)
-		}
-	}
-}
-
-// TestPricing_BuiltInTableBeatsFlatFallback: the flat fields are documented as
-// covering "models absent from pricing", and a model in the built-in table is not
-// absent. Letting one flat input rate shadow every per-model default would
-// reintroduce the flat-rate mispricing the table exists to avoid — and silently,
-// since the figure would then claim to be operator-configured.
-func TestPricing_BuiltInTableBeatsFlatFallback(t *testing.T) {
-	p := configuredJSON(t, `{"remove":["NotebookEdit"],"input_cost_per_token":9e-05}`)
-	rates, src := p.cfg.ratesFor("claude-opus-5")
-	if src != rateDefault {
-		t.Errorf("source = %v, want rateDefault for a model in the built-in table", src)
-	}
-	if rates.InputCostPerToken == 9e-05 {
-		t.Error("flat fallback shadowed the built-in per-model rate")
-	}
-	// A model in neither table still uses the flat fallback.
-	_, src2 := p.cfg.ratesFor("no-such-model")
-	if src2 != rateConfigured {
-		t.Errorf("source = %v, want rateConfigured via the flat fallback", src2)
-	}
-	// And the caveat is still attached, because defaults were used.
-	pruneWithModel(t, p, "claude-opus-5")
-	if m := findMetric(t, p.Metrics(), "$ saved"); !strings.Contains(m.Note, "built-in rates") {
-		t.Errorf("note = %q, want the built-in-rates caveat", m.Note)
 	}
 }
 
@@ -1000,7 +948,7 @@ func TestNoteDrift_EmptyFirstManifestDoesNotSpendTheOnce(t *testing.T) {
 // change, so the re-warm is invisible exactly when it is paid. A figure that does
 // not say it is gross reads as net.
 func TestMetrics_DollarRowsDiscloseTheyAreGross(t *testing.T) {
-	p := configured(t, "NotebookEdit")
+	p := withRates(t, configured(t, "NotebookEdit"), pricing.Bundled()...)
 	pruneWithModel(t, p, "claude-opus-5")
 	for _, name := range []string{"$ saved", "$ saved / request"} {
 		m := findMetric(t, p.Metrics(), name)
@@ -1010,303 +958,27 @@ func TestMetrics_DollarRowsDiscloseTheyAreGross(t *testing.T) {
 	}
 }
 
-// TestPricingPatternsCoverRealModels pins the pattern keys against the actual
-// model list the rossoctl LiteLLM gateway serves, including provider prefixes
-// and dated suffixes. The point of this test is the regression it prevents: a
-// provider version bump must not silently drop a family to unpriced.
-func TestPricingPatternsCoverRealModels(t *testing.T) {
-	cases := []struct {
-		model string
-		want  float64 // input rate
-	}{
-		// opus family, across versions and prefixes
-		{"claude-opus-5", 0.0000038},
-		{"claude-opus-4-8", 0.0000038},
-		{"claude-opus-4-7", 0.0000038},
-		{"claude-opus-4-6", 0.0000038},
-		{"aws/claude-opus-5", 0.0000038},
-		{"aws/claude-opus-4-7", 0.0000038},
-		// a version that does not exist yet must still price
-		{"claude-opus-9", 0.0000038},
-		{"claude-opus-5-20260901", 0.0000038},
-		// sonnet
-		{"claude-sonnet-5", 0.00000152},
-		{"claude-sonnet-4-6", 0.00000152},
-		{"aws/claude-sonnet-4-5", 0.00000152},
-		{"claude-sonnet-4-5-20250929", 0.00000152},
-		// haiku
-		{"claude-haiku-4-5", 0.00000076},
-		{"aws/claude-haiku-4-5", 0.00000076},
-		{"claude-haiku-4-5-20251001", 0.00000076},
-	}
-	c := &config{}
-	c.applyDefaults()
-	for _, tc := range cases {
-		rates, src := c.ratesFor(tc.model)
-		if src != rateDefault {
-			t.Errorf("%s: source = %v, want rateDefault", tc.model, src)
-			continue
-		}
-		if rates.InputCostPerToken != tc.want {
-			t.Errorf("%s: input rate = %g, want %g", tc.model, rates.InputCostPerToken, tc.want)
-		}
-	}
-	// A non-Claude model has no built-in rate and must report so rather than
-	// borrowing a Claude family's numbers.
-	if _, src := c.ratesFor("gpt-4o"); src != rateNone {
-		t.Errorf("gpt-4o: source = %v, want rateNone", src)
-	}
-}
+// TestMetrics_RecoveredPanicIsVisible: fail-open means a panicking plugin looks
+// healthy while doing nothing. The pricing migration introduced a nil-interface
+// panic on the request path, and this blind spot is why it presented as "pruning
+// stopped working" rather than as a crash.
+func TestMetrics_RecoveredPanicIsVisible(t *testing.T) {
+	p := configured(t, "NotebookEdit")
+	p.m.recoveredPanic()
 
-// TestPricingPatternPrecedence covers the resolution order that lets an operator
-// pin one version without giving up family coverage.
-func TestPricingPatternPrecedence(t *testing.T) {
-	c := &config{Pricing: map[string]modelRates{
-		// exact key: must win over both globs below
-		"claude-opus-5": {InputCostPerToken: 1},
-		// broad glob
-		"*claude-opus-*": {InputCostPerToken: 2},
-		// narrower glob: longer pattern wins among globs
-		"*claude-opus-4-8*": {InputCostPerToken: 3},
-	}}
-	c.applyDefaults()
-	if c.pricingErr != nil {
-		t.Fatalf("compile: %v", c.pricingErr)
+	// Reported even though no request was ever seen — a panic on the FIRST request
+	// leaves requestsSeen at zero, which is exactly when the row matters most.
+	m := findMetric(t, p.Metrics(), "panics recovered")
+	if m.Value != 1 {
+		t.Errorf("panics recovered = %v, want 1", m.Value)
 	}
-	for _, tc := range []struct {
-		model string
-		want  float64
-		src   rateSource
-	}{
-		{"claude-opus-5", 1, rateConfigured},   // exact beats glob
-		{"claude-opus-4-8", 3, rateConfigured}, // longest glob wins
-		{"claude-opus-4-6", 2, rateConfigured}, // broad glob
-		// built-in pattern still covers a family the operator said nothing about
-		{"claude-haiku-4-5", 0.00000076, rateDefault},
-	} {
-		rates, src := c.ratesFor(tc.model)
-		if src != tc.src || rates.InputCostPerToken != tc.want {
-			t.Errorf("%s: got (%g, %v), want (%g, %v)",
-				tc.model, rates.InputCostPerToken, src, tc.want, tc.src)
-		}
+	if !strings.Contains(m.Note, "SKIPPED") {
+		t.Errorf("note = %q, want it to say pruning was skipped", m.Note)
 	}
-}
 
-// TestPricingPatternMatchesCase guards the lowercasing on both sides: config
-// keys and the model name off the wire.
-func TestPricingPatternMatchesCase(t *testing.T) {
-	c := &config{Pricing: map[string]modelRates{
-		"*CLAUDE-OPUS-*": {InputCostPerToken: 7},
-	}}
-	c.applyDefaults()
-	rates, src := c.ratesFor("AWS/Claude-Opus-5")
-	if src != rateConfigured || rates.InputCostPerToken != 7 {
-		t.Errorf("got (%g, %v), want (7, configured)", rates.InputCostPerToken, src)
-	}
-}
-
-// TestPricingBadPatternRejected: a malformed glob must fail Configure loudly,
-// not degrade to unpriced with no explanation.
-func TestPricingBadPatternRejected(t *testing.T) {
-	c := &config{Pricing: map[string]modelRates{
-		"*claude-[opus": {InputCostPerToken: 1},
-	}}
-	c.applyDefaults()
-	if c.pricingErr == nil {
-		t.Fatal("want a compile error for an unterminated character class")
-	}
-}
-
-// TestPricingPerMillionUnits is the natural-units path: an operator copies
-// "$3.80 / Mtok" off a price list and the plugin prices with it, no hand
-// division. Values are compared against the per-token equivalent to prove the
-// conversion, not merely that something non-zero landed.
-func TestPricingPerMillionUnits(t *testing.T) {
-	c := &config{Pricing: map[string]modelRates{
-		"my-model": {
-			InputCostPerMillion:      3.80,
-			CacheWriteCostPerMillion: 4.75,
-			CacheReadCostPerMillion:  0.38,
-		},
-	}}
-	c.applyDefaults()
-	if c.pricingErr != nil {
-		t.Fatalf("unexpected error: %v", c.pricingErr)
-	}
-	rates, src := c.ratesFor("my-model")
-	if src != rateConfigured {
-		t.Fatalf("source = %v, want rateConfigured", src)
-	}
-	// Compared with a tolerance, not for equality: a config value divides at
-	// runtime, so 3.80/1e6 lands one ulp below the 3.8e-06 literal. That is a
-	// 1e-16 relative difference on a dollar figure — not a property worth
-	// pinning, and pinning it would only invite a fragile test.
-	for _, tc := range []struct {
-		tier tier
-		want float64
-	}{
-		{tierInput, 0.0000038},
-		{tierCacheWrite, 0.00000475},
-		{tierCacheRead, 0.00000038},
-	} {
-		got, ok := rates.rateFor(tc.tier)
-		if !ok || math.Abs(got-tc.want) > tc.want*1e-12 {
-			t.Errorf("tier %v: got (%g, %v), want (~%g, true)", tc.tier, got, ok, tc.want)
-		}
-	}
-}
-
-// TestPricingPerMillionGlobAndFlat covers the two other places a rate can be
-// stated, so per-million isn't quietly honoured in only one of the three.
-func TestPricingPerMillionGlobAndFlat(t *testing.T) {
-	c := &config{
-		Pricing: map[string]modelRates{
-			"*my-family-*": {InputCostPerMillion: 2.0},
-		},
-		InputCostPerMillion: 9.0,
-	}
-	c.applyDefaults()
-	if c.pricingErr != nil {
-		t.Fatalf("unexpected error: %v", c.pricingErr)
-	}
-	if r, src := c.ratesFor("my-family-7"); src != rateConfigured || r.InputCostPerToken != 2.0/1e6 {
-		t.Errorf("glob: got (%g, %v), want (%g, configured)", r.InputCostPerToken, src, 2.0/1e6)
-	}
-	// A model no pattern claims falls to the flat rate, also stated per-million.
-	if r, src := c.ratesFor("totally-unknown"); src != rateConfigured || r.InputCostPerToken != 9.0/1e6 {
-		t.Errorf("flat: got (%g, %v), want (%g, configured)", r.InputCostPerToken, src, 9.0/1e6)
-	}
-}
-
-// TestPricingUnitConflictRejected is the important one. The two units differ by
-// 10^6, so silently preferring either would misprice by a millionfold with
-// nothing in the readout to show which was honoured.
-func TestPricingUnitConflictRejected(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		r    modelRates
-		want string
-	}{
-		{"input", modelRates{InputCostPerMillion: 3.8, InputCostPerToken: 0.0000038}, "input"},
-		{"cache_write", modelRates{CacheWriteCostPerMillion: 4.75, CacheWriteCostPerToken: 0.00000475}, "cache_write"},
-		{"cache_read", modelRates{CacheReadCostPerMillion: 0.38, CacheReadCostPerToken: 0.00000038}, "cache_read"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			c := &config{Pricing: map[string]modelRates{"m": tc.r}}
-			c.applyDefaults()
-			if c.pricingErr == nil {
-				t.Fatal("want an error when both units are set for one tier")
-			}
-			// The message must name the tier, or an operator with three tiers
-			// configured has to bisect to find the one at fault.
-			if !strings.Contains(c.pricingErr.Error(), tc.want) {
-				t.Errorf("error %q does not name tier %q", c.pricingErr, tc.want)
-			}
-		})
-	}
-	// Same rule on the flat fallback.
-	c := &config{InputCostPerMillion: 3.8, InputCostPerToken: 0.0000038}
-	c.applyDefaults()
-	if c.pricingErr == nil {
-		t.Fatal("flat fallback: want an error when both units are set")
-	}
-}
-
-// TestPricingMixedUnitsAcrossTiersAllowed: stating different tiers in different
-// units is odd but unambiguous, so it must not be rejected — the rule is about
-// one tier stated twice, not about tidiness.
-func TestPricingMixedUnitsAcrossTiersAllowed(t *testing.T) {
-	c := &config{Pricing: map[string]modelRates{
-		"m": {InputCostPerMillion: 3.80, CacheReadCostPerToken: 0.00000038},
-	}}
-	c.applyDefaults()
-	if c.pricingErr != nil {
-		t.Fatalf("unexpected error: %v", c.pricingErr)
-	}
-	r, _ := c.ratesFor("m")
-	// per-million tier: runtime division, so tolerance (see TestPricingPerMillionUnits).
-	if got, _ := r.rateFor(tierInput); math.Abs(got-0.0000038) > 1e-18 {
-		t.Errorf("input = %g, want ~0.0000038", got)
-	}
-	// per-token tier: stored verbatim, so exact.
-	if got, _ := r.rateFor(tierCacheRead); got != 0.00000038 {
-		t.Errorf("cache read = %g, want 0.00000038", got)
-	}
-}
-
-// TestPricingConfigureRejectsUnitConflict proves the fault reaches Configure
-// rather than stopping at applyDefaults, since that is what actually fails boot.
-func TestPricingConfigureRejectsUnitConflict(t *testing.T) {
-	p := New()
-	err := p.Configure([]byte(`{"pricing":{"m":{"input_cost_per_million":3.8,"input_cost_per_token":0.0000038}}}`))
-	if err == nil {
-		t.Fatal("Configure accepted a both-units entry")
-	}
-	if !strings.Contains(err.Error(), "input") {
-		t.Errorf("error %q does not name the tier", err)
-	}
-}
-
-// TestPricingPerMillionJSONDecodes guards the wire names an operator types.
-func TestPricingPerMillionJSONDecodes(t *testing.T) {
-	p := New()
-	if err := p.Configure([]byte(`{
-		"remove": ["X"],
-		"pricing": {"*claude-opus-*": {
-			"input_cost_per_million": 3.80,
-			"cache_write_cost_per_million": 4.75,
-			"cache_read_cost_per_million": 0.38
-		}},
-		"input_cost_per_million": 1.0
-	}`)); err != nil {
-		t.Fatalf("Configure: %v", err)
-	}
-	r, src := p.cfg.ratesFor("claude-opus-5")
-	if src != rateConfigured || math.Abs(r.InputCostPerToken-0.0000038) > 1e-18 {
-		t.Errorf("got (%g, %v), want (~0.0000038, configured)", r.InputCostPerToken, src)
-	}
-}
-
-// TestBuiltinRatesMatchDocumentedPerMillion pins the built-in table against the
-// exact per-Mtok figures the docs publish.
-//
-// Each expectation is written as a CONSTANT expression ($3.80 / tokensPerMillion),
-// which the compiler folds exactly — the same way pricing.go does. So this fails
-// both if a documented figure and the table drift apart, and if anyone converts
-// the table with a runtime division instead, which lands a ulp low.
-//
-// It deliberately does not assert rate*1e6 == 3.80: multiplying back is a second
-// rounding that isn't exact for every value (0.076 round-trips to
-// 0.07600000000000001), which would make the test fail for a reason that has
-// nothing to do with the table being right.
-func TestBuiltinRatesMatchDocumentedPerMillion(t *testing.T) {
-	c := &config{}
-	c.applyDefaults()
-	for _, tc := range []struct {
-		model                     string
-		input, cacheWr, cacheRead float64
-	}{
-		{"claude-opus-5", 3.80 / tokensPerMillion, 4.75 / tokensPerMillion, 0.38 / tokensPerMillion},
-		{"claude-sonnet-5", 1.52 / tokensPerMillion, 1.90 / tokensPerMillion, 0.152 / tokensPerMillion},
-		{"claude-haiku-4-5", 0.76 / tokensPerMillion, 0.95 / tokensPerMillion, 0.076 / tokensPerMillion},
-	} {
-		r, src := c.ratesFor(tc.model)
-		if src != rateDefault {
-			t.Errorf("%s: src = %v, want rateDefault", tc.model, src)
-			continue
-		}
-		for _, f := range []struct {
-			name      string
-			got, want float64
-		}{
-			{"input", r.InputCostPerToken, tc.input},
-			{"cache write", r.CacheWriteCostPerToken, tc.cacheWr},
-			{"cache read", r.CacheReadCostPerToken, tc.cacheRead},
-		} {
-			if f.got != f.want {
-				t.Errorf("%s %s: %v, want exactly %v ($%v/Mtok)",
-					tc.model, f.name, f.got, f.want, f.want*tokensPerMillion)
-			}
-		}
+	// And it survives alongside real traffic.
+	pruneWithModel(t, withRates(t, p, pricing.Bundled()...), "claude-opus-5")
+	if m := findMetric(t, p.Metrics(), "panics recovered"); m.Value != 1 {
+		t.Errorf("panics recovered = %v after traffic, want 1", m.Value)
 	}
 }

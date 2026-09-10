@@ -170,128 +170,75 @@ gross figure converges on the net one, because the re-warm is paid once.
 
 ### Costing it
 
-**Dollars work out of the box.** The plugin ships a rate table measured from the
-rossoctl LiteLLM gateway, so `$ saved` appears with no configuration:
+**Dollars work out of the box**, but rates are **not** a tool-prune option any
+more. They live in the top-level `pricing:` section (see `plugin-catalog.md`),
+resolved by `authlib/pricing`, so `$ saved` here, `/v1/usage` and `abctl` all price
+the same request identically. The 12 rate knobs and the built-in family table that
+used to live on this plugin are gone.
 
-| pattern | input | cache write (1.25x) | cache read (0.10x) |
+The shipped table is now **generated** from LiteLLM's public price map with exact
+per-version rows, which fixes a real error: three hand-measured family globs priced
+every opus version alike, so `claude-opus-4-1` ($15/Mtok list) and `claude-opus-5`
+($5/Mtok) were charged the same — 3x wrong on the older model. Family globs remain
+as a backstop, carrying the newest member's rates, so a version released after the
+table was generated still prices instead of dropping out of the total; an exact row
+always wins over its family.
+
+**Figures move, and by different factors per model — not by one uniform ratio.**
+
+The old table had only family globs, so every opus version was charged one rate. The
+new table has exact per-version rows that outrank globs, so the change depends on
+which version served the request. Input rate, old glob vs new exact row:
+
+| model | old (family glob) | new (exact row) | factor |
 |---|---|---|---|
-| `*claude-opus-*` | $3.80/Mtok | $4.75/Mtok | $0.38/Mtok |
-| `*claude-sonnet-*` | $1.52/Mtok | $1.90/Mtok | $0.152/Mtok |
-| `*claude-haiku-*` | $0.76/Mtok | $0.95/Mtok | $0.076/Mtok |
+| `claude-opus-4-1` | 3.80 | 15.00 | **3.95x** |
+| `claude-opus-5` | 3.80 | 5.00 | 1.32x |
+| `claude-sonnet-4-5` | 1.52 | 3.00 | 1.97x |
+| `claude-sonnet-5` | 1.52 | 2.00 | 1.32x |
+| `claude-haiku-4-5` | 0.76 | 1.00 | 1.32x |
+| `claude-3-haiku-20240307` | *unpriced* | 0.25 | newly priced |
 
-Rates are keyed **per model** because they differ far more than the tiers do —
-5x across this family — so a single flat rate would misprice the saving by that
-factor depending on which model served the request. Each request is priced at its
-own model's rate and the dollars accumulated, never a blended token total
-multiplied by one number.
+So there is no single factor. Older, more expensive versions rise sharply; only the
+newest member of each family lands on the 1.32x glob-to-glob ratio, because that is
+the rate its family glob now carries.
 
-Keys are **globs, and the built-ins are keyed by family rather than by version**,
-which is what stops a model rename from becoming a code change. Model names churn
-— opus 4.6, 4.7, 4.8, 5 — and a table of exact versions would go stale on every
-release and need a rebuild to fix, which is not something an operator can be
-asked to do. One pattern per family absorbs the churn and also covers provider
-prefixes (`aws/claude-opus-5`) and dated suffixes
-(`claude-haiku-4-5-20251001`) without separate entries.
+`claude-3-haiku-20240307` is a different case again, and worth stating precisely: the
+old `*claude-haiku-*` glob could not match a version-FIRST name at all, so that model
+was **unpriced** before this change rather than priced at 0.76. It is newly priced,
+not repriced downward — an earlier draft of this table showed it as a 0.33x decrease,
+which was wrong.
 
-The tradeoff, stated plainly: this assumes a family bills at one rate. That has
-held across the Claude versions measured. If a future version differs, pin it —
-an exact key always beats a pattern, so `claude-opus-6:` overrides
-`*claude-opus-*` for that one model and leaves the family default doing its job
-for the rest.
+The systematic part is what remains true: the old rates were measured on a discounted
+gateway and the new ones are vendor list, so a deployment on such a gateway is now
+overstated and should pin its endpoint.
 
-Any figure derived from these carries `default rates — set pricing.<model> to use
-yours` in its note, because they are a starting point rather than a fact about
-your account: they are specific to that gateway (which bills below vendor list),
-and nothing refreshes them when they change. A model in neither the table nor
-your config is reported in a `requests unpriced` row rather than charged at
-another model's rate.
-
-To use your own, add a `pricing` entry — it overrides the built-in value for that
-model outright:
+Pin your endpoint to correct it — a host-scoped entry outranks anything bundled:
 
 ```yaml
-- name: tool-prune
-  config:
-    remove: [CronCreate, NotebookEdit]
-    pricing:
-      "*claude-opus-*":
-        input_cost_per_million: 3.80
-        cache_write_cost_per_million: 4.75
-        cache_read_cost_per_million: 0.38
-    # optional flat fallback for models absent from the table above
-    input_cost_per_million: 3.80
+pricing:
+  endpoints:
+    - hosts: ["gw.internal"]
+      models:
+        "*claude-opus-*":
+          input_cost_per_million: 3.80
+          cache_write_cost_per_million: 4.75
+          cache_read_cost_per_million: 0.38
 ```
 
-**Rates are stated per million tokens**, because that is the unit every provider
-publishes and the one you already have in hand — `3.80`, copied straight off a
-price list, rather than `0.0000038` arrived at by dividing in your head. That
-difference is not just ergonomics: `0.0000038` is six leading zeros, and
-`0.000038` is a plausible-looking typo that misprices by 10x with nothing in the
-readout to reveal it.
+The `$ saved` note names its provenance and the direction of the bias, so a figure
+cannot be quietly misread as measured on your own account.
 
-The per-token field names are still accepted (`input_cost_per_token`, …), for
-parity with [`litellm-budget-track`](./litellm-budgettrack-plugin.md) and because
-LiteLLM's own `model_prices_and_context_window.json` is per-token, so rates get
-copied out of it verbatim. Different tiers may use different units.
+Rates are still resolved **per model**, because they differ far more than the tiers
+do — 5x across this family — so one flat rate would misprice by that factor
+depending on which model served the request. They are now scoped **per endpoint**
+as well, which a per-plugin table could not express: the same model bills
+differently on a discounted gateway than on the vendor endpoint, and only the
+request's target host tells them apart.
 
-**Setting both units for the same tier is a startup error**, not a precedence
-question. The two differ by 10<sup>6</sup>: silently honouring one would either
-overstate a saving a millionfold or bury it under rounding, and the readout gives
-you no way to tell which happened. The error names the offending entry and tier.
-
-Model keys match what the parser records (`Extensions.Inference.Model`) and are
-matched case-insensitively, since gateways vary in how they echo the name and a
-case mismatch would silently unprice the traffic.
-
-Config keys may be globs too (`*`, `?`, `[...]` — `gobwas/glob` with no separator,
-so `*` spans the `-` and `/` in a model name). Resolution is deliberately ordered
-so the more specific statement wins:
-
-1. exact key in your `pricing`
-2. glob in your `pricing` — **longest pattern first**, so `*claude-opus-4-8*`
-   beats `*claude-opus-*` deterministically rather than by map iteration luck
-3. built-in family pattern
-4. the flat `input_cost_per_million` fallback
-5. unpriced
-
-An invalid pattern fails startup with the offending key named, rather than
-silently dropping to unpriced — a typo'd glob and a genuinely unknown model
-should not look the same in the readout.
-
-A model with no entry and no fallback is **counted, not guessed**: the readout
-grows a `requests unpriced` row naming the models, so an incomplete table shows
-as a visible gap rather than a quietly understated total. Tokens are still
-reported for those requests — only the dollars are withheld.
-
-Field names within each entry match
-[`litellm-budget-track`](./plugin-catalog.md#litellm-budget-track). Cache rates
-fall back to that model's input rate, though on Anthropic-family models that
-fallback is poor — a real cache read is 0.1x input — so set them when known.
-There is deliberately no output rate: pruning only shrinks the prompt.
-
-**Deriving your own rates.** If your gateway reports cost on non-streaming
-responses (LiteLLM's `x-litellm-response-cost`), send two non-streaming requests
-of different prompt length and difference them: `rate = Δcost / Δinput_tokens`.
-Repeat with a `cache_control` block sent twice to get the write and read rates.
-This is exact and specific to your deployment. Do not assume list pricing: a
-shared or enterprise gateway commonly bills at negotiated rates well below it,
-and using list would overstate the saving by whatever that discount is.
-
-Why rates rather than the gateway's own number: LiteLLM reports
-`x-litellm-response-cost: 0` for **streaming** responses, because the total is
-not known when the headers are sent — and Claude Code streams every
-`/v1/messages`. So the authoritative per-request cost is unavailable for exactly
-the traffic this plugin prunes. `litellm-budget-track` hits the same wall and
-falls back to configured rates for streams.
-
-A saving is also a counterfactual — the cost of a request that was never sent —
-so even with a cost header it could only ever be priced from rates, not measured.
-
-Counters are in-memory and per-process, and reset on a config hot-reload as well
-as a restart — a reload rebuilds the plugin. That is the right trade for the
-single-laptop case this targets and what keeps the plugin free of a storage
-dependency; fleet aggregation belongs on the stats server later and would not
-change the plugin.
+A model with no rate for the tier a request actually used is counted in
+`requests unpriced` rather than charged zero. Pricing a carried tier at zero would
+hide the gap inside the priced denominator, which is how a saving silently vanishes.
 
 ## Where the list comes from
 

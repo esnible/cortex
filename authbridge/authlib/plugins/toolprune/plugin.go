@@ -30,7 +30,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"sort"
 	"strings"
 	"sync"
 
@@ -39,6 +38,7 @@ import (
 
 	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
 	"github.com/rossoctl/cortex/authbridge/authlib/plugins"
+	"github.com/rossoctl/cortex/authbridge/authlib/pricing"
 )
 
 // defaultPaths are the inference endpoints the plugin acts on, matched by
@@ -55,214 +55,20 @@ type config struct {
 	// suffix. Defaults to the three inference endpoints.
 	Paths []string `json:"paths" description:"Request paths to act on (exact or suffix match)."`
 
-	// Pricing gives per-token rates per model. Rates are per model because they
-	// differ enormously: across the Claude family the input rate spans roughly
-	// 5x (opus 1.0x, sonnet ~0.4x, haiku ~0.2x), so one flat rate misprices by
-	// that factor depending on which model served the request.
-	// Keys match the model name the parser records
-	// (pctx.Extensions.Inference.Model), matched case-insensitively.
-	Pricing map[string]modelRates `json:"pricing" description:"Rates keyed by model name or glob; prefer the per-million fields."`
-
-	// pricing is Pricing with keys lower-cased; built by applyDefaults.
-	pricing map[string]modelRates `json:"-"`
-	// pricingGlobs are the Pricing keys containing glob metacharacters,
-	// compiled in match order — the mechanism that makes a version bump need
-	// no edit anywhere.
-	pricingGlobs []patternRates `json:"-"`
-	// flat is the normalized flat fallback, so ratesFor doesn't rebuild it per
-	// request and the unit folding happens exactly once.
-	flat modelRates `json:"-"`
-	// pricingErr carries any pricing config fault — bad glob, or both units set
-	// for one tier — for Configure to reject. Faults are not dropped: an unpriced
-	// row from a typo and one from a genuinely unknown model must not look alike.
-	pricingErr error `json:"-"`
-
-	// The flat fields are the fallback for models absent from Pricing. Names and
-	// semantics match litellm-budget-track. All optional; with nothing set no
-	// cost is reported rather than a price being assumed.
+	// There is deliberately no pricing here any more.
 	//
-	// There is deliberately no output rate: pruning only ever shrinks the
-	// prompt, so attributing output cost to it would be false.
-	InputCostPerMillion      float64 `json:"input_cost_per_million" description:"Fallback USD per million uncached input tokens, for models absent from pricing."`
-	CacheWriteCostPerMillion float64 `json:"cache_write_cost_per_million" description:"Fallback USD per million cache-write tokens; defaults to input_cost_per_million."`
-	CacheReadCostPerMillion  float64 `json:"cache_read_cost_per_million" description:"Fallback USD per million cache-read tokens; defaults to input_cost_per_million."`
-
-	InputCostPerToken      float64 `json:"input_cost_per_token" description:"Fallback USD per uncached input token. Alternative to input_cost_per_million; set one, not both."`
-	CacheWriteCostPerToken float64 `json:"cache_write_cost_per_token" description:"Fallback USD per cache-write token; defaults to input rate."`
-	CacheReadCostPerToken  float64 `json:"cache_read_cost_per_token" description:"Fallback USD per cache-read token; defaults to input rate."`
-}
-
-// modelRates is one model's prompt-tier pricing. Cache rates fall back to the
-// input rate, matching litellm-budget-track — though on Anthropic-family models
-// that fallback is poor (a real cache read is 0.1x input), so set them when known.
-type modelRates struct {
-	// The per-million fields are the ones to reach for. Every provider publishes
-	// prices per million tokens ("$3.80 / Mtok"), so this is the unit an operator
-	// already has in hand — no dividing by a million by hand, and no
-	// 0.0000038-vs-0.000038 typo that misprices by 10x and looks plausible in
-	// either direction.
-	InputCostPerMillion      float64 `json:"input_cost_per_million" description:"USD per million uncached input tokens (the unit providers publish)."`
-	CacheWriteCostPerMillion float64 `json:"cache_write_cost_per_million" description:"USD per million cache-write tokens; defaults to input_cost_per_million."`
-	CacheReadCostPerMillion  float64 `json:"cache_read_cost_per_million" description:"USD per million cache-read tokens; defaults to input_cost_per_million."`
-
-	// The per-token fields remain accepted, for parity with
-	// litellm-budget-track's config and with LiteLLM's own
-	// model_prices_and_context_window.json — both are per-token, and rates get
-	// copied straight out of them. Setting both units for one tier is an error,
-	// not a precedence question: see normalize.
-	InputCostPerToken      float64 `json:"input_cost_per_token" description:"USD per uncached input token. Alternative to input_cost_per_million; set one, not both."`
-	CacheWriteCostPerToken float64 `json:"cache_write_cost_per_token" description:"USD per cache-write token; defaults to input rate."`
-	CacheReadCostPerToken  float64 `json:"cache_read_cost_per_token" description:"USD per cache-read token; defaults to input rate."`
-}
-
-// tokensPerMillion converts the published unit to the per-token one all the
-// downstream arithmetic uses.
-const tokensPerMillion = 1_000_000
-
-// normalize folds the per-million fields into the per-token ones, so everything
-// after Configure deals in a single unit.
-//
-// Setting both units for the same tier is rejected rather than resolved by
-// precedence. The two differ by 10^6, so picking a winner silently would either
-// overstate a saving by a millionfold or bury it below rounding — and the
-// readout gives an operator no way to tell which unit was honoured. A startup
-// error naming the tier is the only outcome that can't be misread.
-//
-// what names the entry being normalized, so the error can point at it —
-// `pricing["claude-opus-5"]` for a map entry, "config" for the flat fallback.
-func (r modelRates) normalize(what string) (modelRates, error) {
-	for _, f := range []struct {
-		name    string
-		million float64
-		token   *float64
-	}{
-		{"input", r.InputCostPerMillion, &r.InputCostPerToken},
-		{"cache_write", r.CacheWriteCostPerMillion, &r.CacheWriteCostPerToken},
-		{"cache_read", r.CacheReadCostPerMillion, &r.CacheReadCostPerToken},
-	} {
-		if f.million <= 0 {
-			continue
-		}
-		if *f.token > 0 {
-			return r, fmt.Errorf("%s: %s rate set as both %s_cost_per_million and %s_cost_per_token; set one",
-				what, f.name, f.name, f.name)
-		}
-		*f.token = f.million / tokensPerMillion
-	}
-	return r, nil
-}
-
-// rateFor returns the rate for a tier and whether one is actually available.
-//
-// The bool matters: set() is an OR across three fields, so a model configured
-// with only cache_read_cost_per_token used to resolve as "priced" and then
-// return 0 for a cache-write request — pricing it at zero while still counting
-// toward the priced denominator, so the saving silently vanished with no
-// `requests unpriced` row to show it had.
-func (r modelRates) rateFor(t tier) (float64, bool) {
-	switch t {
-	case tierCacheWrite:
-		if r.CacheWriteCostPerToken > 0 {
-			return r.CacheWriteCostPerToken, true
-		}
-	case tierCacheRead:
-		if r.CacheReadCostPerToken > 0 {
-			return r.CacheReadCostPerToken, true
-		}
-	}
-	return r.InputCostPerToken, r.InputCostPerToken > 0
-}
-
-func (r modelRates) set() bool {
-	return r.InputCostPerToken > 0 || r.CacheWriteCostPerToken > 0 || r.CacheReadCostPerToken > 0
-}
-
-// rateSource names where a request's rates came from, so a reported figure can
-// carry its own provenance instead of looking equally authoritative either way.
-type rateSource int
-
-const (
-	rateNone       rateSource = iota // no rates for this model
-	rateConfigured                   // operator-supplied, for this model or via the flat fallback
-	rateDefault                      // built-in table; see pricing.go
-)
-
-// ratesFor resolves rates for a model, most specific first: an explicit pricing
-// entry, then the flat fallback, then the built-in defaults. Explicit config
-// always wins so an operator on a different gateway can correct the defaults
-// per model without deleting anything.
-func (c *config) ratesFor(model string) (modelRates, rateSource) {
-	key := strings.ToLower(model)
-	// Exact config key first, so an operator can pin one version even when a
-	// broader pattern would also match it.
-	if r, ok := c.pricing[key]; ok && r.set() {
-		return r, rateConfigured
-	}
-	// Then a config glob. This is what lets a model version bump need no edit at
-	// all: one "*claude-opus-*" entry covers every opus release.
-	if r, ok := lookupPattern(c.pricingGlobs, key); ok {
-		return r, rateConfigured
-	}
-	// Then the built-in family patterns — before the flat fallback, because the
-	// flat fields are documented as covering models "absent from pricing", and a
-	// model the built-in table knows is not absent. Letting one flat rate shadow
-	// every family default would reintroduce flat-rate mispricing, silently, and
-	// the figure would claim to be operator-configured.
-	if r, ok := lookupPattern(defaultPatterns, key); ok {
-		return r, rateDefault
-	}
-	if c.flat.set() {
-		return c.flat, rateConfigured
-	}
-	return modelRates{}, rateNone
+	// Rates used to be 12 fields plus a per-model map on this struct, with a
+	// second copy of the same idea in litellm-budget-track. They now live in one
+	// top-level `pricing:` section resolved by authlib/pricing. An operator who
+	// had `pricing:` under this plugin moves it there and gains endpoint scoping,
+	// which a per-plugin table could not express: the applicable rate depends on
+	// which gateway served the request, not on which plugin is asking.
 }
 
 func (c *config) applyDefaults() {
 	if len(c.Paths) == 0 {
 		c.Paths = append([]string(nil), defaultPaths...)
 	}
-	// Fold model keys to lower case once, so lookup is case-insensitive
-	// without allocating per request. Gateways vary in how they echo model
-	// names, and a case mismatch would silently unprice the traffic.
-	c.pricing = make(map[string]modelRates, len(c.Pricing))
-	globs := map[string]modelRates{}
-	// Sorted so that when several entries are malformed the reported one is
-	// stable across restarts, instead of whichever map iteration reached first.
-	keys := make([]string, 0, len(c.Pricing))
-	for k := range c.Pricing {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	for _, k := range keys {
-		lk := strings.ToLower(k)
-		v, err := c.Pricing[k].normalize(fmt.Sprintf("pricing[%q]", k))
-		if err != nil && c.pricingErr == nil {
-			c.pricingErr = err
-		}
-		if strings.ContainsAny(lk, "*?[") {
-			globs[lk] = v
-			continue
-		}
-		c.pricing[lk] = v
-	}
-	flat, err := modelRates{
-		InputCostPerMillion:      c.InputCostPerMillion,
-		CacheWriteCostPerMillion: c.CacheWriteCostPerMillion,
-		CacheReadCostPerMillion:  c.CacheReadCostPerMillion,
-		InputCostPerToken:        c.InputCostPerToken,
-		CacheWriteCostPerToken:   c.CacheWriteCostPerToken,
-		CacheReadCostPerToken:    c.CacheReadCostPerToken,
-	}.normalize("config")
-	if err != nil && c.pricingErr == nil {
-		c.pricingErr = err
-	}
-	c.flat = flat
-
-	globsCompiled, err := compilePatterns(globs)
-	if err != nil && c.pricingErr == nil {
-		c.pricingErr = fmt.Errorf("invalid pricing pattern: %w", err)
-	}
-	c.pricingGlobs = globsCompiled
 }
 
 // ToolPrune is the plugin. Counters live in metrics, guarded by its own mutex;
@@ -271,6 +77,10 @@ type ToolPrune struct {
 	cfg    config
 	raw    json.RawMessage
 	remove map[string]struct{}
+
+	// rates is the process rate table, injected by plugins.BuildWithDeps before
+	// Configure runs. Read only through resolveRates, which guards it.
+	rates pricing.Resolver
 
 	m         metrics
 	driftOnce sync.Once
@@ -283,6 +93,28 @@ func New() *ToolPrune { return &ToolPrune{} }
 
 func init() {
 	plugins.RegisterPlugin("tool-prune", func() pipeline.Plugin { return New() })
+}
+
+// SetPricingResolver implements pricing.ResolverConsumer.
+func (p *ToolPrune) SetPricingResolver(r pricing.Resolver) { p.rates = r }
+
+// resolveRates is the only read of the rate table.
+//
+// The nil guard is load-bearing and easy to get wrong: the field is an INTERFACE,
+// so a plugin that was never injected holds a nil interface, and calling a method
+// on that panics. A nil *pricing.Registry would have been safe — its methods
+// tolerate a nil receiver — but the interface type is what lets a test substitute
+// a fixed table, so the guard lives here instead.
+//
+// This is not a theoretical hazard: without it, an un-injected plugin panicked on
+// the request path. The plugin's fail-open recovered and forwarded the original
+// body, so pruning silently stopped working rather than crashing — which is the
+// worse failure, because nothing surfaced it.
+func (p *ToolPrune) resolveRates(host, model string, promptTotal int) (pricing.Rates, pricing.Provenance) {
+	if p.rates == nil {
+		return pricing.Rates{}, pricing.ProvNone
+	}
+	return p.rates.Resolve(host, model, promptTotal)
 }
 
 func (p *ToolPrune) Name() string { return "tool-prune" }
@@ -316,10 +148,6 @@ func (p *ToolPrune) Configure(raw json.RawMessage) error {
 		}
 	}
 	c.applyDefaults()
-	if c.pricingErr != nil {
-		return fmt.Errorf("tool-prune config: %w", c.pricingErr)
-	}
-
 	p.cfg = c
 	p.raw = raw
 	p.remove = make(map[string]struct{}, len(c.Remove))
@@ -418,6 +246,10 @@ func (p *ToolPrune) OnRequest(_ context.Context, pctx *pipeline.Context) (action
 	// A panic here would fail a request to save tokens. Never worth it.
 	defer func() {
 		if r := recover(); r != nil {
+			// Counted, not just logged. Fail-open means a panicking plugin looks
+			// healthy while doing nothing, and a log line scrolls away — the metric
+			// is what an operator actually sees. See metrics.recovered.
+			p.m.recoveredPanic()
 			slog.Warn("tool-prune: recovered, forwarding original body", "panic", r)
 			action = pipeline.Action{Type: pipeline.Continue}
 		}
@@ -625,16 +457,21 @@ func (p *ToolPrune) OnRequest(_ context.Context, pctx *pipeline.Context) (action
 	// rates resolve here. The consumer pairs this with the response event
 	// (matching on RequestID) to get the prompt token total and which tier the
 	// saving came out of, and finishes the arithmetic.
-	rates, src := p.cfg.ratesFor(inferenceModel(pctx))
-	rateInput, _ := rates.rateFor(tierInput)
-	rateWrite, okW := rates.rateFor(tierCacheWrite)
-	rateRead, okR := rates.rateFor(tierCacheRead)
-	if !okW {
-		rateWrite = 0
-	}
-	if !okR {
-		rateRead = 0
-	}
+	// Rates come from the process table, scoped to the endpoint this request is
+	// headed for — the same model can bill differently on a discounted gateway
+	// than on the vendor endpoint, and only the target host distinguishes them.
+	//
+	// Resolved at prompt size 0, so these are BASE rates: a long-context threshold
+	// depends on the prompt token count, which the provider only reports on the
+	// response. OnFinish resolves again with the real count, so the metrics and the
+	// `$ saved` total are threshold-correct; only the rates published on this event
+	// are base-tier. A consumer doing its own arithmetic from them under-prices a
+	// request past the threshold, which is why that arithmetic is moving out of the
+	// consumer entirely.
+	rates, prov := p.resolveRates(pctx.Host, inferenceModel(pctx), 0)
+	rateInput, _ := rates.For(pricing.TierInput)
+	rateWrite, _ := rates.For(pricing.TierCacheWrite)
+	rateRead, _ := rates.For(pricing.TierCacheRead)
 	// SetBody BEFORE publishing, so the event can report what was actually sent.
 	// Under ErrorPolicyObserve it is a no-op on bytes and leaves bodyMutated
 	// false — this same code path measures without enforcing.
@@ -655,7 +492,7 @@ func (p *ToolPrune) OnRequest(_ context.Context, pctx *pipeline.Context) (action
 		RateInput:      rateInput,
 		RateCacheWrite: rateWrite,
 		RateCacheRead:  rateRead,
-		RateSource:     src.String(),
+		RateSource:     prov.String(),
 	})
 	// Carry the saving to OnFinish, where the response reveals which token tier
 	// it came out of. SetState keeps it private to this plugin, unlike
@@ -715,37 +552,23 @@ func (p *ToolPrune) OnFinish(_ context.Context, pctx *pipeline.Context) {
 		return
 	}
 	t := tierOf(inf)
-	rates, src := p.cfg.ratesFor(inf.Model)
-	rate, ok := rates.rateFor(t)
+	// Resolved with the real prompt total, so a long-context threshold applies.
+	rates, prov := p.resolveRates(pctx.Host, inf.Model, promptTotal)
+	rate, ok := rates.For(t)
 	if !ok {
 		// No usable rate for the tier this request actually used. Count it
-		// unpriced rather than charging zero into the total.
-		src = rateNone
+		// unpriced rather than charging zero into the total — pricing a carried
+		// tier at zero would hide the gap inside the priced denominator.
+		prov = pricing.ProvNone
 	}
-	p.m.observeSaving(tokens, t, tokens*rate, src, inf.Model)
+	p.m.observeSaving(tokens, t, tokens*rate, prov, inf.Model)
 }
 
-// tier names which prompt token tier a request's saving came out of.
-type tier int
-
-const (
-	tierInput tier = iota
-	tierCacheWrite
-	tierCacheRead
-)
-
-// tierOf picks the tier the pruned manifest belonged to. The manifest is in the
-// cached prefix, so a write-dominant request wrote it and a read-dominant one
-// read it; with no cache tokens reported at all it was plain input.
-func tierOf(inf *pipeline.InferenceExtension) tier {
-	switch {
-	case inf.CacheWriteTokens > inf.CacheReadTokens && inf.CacheWriteTokens > 0:
-		return tierCacheWrite
-	case inf.CacheReadTokens > 0:
-		return tierCacheRead
-	default:
-		return tierInput
-	}
+// tierOf picks the tier the pruned manifest belonged to, delegating the rule to
+// authlib/pricing so the UI that renders the saving and the plugin that measures
+// it cannot disagree about which tier it came from.
+func tierOf(inf *pipeline.InferenceExtension) pricing.Tier {
+	return pricing.PromptTier(pricing.UsageFromInference(inf))
 }
 
 // noteDrift logs, once, any configured name absent from the first manifest the

@@ -1,7 +1,7 @@
 # Root Makefile for cortex monorepo
 # Orchestrates linting and formatting across all sub-projects
 
-.PHONY: lint fmt pre-commit build-proxy-init help
+.PHONY: lint fmt pre-commit build-proxy-init pricing-table help
 
 help: ## Display this help
 	@awk 'BEGIN {FS = ":.*##"; printf "\nUsage:\n  make \033[36m<target>\033[0m\n"} /^[a-zA-Z_0-9-]+:.*?##/ { printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2 } /^##@/ { printf "\n\033[1m%s\033[0m\n", substr($$0, 5) } ' $(MAKEFILE_LIST)
@@ -25,3 +25,17 @@ pre-commit: ## Install pre-commit hooks (including commit-msg)
 
 build-proxy-init: ## Build the proxy-init iptables init container
 	cd authbridge/proxy-init && make docker-build-init
+
+pricing-table: ## Regenerate the bundled price table (COMMIT=<sha> [NO_PROXY_FOR_GEN=1])
+ifndef COMMIT
+	$(error COMMIT is required. Find the latest with: curl -sS 'https://api.github.com/repos/BerriAI/litellm/commits?path=model_prices_and_context_window.json&per_page=1' | jq -r '.[0].sha')
+endif
+	@# NO_PROXY_FOR_GEN=1 clears the proxy variables for this fetch. Matched against
+	@# exactly "1", so NO_PROXY_FOR_GEN=0 means off rather than the surprising opposite.
+	@# Off by default:
+	@# "github.com is behind a TLS-intercepting proxy" was true on one developer's
+	@# machine, not a property of this repo, and hardcoding it broke the target for
+	@# anyone whose proxy is the only route out.
+	cd authbridge/authlib && $(if $(filter 1,$(NO_PROXY_FOR_GEN)),HTTPS_PROXY= HTTP_PROXY= ALL_PROXY=,) \
+		go run ./pricing/internal/gen -commit $(COMMIT) -dir ./pricing
+	cd authbridge/authlib && go test ./pricing/ -run TestBundled

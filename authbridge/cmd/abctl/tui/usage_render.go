@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -344,13 +345,70 @@ func renderUsageSummary(snap *usage.Snapshot) string {
 // is the failure this coverage count exists to prevent.
 func renderCostSummary(snap *usage.Snapshot) string {
 	if !snap.Priced {
+		// Not "$0.0000". A zero cost and an unknown cost are different answers, and
+		// only one of them means the traffic was free.
 		return "COST unavailable"
 	}
 	cell := fmt.Sprintf("COST $%.4f", float64(snap.Totals.CostMicros)/1e6)
-	if snap.Totals.PricedRequests < snap.Totals.Requests {
-		cell += fmt.Sprintf(" (%d/%d priced)", snap.Totals.PricedRequests, snap.Totals.Requests)
+	// Compared against PRICEABLE requests, not all of them. Requests counts every
+	// proxied response — MCP tool calls, health checks, anything else the sidecar
+	// handled — while only inference can ever be priced, so the old ratio left a
+	// correctly configured deployment reading "1/10 priced" forever with an empty gap
+	// list. A permanent warning with nothing to act on trains an operator to ignore
+	// the one signal that matters.
+	// Provenance qualifies the figure: $12.40 from a gateway's own numbers and $12.40
+	// modelled from a shipped vendor-list table are not equally trustworthy, and the
+	// column showed them identically. Only shown when it tells the reader something —
+	// a single uniform provenance that is authoritative needs no annotation.
+	cell += provenanceNote(snap.PricedBy)
+
+	priceable := snap.Totals.PriceableRequests
+	if priceable == 0 || snap.Totals.PricedRequests >= priceable {
+		return cell
 	}
-	return cell
+	// Partial coverage: the total covers only the priced subset, so say so, and
+	// name what is missing. "Cost is incomplete" is not actionable; the endpoint and
+	// model are exactly what an operator needs to write a pricing entry for.
+	cell += fmt.Sprintf(" (%d/%d priced", snap.Totals.PricedRequests, priceable)
+	if gaps := topUnpriced(snap.UnpricedBy, 3); gaps != "" {
+		cell += "; unpriced: " + gaps
+	}
+	return cell + ")"
+}
+
+// topUnpriced names the biggest coverage gaps, largest first, capped so one
+// pathological deployment cannot push the rest of the line off screen.
+//
+// Ordered by count rather than alphabetically because an operator fixing coverage
+// wants the entry that buys the most first. Ties break on the key so the line does
+// not reshuffle between refreshes for no reason.
+func topUnpriced(by map[string]int64, max int) string {
+	if len(by) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(by))
+	for k := range by {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if by[keys[i]] != by[keys[j]] {
+			return by[keys[i]] > by[keys[j]]
+		}
+		return keys[i] < keys[j]
+	})
+	shown := keys
+	if len(shown) > max {
+		shown = shown[:max]
+	}
+	parts := make([]string, 0, len(shown))
+	for _, k := range shown {
+		parts = append(parts, fmt.Sprintf("%s x%d", sanitizeLabel(k), by[k]))
+	}
+	out := strings.Join(parts, ", ")
+	if rest := len(keys) - len(shown); rest > 0 {
+		out += fmt.Sprintf(", +%d more", rest)
+	}
+	return out
 }
 
 // usageWindows are the spans the [w] key cycles.
@@ -361,4 +419,65 @@ var usageWindows = []struct {
 	{10 * time.Minute, time.Minute},
 	{time.Hour, 5 * time.Minute},
 	{6 * time.Hour, 30 * time.Minute},
+}
+
+// provenanceNote renders where a cost total came from, or "" when saying so would
+// add nothing.
+//
+// Silent for a wholly authoritative total, because "the gateway told us" is the
+// baseline a reader already assumes. Loud for anything modelled, and loudest when
+// mixed — a partly-modelled total is the case where a reader most needs to know
+// which part to trust.
+func provenanceNote(by map[string]int64) string {
+	if len(by) == 0 {
+		return ""
+	}
+	if len(by) == 1 {
+		for k := range by {
+			if k == "authoritative" {
+				return ""
+			}
+			return " [" + k + "]"
+		}
+	}
+	// Mixed: list every level, largest first, so the dominant source reads first.
+	keys := make([]string, 0, len(by))
+	for k := range by {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if by[keys[i]] != by[keys[j]] {
+			return by[keys[i]] > by[keys[j]]
+		}
+		return keys[i] < keys[j]
+	})
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, fmt.Sprintf("%s %d", k, by[k]))
+	}
+	return " [" + strings.Join(parts, ", ") + "]"
+}
+
+// sanitizeLabel makes a wire-derived label safe to write to a terminal.
+//
+// These keys are "<endpoint> <model>", and the model half comes from the `model` field
+// of the request body — chosen by the workload, and the inference parser records it
+// verbatim. Writing it straight to a TTY lets an escape sequence reposition the cursor,
+// recolour the pane, or erase the very coverage gap it is reporting; a newline alone
+// breaks the table apart. CWE-150.
+//
+// Control characters and DEL become U+FFFD rather than being dropped, so tampering is
+// visible instead of silently producing a plausible-looking label.
+func sanitizeLabel(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		switch {
+		case r == 0x7f, r < 0x20:
+			b.WriteRune('\uFFFD')
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }

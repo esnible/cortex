@@ -171,10 +171,8 @@ cost is ever accumulated and the budget never trips.
 
 - `spend_file` (string) — path to the JSON spend ledger file; required. The ledger is a small JSON file the plugin creates and rewrites, holding the current UTC date plus the cumulative spend and call count for that day (it resets automatically at midnight UTC) — see [Ledger Format](./litellm-budgettrack-plugin.md#ledger-format).
 - `max_budget` (float64) — daily budget in USD; required, must be > 0.
-- `input_cost_per_token` (float64) — USD per uncached input token. Optional; used to price **streamed** responses, whose `x-litellm-response-cost` header is 0 because the total isn't known when headers are sent. When every rate is zero, streamed responses contribute 0 to the ledger.
-- `output_cost_per_token` (float64) — USD per output/completion token, same streamed-response path.
-- `cache_write_cost_per_token` (float64) — USD per cache-write (creation) input token. Defaults to `input_cost_per_token` when unset.
-- `cache_read_cost_per_token` (float64) — USD per cache-read input token. Defaults to `input_cost_per_token` when unset. Leaving the two cache tiers unset reproduces a flat rate, which overstates cache-heavy traffic (e.g. Claude Code) by up to ~10x — set them for accurate pricing.
+- **No rate options.** Rates live in the top-level [`pricing:`](#pricing) section, resolved by `authlib/pricing`, so cost is consistent wherever it is reported. This plugin prices the per-tier token counts `inference-parser` publishes.
+- **Requires `inference-parser` LATER in the chain** (`RequiresLater`). The response passes walk the chain in reverse, so the parser must sit at a higher index to fold each frame before this plugin settles the cost. A chain without it — or with it earlier — fails to build.
 
 ## `mcp-parser`
 
@@ -328,8 +326,7 @@ body-reading plugin (it rewrites the request body). Declares
 
 - `remove` (`[]string`) — tool names to delete from the manifest. The complete verdict: no learning, no state, no storage. Names absent from a given request are ignored. **An empty list is the off switch** — the plugin is inert until a name is added, which is how it ships in the local install.
 - `paths` (`[]string`) — request paths to act on, matched exactly or by suffix. Defaults to `/v1/chat/completions`, `/v1/completions`, `/v1/messages`.
-- `pricing` (`map[model]rates`) — rates keyed by model name **or glob** (`*claude-opus-*`), each with `input_cost_per_million`, `cache_write_cost_per_million`, `cache_read_cost_per_million` (per-million: the unit providers publish, so `3.80` not `0.0000038`). The per-token names are also accepted for `litellm-budget-track` parity; setting both units for one tier fails startup, since they differ by 10^6 and picking a winner silently would misprice by that factor. **Optional**: built-in patterns cover the Claude families on the rossoctl gateway, so `$ saved` works unconfigured; any entry here overrides the built-in. Per model because rates differ ~5x across opus/sonnet/haiku. Built-ins are keyed by *family*, not version, so an opus 4.8 → 5 rename needs no code change. Resolution: exact key → longest matching glob → built-in pattern → flat fallback → unpriced; keys matched case-insensitively. An invalid glob fails startup with the key named.
-- `input_cost_per_million`, `cache_write_cost_per_million`, `cache_read_cost_per_million` (`float`) — optional flat fallback for models absent from `pricing` (per-token variants also accepted). A figure from built-in rates is labelled as such; a model in neither the table nor config is counted in a `requests unpriced` row instead of charged at another model's rate. No output rate: pruning only shrinks the prompt.
+- **No rate options.** The 12 rate knobs and the built-in family table are gone; rates come from the top-level [`pricing:`](#pricing) section. A figure derived from the bundled table is labelled `bundled`, and a model with no rate anywhere is counted in a `requests unpriced` row rather than charged at another model's rate. There is still no output rate: pruning only shrinks the prompt.
 
 Generate the list from local transcripts with `abctl tools scan`, which
 proposes only tools it recognises as Claude Code built-ins and never proposes
@@ -340,3 +337,85 @@ refuses when it observed no tool calls at all, because "tools you have not
 called" would then mean every tool it knows. See
 [`tool-prune-plugin.md`](./tool-prune-plugin.md) for the measure-then-enforce
 rollout, the metrics readout, and what the saving does and does not change.
+
+
+## `pricing:`
+
+Top-level section owning every model rate in the process. One section rather than a
+knob per plugin, so `tool-prune`, `litellm-budget-track`, `/v1/usage` and `abctl`
+cannot disagree about what a request cost.
+
+```yaml
+pricing:
+  # The bundled table ships vendor-list rates for the Claude families, generated
+  # from LiteLLM's public price map. On by default: internal usage should work with
+  # no setup. Set false to price only what you configure.
+  bundled: true
+  endpoints:
+    - hosts: ["gw.internal"]       # host globs, port stripped; "*" or omitted = any
+      models:
+        "*claude-opus-*":          # model glob, matched case-insensitively
+          input_cost_per_million: 3.80
+          cache_write_cost_per_million: 4.75
+          cache_read_cost_per_million: 0.38
+          output_cost_per_million: 19.00
+          above:                   # optional long-context override
+            - prompt_tokens: 200000
+              input_cost_per_million: 7.60
+```
+
+`hosts` is a LIST because gateways commonly share a rate card — two replicas, or a
+service name and its external alias, bill identically, and repeating the whole models
+block per host invites the two copies to drift. Each host becomes its own table row.
+
+**Rates are scoped per endpoint**, which a per-plugin table could not express: the
+same model bills differently on a discounted gateway than on the vendor endpoint,
+and only the request's target host distinguishes them.
+
+### Pinning a gateway that bills below list
+
+This is the one piece of configuration most deployments need, so it is worth stating
+plainly. The bundled table ships vendor-list prices; a gateway that bills below list is
+overstated until you pin it. Eight lines:
+
+```yaml
+pricing:
+  endpoints:
+    - hosts: ["litellm.internal*"]     # your gateway; ports are stripped before matching
+      models:
+        "*claude-opus-*":
+          input_cost_per_million: 3.80
+          cache_write_cost_per_million: 4.75
+          cache_read_cost_per_million: 0.38
+```
+
+Everything else keeps resolving from the bundled table, so `api.anthropic.com` still
+prices at vendor list while your gateway prices at yours. Check it took effect with
+`abctl`: the cost total is annotated `[configured]` rather than `[bundled]`.
+
+Rates on a gateway change on the order of months, which is why this is a static block
+rather than something fetched. Asking the gateway for its own rates via LiteLLM's
+`GET /model/info` was designed and prototyped and then dropped: it needed a virtual key
+minted and mounted, an outbound dependency and a refresh loop, to save transcribing
+three numbers. If your gateway's rates do change often, the resolution order is built
+for it — see `ProvDiscovered` in `authlib/pricing`.
+
+**Bundled rates are VENDOR LIST.** A gateway billing below list is *overstated*
+until you pin it with a host-scoped entry, which outranks anything bundled. This is
+the opposite direction from the hand-measured defaults it replaced, so an operator
+carrying over an old correction should re-check its sign.
+
+Resolution per `(endpoint, model)`: **provenance first** — `configured` beats
+`discovered` beats `bundled` — then specificity within a level, endpoint axis
+before model axis, exact before glob, longer glob before shorter.
+
+**Both units are accepted per tier**; setting *both* for one tier fails startup
+naming the tier, since they differ by 10^6 and silently picking a winner would
+misprice by that factor with nothing in the readout to say which was honoured.
+
+A request is priced only if **every tier that carried tokens had a rate**.
+Otherwise it is reported *unpriced* — never under-priced — and named in
+`/v1/usage`'s `unpricedBy` so the missing entry is nameable rather than merely
+counted.
+
+Regenerate the bundled table with `make pricing-table COMMIT=<litellm sha>`.

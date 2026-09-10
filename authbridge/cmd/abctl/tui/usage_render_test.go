@@ -303,15 +303,19 @@ func TestRenderCostSummary(t *testing.T) {
 		{
 			name: "fully priced omits the coverage note",
 			snap: usage.Snapshot{
-				Totals: usage.Counts{Requests: 40, PricedRequests: 40, CostMicros: 1_842_100},
+				Totals: usage.Counts{Requests: 40, PriceableRequests: 40, PricedRequests: 40, CostMicros: 1_842_100},
 				Priced: true,
 			},
 			want: "COST $1.8421",
 		},
+		// PriceableRequests is the denominator now, not Requests: the latter counts
+		// non-inference traffic that can never be priced, so a correct deployment read
+		// as permanently partial. These fixtures set both to the same value, which is
+		// the all-inference case they were written for.
 		{
 			name: "partially priced names the coverage",
 			snap: usage.Snapshot{
-				Totals: usage.Counts{Requests: 57, PricedRequests: 42, CostMicros: 1_842_100},
+				Totals: usage.Counts{Requests: 57, PriceableRequests: 57, PricedRequests: 42, CostMicros: 1_842_100},
 				Priced: true,
 			},
 			want: "COST $1.8421 (42/57 priced)",
@@ -319,7 +323,7 @@ func TestRenderCostSummary(t *testing.T) {
 		{
 			name: "one priced request out of many",
 			snap: usage.Snapshot{
-				Totals: usage.Counts{Requests: 100, PricedRequests: 1, CostMicros: 500},
+				Totals: usage.Counts{Requests: 100, PriceableRequests: 100, PricedRequests: 1, CostMicros: 500},
 				Priced: true,
 			},
 			want: "COST $0.0005 (1/100 priced)",

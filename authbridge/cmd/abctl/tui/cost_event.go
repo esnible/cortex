@@ -3,6 +3,7 @@ package tui
 import (
 	"github.com/rossoctl/cortex/authbridge/authlib/costevent"
 	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
+	"github.com/rossoctl/cortex/authbridge/authlib/pricing"
 )
 
 // costEvent is the litellm-budget-track per-response event.
@@ -42,27 +43,32 @@ func decodeCostEvent(e *pipeline.SessionEvent) (costEvent, bool) {
 // promptCost models what the prompt of one request cost, from the response's
 // per-tier token counts and the rates tool-prune published on the request.
 //
-// Tier-weighted rather than a flat prompt × single-rate: providers bill a cache
+// Tier-weighted rather than a flat prompt x single-rate: providers bill a cache
 // read at ~0.1x the uncached input rate and a cache write at ~1.25x, so a
 // cache-heavy turn (the common case for a long-running agent) is overstated by
-// close to an order of magnitude by flat pricing. The three rates needed are
-// exactly the three tool-prune already carries.
+// close to an order of magnitude by flat pricing.
 //
-// This is a model, not a measurement: the only figure anyone reports is for the
-// exchange as a whole, on the response, and only when litellm-budget-track is
-// running. Rates resolved as "none" yield ok=false rather than a $0.00 that would
-// read as a free prompt.
+// The arithmetic is pricing.Cost's, not this file's. This function only supplies
+// inputs; it holds no rates and multiplies nothing.
+//
+// Output is deliberately zeroed. tool-prune publishes no output rate, and Cost
+// refuses to price a tier that carried tokens with no rate — correctly, since a
+// partial total is worse than none. What this figure means is what the PROMPT
+// cost, which is the half tool-prune can speak to.
+//
+// A model with no rates yields ok=false rather than a $0.00 that would read as a
+// free prompt.
 func promptCost(ps pruneSaving, resp *pipeline.InferenceExtension) (usd float64, ok bool) {
 	if resp == nil || ps.RateSource == "none" {
 		return 0, false
 	}
-	usd = float64(resp.InputTokens)*ps.RateInput +
-		float64(resp.CacheReadTokens)*ps.RateCacheRead +
-		float64(resp.CacheWriteTokens)*ps.RateCacheWrite
-	if usd <= 0 {
+	u := pricing.UsageFromInference(resp)
+	u.Output = 0
+	micros, priced := pricing.Cost(ps.publishedRates(), u)
+	if !priced || micros <= 0 {
 		return 0, false
 	}
-	return usd, true
+	return float64(micros) / 1e6, true
 }
 
 // promptTokens is the request's own billed token count: what the provider

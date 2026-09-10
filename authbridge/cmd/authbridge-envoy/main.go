@@ -34,6 +34,7 @@ import (
 	"github.com/rossoctl/cortex/authbridge/authlib/config"
 	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
 	"github.com/rossoctl/cortex/authbridge/authlib/plugins"
+	"github.com/rossoctl/cortex/authbridge/authlib/pricing"
 	"github.com/rossoctl/cortex/authbridge/authlib/reloader"
 	"github.com/rossoctl/cortex/authbridge/authlib/runtimeutil"
 	"github.com/rossoctl/cortex/authbridge/authlib/session"
@@ -113,6 +114,19 @@ func main() {
 		slog.Debug("Config does not use SPIFFE")
 	}
 
+	// Built once, outside buildPipelines, because the reloader re-invokes that
+	// closure while anything sharing these rates outlives the rebuild. Without this
+	// the binary injected no resolver at all: tool-prune is linked here by default
+	// and used to ship its own rate table, so `$ saved` worked unconfigured — and
+	// config.Validate builds the pricing table and discards it, so an operator's
+	// `pricing:` block validated cleanly and was then never applied.
+	//
+	// Starts EMPTY. buildPipelines below loads the config and swaps the real table in
+	// before anything reads this, so building one here too was duplicate work — and
+	// in this binary it ran before the mode check and Validate, so a wrong-mode
+	// config reported a pricing error instead of the clearer mode error.
+	pricingRegistry := pricing.NewRegistry(nil)
+
 	buildPipelines := func() (*pipeline.Pipeline, *pipeline.Pipeline, *config.Config, error) {
 		c, err := config.Load(*configPath)
 		if err != nil {
@@ -129,14 +143,31 @@ func main() {
 			return nil, nil, nil, err
 		}
 		config.WarnEmptyPipelines(c, slog.Default())
-		in, err := plugins.BuildWithSPIFFE(c.Pipeline.Inbound.Plugins, provider)
+		// Rates reload with the rest of the config, swapped in place so anything
+		// holding this registry from before the reload sees the new table.
+		tab, err := pricing.Build(c.Pricing)
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("pricing: %w", err)
+		}
+
+		// The registry still holds the PREVIOUS table while the pipelines build, and
+		// is swapped only once both have. Swapping first made a reload
+		// non-transactional: a plugin-build failure makes the reloader reject the
+		// change and keep the running pipelines, but the rates had already moved — so
+		// live traffic priced from a config that was refused. Plugins only store the
+		// resolver during Configure and never resolve through it, so building against
+		// the old table is safe.
+		deps := plugins.Deps{SPIFFE: provider, Pricing: pricingRegistry}
+		in, err := plugins.BuildWithDeps(c.Pipeline.Inbound.Plugins, deps)
 		if err != nil {
 			return nil, nil, nil, fmt.Errorf("inbound: %w", err)
 		}
-		out, err := plugins.BuildWithSPIFFE(c.Pipeline.Outbound.Plugins, provider)
+		out, err := plugins.BuildWithDeps(c.Pipeline.Outbound.Plugins, deps)
 		if err != nil {
 			return nil, nil, nil, fmt.Errorf("outbound: %w", err)
 		}
+		pricingRegistry.Swap(tab)
+		c.Pricing.WarnIfUnpinned(slog.Default())
 		return in, out, c, nil
 	}
 

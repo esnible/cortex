@@ -66,6 +66,29 @@ type Snapshot struct {
 	// price some endpoints and not others. Where those differ the dollar total
 	// covers only the priced subset, and a client showing it must say so.
 	Priced bool `json:"priced"`
+	// UnpricedBy counts the requests that could NOT be priced, keyed
+	// "<endpoint> <model>". Present only when something was unpriced.
+	//
+	// A gap has to be nameable, not just countable. "Cost is incomplete" gives an
+	// operator nothing to act on; "api.openai.com gpt-5: 412" names the pricing
+	// entry to add. Traffic carrying no model is excluded — naming every non-LLM
+	// call the proxy handled would bury the real gaps.
+	//
+	// Summed across the window from the raw buckets, so it is unaffected by the
+	// requested resolution, exactly like Totals.
+	UnpricedBy map[string]int64 `json:"unpricedBy,omitempty"`
+	// PricedBy counts priced requests by the provenance of their figure —
+	// "authoritative" when the gateway reported it, otherwise the rate table's level
+	// ("configured", "discovered", "bundled").
+	//
+	// Without it a total is unqualified, and the spec's own success criterion asks
+	// for cost "labelled with provenance": $12.40 assembled from a gateway's own
+	// numbers and $12.40 modelled from a shipped vendor-list table are not equally
+	// trustworthy figures, and nothing else in the response distinguishes them.
+	//
+	// Summed from the raw buckets alongside Totals, so it is unaffected by the
+	// requested resolution.
+	PricedBy map[string]int64 `json:"pricedBy,omitempty"`
 }
 
 // ParseWindow validates a window parameter against the storage resolution.
@@ -243,6 +266,22 @@ func (a *Aggregator) Snapshot(window, resolution time.Duration, sessionID string
 			}
 		}
 		out.Totals.Add(b.Counts)
+		if ring != nil {
+			if src := &ring[slot(t)]; src.start.Equal(t) {
+				for k, v := range src.byUnpriced {
+					if out.UnpricedBy == nil {
+						out.UnpricedBy = make(map[string]int64, len(src.byUnpriced))
+					}
+					out.UnpricedBy[k] += v.Requests
+				}
+				for k, v := range src.byProvenance {
+					if out.PricedBy == nil {
+						out.PricedBy = make(map[string]int64, len(src.byProvenance))
+					}
+					out.PricedBy[k] += v.Requests
+				}
+			}
+		}
 		out.Buckets = append(out.Buckets, b)
 	}
 	// Derived after the loop: Totals is only complete once every bucket has been

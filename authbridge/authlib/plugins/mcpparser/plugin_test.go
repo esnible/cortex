@@ -538,8 +538,8 @@ func TestConfigure_RejectsUnknownFields(t *testing.T) {
 // stays at the default false (protocol mechanics).
 func TestOnRequest_Classification_ActionMethods(t *testing.T) {
 	cases := []struct {
-		method  string
-		body    string
+		method   string
+		body     string
 		isAction bool
 	}{
 		// Action methods — judge.

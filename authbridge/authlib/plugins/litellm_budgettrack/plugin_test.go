@@ -4,15 +4,18 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/rossoctl/cortex/authbridge/authlib/costevent"
 	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
+	"github.com/rossoctl/cortex/authbridge/authlib/pricing"
 	"github.com/rossoctl/cortex/authbridge/authlib/session"
 	"github.com/rossoctl/cortex/authbridge/authlib/usage"
 )
@@ -187,10 +190,6 @@ func TestConfigureRejectsBadConfig(t *testing.T) {
 		{"empty spend_file", `{"max_budget": 5.0}`},
 		{"zero max_budget", fmt.Sprintf(`{"spend_file": %q, "max_budget": 0}`, spend)},
 		{"negative max_budget", fmt.Sprintf(`{"spend_file": %q, "max_budget": -1}`, spend)},
-		{"negative input rate", fmt.Sprintf(`{"spend_file": %q, "max_budget": 5, "input_cost_per_token": -0.001}`, spend)},
-		{"negative output rate", fmt.Sprintf(`{"spend_file": %q, "max_budget": 5, "output_cost_per_token": -0.001}`, spend)},
-		{"negative cache write rate", fmt.Sprintf(`{"spend_file": %q, "max_budget": 5, "cache_write_cost_per_token": -0.001}`, spend)},
-		{"negative cache read rate", fmt.Sprintf(`{"spend_file": %q, "max_budget": 5, "cache_read_cost_per_token": -0.001}`, spend)},
 		{"invalid json", `{`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -267,20 +266,45 @@ func TestConcurrentOnResponse(t *testing.T) {
 
 // --- streaming (SSE usage) tests ---
 
-// configurePriced builds a plugin with per-token streaming prices set.
-func configurePriced(t *testing.T, maxBudget, inPer, outPer float64) *BudgetTrack {
+// configurePriced builds a plugin whose rates reach it by injection, as
+// plugins.BuildWithDeps does in production. Rates left at 0 are UNSET, not free:
+// pricing.Cost refuses to price a tier that carried tokens without a rate.
+func configurePriced(t *testing.T, maxBudget float64, perTier map[pricing.Tier]float64) *BudgetTrack {
 	t.Helper()
 	p := New()
+	var r pricing.Rates
+	for tier, v := range perTier {
+		if v > 0 {
+			r.Base[tier], r.Set[tier] = v, true
+		}
+	}
+	tab, err := pricing.NewTable([]pricing.Entry{
+		{Host: "*", Model: "*", Rates: r, Prov: pricing.ProvConfigured},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.SetPricingResolver(pricing.NewRegistry(tab))
 	raw, _ := json.Marshal(budgetTrackConfig{
-		SpendFile:          filepath.Join(t.TempDir(), "spend.json"),
-		MaxBudget:          maxBudget,
-		InputCostPerToken:  inPer,
-		OutputCostPerToken: outPer,
+		SpendFile: filepath.Join(t.TempDir(), "spend.json"),
+		MaxBudget: maxBudget,
 	})
 	if err := p.Configure(raw); err != nil {
 		t.Fatalf("Configure() error = %v", err)
 	}
 	return p
+}
+
+// pricedInference seeds the per-tier counts inference-parser would have published,
+// which is now this plugin's only source for them.
+func pricedInference(pctx *pipeline.Context, input, cacheWrite, cacheRead, output int) {
+	pctx.Extensions.Inference = &pipeline.InferenceExtension{
+		Model:            "claude-opus-5",
+		InputTokens:      input,
+		CacheWriteTokens: cacheWrite,
+		CacheReadTokens:  cacheRead,
+		OutputTokens:     output,
+	}
 }
 
 // Anthropic-style streamed /v1/messages frames: input in message_start,
@@ -297,9 +321,10 @@ const (
 // TestStreamingPricesFromUsage: header cost is absent/0 (streaming), so cost is
 // computed from the parsed usage and the configured per-token rates.
 func TestStreamingPricesFromUsage(t *testing.T) {
-	p := configurePriced(t, 5.00, 1e-6, 5e-6) // $1/1M in, $5/1M out
+	p := configurePriced(t, 5.00, map[pricing.Tier]float64{pricing.TierInput: 1e-6, pricing.TierOutput: 5e-6}) // $1/1M in, $5/1M out
 	ctx := context.Background()
 	pctx := &pipeline.Context{ResponseHeaders: http.Header{}} // streamed: no cost header
+	pricedInference(pctx, 100, 0, 0, 40)                      // what inference-parser publishes
 
 	p.OnResponseFrame(ctx, pctx, []byte(frameMessageStart), false)
 	p.OnResponseFrame(ctx, pctx, []byte(frameContentDelta), false)
@@ -333,7 +358,7 @@ func TestStreamingWithoutPricesRecordsZero(t *testing.T) {
 // (non-streaming buffered path delivered as a single frame), it is used and the
 // per-token pricing is ignored.
 func TestHeaderCostWinsOverUsage(t *testing.T) {
-	p := configurePriced(t, 5.00, 1e-6, 5e-6)
+	p := configurePriced(t, 5.00, map[pricing.Tier]float64{pricing.TierInput: 1e-6, pricing.TierOutput: 5e-6})
 	pctx := &pipeline.Context{ResponseHeaders: http.Header{responseCostHeader: {"0.02"}}}
 	// single-frame buffered json also carries usage, which must be ignored
 	body := []byte(`data: {"usage":{"prompt_tokens":100,"completion_tokens":40}}`)
@@ -346,7 +371,7 @@ func TestHeaderCostWinsOverUsage(t *testing.T) {
 // TestOnResponseFrameOriginalFallback: streamed header 0 but non-streaming
 // -original present on the terminal frame is still honored.
 func TestOnResponseFrameOriginalFallback(t *testing.T) {
-	p := configurePriced(t, 5.00, 1e-6, 5e-6)
+	p := configurePriced(t, 5.00, map[pricing.Tier]float64{pricing.TierInput: 1e-6, pricing.TierOutput: 5e-6})
 	pctx := &pipeline.Context{ResponseHeaders: http.Header{responseCostOriginalHeader: {"6.688e-05"}}}
 	p.OnResponseFrame(context.Background(), pctx, nil, true)
 	if got := p.ledger.TotalSpend; got < 6.687e-05 || got > 6.689e-05 {
@@ -354,71 +379,31 @@ func TestOnResponseFrameOriginalFallback(t *testing.T) {
 	}
 }
 
-// TestParseFrameUsageOpenAI covers the OpenAI terminal usage chunk shape.
-func TestParseFrameUsageOpenAI(t *testing.T) {
-	frame := []byte(`data: {"choices":[],"usage":{"prompt_tokens":30,"completion_tokens":12}}`)
-	fu, ok := parseFrameUsage(frame)
-	if !ok || fu.uncached != 30 || fu.output != 12 || fu.cacheWrite != 0 || fu.cacheRead != 0 {
-		t.Errorf("parseFrameUsage = %+v (found=%v), want uncached 30 / output 12", fu, ok)
-	}
-}
-
 // TestStreamingBareFrames reflects reality: the sseframe reader strips the
 // "data:" prefix, so OnResponseFrame receives bare JSON payloads.
-func TestStreamingBareFrames(t *testing.T) {
-	p := configurePriced(t, 5.00, 1e-6, 5e-6)
-	ctx := context.Background()
-	pctx := &pipeline.Context{ResponseHeaders: http.Header{}}
-	// bare-JSON frames (no "data:" prefix), as ReadFrame returns them
-	p.OnResponseFrame(ctx, pctx, []byte(`{"type":"message_start","message":{"usage":{"input_tokens":100,"output_tokens":1}}}`), false)
-	p.OnResponseFrame(ctx, pctx, []byte(`{"type":"message_delta","usage":{"output_tokens":40}}`), false)
-	p.OnResponseFrame(ctx, pctx, nil, true)
-	want := 100*1e-6 + 40*5e-6
-	if got := p.ledger.TotalSpend; got < want-1e-12 || got > want+1e-12 {
-		t.Errorf("TotalSpend = %v, want %v (bare-JSON frames)", got, want)
-	}
-}
-
-// TestParseFrameUsageBareJSON unit-checks the bare-payload path directly.
-func TestParseFrameUsageBareJSON(t *testing.T) {
-	fu, ok := parseFrameUsage([]byte(`{"type":"message_delta","usage":{"input_tokens":14,"output_tokens":8}}`))
-	if !ok || fu.uncached != 14 || fu.output != 8 {
-		t.Errorf("parseFrameUsage(bare) = %+v (found=%v), want uncached 14 / output 8", fu, ok)
-	}
-}
-
-// TestCacheTierParsing verifies the three input tiers are parsed separately.
-func TestCacheTierParsing(t *testing.T) {
-	fu, ok := parseFrameUsage([]byte(`{"usage":{"input_tokens":9,"cache_creation_input_tokens":3755,"cache_read_input_tokens":30008,"output_tokens":100}}`))
-	if !ok || fu.uncached != 9 || fu.cacheWrite != 3755 || fu.cacheRead != 30008 || fu.output != 100 {
-		t.Errorf("parseFrameUsage = %+v, want uncached 9 / cacheWrite 3755 / cacheRead 30008 / output 100", fu)
-	}
-}
 
 // TestCacheTierPricing is the PR #816 must-fix: cache tiers must be priced
 // separately, not flat at input_cost_per_token. Uses the real Claude Code turn
 // from cortex#811 (input 9, cache_creation 3755, cache_read 30008).
 func TestCacheTierPricing(t *testing.T) {
-	p := New()
-	raw, _ := json.Marshal(budgetTrackConfig{
-		SpendFile:              filepath.Join(t.TempDir(), "spend.json"),
-		MaxBudget:              100,
-		InputCostPerToken:      1e-6,
-		OutputCostPerToken:     5e-6,
-		CacheWriteCostPerToken: 1.25e-6, // write premium
-		CacheReadCostPerToken:  0.1e-6,  // read discount
+	p := configurePriced(t, 100, map[pricing.Tier]float64{
+		pricing.TierInput:      1e-6,
+		pricing.TierCacheWrite: 1.25e-6, // write premium
+		pricing.TierCacheRead:  0.1e-6,  // read discount
+		pricing.TierOutput:     5e-6,
 	})
-	if err := p.Configure(raw); err != nil {
-		t.Fatal(err)
-	}
 	pctx := &pipeline.Context{ResponseHeaders: http.Header{"Content-Type": {"text/event-stream"}}}
-	p.OnResponseFrame(context.Background(), pctx,
-		[]byte(`{"usage":{"input_tokens":9,"cache_creation_input_tokens":3755,"cache_read_input_tokens":30008,"output_tokens":100}}`), false)
+	pricedInference(pctx, 9, 3755, 30008, 100)
 	p.OnResponseFrame(context.Background(), pctx, nil, true)
 
-	want := 9*1e-6 + 3755*1.25e-6 + 30008*0.1e-6 + 100*5e-6
+	// Quantized to micros, which is a deliberate change: pricing.Cost returns
+	// integer millionths of a dollar so bucket addition stays exact, and the ledger
+	// now agrees with /v1/usage to the last digit instead of diverging in the 7th
+	// decimal. The lost precision is a millionth of a dollar per request.
+	exact := 9*1e-6 + 3755*1.25e-6 + 30008*0.1e-6 + 100*5e-6
+	want := math.Round(exact*1e6) / 1e6
 	if got := p.ledger.TotalSpend; got < want-1e-12 || got > want+1e-12 {
-		t.Errorf("TotalSpend = %v, want %v (per-tier pricing)", got, want)
+		t.Errorf("TotalSpend = %v, want %v (per-tier pricing, micro-quantized from %v)", got, want, exact)
 	}
 	// Guard against a regression to flat pricing: flat would be far higher.
 	flat := (9+3755+30008)*1e-6 + 100*5e-6
@@ -427,17 +412,27 @@ func TestCacheTierPricing(t *testing.T) {
 	}
 }
 
-// TestCacheRatesDefaultToInputRate: with cache rates unset, cached tokens are
-// priced at the input rate (backward-compatible with pre-#816 flat behavior).
-func TestCacheRatesDefaultToInputRate(t *testing.T) {
-	p := configurePriced(t, 100, 1e-6, 5e-6) // no cache rates
+// TestCacheTiersWithoutRatesAreUnpriced records a deliberate behaviour change.
+//
+// This plugin used to default an unset cache rate to the uncached input rate. That
+// silently OVERSTATED a cache read by 10x, and the request still counted as priced,
+// so the error was invisible. pricing.Cost's per-tier invariant replaces it: a tier
+// that carried tokens with no rate makes the whole request unpriced, which is a
+// visible gap instead of a plausible wrong number.
+func TestCacheTiersWithoutRatesAreUnpriced(t *testing.T) {
+	p := configurePriced(t, 100, map[pricing.Tier]float64{pricing.TierInput: 1e-6, pricing.TierOutput: 5e-6}) // no cache rates
 	pctx := &pipeline.Context{ResponseHeaders: http.Header{"Content-Type": {"text/event-stream"}}}
-	p.OnResponseFrame(context.Background(), pctx,
-		[]byte(`{"usage":{"input_tokens":10,"cache_creation_input_tokens":20,"cache_read_input_tokens":30,"output_tokens":40}}`), false)
+	pricedInference(pctx, 10, 20, 30, 40) // cache tiers carry tokens
 	p.OnResponseFrame(context.Background(), pctx, nil, true)
-	want := (10+20+30)*1e-6 + 40*5e-6 // all input tiers at input rate
-	if got := p.ledger.TotalSpend; got < want-1e-12 || got > want+1e-12 {
-		t.Errorf("TotalSpend = %v, want %v (cache rates default to input rate)", got, want)
+
+	if p.ledger.TotalSpend != 0 {
+		t.Errorf("TotalSpend = %v, want 0 — cache tiers carried tokens with no rate", p.ledger.TotalSpend)
+	}
+	if p.ledger.TotalCalls != 0 {
+		t.Errorf("TotalCalls = %d, want 0 — an unpriced request must not count as priced", p.ledger.TotalCalls)
+	}
+	if _, ok := pctx.Extensions.Custom[p.Name()+pipeline.PluginEventSuffix]; ok {
+		t.Error("an unpriced request published a cost event")
 	}
 }
 
@@ -479,11 +474,10 @@ func TestCapabilitiesDeclaresReadsBody(t *testing.T) {
 // terminal dispatch (e.g. extproc header + buffered-body phases) must not
 // double-charge the ledger.
 func TestOnResponseFrameSettlesOnce(t *testing.T) {
-	p := configurePriced(t, 5.00, 1e-6, 5e-6)
+	p := configurePriced(t, 5.00, map[pricing.Tier]float64{pricing.TierInput: 1e-6, pricing.TierOutput: 5e-6})
 	ctx := context.Background()
 	pctx := &pipeline.Context{ResponseHeaders: http.Header{}}
-	p.OnResponseFrame(ctx, pctx, []byte(`{"type":"message_start","message":{"usage":{"input_tokens":100,"output_tokens":1}}}`), false)
-	p.OnResponseFrame(ctx, pctx, []byte(`{"type":"message_delta","usage":{"output_tokens":40}}`), false)
+	pricedInference(pctx, 100, 0, 0, 40)
 	p.OnResponseFrame(ctx, pctx, nil, true) // first terminal — charges
 	p.OnResponseFrame(ctx, pctx, nil, true) // second terminal — must be a no-op
 	want := 100*1e-6 + 40*5e-6
@@ -498,7 +492,7 @@ func TestOnResponseFrameSettlesOnce(t *testing.T) {
 // TestZeroCostHeaderNonStreamedNotRepriced: a genuine free call (cost header
 // "0", non-streamed) must be charged 0, not re-priced from its usage block.
 func TestZeroCostHeaderNonStreamedNotRepriced(t *testing.T) {
-	p := configurePriced(t, 5.00, 1e-6, 5e-6)
+	p := configurePriced(t, 5.00, map[pricing.Tier]float64{pricing.TierInput: 1e-6, pricing.TierOutput: 5e-6})
 	pctx := &pipeline.Context{ResponseHeaders: http.Header{
 		responseCostHeader: {"0"},
 		"Content-Type":     {"application/json"},
@@ -512,12 +506,12 @@ func TestZeroCostHeaderNonStreamedNotRepriced(t *testing.T) {
 // TestZeroCostHeaderStreamedPricesFromUsage: streamed responses always report a
 // 0 cost header, so the usage fallback must still apply for text/event-stream.
 func TestZeroCostHeaderStreamedPricesFromUsage(t *testing.T) {
-	p := configurePriced(t, 5.00, 1e-6, 5e-6)
+	p := configurePriced(t, 5.00, map[pricing.Tier]float64{pricing.TierInput: 1e-6, pricing.TierOutput: 5e-6})
 	pctx := &pipeline.Context{ResponseHeaders: http.Header{
 		responseCostHeader: {"0"},
 		"Content-Type":     {"text/event-stream; charset=utf-8"},
 	}}
-	p.OnResponseFrame(context.Background(), pctx, []byte(`{"type":"message_start","message":{"usage":{"input_tokens":100,"output_tokens":40}}}`), false)
+	pricedInference(pctx, 100, 0, 0, 40)
 	p.OnResponseFrame(context.Background(), pctx, nil, true)
 	want := 100*1e-6 + 40*5e-6
 	if got := p.ledger.TotalSpend; got < want-1e-12 || got > want+1e-12 {
@@ -548,11 +542,15 @@ func TestPluginNameMatchesCostEventKey(t *testing.T) {
 	}
 }
 
-// TestEmitCostWireFormatUnchanged is the independent proof that promoting the
-// event struct into authlib/costevent did not alter the bytes on the wire. abctl
-// decodes these exact tags from a separate module that this change does not
-// rebuild, so a drift here would silently blank its COST column.
-func TestEmitCostWireFormatUnchanged(t *testing.T) {
+// TestEmitCostWireFormatIsAdditive proves the wire stayed backward compatible when
+// provenance was added.
+//
+// The four original tags must serialize with the same names and values, and a
+// consumer that knows only those four must still decode correctly. abctl decodes
+// these tags from a separate module that this change does not rebuild, so a
+// breaking drift here would silently blank its COST column rather than fail a
+// build.
+func TestEmitCostWireFormatIsAdditive(t *testing.T) {
 	p := configure(t, 10)
 	pctx := &pipeline.Context{ResponseHeaders: http.Header{responseCostHeader: {"0.25"}}}
 	p.OnResponse(context.Background(), pctx)
@@ -565,9 +563,40 @@ func TestEmitCostWireFormatUnchanged(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal: %v", err)
 	}
-	const want = `{"cost_usd":0.25,"source":"gateway-header","daily_total_usd":0.25,"daily_max_usd":10}`
+
+	// The full shape, with provenance appended last.
+	const want = `{"cost_usd":0.25,"source":"gateway-header","daily_total_usd":0.25,"daily_max_usd":10,"provenance":"authoritative","settled":true}`
 	if string(b) != want {
 		t.Errorf("wire format changed:\n got %s\nwant %s", b, want)
+	}
+
+	// The compatibility claim itself: a consumer written against only the original
+	// four fields decodes this unchanged. This is what "additive" has to mean.
+	var legacy struct {
+		CostUSD       float64 `json:"cost_usd"`
+		Source        string  `json:"source"`
+		DailyTotalUSD float64 `json:"daily_total_usd"`
+		DailyMaxUSD   float64 `json:"daily_max_usd"`
+	}
+	if err := json.Unmarshal(b, &legacy); err != nil {
+		t.Fatalf("a four-field consumer failed to decode: %v", err)
+	}
+	if legacy.CostUSD != 0.25 || legacy.Source != costevent.SourceGatewayHeader ||
+		legacy.DailyTotalUSD != 0.25 || legacy.DailyMaxUSD != 10 {
+		t.Errorf("four-field decode = %+v, want the original values intact", legacy)
+	}
+}
+
+// TestEmitCost_ProvenanceOmittedWhenAbsent pins that an event carrying no
+// provenance omits the key entirely, so an older producer's bytes stay byte-identical
+// to what they were before the field existed.
+func TestEmitCost_ProvenanceOmittedWhenAbsent(t *testing.T) {
+	b, err := json.Marshal(costevent.Event{CostUSD: 0.25, Source: costevent.SourceGatewayHeader})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "provenance") {
+		t.Errorf("provenance was emitted for an event that has none: %s", b)
 	}
 }
 
@@ -617,12 +646,12 @@ func TestEmitCost_HeaderPath(t *testing.T) {
 // TestEmitCost_UsageFallback: streamed responses (0-cost header) get priced
 // from the token counters and the emitted event names the fallback source.
 func TestEmitCost_UsageFallback(t *testing.T) {
-	p := configurePriced(t, 5.00, 1e-6, 5e-6)
+	p := configurePriced(t, 5.00, map[pricing.Tier]float64{pricing.TierInput: 1e-6, pricing.TierOutput: 5e-6})
 	pctx := &pipeline.Context{ResponseHeaders: http.Header{
 		responseCostHeader: {"0"},
 		"Content-Type":     {"text/event-stream; charset=utf-8"},
 	}}
-	p.OnResponseFrame(context.Background(), pctx, []byte(`{"type":"message_start","message":{"usage":{"input_tokens":100,"output_tokens":40}}}`), false)
+	pricedInference(pctx, 100, 0, 0, 40)
 	p.OnResponseFrame(context.Background(), pctx, nil, true)
 
 	ev := getCostEvent(t, pctx)

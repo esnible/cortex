@@ -77,6 +77,24 @@ type PluginCapabilities struct {
 	// of running the guardrail as silent dead code.
 	RequiresAny []string
 
+	// RequiresLater names plugins that MUST be present in the same chain and
+	// positioned AFTER this plugin — the mirror of Requires.
+	//
+	// This exists because the request and response passes run in opposite
+	// directions: RunResponse and RunResponseFrame walk the chain in reverse, so a
+	// plugin that needs another's RESPONSE-phase output needs that plugin at a
+	// HIGHER index, not a lower one. Declaring Requires there would enforce exactly
+	// the wrong order.
+	//
+	// litellm-budget-track is the case: it prices the token counts inference-parser
+	// publishes while folding response frames, so the parser has to fold each frame
+	// BEFORE budget-track settles the cost — which means later in the chain.
+	//
+	// Without this, a plausible ordering silently unprices every streamed response:
+	// the counts simply are not there yet when the terminal frame arrives, and
+	// nothing reports that they were missed.
+	RequiresLater []string
+
 	// Description is operator-facing prose, one line, ≤80 chars,
 	// describing what this plugin does. Surfaces in `abctl`'s
 	// plugin-detail and catalog panes, and in /v1/plugins.

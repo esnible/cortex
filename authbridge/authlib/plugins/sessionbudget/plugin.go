@@ -2,6 +2,24 @@
 // inference calls, and wall-clock duration. Must run before inference-parser
 // in the declared plugin order (response path is reverse: inference-parser
 // finalizes counts first, then this plugin reads them).
+//
+// That ordering constraint is prose, and it builds cleanly when violated: a token
+// or call budget then reads zero counts and never fires, which is indistinguishable
+// from a session that stayed inside its limits. pipeline.PluginCapabilities gained
+// RequiresLater to make exactly this a boot error, and it is NOT declared here yet,
+// deliberately:
+//
+//   - Declared unconditionally, it refuses a duration-only budget, which is
+//     enforced entirely on the request path and needs no parser at all. That is a
+//     working configuration today.
+//   - Declared conditionally on the config, it breaks the documented contract that
+//     Capabilities() is static per factory (see pipeline/plugin.go). Catalog()
+//     builds a throwaway instance with no config, so /v1/plugins and abctl would
+//     report no ordering requirement for a plugin that then fails at boot.
+//
+// Doing this properly needs a config-dependent ordering mechanism the pipeline does
+// not have, which is its own change with its own review — not a rider on a pricing
+// PR. Tracked separately.
 package sessionbudget
 
 import (

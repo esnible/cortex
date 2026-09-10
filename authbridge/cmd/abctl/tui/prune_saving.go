@@ -3,8 +3,10 @@ package tui
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 
 	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
+	"github.com/rossoctl/cortex/authbridge/authlib/pricing"
 )
 
 // pruneSaving is the tool-prune per-request event as published on the request
@@ -38,26 +40,54 @@ func decodePruneSaving(e *pipeline.SessionEvent) (pruneSaving, bool) {
 	return ps, true
 }
 
+// publishedRates rebuilds a pricing.Rates from the rates tool-prune put on its
+// event, so the arithmetic below can go through pricing.Cost rather than being a
+// second implementation of it.
+//
+// No output rate: tool-prune deliberately publishes none, because pruning only
+// ever shrinks the prompt and attributing output cost to it would be false.
+func (ps pruneSaving) publishedRates() pricing.Rates {
+	var r pricing.Rates
+	for tier, v := range map[pricing.Tier]float64{
+		pricing.TierInput:      ps.RateInput,
+		pricing.TierCacheWrite: ps.RateCacheWrite,
+		pricing.TierCacheRead:  ps.RateCacheRead,
+	} {
+		if v > 0 {
+			r.Base[tier], r.Set[tier] = v, true
+		}
+	}
+	return r
+}
+
+// provenance names where this row's rates came from, for display. Empty when the
+// producer published none, which is an older proxy rather than an error.
+func (ps pruneSaving) provenance() string {
+	if ps.RateSource == "" || ps.RateSource == "none" {
+		return ""
+	}
+	return ps.RateSource
+}
+
 // savedTokensAndCost converts a request's byte saving into tokens and dollars,
 // using the response's own usage.
 //
 // The two halves live on different events by necessity: the byte saving is known
 // when the request is rewritten, and the tier it came out of — and the ratio to
-// convert bytes to tokens — only from the response. So this is the last step of
-// an arithmetic the plugin starts.
+// convert bytes to tokens — only from the response. So this is the last step of an
+// arithmetic the plugin starts.
 //
-// Tier matters more than it looks: providers charge ~1.25x the input rate for a
-// cache write and ~0.1x for a cache read, so the same saved bytes are worth over
-// 12x more on a cache miss than a hit. Picking the tier the request actually
-// used is the difference between a figure and a guess.
+// The dollars themselves are computed by pricing.Cost, not here. This function
+// supplies inputs and picks the tier via pricing.PromptTier; it holds no rate
+// table and no multiplication of its own. Before the consolidation this file
+// multiplied rates by tokens itself, which made it one of five places that turned
+// tokens into dollars and the only one nothing else tested.
 func savedTokensAndCost(ps pruneSaving, resp *pipeline.InferenceExtension) (tokens, usd float64, ok bool) {
 	if resp == nil {
 		return 0, 0, false
 	}
-	prompt := resp.InputTokens + resp.CacheReadTokens + resp.CacheWriteTokens
-	if prompt == 0 {
-		prompt = resp.PromptTokens // provider reported only an aggregate
-	}
+	u := pricing.UsageFromInference(resp)
+	prompt := u.PromptTotal()
 	if prompt <= 0 {
 		return 0, 0, false
 	}
@@ -65,15 +95,29 @@ func savedTokensAndCost(ps pruneSaving, resp *pipeline.InferenceExtension) (toke
 	// post-prune body size, both measured on the same request so the two sides
 	// agree.
 	tokens = float64(ps.BytesRemoved) * float64(prompt) / float64(ps.BodyBytesAfter)
-
-	rate := ps.RateInput
-	switch {
-	case resp.CacheWriteTokens > resp.CacheReadTokens && resp.CacheWriteTokens > 0:
-		rate = ps.RateCacheWrite
-	case resp.CacheReadTokens > 0:
-		rate = ps.RateCacheRead
+	if tokens <= 0 {
+		return 0, 0, false
 	}
-	return tokens, tokens * rate, true
+
+	// The whole saving is attributed to the one tier it came out of, so the Usage
+	// handed to Cost carries a count in that tier alone.
+	saved := pricing.Usage{}
+	switch pricing.PromptTier(u) {
+	case pricing.TierCacheWrite:
+		saved.CacheWrite = int(math.Round(tokens))
+	case pricing.TierCacheRead:
+		saved.CacheRead = int(math.Round(tokens))
+	default:
+		saved.Input = int(math.Round(tokens))
+	}
+	micros, priced := pricing.Cost(ps.publishedRates(), saved)
+	if !priced {
+		// The tier this request used has no rate. Report the token saving, which is
+		// still known, and decline the dollars rather than showing a zero that
+		// would read as "this saved nothing".
+		return tokens, 0, true
+	}
+	return tokens, float64(micros) / 1e6, true
 }
 
 // formatCompact renders a token count tersely enough for a table cell: 10577

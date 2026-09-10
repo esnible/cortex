@@ -20,6 +20,7 @@ import (
 
 	"github.com/rossoctl/cortex/authbridge/authlib/costevent"
 	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
+	"github.com/rossoctl/cortex/authbridge/authlib/pricing"
 )
 
 const (
@@ -63,6 +64,20 @@ type Counts struct {
 	// Requests-minus-PricedRequests is the gap, correct at every resolution, and
 	// it is what stops a partial total being presented as a complete one.
 	PricedRequests int64 `json:"pricedRequests,omitempty"`
+	// PriceableRequests counts the requests that COULD be priced — those carrying a
+	// model and a non-zero token count.
+	//
+	// It exists because Requests is the wrong denominator for coverage. Requests
+	// counts every proxied response, including MCP tool calls, health checks and any
+	// other non-LLM traffic the sidecar handled, while PricedRequests can only ever
+	// cover inference. Dividing one by the other made a CORRECTLY configured
+	// deployment read "1/10 priced" forever with an empty gap list — a permanent
+	// warning with nothing to act on, which trains an operator to ignore the one
+	// signal that matters.
+	//
+	// Priced-versus-priceable is the ratio that answers "is my cost total complete",
+	// and it reaches parity when it should.
+	PriceableRequests int64 `json:"priceableRequests,omitempty"`
 }
 
 // Add accumulates o into c, field by field.
@@ -81,6 +96,7 @@ func (c *Counts) Add(o Counts) {
 	c.Tokens += o.Tokens
 	c.CostMicros += o.CostMicros
 	c.PricedRequests += o.PricedRequests
+	c.PriceableRequests += o.PriceableRequests
 }
 
 // Bucket is one BucketWidth slice of time, as served to clients.
@@ -122,6 +138,17 @@ type bucket struct {
 	byMethod map[string]Counts
 	byStatus map[string]Counts
 	byPlugin map[string]Counts
+	// byProvenance tallies priced requests by where their figure came from, so a
+	// total can disclose how much of it is a gateway's own number versus modelled
+	// from a rate table. Like byUnpriced, kept outside the Group machinery: it
+	// qualifies the cost total, and a client needs it whichever grouping it asked
+	// for.
+	byProvenance map[string]Counts
+	// byUnpriced tallies endpoint/model pairs that could not be priced. Kept
+	// outside the Group machinery on purpose: it is not an alternative view of the
+	// same counts but a coverage gap, and a client needs it whichever grouping it
+	// asked for.
+	byUnpriced map[string]Counts
 }
 
 // eventCost is one event's settled cost, decoded once per Record and passed to
@@ -144,16 +171,77 @@ type eventCost struct {
 	// Counts.PricedRequests as a coverage count rather than needing a separate
 	// branch at every accumulation site.
 	priced int64
+	// priceable is 1 when the request carried a model and tokens, so it belongs in
+	// the coverage denominator whether or not a rate was found.
+	priceable int64
+	// provenance names where the figure came from, so a reported total can say how
+	// much of it is a gateway's own number and how much is modelled from a rate
+	// table. Empty for an unpriced request.
+	provenance string
+	// unpricedKey names the endpoint and model of a request that COULD have been
+	// priced but was not, so the gap is nameable instead of merely counted.
+	// Empty for a priced request, and empty for traffic that carries no model at
+	// all — naming every non-LLM call the proxy handled would bury the real gaps.
+	unpricedKey string
 }
 
-// decodeEventCost reads the cost event off e, if any. Zero value means unpriced,
-// which is not the same as a zero cost — see Counts.PricedRequests.
-func decodeEventCost(e *pipeline.SessionEvent) eventCost {
-	ce, ok := costevent.Decode(e)
-	if !ok {
+// costOf settles one event's cost, preferring a published figure and falling back
+// to the rate table.
+//
+// The order is deliberate. A cost event is a figure litellm-budget-track already
+// settled — often the gateway's own post-discount number — so it is never
+// second-guessed by a model. The resolver covers what that plugin did not: a
+// pipeline without it, or a request whose response carried no header.
+//
+// Before this fallback, cost required that plugin to be present. A deployment
+// running only inference-parser reported every request unpriced however many
+// tokens it burned, which reads as "this traffic was free" rather than "nothing
+// here priced it".
+//
+// Runs outside the aggregator's lock: resolution is a read of an immutable table
+// and must not hold up the hot path.
+func (a *Aggregator) costOf(e *pipeline.SessionEvent) eventCost {
+	if ce, ok := costevent.Decode(e); ok {
+		prov := ce.Provenance
+		if prov == "" {
+			// An event from a producer predating the field. It is a settled figure,
+			// so the honest label is authoritative-or-modelled-unknown rather than
+			// silently claiming either.
+			prov = "unlabelled"
+		}
+		return eventCost{micros: ce.Micros(), priced: 1, priceable: 1, provenance: prov}
+	}
+	// Only inference traffic can be priced or named. A plain proxied request has no
+	// model and no tokens, and is neither.
+	if e.Inference == nil || e.Inference.Model == "" {
 		return eventCost{}
 	}
-	return eventCost{micros: ce.Micros(), priced: 1}
+	u := pricing.UsageFromInference(e.Inference)
+	// A response carrying no tokens cannot be priced and is not a pricing GAP
+	// either: a 5xx, or a denial after the parser ran, reports a model with zero
+	// usage. Naming it would advertise a missing rate for a model that may well
+	// have one, and adding that entry would never make the row disappear.
+	if u == (pricing.Usage{}) {
+		return eventCost{}
+	}
+	key := e.Host + " " + e.Inference.Model
+	if a.rates == nil {
+		return eventCost{priceable: 1, unpricedKey: key}
+	}
+	rates, prov := a.rates.Resolve(e.Host, e.Inference.Model, u.PromptTotal())
+	if prov == pricing.ProvNone {
+		// No rate for this pair at all — the one case an operator fixes by adding a
+		// pricing entry, so the one case worth naming.
+		return eventCost{priceable: 1, unpricedKey: key}
+	}
+	micros, ok := pricing.Cost(rates, u)
+	if !ok {
+		// A rate was found but it does not cover every tier this request used. Still
+		// a gap an operator can close, and naming the pair points at the entry to
+		// extend rather than to create.
+		return eventCost{priceable: 1, unpricedKey: key}
+	}
+	return eventCost{micros: micros, priced: 1, priceable: 1, provenance: prov.String()}
 }
 
 // Aggregator is a fixed ring of per-minute buckets. Safe for concurrent use.
@@ -175,6 +263,10 @@ type Aggregator struct {
 	// pending holds request-phase plugin names awaiting their response event,
 	// keyed by RequestID. See Record.
 	pending map[string]*pendingRequest
+
+	// rates prices requests that carry no cost event. Optional: nil means only
+	// published figures count, which is the behaviour before WithPricing existed.
+	rates pricing.Resolver
 }
 
 // pendingRequest is the request half of one turn: the plugins that ran before the
@@ -234,6 +326,14 @@ func WithMaxSessions(n int) Option {
 		}
 	}
 }
+
+// WithPricing supplies the rate table used for requests that carry no cost event.
+//
+// The resolver is long-lived and its table swaps in place, which matters here: the
+// aggregator is created once at startup while the pipeline is rebuilt on every
+// config reload, so holding the Registry keeps it on current rates without being
+// rebuilt itself. See pricing.Registry.
+func WithPricing(r pricing.Resolver) Option { return func(a *Aggregator) { a.rates = r } }
 
 // New returns an empty Aggregator.
 func New(opts ...Option) *Aggregator {
@@ -300,7 +400,7 @@ func (a *Aggregator) Record(sessionID string, e *pipeline.SessionEvent) {
 	// relying on that.
 	var ec eventCost
 	if e.Phase != pipeline.SessionRequest {
-		ec = decodeEventCost(e)
+		ec = a.costOf(e)
 	}
 
 	a.mu.Lock()
@@ -447,7 +547,19 @@ func (a *Aggregator) foldInto(ring []bucket, t time.Time, e *pipeline.SessionEve
 		model = e.Inference.Model
 	}
 
-	one := Counts{Requests: 1, Tokens: tokens, CostMicros: ec.micros, PricedRequests: ec.priced}
+	one := Counts{
+		Requests:          1,
+		Tokens:            tokens,
+		CostMicros:        ec.micros,
+		PricedRequests:    ec.priced,
+		PriceableRequests: ec.priceable,
+	}
+	if ec.unpricedKey != "" {
+		addLabel(&b.byUnpriced, truncateLabel(ec.unpricedKey), Counts{Requests: 1})
+	}
+	if ec.provenance != "" {
+		addLabel(&b.byProvenance, truncateLabel(ec.provenance), Counts{Requests: 1})
+	}
 	if e.StatusCode >= 400 || e.Phase == pipeline.SessionDenied {
 		one.Errors = 1
 	}

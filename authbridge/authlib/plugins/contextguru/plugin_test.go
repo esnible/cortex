@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
 	bschemas "github.com/maximhq/bifrost/core/schemas"
+	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
 )
 
 func configured(t *testing.T, cfgJSON string) *ContextGuru {
