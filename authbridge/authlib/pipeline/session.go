@@ -161,8 +161,17 @@ type SessionEvent struct {
 	// traffic and someone has to restart something. Diagnosing the latter
 	// previously required the proxy log, the CA's NotBefore and a process
 	// listing — none of which the timeline hinted at.
-	TunnelReason string
+	TunnelReason TunnelReason
 }
+
+// TunnelReason is why an opaque tunnel stayed opaque.
+//
+// A named type rather than a bare string so the compiler catches a typo on the
+// producer side and on every consumer: these values are decoded from the wire,
+// enumerated in the operator docs and pinned by tests, and a misspelling in any of
+// those places would otherwise be a value that renders as itself and means nothing.
+// It marshals as a plain JSON string, so the wire contract is unchanged.
+type TunnelReason string
 
 // Tunnel reasons. Stable strings: abctl renders them and operators grep them.
 //
@@ -176,32 +185,45 @@ const (
 	// bad certificate" / "unknown certificate authority", which is the peer actively
 	// refusing us. Usually a process that started before the CA was minted, since CA
 	// files are read once at startup.
-	TunnelClientRejectedCA = "client-rejected-ca"
+	TunnelClientRejectedCA TunnelReason = "client-rejected-ca"
 	// TunnelClientHungUp — the client disappeared mid-handshake without sending an
 	// alert. CA distrust is one cause, but so is a cancelled request or a dead
 	// socket, so this deliberately does NOT tell anyone to restart anything.
-	TunnelClientHungUp = "client-hung-up"
+	TunnelClientHungUp TunnelReason = "client-hung-up"
 	// TunnelHandshakeFailed — the handshake failed for some other reason: a version,
 	// cipher or ALPN mismatch, or our own certificate minting failing. Not the
 	// client's fault as far as we can tell, so it gets no client-side advice. The
 	// logged error= field carries the specific cause.
-	TunnelHandshakeFailed = "handshake-failed"
+	TunnelHandshakeFailed TunnelReason = "handshake-failed"
 	// TunnelOriginUnverified — WE could not verify the origin, so bridging would have
 	// meant vouching for a certificate we could not check.
-	TunnelOriginUnverified = "origin-unverified"
-	// TunnelSkipCached — a previous rejection for this host is still inside the skip
-	// window, so no interception was attempted at all. Distinct from
-	// client-rejected-ca: THIS client may well trust the CA and is being tunnelled
-	// because another one did not.
-	TunnelSkipCached = "skip-cached"
+	TunnelOriginUnverified TunnelReason = "origin-unverified"
+	// TunnelSkipCached — an earlier handshake FAILURE for this host is still inside the
+	// skip window, so no interception was attempted at all.
+	//
+	// Deliberately does not say why that earlier attempt failed. The skip is seeded by
+	// any failed forge — a rejection, a hang-up, a cipher mismatch — because in every
+	// one of those the connection died mid-handshake and the client's retry needs a
+	// tunnel to work at all. Claiming "another client rejected the CA" here would be
+	// right only some of the time. The seeding failure logged its own specific reason
+	// when it happened; that is where the why lives.
+	//
+	// Distinct from client-rejected-ca either way: THIS client may well trust the CA
+	// and is being tunnelled because an earlier one had trouble.
+	TunnelSkipCached TunnelReason = "skip-cached"
 	// TunnelBridgeDisabled — no TLS bridge is configured.
-	TunnelBridgeDisabled = "bridge-disabled"
+	TunnelBridgeDisabled TunnelReason = "bridge-disabled"
 	// TunnelPassthroughPort, TunnelPassthroughNonTLS and TunnelPassthroughHost mirror
 	// Decision.Classify's own reasons for declining to intercept. All three are
 	// working as intended.
-	TunnelPassthroughPort   = "passthrough-port"
-	TunnelPassthroughNonTLS = "passthrough-nontls"
-	TunnelPassthroughHost   = "passthrough-host"
+	TunnelPassthroughPort   TunnelReason = "passthrough-port"
+	TunnelPassthroughNonTLS TunnelReason = "passthrough-nontls"
+	TunnelPassthroughHost   TunnelReason = "passthrough-host"
+	// TunnelPassthroughUnknown is the fallback when a lower layer declines to
+	// intercept for a reason this vocabulary does not yet name. It exists so that
+	// case can never produce the EMPTY string, which a consumer reads as "bridged" —
+	// the exact opposite of what happened, and invisible in a timeline.
+	TunnelPassthroughUnknown TunnelReason = "passthrough-unknown"
 )
 
 // EventTLS describes the TLS state of a connection that produced a
@@ -285,7 +307,7 @@ type sessionEventWire struct {
 	// omitempty so both skew directions are safe: an old abctl ignores an unknown
 	// key, and a new abctl against an old proxy sees "" and renders exactly what it
 	// renders today.
-	TunnelReason string `json:"tunnelReason,omitempty"`
+	TunnelReason TunnelReason `json:"tunnelReason,omitempty"`
 }
 
 func (e SessionEvent) MarshalJSON() ([]byte, error) {

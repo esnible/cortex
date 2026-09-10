@@ -314,12 +314,12 @@ func TestTunnelReasonsAreDocumented(t *testing.T) {
 	if err != nil {
 		t.Skipf("docs not readable from here: %v", err)
 	}
-	for _, reason := range []string{
+	for _, reason := range []TunnelReason{
 		TunnelClientRejectedCA, TunnelClientHungUp, TunnelHandshakeFailed,
 		TunnelOriginUnverified, TunnelSkipCached, TunnelBridgeDisabled,
 		TunnelPassthroughPort, TunnelPassthroughNonTLS, TunnelPassthroughHost,
 	} {
-		if !strings.Contains(string(doc), reason) {
+		if !strings.Contains(string(doc), string(reason)) {
 			t.Errorf("tunnel reason %q is not in laptop-service.md; an operator who sees "+
 				"it in the timeline has nowhere to look it up", reason)
 		}

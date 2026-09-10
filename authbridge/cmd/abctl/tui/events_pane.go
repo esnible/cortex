@@ -387,11 +387,11 @@ func rowAction(er eventRow, invs []pipeline.Invocation) (action, plugin string) 
 // rather than prettified: an operator grepping the proxy log for the same string
 // should find the same token. An unknown reason is passed through untouched — a
 // newer proxy paired with an older abctl should show the new reason, not hide it.
-func tunnelReasonCell(reason string) string {
+func tunnelReasonCell(reason pipeline.TunnelReason) string {
 	if reason == "" {
 		return "—"
 	}
-	return reason
+	return string(reason)
 }
 
 // eventAction folds a message's per-plugin invocations into the single ACTION +

@@ -591,6 +591,18 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, isBridge 
 // r.URL.Host); host is the skip/log key. Returns true if it consumed the connection
 // (success OR an unrecoverable post-forge failure that was logged); false to fall
 // back to a plain tunnel — so no working call is ever broken.
+// tunnelRecorder records the tunnel-open event for one CONNECT, with the reason the
+// bytes stayed opaque. Named rather than a bare func so the two callers' different
+// contracts are visible in the type: handleConnect passes a real recorder, while the
+// transparent listener passes noopRecorder because it already recorded eagerly before
+// its own bridge decision.
+type tunnelRecorder func(reason pipeline.TunnelReason)
+
+// noopRecorder is for a caller that has already recorded. Named so the call site says
+// why it discards rather than looking like an oversight — and so the day the
+// transparent listener is restructured, the remaining uses are greppable.
+func noopRecorder(pipeline.TunnelReason) {}
+
 // bridgeServe attempts to terminate the client's TLS and serve the decrypted
 // connection through the pipeline. Returns true when it handled the connection
 // (bridged, or the client's connection died post-forge and there is nothing left
@@ -600,7 +612,7 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, isBridge 
 // bridgeServe owns that call on every path it takes — including the successful
 // one, where it must happen before ServeConn blocks — because two of the reasons
 // are discovered only in here.
-func (s *Server) bridgeServe(client net.Conn, authority, host string, rec func(reason string)) bool {
+func (s *Server) bridgeServe(client net.Conn, authority, host string, rec tunnelRecorder) bool {
 	// 1) Verify upstream reachability + cert via the dedicated client, BEFORE forging.
 	//    HEAD avoids GET side-effects; a non-2xx status still returns err==nil (cert
 	//    verified), which is all we need. Only a transport/TLS error fails here. The
@@ -650,9 +662,12 @@ func (s *Server) bridgeServe(client net.Conn, authority, host string, rec func(r
 		// about trust — and a minting failure on our own side is the worst case for
 		// that, since nothing they do to the client can fix it.
 		if reason == pipeline.TunnelClientRejectedCA {
+			// Short enough to read unwrapped. The lsof recipe for mapping the client
+			// port to a process lives in docs/laptop-service.md rather than being
+			// repeated on every occurrence of this line.
 			args = append(args,
 				"ca_not_before", s.caNotBefore(),
-				"fix", "restart clients that started before ca_not_before (CA files are read once at startup); identify this one with: lsof -nP -iTCP:"+clientPort(client))
+				"fix", "restart clients started before ca_not_before")
 		}
 		slog.Warn("tls-bridge passthrough", args...)
 		rec(reason)
@@ -664,9 +679,9 @@ func (s *Server) bridgeServe(client net.Conn, authority, host string, rec func(r
 		// case, reached from the tunnel-threshold path.
 		return true // conn is dead post-forge; nothing left to tunnel
 	}
-	// Bridged. Empty reason: abctl folds this row into the decrypted inner
-	// request, whose own action is the one worth showing.
-	rec("")
+	// Bridged: record with no reason, which is what tells abctl to fold this row into
+	// the decrypted inner request whose own action is the interesting one.
+	markBridged(rec)
 
 	// 3) Serve the decrypted conn through the UNCHANGED pipeline.
 	tlsbridge.ServeConn(tconn, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1162,14 +1177,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// than a call here because the reason is not known yet: recording before the
 	// bridge decision — as this did — made the two most useful reasons
 	// unrepresentable, since both are discovered inside bridgeServe.
-	recOnce := false
-	rec := func(reason string) {
-		if skipped || recOnce {
-			return // SkipHosts ran no plugins, so there is nothing to attribute
-		}
-		recOnce = true
-		s.recordTunnelOpened(pctx, reason)
-	}
+	rec := s.tunnelRecorderFor(pctx, skipped)
 	reason := pipeline.TunnelBridgeDisabled
 
 	if s.TLSBridge != nil {
@@ -1449,7 +1457,7 @@ func (s *Server) warnFired() bool { return s.bridgeWarned.Load() }
 // wire vocabulary. Classify already distinguishes these cases; translating here
 // rather than inventing a parallel set keeps one source of truth for WHY the
 // bridge declined.
-func passthroughReason(why string) string {
+func passthroughReason(why string) pipeline.TunnelReason {
 	switch why {
 	case tlsbridge.ReasonPort:
 		return pipeline.TunnelPassthroughPort
@@ -1457,9 +1465,25 @@ func passthroughReason(why string) string {
 		return pipeline.TunnelPassthroughNonTLS
 	case tlsbridge.ReasonSkip:
 		return pipeline.TunnelPassthroughHost
+	case "":
+		// Classify pairs "" with Terminate — it is NOT declining. The caller bridges
+		// and bridgeServe records that outcome, so there is no passthrough reason to
+		// give and "" is right here.
+		return ""
 	}
-	return ""
+	// Any OTHER value is a reason tlsbridge grew that this does not map. Never "":
+	// that is how a BRIDGED row is marked, so an unmapped passthrough would render as
+	// an em dash and read as "we decrypted this". Go cannot force an exhaustive
+	// switch, so the fallback is a value that shows up as itself and sends the reader
+	// here; TestPassthroughReasonCoversEveryClassifyReason fails when it happens.
+	return pipeline.TunnelPassthroughUnknown
 }
+
+// markBridged records a successful bridge. Its whole job is to trip the once-guard
+// with no reason attached, which is the signal abctl uses to fold the CONNECT row into
+// the decrypted request. Named because `rec("")` at the call site reads like an
+// oversight rather than a decision.
+func markBridged(rec tunnelRecorder) { rec("") }
 
 // clientAddr names the client end of a connection for diagnostics, tolerating a
 // nil conn or nil RemoteAddr so a logging path can never panic.
@@ -1522,7 +1546,7 @@ func (s *Server) caNotBefore() string {
 // Matched on the string because the error is wrapped in the unexported
 // *tls.permanentError: errors.As against tls.AlertError returns false for it, which I
 // verified rather than assumed.
-func handshakeFailureReason(err error) string {
+func handshakeFailureReason(err error) pipeline.TunnelReason {
 	if err == nil {
 		return ""
 	}
@@ -1535,4 +1559,29 @@ func handshakeFailureReason(err error) string {
 		return pipeline.TunnelClientHungUp
 	}
 	return pipeline.TunnelHandshakeFailed
+}
+
+// tunnelRecorderFor returns the recorder for one CONNECT: it records the tunnel-open
+// at most once, with the reason the bytes stayed opaque.
+//
+// Extracted from handleConnect so the at-most-once invariant is reachable from a test.
+// It was previously an inline closure, and the test that claimed to cover it did not:
+// no current path calls the recorder twice, so removing the guard left every test
+// passing. The guard defends against a future exit, which is exactly the kind of thing
+// only a direct test can hold.
+//
+// sync.Once rather than a bool flag: with a flag the invariant holds only while every
+// exit happens to re-read it, so a branch added later is silently uncovered. Once makes
+// it unforgeable however the caller is rearranged.
+//
+// skipped means the destination matched SkipHosts, where no plugin ran and there is
+// nothing to attribute an event to.
+func (s *Server) tunnelRecorderFor(pctx *pipeline.Context, skipped bool) tunnelRecorder {
+	var once sync.Once
+	return func(reason pipeline.TunnelReason) {
+		if skipped {
+			return
+		}
+		once.Do(func() { s.recordTunnelOpened(pctx, reason) })
+	}
 }

@@ -140,14 +140,14 @@ func TestClientRejectedCA_WarnsEvenAfterOtherTrafficBridged(t *testing.T) {
 
 	client := rejectingClient(t)
 	pctx := &pipeline.Context{Direction: pipeline.Outbound, Host: authority}
-	rec := func(reason string) { s.recordTunnelOpened(pctx, reason) }
+	rec := func(reason pipeline.TunnelReason) { s.recordTunnelOpened(pctx, reason) }
 
 	if handled := s.bridgeServe(client, authority, hostOnly(authority), rec); !handled {
 		t.Fatal("bridgeServe returned false; the connection is dead post-forge and must be reported handled")
 	}
 
 	got := logbuf.String()
-	if !strings.Contains(got, pipeline.TunnelClientRejectedCA) {
+	if !strings.Contains(got, string(pipeline.TunnelClientRejectedCA)) {
 		t.Errorf("warning did not name the reason %q despite bridgedRequests=7:\n%s",
 			pipeline.TunnelClientRejectedCA, got)
 	}
@@ -159,8 +159,12 @@ func TestClientRejectedCA_WarnsEvenAfterOtherTrafficBridged(t *testing.T) {
 	if !strings.Contains(got, "ca_not_before=") {
 		t.Errorf("warning did not state the CA cutoff, which is what makes it actionable:\n%s", got)
 	}
-	if !strings.Contains(got, "lsof") {
-		t.Errorf("warning did not say how to map the port to a process:\n%s", got)
+	// The lsof recipe deliberately does NOT appear here: review asked for a log line
+	// short enough to read unwrapped, so mapping a client port to a process lives in
+	// docs/laptop-service.md instead of being repeated on every occurrence. What the
+	// line must still carry is the client and the cutoff, asserted above.
+	if strings.Contains(got, "lsof") {
+		t.Errorf("the warning re-grew the lsof recipe; it belongs in the docs:\n%s", got)
 	}
 
 	// And the timeline carries it, so this is visible without reading a log file.
@@ -184,7 +188,7 @@ func TestClientRejectedCA_SkipsHostAfterwards(t *testing.T) {
 	if s.TLSBridge.Skip.Contains(host) {
 		t.Fatal("host skipped before any failure")
 	}
-	s.bridgeServe(rejectingClient(t), authority, host, func(string) {})
+	s.bridgeServe(rejectingClient(t), authority, host, noopRecorder)
 	if !s.TLSBridge.Skip.Contains(host) {
 		t.Error("host not skipped after a rejected forge; the client's retry would fail again")
 	}
@@ -204,10 +208,10 @@ func TestClientHungUp_GetsNoRestartAdvice(t *testing.T) {
 
 	pctx := &pipeline.Context{Direction: pipeline.Outbound, Host: authority}
 	s.bridgeServe(hangUpClient(t), authority, hostOnly(authority),
-		func(reason string) { s.recordTunnelOpened(pctx, reason) })
+		func(reason pipeline.TunnelReason) { s.recordTunnelOpened(pctx, reason) })
 
 	got := logbuf.String()
-	if !strings.Contains(got, pipeline.TunnelClientHungUp) {
+	if !strings.Contains(got, string(pipeline.TunnelClientHungUp)) {
 		t.Errorf("want reason %q, got:\n%s", pipeline.TunnelClientHungUp, got)
 	}
 	if strings.Contains(got, "fix=") || strings.Contains(got, "ca_not_before") {
@@ -366,5 +370,56 @@ func TestHandleConnect_RecordsExactlyOnce(t *testing.T) {
 	}
 	if v := store.View(session.DefaultSessionID); v == nil || len(v.Events) != 1 {
 		t.Errorf("want exactly 1 tunnel-open event, got %d", len(v.Events))
+	}
+}
+
+// TestHangUpAlsoSeedsTheSkip pins that a hang-up skips the host too, and that the
+// second connection therefore reports skip-cached rather than client-rejected-ca.
+//
+// Raised in review as a possible defect — Skip is seeded before the failure is
+// classified, so a hang-up caches the same state a confirmed rejection does. Keeping
+// it deliberately: in EVERY failure class the forged handshake already killed that
+// connection, so the client's retry needs a tunnel to work at all. Skipping only on
+// client-rejected-ca would leave a client that closes without sending an alert — which
+// is a real way to refuse a certificate — failing forever.
+//
+// What WAS wrong is what skip-cached claimed. It said "another client rejected the CA",
+// which is true only sometimes; the seeding failure logs its own specific reason. This
+// test exists so the behaviour is a choice on the record rather than an accident.
+func TestHangUpAlsoSeedsTheSkip(t *testing.T) {
+	s, store, authority := bridgeForRejectTest(t)
+	host := hostOnly(authority)
+	pctx := &pipeline.Context{Direction: pipeline.Outbound, Host: authority}
+
+	s.bridgeServe(hangUpClient(t), authority, host,
+		func(r pipeline.TunnelReason) { s.recordTunnelOpened(pctx, r) })
+
+	// The first failure reports what actually happened, not a CA rejection.
+	v := store.View(session.DefaultSessionID)
+	if v == nil || len(v.Events) != 1 {
+		t.Fatalf("want 1 event, got %+v", v)
+	}
+	if got := v.Events[0].TunnelReason; got != pipeline.TunnelClientHungUp {
+		t.Errorf("first failure reason = %q, want %q — a hang-up must not be reported as "+
+			"a CA rejection", got, pipeline.TunnelClientHungUp)
+	}
+	// And it seeds the skip, so the client's retry can tunnel.
+	if !s.TLSBridge.Skip.Contains(host) {
+		t.Error("a hang-up did not seed the skip; the client's retry would forge again and " +
+			"die again")
+	}
+}
+
+// TestPassthroughReasonNeverEmpty: the fallback must be the sentinel, never "".
+// An empty reason is how a BRIDGED row is marked, so an unmapped passthrough would
+// render as an em dash and read as "we decrypted this" — the opposite of the truth.
+func TestPassthroughReasonNeverEmpty(t *testing.T) {
+	for _, why := range append([]string{"a-reason-nobody-mapped", ""}, tlsbridge.ClassifyReasons...) {
+		if got := passthroughReason(why); got == "" {
+			t.Errorf("passthroughReason(%q) = %q; an empty reason renders as BRIDGED", why, got)
+		}
+	}
+	if got := passthroughReason("a-reason-nobody-mapped"); got != pipeline.TunnelPassthroughUnknown {
+		t.Errorf("unmapped reason = %q, want the sentinel %q", got, pipeline.TunnelPassthroughUnknown)
 	}
 }

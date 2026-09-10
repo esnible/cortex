@@ -149,7 +149,7 @@ func (s *Server) HandleTransparentConn(clientConn net.Conn, dst string) {
 				_ = upstream.Close() // bridgeServe dials its own verified upstream; drop the pre-dial
 				// No-op recorder: this path already recorded the tunnel-open eagerly
 				// above, so letting bridgeServe record again would double-count it.
-				if s.bridgeServe(clientConn, host, key, func(string) {}) {
+				if s.bridgeServe(clientConn, host, key, noopRecorder) {
 					return
 				}
 				// bridgeServe fell open (upstream-verify failed) → re-dial for the tunnel.
@@ -170,7 +170,7 @@ func (s *Server) HandleTransparentConn(clientConn net.Conn, dst string) {
 // HandleTransparentConn. MCP/Inference snapshots are nil by definition (the
 // bytes are opaque); Invocations from gate plugins and plugin-public Plugins
 // entries are still meaningful.
-func (s *Server) recordTunnelOpened(pctx *pipeline.Context, reason string) {
+func (s *Server) recordTunnelOpened(pctx *pipeline.Context, reason pipeline.TunnelReason) {
 	if s.Sessions == nil {
 		return
 	}
