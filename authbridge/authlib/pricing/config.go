@@ -2,6 +2,7 @@ package pricing
 
 import (
 	"fmt"
+	"log/slog"
 	"math"
 	"sort"
 	"strings"
@@ -243,4 +244,28 @@ func (t TierRates) resolve(what string) (rate [numTiers]float64, set [numTiers]b
 		}
 	}
 	return rate, set, nil
+}
+
+// WarnIfUnpinned logs once at startup when the process will price every endpoint from
+// the bundled table.
+//
+// The bundled rates are VENDOR LIST. A deployment behind a gateway that bills below
+// list is overstated — measurably so: the gateway these rates replaced billed at 0.76x
+// vendor list, making every figure 1.32x high. Nothing in the running system says so,
+// because an overstated figure looks exactly like an accurate one.
+//
+// Deliberately a WARN and not an error: pricing from list is a reasonable default and
+// the correct answer for anyone talking straight to the vendor. It is only wrong
+// silently, which is what this fixes.
+func (c *Config) WarnIfUnpinned(log *slog.Logger) {
+	if !c.BundledEnabled() {
+		return // pricing only what was configured; nothing to warn about
+	}
+	if c != nil && len(c.Endpoints) > 0 {
+		return // the operator has pinned something
+	}
+	log.Warn("pricing: every endpoint will price from the bundled table, which ships VENDOR LIST rates",
+		"effect", "a gateway that bills below list is OVERSTATED (the reference gateway differs by 1.32x)",
+		"fix", "add a pricing.endpoints entry for your gateway; see docs/plugin-catalog.md",
+		"check", "abctl annotates the cost total [bundled] rather than [configured]")
 }

@@ -149,8 +149,14 @@ func main() {
 		if err != nil {
 			return nil, nil, nil, fmt.Errorf("pricing: %w", err)
 		}
-		pricingRegistry.Swap(tab)
 
+		// The registry still holds the PREVIOUS table while the pipelines build, and
+		// is swapped only once both have. Swapping first made a reload
+		// non-transactional: a plugin-build failure makes the reloader reject the
+		// change and keep the running pipelines, but the rates had already moved — so
+		// live traffic priced from a config that was refused. Plugins only store the
+		// resolver during Configure and never resolve through it, so building against
+		// the old table is safe.
 		deps := plugins.Deps{SPIFFE: provider, Pricing: pricingRegistry}
 		in, err := plugins.BuildWithDeps(c.Pipeline.Inbound.Plugins, deps)
 		if err != nil {
@@ -160,6 +166,8 @@ func main() {
 		if err != nil {
 			return nil, nil, nil, fmt.Errorf("outbound: %w", err)
 		}
+		pricingRegistry.Swap(tab)
+		c.Pricing.WarnIfUnpinned(slog.Default())
 		return in, out, c, nil
 	}
 

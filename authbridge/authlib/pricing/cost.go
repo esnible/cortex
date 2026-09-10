@@ -2,6 +2,14 @@ package pricing
 
 import "math"
 
+// maxCostMicros bounds a single request's cost.
+//
+// float64 counts every integer exactly only up to 2^53, so a total beyond that cannot
+// round-trip through int64 meaningfully even when it fits. $9 billion for one request
+// is unreachable by any legitimate traffic and is the point past which a figure is a
+// bug rather than a bill.
+const maxCostMicros = 1 << 53
+
 // Cost prices u at r, returning integer micros — millionths of a dollar.
 //
 // Micros because usage.Counts.CostMicros is already that unit, and integer
@@ -26,12 +34,13 @@ import "math"
 //
 // A tier with no rate but no tokens is fine: toolprune's table has no output rate
 // at all, and refusing there would unprice every request it measures.
-func Cost(r Rates, u Usage) (micros int64, ok bool) {
+func Cost(r Rates, u Usage) (int64, bool) {
 	if u == (Usage{}) {
 		return 0, false
 	}
 	eff := r.At(u.PromptTotal())
 	var usd float64
+	var micros float64
 	for i, n := range u.tokens() {
 		if n < 0 {
 			return 0, false
@@ -53,5 +62,13 @@ func Cost(r Rates, u Usage) (micros int64, ok bool) {
 		}
 		usd += float64(n) * eff.Base[i]
 	}
-	return int64(math.Round(usd * 1e6)), true
+	micros = math.Round(usd * 1e6)
+	// Bound-checked before conversion. Each RATE is validated above, but a finite
+	// rate times a large token count still accumulates past int64: the conversion
+	// would then be undefined and return ok=true with a garbage ledger figure, which
+	// is worse than reporting the request unpriced.
+	if math.IsNaN(micros) || math.IsInf(micros, 0) || micros > maxCostMicros || micros < 0 {
+		return 0, false
+	}
+	return int64(micros), true
 }

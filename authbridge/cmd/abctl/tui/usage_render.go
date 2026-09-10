@@ -402,7 +402,7 @@ func topUnpriced(by map[string]int64, max int) string {
 	}
 	parts := make([]string, 0, len(shown))
 	for _, k := range shown {
-		parts = append(parts, fmt.Sprintf("%s x%d", k, by[k]))
+		parts = append(parts, fmt.Sprintf("%s x%d", sanitizeLabel(k), by[k]))
 	}
 	out := strings.Join(parts, ", ")
 	if rest := len(keys) - len(shown); rest > 0 {
@@ -456,4 +456,28 @@ func provenanceNote(by map[string]int64) string {
 		parts = append(parts, fmt.Sprintf("%s %d", k, by[k]))
 	}
 	return " [" + strings.Join(parts, ", ") + "]"
+}
+
+// sanitizeLabel makes a wire-derived label safe to write to a terminal.
+//
+// These keys are "<endpoint> <model>", and the model half comes from the `model` field
+// of the request body — chosen by the workload, and the inference parser records it
+// verbatim. Writing it straight to a TTY lets an escape sequence reposition the cursor,
+// recolour the pane, or erase the very coverage gap it is reporting; a newline alone
+// breaks the table apart. CWE-150.
+//
+// Control characters and DEL become U+FFFD rather than being dropped, so tampering is
+// visible instead of silently producing a plausible-looking label.
+func sanitizeLabel(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		switch {
+		case r == 0x7f, r < 0x20:
+			b.WriteRune('\uFFFD')
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }

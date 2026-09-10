@@ -184,3 +184,35 @@ func TestRenderCostSummary_LabelsProvenance(t *testing.T) {
 		})
 	}
 }
+
+// TestRenderCostSummary_SanitizesWireDerivedLabels: the model half of an UnpricedBy key
+// comes from the request body's `model` field, chosen by the workload and recorded
+// verbatim by the parser. Rendering it raw to a TTY lets an escape sequence reposition
+// the cursor, recolour the pane, or erase the very gap being reported. CWE-150.
+func TestRenderCostSummary_SanitizesWireDerivedLabels(t *testing.T) {
+	for name, hostile := range map[string]string{
+		"ANSI colour":     "gw \x1b[31mclaude-opus-5",
+		"cursor move":     "gw \x1b[2Aclaude",
+		"newline":         "gw claude\nFAKE TOTAL: $0.0000",
+		"carriage return": "gw claude\rerased",
+		"NUL":             "gw claude\x00",
+		"DEL":             "gw claude\x7f",
+	} {
+		t.Run(name, func(t *testing.T) {
+			got := renderCostSummary(&usage.Snapshot{
+				Priced:     true,
+				Totals:     usage.Counts{Requests: 10, PriceableRequests: 10, PricedRequests: 4, CostMicros: 1},
+				UnpricedBy: map[string]int64{hostile: 6},
+			})
+			for _, bad := range []string{"\x1b", "\n", "\r", "\x00", "\x7f"} {
+				if strings.Contains(got, bad) {
+					t.Errorf("rendered output still carries %q: %q", bad, got)
+				}
+			}
+			// The label is still recognisable, so a real gap remains actionable.
+			if !strings.Contains(got, "claude") {
+				t.Errorf("sanitizing destroyed the label: %q", got)
+			}
+		})
+	}
+}

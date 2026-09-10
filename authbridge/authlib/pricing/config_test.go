@@ -1,6 +1,7 @@
 package pricing
 
 import (
+	"log/slog"
 	"strings"
 	"testing"
 
@@ -239,5 +240,42 @@ endpoints:
 	}
 	if !strings.Contains(err.Error(), "claude-[") {
 		t.Errorf("error %q does not name the offending pattern", err)
+	}
+}
+
+// The 1.32x overstatement on a discounted gateway is silent: an overstated figure looks
+// exactly like an accurate one. A boot warning is the only thing that makes it visible.
+func TestWarnIfUnpinned(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		cfg  *Config
+		warn bool
+	}{
+		{"no pricing section at all", nil, true},
+		{"bundled on, nothing pinned", &Config{}, true},
+		{"an endpoint pinned", &Config{Endpoints: []EndpointConfig{{Hosts: []string{"gw"}}}}, false},
+		{"bundled disabled", &Config{Bundled: func() *bool { b := false; return &b }()}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf strings.Builder
+			log := slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn}))
+			tc.cfg.WarnIfUnpinned(log)
+			got := buf.String()
+			if tc.warn && got == "" {
+				t.Error("no warning for a deployment pricing everything from vendor list")
+			}
+			if !tc.warn && got != "" {
+				t.Errorf("warned unnecessarily: %s", got)
+			}
+			if tc.warn {
+				// The direction of the error and the remedy both have to be in it, or an
+				// operator cannot act on it.
+				for _, want := range []string{"VENDOR LIST", "OVERSTATED", "pricing.endpoints"} {
+					if !strings.Contains(got, want) {
+						t.Errorf("warning omits %q: %s", want, got)
+					}
+				}
+			}
+		})
 	}
 }

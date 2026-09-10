@@ -70,19 +70,20 @@ func Filter(raw []byte, commit string) ([]byte, error) {
 	}
 	keep := map[string]json.RawMessage{}
 	for name, body := range all {
+		var header struct {
+			Provider string `json:"litellm_provider"`
+		}
+		if json.Unmarshal(body, &header) != nil || header.Provider != AnthropicProvider {
+			continue // sample_spec, non-model rows, and other providers
+		}
 		var mi modelInfo
 		if err := json.Unmarshal(body, &mi); err != nil {
-			// Same reasoning as in Entries: a claude-shaped row that will not parse is
-			// a real problem, because dropping it here removes it from the snapshot
-			// too and nothing downstream can then notice it is missing.
-			if strings.HasPrefix(name, "claude") || strings.Contains(name, "/claude") {
-				return nil, fmt.Errorf("pricegen: entry %q failed to parse, which would silently drop it from the snapshot: %w", name, err)
-			}
-			continue // sample_spec and other non-model rows
+			// Provider-verified and still unusable: dropping it removes the row from
+			// the snapshot too, and nothing downstream can then notice it is gone.
+			// Upstream changing a cost field's JSON type is exactly how this arrives.
+			return nil, fmt.Errorf("pricegen: %s entry %q failed to decode, which would silently drop it from the snapshot: %w", AnthropicProvider, name, err)
 		}
-		if mi.Provider != AnthropicProvider {
-			continue
-		}
+		_ = mi // decoded to prove it is usable; the raw body is what gets stored
 		keep[name] = body
 	}
 	if len(keep) == 0 {
@@ -128,18 +129,20 @@ func Entries(raw []byte) ([]pricing.Entry, error) {
 		if name == SnapshotCommitKey {
 			continue // the generator's provenance stamp, not a model
 		}
+		// The PROVIDER is decoded first, alone, so "is this a row we care about" never
+		// depends on the rest of the row parsing. Keying that off the model NAME — as
+		// this did — misses an Anthropic row named unconventionally, and that row is
+		// then dropped silently.
+		var header struct {
+			Provider string `json:"litellm_provider"`
+		}
+		if json.Unmarshal(body, &header) != nil || header.Provider != AnthropicProvider {
+			continue // sample_spec, non-model rows, and other providers
+		}
 		var mi modelInfo
 		if err := json.Unmarshal(body, &mi); err != nil {
-			// Recorded, not swallowed. The whole-map decode this replaced failed
-			// loudly on a malformed entry; a bare `continue` would instead drop a
-			// real model quietly, and the next regeneration would remove it from the
-			// bundled table so it resolved via a family glob or not at all.
-			//
-			// The golden test cannot catch that on its own: it compares
-			// Entries(snapshot) against a table built from the same Entries, so a
-			// dropped model disappears from both sides and the lengths still agree.
-			// Hence surfacing the names here AND the independent per-key check in
-			// bundled_test.go.
+			// Provider-verified, so this is a row we meant to keep: record it and fail
+			// below rather than dropping a real model quietly.
 			skipped = append(skipped, fmt.Sprintf("%s (%v)", name, err))
 			continue
 		}
@@ -147,18 +150,10 @@ func Entries(raw []byte) ([]pricing.Entry, error) {
 	}
 	sort.Strings(skipped)
 	if len(skipped) > 0 {
-		// Only rows that look like they were meant to be models are an error. Upstream
-		// carries non-model rows such as sample_spec, and those are expected.
-		var real []string
-		for _, sk := range skipped {
-			if strings.HasPrefix(sk, "claude") || strings.Contains(sk, "/claude") {
-				real = append(real, sk)
-			}
-		}
-		if len(real) > 0 {
-			return nil, fmt.Errorf("pricegen: %d claude entr(ies) failed to parse, which would silently drop them from the table: %s",
-				len(real), strings.Join(real, "; "))
-		}
+		// Everything reaching here is already provider-verified, so any failure is a
+		// row we meant to keep — no name heuristic needed to tell them apart.
+		return nil, fmt.Errorf("pricegen: %d %s entr(ies) failed to decode, which would silently drop them from the table: %s",
+			len(skipped), AnthropicProvider, strings.Join(skipped, "; "))
 	}
 
 	var out []pricing.Entry

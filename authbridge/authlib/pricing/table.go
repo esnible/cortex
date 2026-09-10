@@ -238,10 +238,16 @@ func NewTable(entries []Entry) (*Table, error) {
 	seen := make(map[string]struct{}, len(entries))
 	for _, e := range entries {
 		switch e.Prov {
+		case ProvBundled, ProvDiscovered, ProvConfigured:
+			// The only levels a table row may carry. An allowlist, not a denylist:
+			// Provenance(99) previously passed, outranked every valid row in Resolve
+			// because precedence is the numeric ordering, and printed as "none".
 		case ProvAuthoritative:
 			return nil, fmt.Errorf("pricing: entry %q/%q claims authoritative provenance, which is a settled per-request figure and not a table rate", e.Host, e.Model)
 		case ProvNone:
 			return nil, fmt.Errorf("pricing: entry %q/%q has no provenance", e.Host, e.Model)
+		default:
+			return nil, fmt.Errorf("pricing: entry %q/%q has provenance %d, which is not a table level", e.Host, e.Model, int(e.Prov))
 		}
 		if !e.Rates.any() {
 			return nil, fmt.Errorf("pricing: entry %q/%q sets no rate for any tier", e.Host, e.Model)
@@ -286,7 +292,12 @@ func NewTable(entries []Entry) (*Table, error) {
 			prov:  e.Prov,
 			spec: specificity{
 				namedHost: !anyHost(host),
-				exactHost: !anyHost(host) && !strings.ContainsAny(host, globMeta),
+				// isIPv6Literal counts as EXACT: matchHost compares such a pattern
+				// literally (path.Match would read "[" as a character class), so
+				// ranking it as a glob made the matching and the ranking disagree —
+				// an overlapping glob of the same length could outrank the very
+				// address it was written for.
+				exactHost: !anyHost(host) && (isIPv6Literal(host) || !strings.ContainsAny(host, globMeta)),
 				// Zero for a catch-all, so "*" and "" rank identically — the docs
 				// promise they mean the same thing, but len("*") is 1 and len("") is
 				// 0, and hostLen is compared before the model axis, so a
