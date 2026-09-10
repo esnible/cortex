@@ -143,3 +143,44 @@ func TestRenderCostSummary_RealGapMeasuredAgainstPriceable(t *testing.T) {
 		t.Errorf("rendered %q, want the gap named", got)
 	}
 }
+
+// The spec's success criterion asks for cost "labelled with provenance". A total
+// assembled from a gateway's own numbers and one modelled from a shipped vendor-list
+// table are not equally trustworthy, and nothing in the column distinguished them.
+func TestRenderCostSummary_LabelsProvenance(t *testing.T) {
+	base := usage.Counts{Requests: 10, PriceableRequests: 10, PricedRequests: 10, CostMicros: 1_240_000}
+	for _, tc := range []struct {
+		name string
+		by   map[string]int64
+		want string
+		deny string
+	}{{
+		// The baseline a reader already assumes; annotating it is noise.
+		name: "wholly authoritative is silent",
+		by:   map[string]int64{"authoritative": 10},
+		deny: "[",
+	}, {
+		name: "wholly bundled says so",
+		by:   map[string]int64{"bundled": 10},
+		want: "[bundled]",
+	}, {
+		name: "configured says so",
+		by:   map[string]int64{"configured": 10},
+		want: "[configured]",
+	}, {
+		// The case a reader most needs: part of this total is modelled.
+		name: "mixed lists the dominant source first",
+		by:   map[string]int64{"bundled": 3, "authoritative": 7},
+		want: "[authoritative 7, bundled 3]",
+	}} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := renderCostSummary(&usage.Snapshot{Priced: true, Totals: base, PricedBy: tc.by})
+			if tc.want != "" && !strings.Contains(got, tc.want) {
+				t.Errorf("rendered %q, missing %q", got, tc.want)
+			}
+			if tc.deny != "" && strings.Contains(got, tc.deny) {
+				t.Errorf("rendered %q, should not contain %q", got, tc.deny)
+			}
+		})
+	}
+}

@@ -1777,6 +1777,44 @@ changes), `laptop-token-savings.md` (config lifted to the top level).
 - Docs updated: `plugin-catalog.md`, `tool-prune-plugin.md`,
   `litellm-budgettrack-plugin.md`, `laptop-token-savings.md`.
 
+## Audit against the definition of done
+
+Verified empirically, not asserted:
+
+| Success criterion (spec) | Result |
+|---|---|
+| 1. One rate table, one `Cost`, one token parser | **Met.** No rate knobs or rate tables outside `authlib/pricing`; one surviving `tokens*rate` in tool-prune's metrics counter, documented in the package doc |
+| 2. `claude-opus-4-1` / `claude-opus-5` price 3x apart from bundled, no config | **Met.** 15.00/M vs 5.00/M = exactly 3.00x, both `bundled` |
+| 3. Two gateways plus `api.anthropic.com` each priced correctly | **Met** for the manual half: `gw-a` 3.80 (configured), `gw-b` 2.50 (configured), `api.anthropic.com` 5.00 (bundled). Discovery for the gateways is phase 7 by design |
+| 4. Cost labelled with provenance, partial coverage disclosed | **Met after this audit.** It was NOT: `provenance` was written by the plugin and read by nothing, so `/v1/usage` reported an unqualified total. `Snapshot.PricedBy` and abctl rendering close it |
+| 5. Ledger and `/v1/usage` agree on the same request | **Met.** Both 8204 micros for the same figure — the micro quantization is what makes this hold |
+
+Wire compatibility checked in both directions against the bytes #920 actually shipped:
+old producer → new consumer decodes with the new fields zero; new producer → old
+four-field consumer reads the original values unchanged; an unlabelled zero is still
+refused while a settled zero is accepted.
+
+**One DoD item cannot be satisfied as written:** "called out in a release note". This
+repo has no release-notes or CHANGELOG mechanism. The breaking change is carried by
+the PR body's dedicated section and by both plugin docs; a `breaking-change` label
+would be the automation hook, and no such label exists in the repo.
+
+## Phase 7 readiness
+
+Asserted by `pricing/phase7_readiness_test.go` rather than left to inspection, so a
+later change cannot quietly close a seam the deferred work needs:
+
+- `ProvDiscovered` ranks strictly between bundled and configured, and `NewTable`
+  accepts it (only `ProvAuthoritative` and `ProvNone` are rejected).
+- `Registry.Swap` installs a refreshed table visible to a `Resolver` captured before
+  the swap — the position every consumer is in.
+- All three consumers hold the `Resolver` interface, so discovery can wrap or replace
+  the registry without touching them.
+- The strict config decoder derives its key set by reflection, so phase 7's own
+  config fields will be accepted with no change to `strict.go`.
+- `Cost` validates rates, not just token counts — discovery's numbers arrive from a
+  remote gateway and never pass through config validation.
+
 ## Not in this PR
 
 - **Phase 7 — discovery** (`GET /model/info`, refresh loop, fail-soft, status endpoint).

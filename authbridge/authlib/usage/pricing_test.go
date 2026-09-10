@@ -2,6 +2,7 @@ package usage
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 	"time"
 
@@ -288,5 +289,47 @@ func TestPricing_PriceableCountsUnpricedInference(t *testing.T) {
 	}
 	if got := snap.UnpricedBy["api.openai.com gpt-5"]; got != 1 {
 		t.Errorf("UnpricedBy = %v, want the gap named", snap.UnpricedBy)
+	}
+}
+
+// TestPricing_ProvenanceReachesTheSnapshot closes the spec's success criterion that
+// cost be "labelled with provenance". Before this the field was written by the plugin
+// and read by nothing, so /v1/usage reported a total with no way to tell a gateway's
+// own figure from one modelled off a shipped table.
+func TestPricing_ProvenanceReachesTheSnapshot(t *testing.T) {
+	now := time.Now().Truncate(BucketWidth)
+	a := New(WithClock(func() time.Time { return now }),
+		WithPricing(resolverFor(t, "claude-opus-5", 5.0/1e6, 25.0/1e6)))
+
+	// One authoritative figure from the plugin.
+	ev := pricedRespEvent("gw.internal", "claude-opus-5", 10, 5)
+	raw, err := json.Marshal(costevent.Event{
+		CostUSD: 1.0, Source: costevent.SourceGatewayHeader,
+		Provenance: "authoritative", Settled: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ev.Plugins = map[string]json.RawMessage{costevent.PluginName: raw}
+	a.Record("s1", ev)
+
+	// Two the aggregator modelled from the configured table.
+	a.Record("s1", pricedRespEvent("gw.internal", "claude-opus-5", 1000, 500))
+	a.Record("s1", pricedRespEvent("gw.internal", "claude-opus-5", 1000, 500))
+
+	snap := a.Snapshot(10*BucketWidth, BucketWidth, "", GroupNone)
+	if got := snap.PricedBy["authoritative"]; got != 1 {
+		t.Errorf("PricedBy[authoritative] = %d, want 1; map = %v", got, snap.PricedBy)
+	}
+	if got := snap.PricedBy["configured"]; got != 2 {
+		t.Errorf("PricedBy[configured] = %d, want 2; map = %v", got, snap.PricedBy)
+	}
+	// It must survive JSON, since that is how /v1/usage delivers it.
+	b, err := json.Marshal(snap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `"pricedBy"`) {
+		t.Errorf("snapshot JSON carries no pricedBy: %s", b)
 	}
 }

@@ -138,6 +138,12 @@ type bucket struct {
 	byMethod map[string]Counts
 	byStatus map[string]Counts
 	byPlugin map[string]Counts
+	// byProvenance tallies priced requests by where their figure came from, so a
+	// total can disclose how much of it is a gateway's own number versus modelled
+	// from a rate table. Like byUnpriced, kept outside the Group machinery: it
+	// qualifies the cost total, and a client needs it whichever grouping it asked
+	// for.
+	byProvenance map[string]Counts
 	// byUnpriced tallies endpoint/model pairs that could not be priced. Kept
 	// outside the Group machinery on purpose: it is not an alternative view of the
 	// same counts but a coverage gap, and a client needs it whichever grouping it
@@ -168,6 +174,10 @@ type eventCost struct {
 	// priceable is 1 when the request carried a model and tokens, so it belongs in
 	// the coverage denominator whether or not a rate was found.
 	priceable int64
+	// provenance names where the figure came from, so a reported total can say how
+	// much of it is a gateway's own number and how much is modelled from a rate
+	// table. Empty for an unpriced request.
+	provenance string
 	// unpricedKey names the endpoint and model of a request that COULD have been
 	// priced but was not, so the gap is nameable instead of merely counted.
 	// Empty for a priced request, and empty for traffic that carries no model at
@@ -192,7 +202,14 @@ type eventCost struct {
 // and must not hold up the hot path.
 func (a *Aggregator) costOf(e *pipeline.SessionEvent) eventCost {
 	if ce, ok := costevent.Decode(e); ok {
-		return eventCost{micros: ce.Micros(), priced: 1, priceable: 1}
+		prov := ce.Provenance
+		if prov == "" {
+			// An event from a producer predating the field. It is a settled figure,
+			// so the honest label is authoritative-or-modelled-unknown rather than
+			// silently claiming either.
+			prov = "unlabelled"
+		}
+		return eventCost{micros: ce.Micros(), priced: 1, priceable: 1, provenance: prov}
 	}
 	// Only inference traffic can be priced or named. A plain proxied request has no
 	// model and no tokens, and is neither.
@@ -224,7 +241,7 @@ func (a *Aggregator) costOf(e *pipeline.SessionEvent) eventCost {
 		// extend rather than to create.
 		return eventCost{priceable: 1, unpricedKey: key}
 	}
-	return eventCost{micros: micros, priced: 1, priceable: 1}
+	return eventCost{micros: micros, priced: 1, priceable: 1, provenance: prov.String()}
 }
 
 // Aggregator is a fixed ring of per-minute buckets. Safe for concurrent use.
@@ -539,6 +556,9 @@ func (a *Aggregator) foldInto(ring []bucket, t time.Time, e *pipeline.SessionEve
 	}
 	if ec.unpricedKey != "" {
 		addLabel(&b.byUnpriced, truncateLabel(ec.unpricedKey), Counts{Requests: 1})
+	}
+	if ec.provenance != "" {
+		addLabel(&b.byProvenance, truncateLabel(ec.provenance), Counts{Requests: 1})
 	}
 	if e.StatusCode >= 400 || e.Phase == pipeline.SessionDenied {
 		one.Errors = 1

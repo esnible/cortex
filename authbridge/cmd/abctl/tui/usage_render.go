@@ -356,6 +356,12 @@ func renderCostSummary(snap *usage.Snapshot) string {
 	// correctly configured deployment reading "1/10 priced" forever with an empty gap
 	// list. A permanent warning with nothing to act on trains an operator to ignore
 	// the one signal that matters.
+	// Provenance qualifies the figure: $12.40 from a gateway's own numbers and $12.40
+	// modelled from a shipped vendor-list table are not equally trustworthy, and the
+	// column showed them identically. Only shown when it tells the reader something —
+	// a single uniform provenance that is authoritative needs no annotation.
+	cell += provenanceNote(snap.PricedBy)
+
 	priceable := snap.Totals.PriceableRequests
 	if priceable == 0 || snap.Totals.PricedRequests >= priceable {
 		return cell
@@ -413,4 +419,41 @@ var usageWindows = []struct {
 	{10 * time.Minute, time.Minute},
 	{time.Hour, 5 * time.Minute},
 	{6 * time.Hour, 30 * time.Minute},
+}
+
+// provenanceNote renders where a cost total came from, or "" when saying so would
+// add nothing.
+//
+// Silent for a wholly authoritative total, because "the gateway told us" is the
+// baseline a reader already assumes. Loud for anything modelled, and loudest when
+// mixed — a partly-modelled total is the case where a reader most needs to know
+// which part to trust.
+func provenanceNote(by map[string]int64) string {
+	if len(by) == 0 {
+		return ""
+	}
+	if len(by) == 1 {
+		for k := range by {
+			if k == "authoritative" {
+				return ""
+			}
+			return " [" + k + "]"
+		}
+	}
+	// Mixed: list every level, largest first, so the dominant source reads first.
+	keys := make([]string, 0, len(by))
+	for k := range by {
+		keys = append(keys, k)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		if by[keys[i]] != by[keys[j]] {
+			return by[keys[i]] > by[keys[j]]
+		}
+		return keys[i] < keys[j]
+	})
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		parts = append(parts, fmt.Sprintf("%s %d", k, by[k]))
+	}
+	return " [" + strings.Join(parts, ", ") + "]"
 }

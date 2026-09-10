@@ -77,6 +77,18 @@ type Snapshot struct {
 	// Summed across the window from the raw buckets, so it is unaffected by the
 	// requested resolution, exactly like Totals.
 	UnpricedBy map[string]int64 `json:"unpricedBy,omitempty"`
+	// PricedBy counts priced requests by the provenance of their figure —
+	// "authoritative" when the gateway reported it, otherwise the rate table's level
+	// ("configured", "discovered", "bundled").
+	//
+	// Without it a total is unqualified, and the spec's own success criterion asks
+	// for cost "labelled with provenance": $12.40 assembled from a gateway's own
+	// numbers and $12.40 modelled from a shipped vendor-list table are not equally
+	// trustworthy figures, and nothing else in the response distinguishes them.
+	//
+	// Summed from the raw buckets alongside Totals, so it is unaffected by the
+	// requested resolution.
+	PricedBy map[string]int64 `json:"pricedBy,omitempty"`
 }
 
 // ParseWindow validates a window parameter against the storage resolution.
@@ -261,6 +273,12 @@ func (a *Aggregator) Snapshot(window, resolution time.Duration, sessionID string
 						out.UnpricedBy = make(map[string]int64, len(src.byUnpriced))
 					}
 					out.UnpricedBy[k] += v.Requests
+				}
+				for k, v := range src.byProvenance {
+					if out.PricedBy == nil {
+						out.PricedBy = make(map[string]int64, len(src.byProvenance))
+					}
+					out.PricedBy[k] += v.Requests
 				}
 			}
 		}
