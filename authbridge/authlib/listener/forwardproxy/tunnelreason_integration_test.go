@@ -1,8 +1,12 @@
 package forwardproxy
 
 import (
+	"bufio"
 	"bytes"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/pem"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -12,6 +16,7 @@ import (
 	"time"
 
 	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
+	"github.com/rossoctl/cortex/authbridge/authlib/plugins/plugintesting"
 	"github.com/rossoctl/cortex/authbridge/authlib/session"
 	"github.com/rossoctl/cortex/authbridge/authlib/tlsbridge"
 )
@@ -50,10 +55,10 @@ func bridgeForRejectTest(t *testing.T) (*Server, *session.Store, string) {
 	return s, store, strings.TrimPrefix(origin.URL, "https://")
 }
 
-// nonTLSClient returns the proxy-side conn of a pair whose peer sends bytes that
-// are not a TLS handshake, so Terminate fails exactly as it does for a client
-// that refuses the forged leaf.
-func nonTLSClient(t *testing.T) net.Conn {
+// clientConnPair returns the PROXY-side conn of a TCP pair, having handed the client
+// end to fn in a goroutine. Real TCP rather than net.Pipe because clientAddr /
+// clientPort read RemoteAddr, and the port is the whole point of those.
+func clientConnPair(t *testing.T, fn func(net.Conn)) net.Conn {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -61,30 +66,56 @@ func nonTLSClient(t *testing.T) net.Conn {
 	}
 	t.Cleanup(func() { _ = ln.Close() })
 
-	done := make(chan net.Conn, 1)
+	accepted := make(chan net.Conn, 1)
 	go func() {
 		c, aerr := ln.Accept()
 		if aerr != nil {
-			done <- nil
+			accepted <- nil
 			return
 		}
-		done <- c
+		accepted <- c
 	}()
-	client, err := net.Dial("tcp", ln.Addr().String())
+	raw, err := net.Dial("tcp", ln.Addr().String())
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
-	t.Cleanup(func() { _ = client.Close() })
-	// Not a ClientHello, and then gone — the shape of a rejected handshake.
-	_, _ = client.Write([]byte("nope"))
-	_ = client.Close()
+	go fn(raw)
 
-	srv := <-done
+	srv := <-accepted
 	if srv == nil {
 		t.Fatal("accept failed")
 	}
 	t.Cleanup(func() { _ = srv.Close() })
 	return srv
+}
+
+// rejectingClient is a real TLS client that trusts nothing, so it refuses the forged
+// leaf and sends a bad_certificate alert. That alert is what lets the proxy claim CA
+// distrust rather than guess at it.
+//
+// The earlier version of this helper just wrote "nope" and closed, which produces
+// "unexpected EOF" — a hang-up, not a rejection. It passed against a classifier that
+// labelled every handshake error client-rejected-ca, and stopped passing the moment
+// that claim was narrowed to what the evidence supports. The test was the
+// counterexample to its own assertion.
+func rejectingClient(t *testing.T) net.Conn {
+	t.Helper()
+	return clientConnPair(t, func(raw net.Conn) {
+		tc := tls.Client(raw, &tls.Config{ServerName: "example.com", RootCAs: x509.NewCertPool()})
+		_ = tc.Handshake() // fails, and sends the alert on its way out
+		_ = tc.Close()
+	})
+}
+
+// hangUpClient sends bytes that are not a ClientHello and vanishes, which is what a
+// cancelled request or a dead socket looks like. Distinct from a rejection, and it
+// must NOT be told to restart anything.
+func hangUpClient(t *testing.T) net.Conn {
+	t.Helper()
+	return clientConnPair(t, func(raw net.Conn) {
+		_, _ = raw.Write([]byte("nope"))
+		_ = raw.Close()
+	})
 }
 
 // TestClientRejectedCA_WarnsEvenAfterOtherTrafficBridged is the regression test
@@ -107,7 +138,7 @@ func TestClientRejectedCA_WarnsEvenAfterOtherTrafficBridged(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logbuf, &slog.HandlerOptions{Level: slog.LevelWarn})))
 	t.Cleanup(func() { slog.SetDefault(prev) })
 
-	client := nonTLSClient(t)
+	client := rejectingClient(t)
 	pctx := &pipeline.Context{Direction: pipeline.Outbound, Host: authority}
 	rec := func(reason string) { s.recordTunnelOpened(pctx, reason) }
 
@@ -153,8 +184,187 @@ func TestClientRejectedCA_SkipsHostAfterwards(t *testing.T) {
 	if s.TLSBridge.Skip.Contains(host) {
 		t.Fatal("host skipped before any failure")
 	}
-	s.bridgeServe(nonTLSClient(t), authority, host, func(string) {})
+	s.bridgeServe(rejectingClient(t), authority, host, func(string) {})
 	if !s.TLSBridge.Skip.Contains(host) {
 		t.Error("host not skipped after a rejected forge; the client's retry would fail again")
+	}
+}
+
+// TestClientHungUp_GetsNoRestartAdvice: an EOF mid-handshake is not proof of anything
+// about trust, so it must not carry the restart-your-agents hint. Sending someone to
+// restart agents over a cancelled request wastes their time and teaches them to
+// distrust the message that matters.
+func TestClientHungUp_GetsNoRestartAdvice(t *testing.T) {
+	s, store, authority := bridgeForRejectTest(t)
+
+	var logbuf bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logbuf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	pctx := &pipeline.Context{Direction: pipeline.Outbound, Host: authority}
+	s.bridgeServe(hangUpClient(t), authority, hostOnly(authority),
+		func(reason string) { s.recordTunnelOpened(pctx, reason) })
+
+	got := logbuf.String()
+	if !strings.Contains(got, pipeline.TunnelClientHungUp) {
+		t.Errorf("want reason %q, got:\n%s", pipeline.TunnelClientHungUp, got)
+	}
+	if strings.Contains(got, "fix=") || strings.Contains(got, "ca_not_before") {
+		t.Errorf("a hang-up was given CA-trust advice it cannot justify:\n%s", got)
+	}
+	v := store.View(session.DefaultSessionID)
+	if v == nil || len(v.Events) != 1 || v.Events[0].TunnelReason != pipeline.TunnelClientHungUp {
+		t.Errorf("event reason = %+v, want %q", v, pipeline.TunnelClientHungUp)
+	}
+}
+
+// connectThrough drives a real CONNECT through handleConnect against a throwaway
+// origin and returns the tunnel-open event that was recorded, or nil.
+//
+// This exists because the tests above call bridgeServe directly, which leaves the
+// recorder closure in handleConnect — recOnce, the skipped guard, and five of the nine
+// reasons — with no coverage at all. Reading the control flow is not the same as
+// pinning it.
+func connectThrough(t *testing.T, s *Server, store *session.Store, target string, first []byte) *pipeline.SessionEvent {
+	t.Helper()
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		s.handleRequest(w, r)
+	}))
+	t.Cleanup(srv.Close)
+
+	raw, err := net.Dial("tcp", strings.TrimPrefix(srv.URL, "http://"))
+	if err != nil {
+		t.Fatalf("dial proxy: %v", err)
+	}
+	defer func() { _ = raw.Close() }()
+
+	if _, err := fmt.Fprintf(raw, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", target, target); err != nil {
+		t.Fatalf("write CONNECT: %v", err)
+	}
+	br := bufio.NewReader(raw)
+	if _, err := http.ReadResponse(br, nil); err != nil {
+		t.Fatalf("read CONNECT response: %v", err)
+	}
+	if len(first) > 0 {
+		_, _ = raw.Write(first)
+	}
+	// The event is recorded on the CONNECT path before any copying; give it a moment.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if v := store.View(session.DefaultSessionID); v != nil && len(v.Events) > 0 {
+			return &v.Events[0]
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	return nil
+}
+
+// connectServer builds a Server wired the way handleConnect needs: an outbound
+// pipeline holder (it runs the gate on the CONNECT itself) plus a session store.
+func connectServer(t *testing.T, store *session.Store, bridge *tlsbridge.Engine) *Server {
+	t.Helper()
+	p, err := plugintesting.BuildPipeline(nil)
+	if err != nil {
+		t.Fatalf("BuildPipeline: %v", err)
+	}
+	return &Server{
+		OutboundPipeline: pipeline.NewHolder(p),
+		Client:           http.DefaultClient,
+		Sessions:         store,
+		TLSBridge:        bridge,
+	}
+}
+
+// tlsRecordHead is the first five bytes of a TLS handshake record: content type 22,
+// version 3.x, length. Enough for looksLikeTLSRecord, and enough to unblock the
+// listener's Peek(5) — which waits for five bytes before it can classify anything, so
+// a test that sends nothing after CONNECT hangs until its own deadline rather than
+// exercising the branch it names.
+var tlsRecordHead = []byte{0x16, 0x03, 0x01, 0x00, 0x00}
+
+// TestHandleConnect_RecordsReason covers the reasons only reachable through
+// handleConnect's own wiring. Each is a different branch of the decision, and none was
+// exercised end to end before.
+func TestHandleConnect_RecordsReason(t *testing.T) {
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer origin.Close()
+	target := strings.TrimPrefix(origin.URL, "http://")
+
+	t.Run("bridge-disabled", func(t *testing.T) {
+		store := session.New(5*time.Minute, 100, 0)
+		defer store.Close()
+		s := connectServer(t, store, nil) // no TLSBridge at all
+		ev := connectThrough(t, s, store, target, nil)
+		if ev == nil || ev.TunnelReason != pipeline.TunnelBridgeDisabled {
+			t.Fatalf("reason = %v, want %q", ev, pipeline.TunnelBridgeDisabled)
+		}
+	})
+
+	t.Run("skip-cached", func(t *testing.T) {
+		store := session.New(5*time.Minute, 100, 0)
+		defer store.Close()
+		d, err := tlsbridge.NewDecision(tlsbridge.DecisionOpts{Ports: map[int]bool{portOf(target): true}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		s := connectServer(t, store, &tlsbridge.Engine{Decision: d, Skip: tlsbridge.NewSkipSet()})
+		s.TLSBridge.Skip.Add(hostOnly(target)) // a previous client's rejection
+		ev := connectThrough(t, s, store, target, tlsRecordHead)
+		if ev == nil || ev.TunnelReason != pipeline.TunnelSkipCached {
+			t.Fatalf("reason = %v, want %q", ev, pipeline.TunnelSkipCached)
+		}
+	})
+
+	t.Run("passthrough-port", func(t *testing.T) {
+		store := session.New(5*time.Minute, 100, 0)
+		defer store.Close()
+		// A port the bridge does not watch.
+		d, err := tlsbridge.NewDecision(tlsbridge.DecisionOpts{Ports: map[int]bool{1: true}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		s := connectServer(t, store, &tlsbridge.Engine{Decision: d, Skip: tlsbridge.NewSkipSet()})
+		ev := connectThrough(t, s, store, target, tlsRecordHead)
+		if ev == nil || ev.TunnelReason != pipeline.TunnelPassthroughPort {
+			t.Fatalf("reason = %v, want %q", ev, pipeline.TunnelPassthroughPort)
+		}
+	})
+
+	t.Run("passthrough-nontls", func(t *testing.T) {
+		store := session.New(5*time.Minute, 100, 0)
+		defer store.Close()
+		d, err := tlsbridge.NewDecision(tlsbridge.DecisionOpts{Ports: map[int]bool{portOf(target): true}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		s := connectServer(t, store, &tlsbridge.Engine{Decision: d, Skip: tlsbridge.NewSkipSet()})
+		// Plain HTTP bytes: watched port, but not a TLS record.
+		ev := connectThrough(t, s, store, target, []byte("GET / HTTP/1.1\r\n\r\n"))
+		if ev == nil || ev.TunnelReason != pipeline.TunnelPassthroughNonTLS {
+			t.Fatalf("reason = %v, want %q", ev, pipeline.TunnelPassthroughNonTLS)
+		}
+	})
+}
+
+// TestHandleConnect_RecordsExactlyOnce: the recorder is a closure with a recOnce
+// guard, so a CONNECT must produce ONE tunnel-open however it is decided. A double
+// record would double-count every tunnel in the timeline.
+func TestHandleConnect_RecordsExactlyOnce(t *testing.T) {
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {}))
+	defer origin.Close()
+	target := strings.TrimPrefix(origin.URL, "http://")
+
+	store := session.New(5*time.Minute, 100, 0)
+	defer store.Close()
+	s := connectServer(t, store, nil)
+	if ev := connectThrough(t, s, store, target, nil); ev == nil {
+		t.Fatal("no event recorded")
+	}
+	if v := store.View(session.DefaultSessionID); v == nil || len(v.Events) != 1 {
+		t.Errorf("want exactly 1 tunnel-open event, got %d", len(v.Events))
 	}
 }

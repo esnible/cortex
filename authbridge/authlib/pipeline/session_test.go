@@ -2,6 +2,8 @@ package pipeline
 
 import (
 	"encoding/json"
+	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -231,5 +233,95 @@ func TestSessionEvent_PluginsMap_JSONRoundTrip(t *testing.T) {
 	// can decode each plugin's payload into its own type.
 	if got := string(decoded.Plugins["rate-limiter"]); got != `{"allowed":true,"tokensLeft":42}` {
 		t.Errorf("rate-limiter payload drifted: %q", got)
+	}
+}
+
+// TestSessionEventWire_HasEveryDomainField is the tripwire the round-trip test
+// cannot be.
+//
+// SessionEvent has no struct tags: it marshals through the hand-maintained
+// sessionEventWire DTO with field-by-field copies. Add a field to SessionEvent and
+// forget the DTO and the field never crosses the wire — which is exactly what
+// happened to TunnelReason. Every existing test stayed green, because
+// TestSessionEvent_JSONRoundTrip compares Marshal→Unmarshal→Marshal for byte
+// identity and a field absent from the DTO on BOTH sides round-trips identically.
+// Symmetric loss is invisible to a symmetric test.
+//
+// This asserts structurally instead: for every exported field on SessionEvent there
+// must be one of the same name on sessionEventWire. It cannot be satisfied by
+// accident, and it fails at the moment the two drift rather than in the field.
+func TestSessionEventWire_HasEveryDomainField(t *testing.T) {
+	domain := reflect.TypeOf(SessionEvent{})
+	wire := reflect.TypeOf(sessionEventWire{})
+
+	// Deliberate renames, kept explicit so the check stays strict. Duration is
+	// milliseconds on the wire, and the DTO field is named for the unit rather than
+	// silently changing what a same-named field means.
+	renamed := map[string]string{"Duration": "DurationMs"}
+
+	for i := 0; i < domain.NumField(); i++ {
+		f := domain.Field(i)
+		if !f.IsExported() {
+			continue
+		}
+		want := f.Name
+		if alias, ok := renamed[want]; ok {
+			want = alias
+		}
+		if _, ok := wire.FieldByName(want); !ok {
+			t.Errorf("SessionEvent.%s has no sessionEventWire counterpart (looked for %q): "+
+				"it will never reach the wire, and the round-trip test cannot see that",
+				f.Name, want)
+		}
+	}
+}
+
+// TestSessionEventWire_EveryFieldSerializes is the value-level half: a populated
+// event must produce a JSON key per wire field. Catches a field present in the DTO
+// but missing from MarshalJSON's literal — the other way the two halves can drift.
+func TestSessionEventWire_EveryFieldSerializes(t *testing.T) {
+	ev := SessionEvent{
+		SessionID: "s", At: time.Now(), Direction: Outbound, Phase: SessionRequest,
+		RequestID: "r", Host: "h:443", StatusCode: 200, Duration: time.Second,
+		Tunnel: true, TunnelReason: TunnelClientRejectedCA,
+	}
+	b, err := json.Marshal(ev)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	var got map[string]json.RawMessage
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatalf("Unmarshal to map: %v", err)
+	}
+	for _, key := range []string{
+		"sessionId", "at", "direction", "phase", "requestId",
+		"host", "statusCode", "durationMs", "tunnel", "tunnelReason",
+	} {
+		if _, ok := got[key]; !ok {
+			t.Errorf("populated event produced no %q key; got %s", key, b)
+		}
+	}
+}
+
+// TestTunnelReasonsAreDocumented pins every reason against the operator docs.
+//
+// The doc previously said "two other reasons" when there were four, and omitted
+// origin-unverified — the one that points at the destination rather than the client,
+// and so the one most likely to send someone looking in the wrong place. A reason
+// nobody can look up is barely better than the em dash it replaced.
+func TestTunnelReasonsAreDocumented(t *testing.T) {
+	doc, err := os.ReadFile("../../docs/laptop-service.md")
+	if err != nil {
+		t.Skipf("docs not readable from here: %v", err)
+	}
+	for _, reason := range []string{
+		TunnelClientRejectedCA, TunnelClientHungUp, TunnelHandshakeFailed,
+		TunnelOriginUnverified, TunnelSkipCached, TunnelBridgeDisabled,
+		TunnelPassthroughPort, TunnelPassthroughNonTLS, TunnelPassthroughHost,
+	} {
+		if !strings.Contains(string(doc), reason) {
+			t.Errorf("tunnel reason %q is not in laptop-service.md; an operator who sees "+
+				"it in the timeline has nowhere to look it up", reason)
+		}
 	}
 }

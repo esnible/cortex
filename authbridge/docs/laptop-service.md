@@ -198,12 +198,22 @@ ps -o lstart= -p <pid>        # started before ca_not_before? restart it
 The port has to come from the log rather than a later `lsof` sweep: the connection
 is gone by the time you look, so nothing after the fact can attribute it.
 
-Two other reasons you may see, neither of which is a problem to fix:
+The other reasons you may see, and what each one asks of you:
 
-| Reason | Meaning |
-| --- | --- |
-| `passthrough-host` | A host Cortex deliberately does not intercept (GitHub, module proxies, package registries). Working as intended. |
-| `skip-cached` | Another client rejected the CA recently, so this host is not being intercepted for anyone for a few minutes. Fix that client and this clears itself. |
+| Reason | Meaning | Act? |
+| --- | --- | --- |
+| `passthrough-host` | A host Cortex deliberately does not intercept (GitHub, module proxies, package registries). | no |
+| `passthrough-port` | Not a port the bridge watches. | no |
+| `passthrough-nontls` | The bytes were not a TLS handshake, so there was nothing to terminate. | no |
+| `skip-cached` | Another client rejected the CA recently, so this host is not intercepted for **anyone** for a few minutes. Fix that client and it clears itself. | fix the other client |
+| `bridge-disabled` | No TLS bridge is configured. | only if you wanted one |
+| `client-hung-up` | The client vanished mid-handshake. Often a cancelled request; not evidence about trust, which is why it carries no advice. | usually no |
+| `handshake-failed` | Some other handshake failure — a version, cipher or ALPN mismatch, or Cortex failing to mint a certificate. | check `error=` in the log |
+| `origin-unverified` | **Cortex** could not verify the destination's certificate, so it declined to vouch for it. Bridging would have meant terminating TLS for a server we could not authenticate. | investigate the destination |
+
+Only `client-rejected-ca` asks you to restart anything. The others are either working as
+intended or point somewhere other than your agents — which is why the reason is worth
+reading before acting on it.
 
 ### Developer tooling is not intercepted at all
 

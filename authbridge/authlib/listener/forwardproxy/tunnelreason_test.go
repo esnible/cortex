@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
+	"github.com/rossoctl/cortex/authbridge/authlib/tlsbridge"
 )
 
 // TestPassthroughReason pins the mapping onto Classify's own vocabulary. If
@@ -24,16 +25,32 @@ func TestPassthroughReason(t *testing.T) {
 	}
 }
 
-// TestPassthroughReasonCoversEveryClassifyVerdict guards the gap the table above
-// cannot: a reason Classify emits that nothing here maps. Kept as an explicit
-// list so adding one to Classify fails here rather than degrading in the field.
-func TestPassthroughReasonCoversEveryClassifyVerdict(t *testing.T) {
-	for _, why := range []string{"port", "non-tls", "skip"} {
-		if passthroughReason(why) == "" {
-			t.Errorf("Classify reason %q maps to the empty string, which renders as a BRIDGED row", why)
+// TestPassthroughReasonCoversEveryClassifyReason is a real tripwire, not a restated
+// list. It iterates tlsbridge.ClassifyReasons — the vocabulary Classify itself uses —
+// so adding a reason there, or renaming one, fails HERE instead of silently producing
+// an unmapped "" downstream. An unmapped reason renders as an em dash, which reads as
+// "bridged": the opposite of what happened.
+func TestPassthroughReasonCoversEveryClassifyReason(t *testing.T) {
+	if len(tlsbridge.ClassifyReasons) == 0 {
+		t.Fatal("tlsbridge.ClassifyReasons is empty; this test would assert nothing")
+	}
+	for _, why := range tlsbridge.ClassifyReasons {
+		got := passthroughReason(why)
+		if got == "" {
+			t.Errorf("Classify reason %q maps to \"\", which renders as a BRIDGED row", why)
+			continue
+		}
+		if len(got) > pluginCellWidth {
+			t.Errorf("reason %q is %d chars; it truncates in abctl's %d-wide PLUGIN cell, "+
+				"so the timeline token stops matching the log token", got, len(got), pluginCellWidth)
 		}
 	}
 }
+
+// pluginCellWidth mirrors abctl's PLUGIN column width. Duplicated deliberately:
+// authlib must not import the TUI, and a reason that does not fit is a defect in the
+// reason, not in the column.
+const pluginCellWidth = 18
 
 // TestClientAddrNeverPanics: these helpers exist only to build a log line, so a
 // nil conn must degrade rather than take the proxy down on a diagnostic path.

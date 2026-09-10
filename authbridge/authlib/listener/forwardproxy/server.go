@@ -22,6 +22,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"errors"
 	"github.com/rossoctl/cortex/authbridge/authlib/listener/httpx"
 	"github.com/rossoctl/cortex/authbridge/authlib/listener/internal/bodyread"
 	"github.com/rossoctl/cortex/authbridge/authlib/listener/internal/sseframe"
@@ -611,13 +612,13 @@ func (s *Server) bridgeServe(client net.Conn, authority, host string, rec func(r
 	req, err := http.NewRequestWithContext(ctx, http.MethodHead, "https://"+authority, nil)
 	if err != nil {
 		slog.Info("tls-bridge passthrough", "host", host, "reason", "upstream-verify", "error", err)
-		rec(pipeline.TunnelUpstreamVerifyFailed)
+		rec(pipeline.TunnelOriginUnverified)
 		return false
 	}
 	resp, err := s.TLSBridge.Upstream.Do(req)
 	if err != nil {
 		slog.Info("tls-bridge passthrough", "host", host, "reason", "upstream-verify", "error", err)
-		rec(pipeline.TunnelUpstreamVerifyFailed)
+		rec(pipeline.TunnelOriginUnverified)
 		return false // fall back to plain tunnel — agent's own e2e TLS still reaches origin
 	}
 	_ = resp.Body.Close()
@@ -626,34 +627,41 @@ func (s *Server) bridgeServe(client net.Conn, authority, host string, rec func(r
 	tconn, err := s.TLSBridge.Term.Terminate(client, hostOnly(authority))
 	if err != nil {
 		s.TLSBridge.Skip.Add(host) // pinned client → its retry will passthrough
-		// UNCONDITIONAL, and it names the client. A failed FORGED handshake is
-		// proof that THIS client does not trust the bridge CA, whatever other
-		// clients are doing — so success elsewhere must not silence it. It used
-		// to: the guidance below sat behind bridgedRequests == 0, which treats
-		// trust as a property of the deployment. It is a property of each
-		// client, and on a laptop running several agents they routinely
-		// disagree: one predates the CA, the rest do not, and the message that
-		// explains the whole thing never prints.
+		reason := handshakeFailureReason(err)
+		// UNCONDITIONAL, and it names the client. Success elsewhere must not silence
+		// this: it used to sit behind bridgedRequests == 0, which treats CA trust as a
+		// property of the deployment. It is a property of each client, and on a
+		// machine running several agents they routinely disagree — one predates the
+		// CA, the rest do not — so the counter was non-zero and the message that
+		// explains the failure never printed.
 		//
-		// The client address is the discriminator, not the host — every client
-		// dials the same host, so the host cannot tell them apart. On loopback
-		// the source port maps 1:1 to a process, and it has to be captured HERE:
-		// the connection is gone by the time anyone reads the log, so no later
-		// process listing can attribute it.
-		slog.Warn("tls-bridge passthrough",
+		// The client address is the discriminator, not the host: every client dials
+		// the same host, so the host cannot tell them apart. It has to be captured
+		// HERE, because the connection is gone by the time anyone reads the log and no
+		// later process listing can attribute it.
+		args := []any{
 			"host", host,
-			"reason", pipeline.TunnelClientRejectedCA,
+			"reason", reason,
 			"client", clientAddr(client),
-			"ca_not_before", s.caNotBefore(),
 			"error", err,
-			"fix", "restart clients that started before ca_not_before (CA files are read once at startup); identify this one with: lsof -nP -iTCP:"+clientPort(client))
-		rec(pipeline.TunnelClientRejectedCA)
-		// Still worth saying when NOTHING has ever bridged — that is a different
-		// diagnosis ("the bridge is doing nothing at all") and its message says
-		// so, which would be false once anything has been decrypted.
-		if s.bridgedRequests.Load() == 0 {
-			s.noteBridgeHandshakeFailure()
 		}
+		// The restart advice goes ONLY on a real rejection. An EOF or a cipher
+		// mismatch would send someone restarting agents over something that was never
+		// about trust — and a minting failure on our own side is the worst case for
+		// that, since nothing they do to the client can fix it.
+		if reason == pipeline.TunnelClientRejectedCA {
+			args = append(args,
+				"ca_not_before", s.caNotBefore(),
+				"fix", "restart clients that started before ca_not_before (CA files are read once at startup); identify this one with: lsof -nP -iTCP:"+clientPort(client))
+		}
+		slog.Warn("tls-bridge passthrough", args...)
+		rec(reason)
+		// Deliberately NOT also calling noteBridgeHandshakeFailure. It fires
+		// warnBridgeUnused, whose fix is "point the client at the trust anchor" — so
+		// with bridgedRequests == 0 a single rejected forge produced two warnings with
+		// two different remedies, back to back. This one is strictly better informed:
+		// it knows which client and which CA. warnBridgeUnused still covers its own
+		// case, reached from the tunnel-threshold path.
 		return true // conn is dead post-forge; nothing left to tunnel
 	}
 	// Bridged. Empty reason: abctl folds this row into the decrypted inner
@@ -1443,11 +1451,11 @@ func (s *Server) warnFired() bool { return s.bridgeWarned.Load() }
 // bridge declined.
 func passthroughReason(why string) string {
 	switch why {
-	case "port":
+	case tlsbridge.ReasonPort:
 		return pipeline.TunnelPassthroughPort
-	case "non-tls":
+	case tlsbridge.ReasonNonTLS:
 		return pipeline.TunnelPassthroughNonTLS
-	case "skip":
+	case tlsbridge.ReasonSkip:
 		return pipeline.TunnelPassthroughHost
 	}
 	return ""
@@ -1497,4 +1505,34 @@ func (s *Server) caNotBefore() string {
 		s.caNotBeforeStr = crt.NotBefore.Local().Format(time.RFC3339)
 	})
 	return s.caNotBeforeStr
+}
+
+// handshakeFailureReason narrows a failed forge to what we can actually claim.
+//
+// Terminator.Terminate returns exactly one error, from conn.Handshake(), and several
+// very different things arrive through it: the client refusing our leaf, the client
+// vanishing, a version/cipher/ALPN mismatch, and our own minter failing. Labelling
+// them all "the client does not trust our CA" would send people restarting agents
+// over problems that were never about trust.
+//
+// "remote error: tls:" is the discriminator — it means the PEER sent us an alert, so
+// it actively rejected something rather than merely going away. bad_certificate and
+// unknown_ca are the two alerts a client sends when it will not accept our chain.
+//
+// Matched on the string because the error is wrapped in the unexported
+// *tls.permanentError: errors.As against tls.AlertError returns false for it, which I
+// verified rather than assumed.
+func handshakeFailureReason(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := err.Error()
+	switch {
+	case strings.Contains(msg, "remote error: tls: bad certificate"),
+		strings.Contains(msg, "remote error: tls: unknown certificate authority"):
+		return pipeline.TunnelClientRejectedCA
+	case errors.Is(err, io.EOF), strings.Contains(msg, "EOF"):
+		return pipeline.TunnelClientHungUp
+	}
+	return pipeline.TunnelHandshakeFailed
 }
