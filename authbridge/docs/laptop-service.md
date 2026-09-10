@@ -311,6 +311,20 @@ Leaving it behind means a CA whose private key you have deleted stays trusted fo
 TLS — harmless in itself, since nothing can sign with it any more, but it is trust
 you did not intend to keep.
 
+#### If you reinstall afterwards, restart your agents
+
+Deleting `~/.cortex` deletes the CA, so a later install mints a **new** one. Every
+agent that is already running still trusts the old CA — a client reads its CA file
+once, at startup — and will refuse the new certificates.
+
+That failure is quiet. Cortex falls back to tunnelling rather than breaking the
+connection, so the traffic keeps flowing and nothing on the agent's side complains;
+it simply stops being parsed, which shows up as `tunnel` rows in `abctl observe`.
+Restart those agents and they are visible again.
+
+An ordinary upgrade is unaffected — it keeps the existing CA. This only applies when
+`~/.cortex` has been deleted, or on a first install with agents already running.
+
 #### If `abctl` is already gone
 
 The service can be removed by hand:

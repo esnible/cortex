@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/x509"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
@@ -521,6 +523,29 @@ func serviceStatus(p servicePaths, stdout io.Writer) int {
 			w, version)
 	}
 
+	// The CA cutoff, because "installed and healthy" is not the same as "seeing
+	// anything". A client reads its CA file once at startup, so an agent older than
+	// this CA is being tunnelled rather than observed — and nothing on its side says
+	// so, because tunnelling is not an error. This is the only place that fact is
+	// discoverable without reading the proxy log.
+	if nb, caFile := bridgeCANotBefore(p.configFile); nb != "" {
+		fmt.Fprintf(stdout, "TLS bridge CA: %s (minted %s)\n", caFile, nb)
+		fmt.Fprintf(stdout, "  Agents started before that cannot be observed until restarted.\n")
+		if p.forwardAddr != "" {
+			// Filtered to the CLIENT side and paired with start times, because the
+			// bare `lsof -nP -iTCP:<port>` this used to print does not answer the
+			// question: it lists the proxy's own listening socket and its server-side
+			// half of every connection, and shows no start times at all — so nothing
+			// in it can be compared against the cutoff printed one line above.
+			//
+			// Matching the destination suffix rather than an IP literal keeps it
+			// correct whichever loopback address the listener is on.
+			fmt.Fprintf(stdout, "  Find them:  lsof -nP -iTCP -sTCP:ESTABLISHED"+
+				" | awk '$9 ~ /->.*:%s$/ {print $2}' | sort -u"+
+				" | xargs ps -o pid,lstart,comm -p\n", portOfAddr(p.forwardAddr))
+		}
+	}
+
 	if p.healthURL == "" {
 		return 0
 	}
@@ -733,4 +758,38 @@ func serviceIsCurrent(p servicePaths) bool {
 		return false // cannot confirm it is serving, so do not claim it is
 	}
 	return waitHealthy(p.healthURL, 2*time.Second)
+}
+
+// bridgeCANotBefore returns the bridge CA's NotBefore in RFC3339 and the file it
+// came from, or empty strings when there is no bridge, no CA yet, or the config
+// will not load. Every failure is silent: this is one advisory line in `status`,
+// and a broken config must still let status report the things it can.
+func bridgeCANotBefore(cortexCfg string) (notBefore, caFile string) {
+	cfg, err := config.Load(cortexCfg)
+	if err != nil || cfg.TLSBridge == nil || cfg.TLSBridge.CADir == "" {
+		return "", ""
+	}
+	caFile = filepath.Join(cfg.TLSBridge.CADir, "ca.crt")
+	pemBytes, err := os.ReadFile(caFile)
+	if err != nil {
+		return "", ""
+	}
+	blk, _ := pem.Decode(pemBytes)
+	if blk == nil {
+		return "", ""
+	}
+	crt, err := x509.ParseCertificate(blk.Bytes)
+	if err != nil {
+		return "", ""
+	}
+	return crt.NotBefore.Local().Format(time.RFC3339), caFile
+}
+
+// portOfAddr is the port of a host:port, or the input unchanged when it has no
+// colon — so the suggested lsof command is still recognisable rather than empty.
+func portOfAddr(addr string) string {
+	if _, port, err := net.SplitHostPort(addr); err == nil && port != "" {
+		return port
+	}
+	return addr
 }

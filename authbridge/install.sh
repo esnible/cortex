@@ -522,6 +522,24 @@ sha_check() {
 	fi
 }
 
+# ca_fingerprint prints a hash of the bridge CA, or nothing when there is no CA yet.
+# Same tool preference as sha_check: shasum on macOS, sha256sum elsewhere. Prints
+# nothing rather than failing when neither exists — this drives one advisory message,
+# and an installer must not die over that.
+ca_fingerprint() {
+	[ -f "${ca_dir}/ca.crt" ] || return 0
+	if command -v shasum >/dev/null 2>&1; then
+		shasum -a 256 "${ca_dir}/ca.crt" 2>/dev/null | cut -d' ' -f1
+	elif command -v sha256sum >/dev/null 2>&1; then
+		sha256sum "${ca_dir}/ca.crt" 2>/dev/null | cut -d' ' -f1
+	fi
+	# Explicit, because the caller assigns this in a bare `fp="$(ca_fingerprint)"` and a
+	# non-zero status there aborts under set -e. An if/elif with no matching branch
+	# happens to yield 0 today, but that stops being true the moment someone adds an
+	# else — too subtle a thing to leave the installer's survival resting on.
+	return 0
+}
+
 # Demo listener ports — loopback, and deliberately uncommon to avoid colliding
 # with common dev tools. Keep in sync with the built-in config in
 # authbridge/cmd/authbridge-proxy/local.go.
@@ -1104,6 +1122,23 @@ if [ ! -f "${CORTEX_DIR}/config.yaml" ]; then
 	fi
 fi
 
+# A fingerprint of the CA as it stands BEFORE anything starts the proxy, so the summary
+# below can tell whether a new one was minted. Sampled here because the proxy mints on
+# first start and afterwards it is too late to ask — and before BOTH start paths, since
+# the --no-service path mints just as the supervised one does.
+#
+# A newly-minted CA invalidates every client that was already running — they read their
+# CA file once, at startup — and that is invisible to them: the bridge tunnels instead
+# of failing, so traffic flows and the parsers just stop seeing it.
+#
+# Comparing the CONTENT rather than testing for ca.crt's existence, because
+# EnsureFileSource mints when ANY of tls.crt / tls.key / ca.crt is missing, not only when
+# all three are. A directory holding ca.crt but no tls.key — a truncated copy, a
+# half-finished cleanup — gets a brand-new CA while an existence check says "already had
+# one" and suppresses the notice, which is exactly the case that needs it. Hashing also
+# covers any future change to the minting condition without this line tracking it.
+ca_fp_before="$(ca_fingerprint)"
+
 # SUPERVISED records which start path actually took, so the closing summary offers
 # `service stop` only where a service really exists.
 SUPERVISED=""
@@ -1240,6 +1275,19 @@ info "    (tools scan only proposes the prune list; the actual \$ saved shows li
 info ""
 if [ -z "${SUPERVISED}" ]; then
 	print_local_start_help
+	info ""
+fi
+# Said only when the CA actually CHANGED just now, and said late so it is the last
+# thing on screen rather than scrolled past. Silent on the common case — an upgrade
+# leaves all three CA files in place, so nothing is minted and nothing already running
+# is affected.
+ca_fp_after="$(ca_fingerprint)"
+if [ -n "${ca_fp_after}" ] && [ "${ca_fp_before}" != "${ca_fp_after}" ]; then
+	info "  NOTE: a new CA was created for this machine."
+	info "    Agents that were ALREADY RUNNING trust a different CA (or none) and"
+	info "    cannot be observed until restarted — a client reads its CA file once,"
+	info "    at startup. Traffic still flows, so nothing on their side will complain:"
+	info "    it tunnels through unparsed instead. Restart them to see their traffic."
 	info ""
 fi
 # The full, harness-agnostic environment block. `abctl claude-code enable` wires

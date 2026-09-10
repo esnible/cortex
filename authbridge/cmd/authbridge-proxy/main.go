@@ -470,9 +470,20 @@ func main() {
 			log.Fatalf("tls-bridge CA init failed: %v", cerr)
 		}
 		if generated {
+			// "already running" is the half people miss. A client reads its CA file
+			// ONCE, at process start, so every agent that was already up is holding
+			// the previous CA — or none — and will reject the leaves this new one
+			// signs. It does not fail loudly: the bridge falls back to tunnelling,
+			// so the traffic still flows and every body-reading plugin goes blind
+			// with nothing on the client side to notice.
+			//
+			// Reached on a first install and after ~/.cortex is deleted and
+			// recreated — which the uninstall instructions tell people to do. A
+			// plain upgrade preserves the CA and is unaffected.
 			slog.Warn("tls-bridge: generated self-signed CA (generate_ca=true; standalone/demo)",
 				"ca_dir", cfg.TLSBridge.CADir,
-				"hint", "clients must trust it, e.g. NODE_EXTRA_CA_CERTS="+cfg.TLSBridge.CADir+"/ca.crt")
+				"hint", "clients must trust it, e.g. NODE_EXTRA_CA_CERTS="+cfg.TLSBridge.CADir+"/ca.crt",
+				"restart_clients", "agents already running trust a different CA (or none) and cannot be observed until restarted")
 		}
 		// Assemble the CA + platform-roots bundle for tools whose CA setting
 		// REPLACES their trust store rather than extending it (Go's SSL_CERT_FILE,
