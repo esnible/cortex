@@ -1548,7 +1548,7 @@ under `plugins/` left alone — unformatted at the merge base too) ·
 
 ## Phase 3 — `toolprune` migration
 
-**Status:** ⬜ NOT YET DETAILED
+**Status:** ✅ IMPLEMENTED
 
 **Spec scope (verbatim, §Phasing entry 3):** "**`toolprune` migration** — swap to the
 resolver, delete its table. Existing `$ saved` tests are the oracle; the bundled slice
@@ -1566,14 +1566,43 @@ plugin's event** — the counterfactual `$ saved` calculation still needs them.
 message, not bulk-updated.
 
 <!-- FILL-IN:PHASE-3 -->
-*Tasks not yet written.*
+
+### Implemented (recorded as built)
+
+`pricing.go` deleted entirely; 235 lines out of `plugin.go`. Net across source and
+tests: **791 removed, 149 added.** Gone: three hand-measured family globs, 12 rate
+knobs, the per-model `Pricing` map, `modelRates` / `normalize` / `rateFor` / `set` /
+`ratesFor` / `rateSource`, and the plugin's own `tier` enum (now `pricing.Tier`).
+
+**Bug found by test, not review.** The resolver field is an *interface*, so an
+un-injected plugin held a **nil interface** and panicked on the request path — a nil
+`*Registry` would have been safe, the interface is not. The plugin's fail-open
+recovered it and forwarded the original body, so pruning **silently stopped working**
+rather than crashing. That accounted for 15 of the 20 test failures the migration
+first produced. `resolveRates` guards it.
+
+**Rate shift, justified per family as required.** The caveat direction inverts: the
+deleted globs *understated* vendor-list payers, the bundled table *overstates*
+discounted gateways, uniformly **1.32x** (opus 3.80→5.00, sonnet 1.52→2.00, haiku
+0.76→1.00 on input; same factor on both cache tiers). Uniform because the gateway
+discount was. The metrics note names the direction and the test asserts the new
+wording — an operator reading the old note would correct the wrong way.
+
+`OnRequest` cannot apply long-context thresholds (the provider only reports counts on
+the response), so rates published on its event are base-tier; `OnFinish` resolves
+with the real prompt total, so metrics and `$ saved` are threshold-correct.
+
+16 tests whose subject moved to `authlib/pricing` were deleted rather than
+duplicated, each with a verified equivalent named in the commit. The flat fallback
+has none by design, having been deleted with its knobs.
+
 <!-- /FILL-IN:PHASE-3 -->
 
 ---
 
 ## Phase 4 — `litellm_budgettrack` migration
 
-**Status:** ⬜ NOT YET DETAILED
+**Status:** ✅ IMPLEMENTED
 
 **Spec scope (verbatim, §Phasing entry 4):** "**`litellm_budgettrack` migration** — SSE
 equivalence test written *first*, then drop the parser and rate knobs, add `Requires`,
@@ -1589,14 +1618,52 @@ wire values keep decoding.
 `### Aggregator and wire format` (L386-437).
 
 <!-- FILL-IN:PHASE-4 -->
-*Tasks not yet written.*
+
+### Implemented (recorded as built)
+
+**The SSE equivalence test was committed first**, passing against the existing
+parser, so its five recorded costs are an invariant rather than an expectation
+written alongside the change that must satisfy them. After deleting
+`parseFrameUsage` / `usageJSON` / `frameUsage` / `usageState` and the 4 rate knobs,
+**every recorded cost held**; the only line that changed in that file is the
+rate-supply shim.
+
+**`RequiresLater` is new, and finding out why is the substance of this phase.** The
+obvious `Requires: ["inference-parser"]` is exactly backwards: `RunResponse` and
+`RunResponseFrame` walk the chain in **reverse**, so a dependency on another plugin's
+response-phase output needs it at a **higher** index. With `Requires`, the parser ran
+*after* budget-track settled and **every streamed response was silently unpriced** —
+the integration test failed with an untouched ledger and nothing else reported it.
+`Requires` cannot express "later", so `PluginCapabilities` gained `RequiresLater`
+and `validateRelationships` enforces it.
+
+Settling in `OnFinish` would also have had the counts, and was rejected on evidence:
+the forward proxy appends the response session event inside the handler
+(`server.go:669`) while `RunFinish` is deferred (`server.go:284`), so the cost event
+would miss the event the aggregator reads and phase 0 would break.
+
+**BREAKING:** a pipeline listing `litellm-budget-track` without `inference-parser`
+**after** it now fails to build.
+
+Two further deliberate changes: cache tiers with no rate are **unpriced, not
+defaulted** (the old default overstated a read 10x while still counting the request
+as priced — invisible); and the ledger **quantizes to micros**, costing a millionth
+of a dollar per request and buying agreement with `/v1/usage` to the last digit
+(spec success criterion 5).
+
+`costevent` gained `Provenance` **additively**. The wire test now proves additivity —
+original four tags unchanged AND a four-field consumer still decoding — rather than
+byte-identity, which a new field necessarily breaks. An existing test,
+`TestCloneCatalog_DeepCopiesEveryReferenceField`, caught that `RequiresLater` was
+missing from `cloneCatalog`.
+
 <!-- /FILL-IN:PHASE-4 -->
 
 ---
 
 ## Phase 5 — Aggregator resolver fallback
 
-**Status:** ⬜ NOT YET DETAILED
+**Status:** ✅ IMPLEMENTED
 
 **Spec scope (verbatim, §Phasing entry 5):** "**Aggregator resolver fallback** — pricing
 for requests with no cost event (no `litellm-budget-track` in the pipeline), plus
@@ -1610,14 +1677,37 @@ endpoint/model pairs are counted and nameable rather than silently zero.
 `authlib/usage/usage.go` `foldInto`, `authlib/usage/snapshot.go`.
 
 <!-- FILL-IN:PHASE-5 -->
-*Tasks not yet written.*
+
+### Implemented (recorded as built)
+
+`usage.WithPricing(resolver)` plus `Snapshot.UnpricedBy`. A published cost event
+still wins always — it is a figure the plugin settled, often the gateway's own
+post-discount number, and a model must not second-guess it.
+
+This closes the gap a live `abctl` capture exposed: cost depended on **which plugins
+were configured**, not on the traffic. `litellm-budget-track` was the only thing
+publishing a figure, so a pipeline running just `inference-parser` reported every
+request unpriced however many tokens it burned — and unpriced renders as no cost,
+which reads as "this traffic was free".
+
+`UnpricedBy` is keyed `"<endpoint> <model>"` because a gap must be **nameable**, not
+merely counted: "cost is incomplete" is not actionable, "api.openai.com gpt-5 x412"
+is the entry to write. Traffic with no model is excluded, or every non-LLM call would
+bury the real gaps. Summed from the raw buckets beside `Totals`, so it needs no
+change to `fold`, and kept outside the `Group` machinery deliberately — it is a
+coverage gap, not another view of the same counts, and a client needs it whichever
+grouping it asked for.
+
+Resolution runs outside the aggregator's lock. Verified load-bearing: disabling the
+fallback fails four of the new tests by name.
+
 <!-- /FILL-IN:PHASE-5 -->
 
 ---
 
 ## Phase 6 — `abctl`
 
-**Status:** ⬜ NOT YET DETAILED
+**Status:** ✅ IMPLEMENTED
 
 **Spec scope (verbatim, §Phasing entry 6):** "**`abctl`** — render provenance on both
 sides and the three coverage states. Must follow phase 3, which is what makes rendering
@@ -1634,7 +1724,41 @@ referenced in the scope above.
 ordering dependency on phase 3.
 
 <!-- FILL-IN:PHASE-6 -->
-*Tasks not yet written.*
+
+### Implemented (recorded as built)
+
+`renderCostSummary` now distinguishes the **three coverage states** — nothing priced
+says "unavailable" rather than `$0.0000`; fully priced shows a bare total; partial
+discloses the ratio **and names the gaps**, ordered by count (an operator wants the
+entry that buys the most) and capped at three with `+N more`.
+
+`savedTokensAndCost` and `promptCost` keep their names and **lose their arithmetic**:
+both now build a `pricing.Rates` from what tool-prune published and call
+`pricing.Cost`. This file used to multiply rates by tokens itself — one of five such
+sites, and the only one nothing else tested. There is now exactly one implementation.
+
+**Deviation from the plan's literal wording, stated:** the plan said *delete*
+`savedTokensAndCost` and `promptCost`. Deleting them outright would have removed the
+per-row dollar figures entirely, because the request-side saving is inherently
+cross-event (bytes known at request time, tier and token ratio only from the
+response) and no plugin can publish a finished figure for it — `OnFinish` is too late
+for the session event. Routing them through `pricing.Cost` achieves what the
+deletion was for (one arithmetic site) without losing the display.
+
+`promptCost` zeroes `Output` deliberately: tool-prune publishes no output rate by
+design, and `Cost` refuses to price a tier that carried tokens without one, so
+passing output through would blank every request row.
+
+`pricing.PromptTier` is new and shared — the rule for which tier a prefix saving came
+out of was implemented twice, in the plugin that measures it and the UI that renders
+it, and the two disagreeing would have been invisible.
+
+Docs updated: `plugin-catalog.md` (both plugins' rate options replaced with a
+`pricing:` section reference, plus a new `pricing:` reference section),
+`tool-prune-plugin.md` (Costing rewritten with the inverted-caveat table),
+`litellm-budgettrack-plugin.md` (rates, the `RequiresLater` ordering, both behaviour
+changes), `laptop-token-savings.md` (config lifted to the top level).
+
 <!-- /FILL-IN:PHASE-6 -->
 
 ---

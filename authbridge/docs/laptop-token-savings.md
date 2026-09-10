@@ -70,11 +70,18 @@ price lists use, and keyed by model family so a version bump needs no edit:
 ```yaml
 # ~/.cortex/config.yaml, under the tool-prune plugin
 config:
-  pricing:
-    "*claude-opus-*":
-      input_cost_per_million: 3.80
-      cache_write_cost_per_million: 4.75
-      cache_read_cost_per_million: 0.38
+# Rates are a TOP-LEVEL section now, not a tool-prune option, and they are scoped
+# per endpoint — a discounted gateway and api.anthropic.com bill differently, and
+# only the target host tells them apart. The bundled table ships vendor list, so
+# pin your gateway or its figures are overstated.
+pricing:
+  endpoints:
+    - host: "gw.internal"
+      models:
+        "*claude-opus-*":
+          input_cost_per_million: 3.80
+          cache_write_cost_per_million: 4.75
+          cache_read_cost_per_million: 0.38
 ```
 
 Full reference, including how to measure your own from a gateway's cost headers:

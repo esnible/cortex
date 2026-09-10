@@ -252,3 +252,44 @@ go build ./cmd/authbridge-proxy/
 - Budget alerts at configurable thresholds (e.g., 80% warning)
 - Weekly/monthly budget periods (not just daily)
 - Integration with cortex control API for real-time budget queries
+
+
+## Rates and ordering (changed)
+
+Rates are no longer plugin options. The four `*_cost_per_token` knobs are gone; the
+plugin prices the per-tier token counts `inference-parser` publishes, through the
+top-level `pricing:` section. Its own SSE token parser is gone with them — one
+parser, one rate table, one place tokens become dollars.
+
+**BREAKING — `inference-parser` must appear AFTER this plugin in the chain.**
+
+That reads backwards and is not a typo. The response passes walk the chain in
+reverse (`pipeline.RunResponseFrame`), so the parser needs a *higher* index to fold
+each frame before this plugin settles the cost on the terminal one. The requirement
+is declared as `RequiresLater`, and a chain that gets it wrong now fails to build.
+Before that check existed, the wrong order built cleanly and silently unpriced every
+streamed response — the counts simply were not there yet.
+
+```yaml
+pipeline:
+  outbound:
+    plugins:
+      - name: litellm-budget-track   # settles cost LAST on the response pass
+      - name: inference-parser       # folds token counts FIRST on the response pass
+```
+
+Two further behaviour changes:
+
+- **Cache tiers with no rate are unpriced, not defaulted.** The old default charged
+  them at the uncached input rate, overstating a cache read by 10x while still
+  counting the request as priced — so the error was invisible. A tier that carried
+  tokens without a rate now makes the request unpriced, which is a visible gap.
+- **The ledger quantizes to micros**, because `pricing.Cost` returns integer
+  millionths so bucket addition stays exact. It costs a millionth of a dollar per
+  request and makes the ledger agree with `/v1/usage` to the last digit.
+
+The cost event gained a `provenance` field, **additively**: the original
+`cost_usd` / `source` / `daily_total_usd` / `daily_max_usd` tags are unchanged and a
+consumer that knows only those four still decodes. `source` is retained rather than
+replaced — it says which *path* priced the request (gateway header vs token counts),
+where `provenance` says how much to trust the rates.
