@@ -149,7 +149,43 @@ type SessionEvent struct {
 	// signal rather than inferring "tunnel" from host/extension shape, which
 	// an ordinary unparsed request could otherwise mimic.
 	Tunnel bool
+
+	// TunnelReason says WHY the bytes were left opaque. Empty when Tunnel is
+	// false, and empty on a bridged CONNECT (abctl folds that row into the
+	// decrypted inner request, whose own action is the interesting one).
+	//
+	// It exists because "tunnel" with no reason is indistinguishable from a
+	// routine egress passthrough, and the two demand opposite responses: a
+	// configured passthrough is working as intended, while a client that
+	// rejected the bridge certificate means every plugin is blind to that
+	// traffic and someone has to restart something. Diagnosing the latter
+	// previously required the proxy log, the CA's NotBefore and a process
+	// listing — none of which the timeline hinted at.
+	TunnelReason string
 }
+
+// Tunnel reasons. Stable strings: abctl renders them and operators grep them.
+const (
+	// TunnelClientRejectedCA — the client refused the forged leaf, so it does
+	// not trust the bridge CA. Usually a process that started before the CA was
+	// minted, since CA files are read once at startup.
+	TunnelClientRejectedCA = "client-rejected-ca"
+	// TunnelUpstreamVerifyFailed — WE could not verify the origin, so bridging
+	// would have meant vouching for a certificate we could not check.
+	TunnelUpstreamVerifyFailed = "upstream-verify-failed"
+	// TunnelSkipCached — a previous client rejection for this host is still
+	// inside the skip window, so no interception was attempted at all. Distinct
+	// from client-rejected-ca: THIS client may well trust the CA and is being
+	// tunnelled because another one did not.
+	TunnelSkipCached = "skip-cached"
+	// TunnelBridgeDisabled — no TLS bridge is configured.
+	TunnelBridgeDisabled = "bridge-disabled"
+	// TunnelPassthroughPort, TunnelPassthroughNonTLS, TunnelPassthroughHost
+	// mirror Decision.Classify's own reasons for declining to intercept.
+	TunnelPassthroughPort   = "passthrough-port"
+	TunnelPassthroughNonTLS = "passthrough-non-tls"
+	TunnelPassthroughHost   = "passthrough-host"
+)
 
 // EventTLS describes the TLS state of a connection that produced a
 // session event. Populated by the reverse-proxy listener when mTLS is

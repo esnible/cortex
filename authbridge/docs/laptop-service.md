@@ -166,6 +166,45 @@ followed by this machine's public roots. Pointing a replacing variable at `ca.cr
 would leave that tool trusting one private CA and nothing else, which breaks every
 direct TLS call it makes.
 
+### Everything shows as `tunnel` and no plugin ever runs
+
+`abctl observe` shows rows like this, with `tunnel` in ACTION and no method or status:
+
+```
+18:00:02  out  req  tunnel  client-rejected-ca   ete-litellm.example.com
+```
+
+The reason is in the PLUGIN column. `client-rejected-ca` means that client refused
+the bridge certificate, so nothing downstream can read the traffic. The usual cause
+is a process that **started before the CA existed**: CA files are read once at
+startup, so an agent already running when Cortex was first installed — or when
+`~/.cortex` was deleted and recreated — is holding a different CA, or none.
+
+The proxy log names the offender and the cutoff:
+
+```sh
+grep 'client-rejected-ca' ~/.cortex/proxy.log
+# ... client=127.0.0.1:58041 ca_not_before=2026-09-09T17:11:39-04:00
+#     fix=restart clients that started before ca_not_before ...
+```
+
+Map that client port to a process, then restart it:
+
+```sh
+lsof -nP -iTCP:58041          # -> COMMAND / PID
+ps -o lstart= -p <pid>        # started before ca_not_before? restart it
+```
+
+The port has to come from the log rather than a later `lsof` sweep: the connection
+is gone by the time you look, so nothing after the fact can attribute it.
+
+Two other reasons you may see, neither of which is a problem to fix:
+
+| Reason | Meaning |
+| --- | --- |
+| `passthrough-host` | A host Cortex deliberately does not intercept (GitHub, module proxies, package registries). Working as intended. |
+| `skip-cached` | Another client rejected the CA recently, so this host is not being intercepted for anyone for a few minutes. Fix that client and this clears itself. |
+
 ### Developer tooling is not intercepted at all
 
 `gh`, `go`, `pip` and `npm` work out of the box, without trusting anything. The

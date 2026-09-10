@@ -960,3 +960,42 @@ func TestBuildEventRows_TunnelRowsAreLabelled(t *testing.T) {
 		t.Errorf("bridged row ACTION = %q, want observe", a)
 	}
 }
+
+// TestTunnelReasonCell: the PLUGIN cell carries the reason on a tunnel row,
+// because no plugin ran there and a second em dash beside the first is what made
+// a routine passthrough and a blind-to-everything CA rejection look identical.
+func TestTunnelReasonCell(t *testing.T) {
+	for _, tc := range []struct{ reason, want string }{
+		{"", "—"}, // bridged: folded into the inner request
+		{pipeline.TunnelClientRejectedCA, pipeline.TunnelClientRejectedCA},
+		{pipeline.TunnelSkipCached, pipeline.TunnelSkipCached},
+		{"some-future-reason", "some-future-reason"}, // newer proxy, older abctl
+	} {
+		if got := tunnelReasonCell(tc.reason); got != tc.want {
+			t.Errorf("tunnelReasonCell(%q) = %q, want %q", tc.reason, got, tc.want)
+		}
+	}
+}
+
+// TestRowActionSurfacesTunnelReason: the reason has to reach the row, not just
+// the event. A tunnel row shows "tunnel" plus WHY; a row where a plugin acted
+// keeps that plugin's headline, because a gate CAN deny a CONNECT and that deny
+// must not be replaced by a tunnel label.
+func TestRowActionSurfacesTunnelReason(t *testing.T) {
+	ev := &pipeline.SessionEvent{Tunnel: true, TunnelReason: pipeline.TunnelClientRejectedCA}
+	action, plugin := rowAction(eventRow{event: ev}, nil)
+	if action != tunnelAction {
+		t.Errorf("action = %q, want %q", action, tunnelAction)
+	}
+	if plugin != pipeline.TunnelClientRejectedCA {
+		t.Errorf("plugin cell = %q, want the reason %q", plugin, pipeline.TunnelClientRejectedCA)
+	}
+
+	// A denied CONNECT keeps its own headline.
+	denied := &pipeline.SessionEvent{Tunnel: true, TunnelReason: pipeline.TunnelSkipCached}
+	invs := []pipeline.Invocation{{Plugin: "ibac", Action: "deny"}}
+	action, _ = rowAction(eventRow{event: denied}, invs)
+	if action == tunnelAction {
+		t.Error("a denied CONNECT was relabelled 'tunnel'; the deny must headline")
+	}
+}

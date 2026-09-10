@@ -127,7 +127,13 @@ func (s *Server) HandleTransparentConn(clientConn net.Conn, dst string) {
 
 	enableKeepalive(upstream)
 
-	s.recordTunnelOpened(pctx)
+	// The transparent path records before its own bridge decision for now, so it
+	// reports only that the tunnel opened. Threading the reason through here too
+	// means the same restructuring done for handleConnect; deliberately left for
+	// a follow-up rather than half-done, since this listener is off by default
+	// (--local skips it) and every reason it could report is already correct in
+	// the log.
+	s.recordTunnelOpened(pctx, "")
 
 	if s.TLSBridge != nil {
 		// host is the policy authority: "<sniffed-SNI>:port" when a name was
@@ -141,7 +147,9 @@ func (s *Server) HandleTransparentConn(clientConn net.Conn, dst string) {
 			v, reason := s.TLSBridge.Decision.Classify(key, portOf(dst), first)
 			if v == tlsbridge.Terminate {
 				_ = upstream.Close() // bridgeServe dials its own verified upstream; drop the pre-dial
-				if s.bridgeServe(clientConn, host, key) {
+				// No-op recorder: this path already recorded the tunnel-open eagerly
+				// above, so letting bridgeServe record again would double-count it.
+				if s.bridgeServe(clientConn, host, key, func(string) {}) {
 					return
 				}
 				// bridgeServe fell open (upstream-verify failed) → re-dial for the tunnel.
@@ -162,7 +170,7 @@ func (s *Server) HandleTransparentConn(clientConn net.Conn, dst string) {
 // HandleTransparentConn. MCP/Inference snapshots are nil by definition (the
 // bytes are opaque); Invocations from gate plugins and plugin-public Plugins
 // entries are still meaningful.
-func (s *Server) recordTunnelOpened(pctx *pipeline.Context) {
+func (s *Server) recordTunnelOpened(pctx *pipeline.Context, reason string) {
 	if s.Sessions == nil {
 		return
 	}
@@ -183,6 +191,10 @@ func (s *Server) recordTunnelOpened(pctx *pipeline.Context) {
 		// Explicit opaque-tunnel marker so abctl can fold this CONNECT into
 		// the decrypted inner request without inferring "tunnel" from shape.
 		Tunnel: true,
+		// Why the bytes stayed opaque. The caller knows; this function does
+		// not, which is why it is a parameter rather than something derived
+		// here from host shape.
+		TunnelReason: reason,
 	}
 	// Always record the tunnel-open so passthrough/non-bridged tunnels (no
 	// plugin activity) are still visible. For a TLS-bridged call abctl folds

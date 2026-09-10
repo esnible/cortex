@@ -8,7 +8,9 @@ import (
 	"bytes"
 	"context"
 	cryptotls "crypto/tls"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
 	"fmt"
 	"io"
 	"log/slog"
@@ -103,6 +105,10 @@ type Server struct {
 	tunnelsOpened   atomic.Uint64
 	bridgeAttempts  atomic.Uint64
 	bridgedRequests atomic.Uint64
+
+	// caNotBefore is parsed on first use and never changes for the process.
+	caNotBeforeOnce sync.Once
+	caNotBeforeStr  string
 	bridgeWarnOnce  sync.Once
 	bridgeWarned    atomic.Bool
 }
@@ -584,7 +590,16 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, isBridge 
 // r.URL.Host); host is the skip/log key. Returns true if it consumed the connection
 // (success OR an unrecoverable post-forge failure that was logged); false to fall
 // back to a plain tunnel — so no working call is ever broken.
-func (s *Server) bridgeServe(client net.Conn, authority, host string) bool {
+// bridgeServe attempts to terminate the client's TLS and serve the decrypted
+// connection through the pipeline. Returns true when it handled the connection
+// (bridged, or the client's connection died post-forge and there is nothing left
+// to tunnel), false when it declined and the caller should tunnel instead.
+//
+// rec records the tunnel-open event with the reason the bytes stayed opaque.
+// bridgeServe owns that call on every path it takes — including the successful
+// one, where it must happen before ServeConn blocks — because two of the reasons
+// are discovered only in here.
+func (s *Server) bridgeServe(client net.Conn, authority, host string, rec func(reason string)) bool {
 	// 1) Verify upstream reachability + cert via the dedicated client, BEFORE forging.
 	//    HEAD avoids GET side-effects; a non-2xx status still returns err==nil (cert
 	//    verified), which is all we need. Only a transport/TLS error fails here. The
@@ -596,11 +611,13 @@ func (s *Server) bridgeServe(client net.Conn, authority, host string) bool {
 	req, err := http.NewRequestWithContext(ctx, http.MethodHead, "https://"+authority, nil)
 	if err != nil {
 		slog.Info("tls-bridge passthrough", "host", host, "reason", "upstream-verify", "error", err)
+		rec(pipeline.TunnelUpstreamVerifyFailed)
 		return false
 	}
 	resp, err := s.TLSBridge.Upstream.Do(req)
 	if err != nil {
 		slog.Info("tls-bridge passthrough", "host", host, "reason", "upstream-verify", "error", err)
+		rec(pipeline.TunnelUpstreamVerifyFailed)
 		return false // fall back to plain tunnel — agent's own e2e TLS still reaches origin
 	}
 	_ = resp.Body.Close()
@@ -609,14 +626,39 @@ func (s *Server) bridgeServe(client net.Conn, authority, host string) bool {
 	tconn, err := s.TLSBridge.Term.Terminate(client, hostOnly(authority))
 	if err != nil {
 		s.TLSBridge.Skip.Add(host) // pinned client → its retry will passthrough
-		slog.Warn("tls-bridge passthrough", "host", host, "reason", "handshake-fail", "error", err)
-		// Proof the client doesn't trust the CA. Warn now with the fix, because
-		// Skip.Add above means this host never reaches noteBridgeAttempt again.
+		// UNCONDITIONAL, and it names the client. A failed FORGED handshake is
+		// proof that THIS client does not trust the bridge CA, whatever other
+		// clients are doing — so success elsewhere must not silence it. It used
+		// to: the guidance below sat behind bridgedRequests == 0, which treats
+		// trust as a property of the deployment. It is a property of each
+		// client, and on a laptop running several agents they routinely
+		// disagree: one predates the CA, the rest do not, and the message that
+		// explains the whole thing never prints.
+		//
+		// The client address is the discriminator, not the host — every client
+		// dials the same host, so the host cannot tell them apart. On loopback
+		// the source port maps 1:1 to a process, and it has to be captured HERE:
+		// the connection is gone by the time anyone reads the log, so no later
+		// process listing can attribute it.
+		slog.Warn("tls-bridge passthrough",
+			"host", host,
+			"reason", pipeline.TunnelClientRejectedCA,
+			"client", clientAddr(client),
+			"ca_not_before", s.caNotBefore(),
+			"error", err,
+			"fix", "restart clients that started before ca_not_before (CA files are read once at startup); identify this one with: lsof -nP -iTCP:"+clientPort(client))
+		rec(pipeline.TunnelClientRejectedCA)
+		// Still worth saying when NOTHING has ever bridged — that is a different
+		// diagnosis ("the bridge is doing nothing at all") and its message says
+		// so, which would be false once anything has been decrypted.
 		if s.bridgedRequests.Load() == 0 {
 			s.noteBridgeHandshakeFailure()
 		}
 		return true // conn is dead post-forge; nothing left to tunnel
 	}
+	// Bridged. Empty reason: abctl folds this row into the decrypted inner
+	// request, whose own action is the one worth showing.
+	rec("")
 
 	// 3) Serve the decrypted conn through the UNCHANGED pipeline.
 	tlsbridge.ServeConn(tconn, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1107,9 +1149,20 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// (see handleRequest above). Shared with the transparent-redirect path.
 	// Skipped when the destination matched SkipHosts: no plugin ran, so
 	// there are no Invocations to attribute the event to.
-	if !skipped {
-		s.recordTunnelOpened(pctx)
+	// rec records the tunnel-open exactly once, on whichever path this CONNECT
+	// takes, carrying the reason the bytes stayed opaque. It is a closure rather
+	// than a call here because the reason is not known yet: recording before the
+	// bridge decision — as this did — made the two most useful reasons
+	// unrepresentable, since both are discovered inside bridgeServe.
+	recOnce := false
+	rec := func(reason string) {
+		if skipped || recOnce {
+			return // SkipHosts ran no plugins, so there is nothing to attribute
+		}
+		recOnce = true
+		s.recordTunnelOpened(pctx, reason)
 	}
+	reason := pipeline.TunnelBridgeDisabled
 
 	if s.TLSBridge != nil {
 		pc := &peekedConn{Conn: clientConn, r: bufio.NewReaderSize(clientConn, sniffBufSize)}
@@ -1117,11 +1170,17 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		first, _ := pc.Peek(5)
 		authority := r.Host // CONNECT target is already host:port
 		key := hostOnly(r.Host)
-		if !s.TLSBridge.Skip.Contains(key) {
-			if v, _ := s.TLSBridge.Decision.Classify(key, portOf(r.Host), first); v == tlsbridge.Terminate {
+		if s.TLSBridge.Skip.Contains(key) {
+			// Distinct from client-rejected-ca: this client may trust the CA
+			// perfectly well and is being tunnelled because another one did not.
+			reason = pipeline.TunnelSkipCached
+		} else {
+			v, why := s.TLSBridge.Decision.Classify(key, portOf(r.Host), first)
+			reason = passthroughReason(why)
+			if v == tlsbridge.Terminate {
 				s.noteBridgeAttempt()
 				_ = upstream.Close() // bridgeServe dials its own verified upstream
-				if s.bridgeServe(clientConn, authority, key) {
+				if s.bridgeServe(clientConn, authority, key, rec) {
 					return
 				}
 				// fell open → re-dial for the tunnel
@@ -1133,6 +1192,10 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+
+	// Every path that reaches here left the bytes opaque without entering
+	// bridgeServe, so this is where their reason gets recorded.
+	rec(reason)
 
 	// Bidirectional copy until either side closes.
 	tunnel(clientConn, upstream)
@@ -1373,3 +1436,65 @@ func (s *Server) caFileHint() string {
 // Exists for tests: sync.Once has no public "has it run" query, and asserting
 // on log output would couple the test to the message text.
 func (s *Server) warnFired() bool { return s.bridgeWarned.Load() }
+
+// passthroughReason maps Decision.Classify's own reason string onto the stable
+// wire vocabulary. Classify already distinguishes these cases; translating here
+// rather than inventing a parallel set keeps one source of truth for WHY the
+// bridge declined.
+func passthroughReason(why string) string {
+	switch why {
+	case "port":
+		return pipeline.TunnelPassthroughPort
+	case "non-tls":
+		return pipeline.TunnelPassthroughNonTLS
+	case "skip":
+		return pipeline.TunnelPassthroughHost
+	}
+	return ""
+}
+
+// clientAddr names the client end of a connection for diagnostics, tolerating a
+// nil conn or nil RemoteAddr so a logging path can never panic.
+func clientAddr(c net.Conn) string {
+	if c == nil {
+		return "unknown"
+	}
+	a := c.RemoteAddr()
+	if a == nil {
+		return "unknown"
+	}
+	return a.String()
+}
+
+// clientPort is the source port alone, for pasting into `lsof -nP -iTCP:<port>`.
+// Returns "<port>" as a literal placeholder when it cannot be determined, so the
+// suggested command still reads as a template rather than as something to run.
+func clientPort(c net.Conn) string {
+	if _, port, err := net.SplitHostPort(clientAddr(c)); err == nil && port != "" {
+		return port
+	}
+	return "<port>"
+}
+
+// caNotBefore is the bridge CA's NotBefore, which is the line dividing clients
+// that can trust it from clients that cannot: CA files are read once at process
+// start, so anything older than this is holding a different CA (or none).
+// Parsed once — the value is fixed for the process.
+func (s *Server) caNotBefore() string {
+	s.caNotBeforeOnce.Do(func() {
+		s.caNotBeforeStr = "unknown"
+		if s.TLSBridge == nil || len(s.TLSBridge.CAPEM) == 0 {
+			return
+		}
+		blk, _ := pem.Decode(s.TLSBridge.CAPEM)
+		if blk == nil {
+			return
+		}
+		crt, err := x509.ParseCertificate(blk.Bytes)
+		if err != nil {
+			return
+		}
+		s.caNotBeforeStr = crt.NotBefore.Local().Format(time.RFC3339)
+	})
+	return s.caNotBeforeStr
+}

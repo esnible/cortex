@@ -20,7 +20,7 @@ func TestRecordTunnelOpened_SetsTunnelMarker(t *testing.T) {
 	defer store.Close()
 	s := &Server{Sessions: store}
 
-	s.recordTunnelOpened(&pipeline.Context{Direction: pipeline.Outbound, Host: "example.com:443"})
+	s.recordTunnelOpened(&pipeline.Context{Direction: pipeline.Outbound, Host: "example.com:443"}, pipeline.TunnelSkipCached)
 
 	v := store.View(session.DefaultSessionID)
 	if v == nil || len(v.Events) != 1 {

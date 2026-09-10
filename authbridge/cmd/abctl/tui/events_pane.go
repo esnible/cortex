@@ -370,9 +370,28 @@ const tunnelAction = "tunnel"
 func rowAction(er eventRow, invs []pipeline.Invocation) (action, plugin string) {
 	action, plugin = eventAction(invs)
 	if er.event != nil && er.event.Tunnel && action == "—" {
-		return tunnelAction, "—"
+		// The PLUGIN cell carries the REASON on these rows. No plugin ran — that
+		// is what makes the row a tunnel — so the cell would otherwise be a
+		// second em dash beside the first, on the one row type that needs an
+		// explanation most. "tunnel" alone cannot distinguish a passthrough
+		// working as designed from a client that rejected the bridge CA, and
+		// those demand opposite responses.
+		return tunnelAction, tunnelReasonCell(er.event.TunnelReason)
 	}
 	return action, plugin
+}
+
+// tunnelReasonCell renders SessionEvent.TunnelReason for the PLUGIN column.
+//
+// Reasons are already short, kebab-case and stable, so they are shown verbatim
+// rather than prettified: an operator grepping the proxy log for the same string
+// should find the same token. An unknown reason is passed through untouched — a
+// newer proxy paired with an older abctl should show the new reason, not hide it.
+func tunnelReasonCell(reason string) string {
+	if reason == "" {
+		return "—"
+	}
+	return reason
 }
 
 // eventAction folds a message's per-plugin invocations into the single ACTION +
