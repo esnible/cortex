@@ -295,8 +295,8 @@ done
 # catch that: in isolation main -> CHANNEL_TAG is correct. The bug was in the bootstrap
 # deciding to pass "main" at all. So extract the bootstrap block itself and assert the
 # pair it produces.
-with_bootstrap() { # want_ref http_code_for_script_fetch newest_release_output
-	_want=$1; _http=$2; _newest=$3
+with_bootstrap() { # want_ref http_code_for_script_fetch newest_release_output [run_as=pipe|file]
+	_want=$1; _http=$2; _newest=$3; _runas=${4:-pipe}
 	_start=$(awk '/^SCRIPT_REF="\$\{AUTHBRIDGE_SCRIPT_REF:-\}"/{print NR; exit}' "${INSTALL_SH}")
 	_end=$(awk -v s="${_start}" 'NR>=s && /^fi$/{print NR; exit}' "${INSTALL_SH}")
 	{
@@ -329,7 +329,15 @@ with_bootstrap() { # want_ref http_code_for_script_fetch newest_release_output
 		# shellcheck disable=SC2016 # same: the probe prints its own variables.
 		printf 'printf "script=%%s version=%%s\\n" "${SCRIPT_REF}" "${VERSION_REF}"\n'
 	} >"${TMP}/bs.sh"
-	sh "${TMP}/bs.sh" 2>/dev/null
+	if [ "${_runas}" = file ]; then
+		# $0 is a readable file -> the re-exec must be skipped (local clone / edit).
+		sh "${TMP}/bs.sh" 2>/dev/null
+	else
+		# Simulate the documented `curl … | sh` pipe: the script arrives on stdin, so $0
+		# is "sh" with no file at that path — the case the re-exec bootstrap targets. cd
+		# to TMP so no stray "sh" file in the caller's cwd can spoof the $0-is-a-file test.
+		( cd "${TMP}" && sh ) < "${TMP}/bs.sh" 2>/dev/null
+	fi
 }
 
 # The plain one-liner while the release API is unreachable. VERSION_REF must be empty so
@@ -370,6 +378,19 @@ check "--ref=v0.5.0 with a transport failure refuses to run main" \
 # kind of vacuous pass that hid the unreachable arm above.
 check "--ref=v0.5.0 with a 200 script re-execs into it" \
 	"REEXECED" "$(with_bootstrap v0.5.0 200 v0.7.0-alpha.7)"
+
+# --- run as a LOCAL FILE: never re-exec the released copy (the reported bug) ---
+#
+# Running ./install.sh from a clone (or an edit under test) must run THAT file, not
+# silently re-fetch the newest release and run it — which is what produced "Using the
+# installer from vX", ran the OLD released code, and died. $0 is a readable file here,
+# so the re-exec is skipped: no REEXECED, no DIED, SCRIPT_REF stays empty. Binaries
+# still follow --ref (or resolve newest when unset), so `--ref=X` pins X's binaries even
+# though this local script — not X's — is what runs.
+check "local file, --ref=v0.5.0: run THIS script, pin v0.5.0 binaries, no re-exec" \
+	"script= version=v0.5.0" "$(with_bootstrap v0.5.0 200 v0.7.0-alpha.7 file)"
+check "local file, no --ref: run THIS script, resolve binaries later, no re-exec" \
+	"script= version=" "$(with_bootstrap "" 200 v0.7.0-alpha.7 file)"
 
 # --- the one-liner survives an exhausted API quota ---
 #
@@ -473,6 +494,182 @@ if [ -f "${WORKFLOW}" ]; then
 else
 	check "release-binaries.yaml is where expected" "found" "missing at ${WORKFLOW}"
 fi
+
+# --- port_in_use: the ss branch counts only loopback / wildcard binds ---
+#
+# ss reports the Local Address:Port in column 4. A listener on an EXTERNAL interface
+# does not make the loopback port unavailable, so port_in_use must not count it —
+# matching it would make start_unsupervised's health poll return early and stop_cortex
+# warn about a proxy that is not there. IPv6 loopback ([::1]) is the case a naive IPv4
+# pattern misses: the proxy can bind ::1 only, and reading that as "free" makes the
+# health poll spin its full 10s. `command` is stubbed so lsof is "absent" and ss is
+# "present", forcing the ss path; ss is stubbed to emit the fixture (the real ss
+# filters by sport, but the awk address-column check is the code under test).
+with_port_in_use_ss() { # port  ss-listing-fixture
+	{
+		printf 'command() { case "$2" in ss) return 0 ;; *) return 1 ;; esac; }\n'
+		printf 'ss() { cat "%s"; }\n' "$2"
+		sed -n '/^port_in_use()/,/^}/p' "${INSTALL_SH}"
+		printf 'if port_in_use "%s"; then echo busy; else echo free; fi\n' "$1"
+	} >"${TMP}/pin.sh"
+	sh "${TMP}/pin.sh" 2>/dev/null
+}
+
+fixture ss_v4loop.txt <<'EOF'
+LISTEN 0 4096 127.0.0.1:47600 0.0.0.0:*
+EOF
+check "ss: IPv4 loopback bind reads busy" "busy" "$(with_port_in_use_ss 47600 "${FIXTURE}")"
+
+fixture ss_v6loop.txt <<'EOF'
+LISTEN 0 4096 [::1]:47600 [::]:*
+EOF
+check "ss: IPv6 loopback [::1] bind reads busy" "busy" "$(with_port_in_use_ss 47600 "${FIXTURE}")"
+
+fixture ss_wild4.txt <<'EOF'
+LISTEN 0 4096 0.0.0.0:47600 0.0.0.0:*
+EOF
+check "ss: IPv4 wildcard bind reads busy" "busy" "$(with_port_in_use_ss 47600 "${FIXTURE}")"
+
+fixture ss_wild6.txt <<'EOF'
+LISTEN 0 4096 [::]:47600 [::]:*
+EOF
+check "ss: IPv6 wildcard bind reads busy" "busy" "$(with_port_in_use_ss 47600 "${FIXTURE}")"
+
+fixture ss_external.txt <<'EOF'
+LISTEN 0 4096 192.168.1.5:47600 0.0.0.0:*
+EOF
+check "ss: external-only bind reads free (loopback port still available)" "free" "$(with_port_in_use_ss 47600 "${FIXTURE}")"
+
+fixture ss_none.txt </dev/null
+check "ss: nothing listening reads free" "free" "$(with_port_in_use_ss 47600 "${FIXTURE}")"
+
+# The awk anchors the port to end-of-field, so a loopback bind on a DIFFERENT port
+# (or a port that is a substring, e.g. :47600 inside :476000) must not count.
+fixture ss_otherport.txt <<'EOF'
+LISTEN 0 4096 127.0.0.1:9999 0.0.0.0:*
+EOF
+check "ss: a loopback bind on another port reads free" "free" "$(with_port_in_use_ss 47600 "${FIXTURE}")"
+
+# --- supervisor_usable: attempt-and-detect, with launchctl/systemctl mocked ---
+#
+# The preflight that decides whether to reach for the OS supervisor. The seatbelt
+# sandbox that motivated this PR is "launchctl is present but `launchctl list` fails"
+# — mocked here, plus the systemd-user equivalent, absence, and the working case.
+with_supervisor_usable() { # os(darwin|linux)  present(1|0)  probe_exit
+	_absent=1; [ "$2" = 1 ] && _absent=0
+	{
+		printf 'os=%s\n' "$1"
+		printf 'command() { case "$2" in launchctl|systemctl) return %s ;; *) return 0 ;; esac; }\n' "${_absent}"
+		printf 'launchctl() { return %s; }\n' "$3"
+		printf 'systemctl() { return %s; }\n' "$3"
+		sed -n '/^supervisor_usable()/,/^}/p' "${INSTALL_SH}"
+		printf 'if supervisor_usable; then echo usable; else echo unusable; fi\n'
+	} >"${TMP}/su.sh"
+	sh "${TMP}/su.sh" 2>/dev/null
+}
+check "supervisor: darwin, launchctl absent -> unusable" "unusable" "$(with_supervisor_usable darwin 0 0)"
+check "supervisor: darwin, launchctl present but 'list' fails (sandbox) -> unusable" "unusable" "$(with_supervisor_usable darwin 1 1)"
+check "supervisor: darwin, launchctl present and 'list' ok -> usable" "usable" "$(with_supervisor_usable darwin 1 0)"
+check "supervisor: linux, systemctl absent -> unusable" "unusable" "$(with_supervisor_usable linux 0 0)"
+check "supervisor: linux, user bus unreachable -> unusable" "unusable" "$(with_supervisor_usable linux 1 1)"
+check "supervisor: linux, systemctl reachable -> usable" "usable" "$(with_supervisor_usable linux 1 0)"
+
+# --- proxy_running: five branches, and it gates a kill ---
+#
+# stop_cortex signals the pid this returns, so every branch matters: a non-numeric,
+# empty, missing, or dead pid must read stopped (never SIGTERM a recycled pid), and
+# where the sandbox blinds `ps` we keep the kill -0 result rather than refuse. kill and
+# ps are mocked; the pidfile is a real file so the cat + `case` parsing is shipped code.
+with_proxy_running() { # pidfile-content(__MISSING__ for none)  kill_exit  ps_mode(fail|empty|COMM)
+	_pf="${TMP}/pr_pidfile"
+	if [ "$1" = "__MISSING__" ]; then rm -f "${_pf}"; else printf '%s\n' "$1" >"${_pf}"; fi
+	{
+		printf 'PROXY_PIDFILE=%s\n' "${_pf}"
+		printf 'kill() { return %s; }\n' "$2"
+		case "$3" in
+			fail)  printf 'ps() { return 1; }\n' ;;
+			empty) printf 'ps() { return 0; }\n' ;;
+			*)     printf 'ps() { printf "%%s\\n" "%s"; }\n' "$3" ;;
+		esac
+		sed -n '/^proxy_running()/,/^}/p' "${INSTALL_SH}"
+		printf 'if proxy_running; then echo running; else echo stopped; fi\n'
+	} >"${TMP}/prun.sh"
+	sh "${TMP}/prun.sh" 2>/dev/null
+}
+check "proxy_running: missing pidfile -> stopped" "stopped" "$(with_proxy_running __MISSING__ 0 authbridge-proxy)"
+check "proxy_running: non-numeric pid -> stopped" "stopped" "$(with_proxy_running abc 0 authbridge-proxy)"
+check "proxy_running: empty pid -> stopped" "stopped" "$(with_proxy_running '' 0 authbridge-proxy)"
+check "proxy_running: dead pid (kill -0 fails) -> stopped" "stopped" "$(with_proxy_running 12345 1 authbridge-proxy)"
+check "proxy_running: alive, ps blind (sandbox) -> running" "running" "$(with_proxy_running 12345 0 fail)"
+check "proxy_running: alive, ps empty comm -> running" "running" "$(with_proxy_running 12345 0 empty)"
+check "proxy_running: alive, ps names authbridge-proxy -> running" "running" "$(with_proxy_running 12345 0 authbridge-proxy)"
+check "proxy_running: alive, ps names another process -> stopped" "stopped" "$(with_proxy_running 12345 0 sshd)"
+
+# --- ensure_tmpdir: exports TMPDIR on BOTH paths (regression: unset-TMPDIR abort) ---
+#
+# With `set -u`, a later "${TMPDIR}" reference (the svc_err mktemp on the supervised
+# path) aborts the script if ensure_tmpdir returned without exporting TMPDIR. macOS
+# hides this because launchd sets TMPDIR per user; Linux routinely has it unset — so
+# the writable-base path must export TMPDIR too, not just the fallback. mkdir/rmdir are
+# mocked so the result does not depend on whether /tmp is writable where the test runs;
+# TMPDIR is unset for the run so the base defaults to /tmp.
+with_ensure_tmpdir() { # base_writable(ok|deny)  [preset-TMPDIR]
+	if [ "$1" = ok ]; then _mk='mkdir() { return 0; }'
+	else _mk='mkdir() { for _a in "$@"; do [ "$_a" = "-p" ] && return 0; done; return 1; }'
+	fi
+	{
+		printf 'CORTEX_DIR=%s\n' "${TMP}/cortexhome"
+		printf 'info() { :; }\ndie() { printf "DIED\\n"; exit 1; }\nrmdir() { :; }\n'
+		printf '%s\n' "${_mk}"
+		sed -n '/^ensure_tmpdir()/,/^}/p' "${INSTALL_SH}"
+		printf 'ensure_tmpdir\n'
+		printf 'printf "%%s\\n" "${TMPDIR-__UNSET__}"\n'
+	} >"${TMP}/et.sh"
+	if [ -n "${2:-}" ]; then TMPDIR="$2" sh "${TMP}/et.sh" 2>/dev/null
+	else env -u TMPDIR sh "${TMP}/et.sh" 2>/dev/null; fi
+}
+check "ensure_tmpdir: unset TMPDIR, writable /tmp -> adopt & export /tmp (else set -u aborts)" "/tmp" "$(with_ensure_tmpdir ok)"
+check "ensure_tmpdir: unwritable base falls back under CORTEX_DIR and exports it" "${TMP}/cortexhome/tmp" "$(with_ensure_tmpdir deny)"
+# An already-set writable TMPDIR is used AS-IS — never overwritten with a normalised
+# copy. The trailing-slash case is the tell: the old code round-tripped through _base
+# and stripped it; TMPDIR must come back byte-for-byte.
+check "ensure_tmpdir: an already-set writable TMPDIR is kept verbatim" "/custom/t" "$(with_ensure_tmpdir ok /custom/t)"
+check "ensure_tmpdir: an already-set TMPDIR keeps its trailing slash (not clobbered)" "/custom/t/" "$(with_ensure_tmpdir ok /custom/t/)"
+# A set-but-unwritable TMPDIR still falls back rather than failing.
+check "ensure_tmpdir: set-but-unwritable TMPDIR falls back under CORTEX_DIR" "${TMP}/cortexhome/tmp" "$(with_ensure_tmpdir deny /nope)"
+
+# --- service_install_action: classify `abctl service install` -> what to do ---
+#
+# The reported bug: `abctl service install` failed with `launchctl bootstrap failed:
+# ... Input/output error` (exit 1), but the installer died with "could not set up the
+# service" instead of running the proxy directly. Root cause: abctl prints that on
+# STDOUT, and the decision matched a signature in STDERR only. The rule is now
+# exit + `refus` + ports, so the failure text's stream no longer matters, and any
+# unrecognised failure falls back (Cortex runs) rather than dying. demo_ports_busy is
+# mocked; grep is real.
+with_service_install_action() { # status  output  ports_busy(yes|no)
+	{
+		if [ "$3" = yes ]; then printf 'demo_ports_busy() { return 0; }\n'
+		else printf 'demo_ports_busy() { return 1; }\n'; fi
+		sed -n '/^service_install_action()/,/^}/p' "${INSTALL_SH}"
+		printf 'service_install_action "%s" "%s"\n' "$1" "$2"
+	} >"${TMP}/sia.sh"
+	sh "${TMP}/sia.sh" 2>/dev/null
+}
+check "svc action: exit 0 -> supervised" "supervised" \
+	"$(with_service_install_action 0 ok no)"
+check "svc action: launchd EIO (exit 1), ports free -> fallback [the reported bug]" "fallback" \
+	"$(with_service_install_action 1 'launchctl bootstrap failed: exit status 5: Input/output error' no)"
+check "svc action: an abctl refusal -> refused (never fall back past a safety decision)" "refused" \
+	"$(with_service_install_action 1 'abctl: refusing to expose listener' no)"
+check "svc action: non-zero with ports held -> ports-busy (upgrade race)" "ports-busy" \
+	"$(with_service_install_action 1 'bootstrap failed' yes)"
+check "svc action: unknown non-zero, ports free -> fallback (default; Cortex still runs)" "fallback" \
+	"$(with_service_install_action 7 'some unrecognised error' no)"
+# A safety refusal must win over a busy-port race — never downgraded to "wait and
+# re-run", which would eventually run the config abctl refused.
+check "svc action: refusal wins over ports-busy" "refused" \
+	"$(with_service_install_action 1 'refused: unsafe config' yes)"
 
 printf '\n%s passed, %s failed\n' "${PASS}" "${FAIL}"
 [ "${FAIL}" = "0" ]
