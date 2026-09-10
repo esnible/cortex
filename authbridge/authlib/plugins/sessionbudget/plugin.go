@@ -2,6 +2,24 @@
 // inference calls, and wall-clock duration. Must run before inference-parser
 // in the declared plugin order (response path is reverse: inference-parser
 // finalizes counts first, then this plugin reads them).
+//
+// That ordering constraint is prose, and it builds cleanly when violated: a token
+// or call budget then reads zero counts and never fires, which is indistinguishable
+// from a session that stayed inside its limits. pipeline.PluginCapabilities gained
+// RequiresLater to make exactly this a boot error, and it is NOT declared here yet,
+// deliberately:
+//
+//   - Declared unconditionally, it refuses a duration-only budget, which is
+//     enforced entirely on the request path and needs no parser at all. That is a
+//     working configuration today.
+//   - Declared conditionally on the config, it breaks the documented contract that
+//     Capabilities() is static per factory (see pipeline/plugin.go). Catalog()
+//     builds a throwaway instance with no config, so /v1/plugins and abctl would
+//     report no ordering requirement for a plugin that then fails at boot.
+//
+// Doing this properly needs a config-dependent ordering mechanism the pipeline does
+// not have, which is its own change with its own review — not a rider on a pricing
+// PR. Tracked separately.
 package sessionbudget
 
 import (
@@ -118,39 +136,8 @@ func (p *SessionBudget) Name() string { return "session-budget" }
 
 func (p *SessionBudget) Capabilities() pipeline.PluginCapabilities {
 	return pipeline.PluginCapabilities{
-		// Declared only when a limit actually depends on the parser's output.
-		//
-		// The package doc has always stated the constraint — "must run before
-		// inference-parser in the declared plugin order (response path is reverse)" —
-		// but as prose, which builds cleanly when violated. Violated, a token or call
-		// budget reads zero counts and never fires, which looks exactly like a
-		// session that stayed inside its limits.
-		//
-		// CONDITIONAL, though, because max_duration_seconds is enforced entirely on
-		// the request path and never touches Extensions.Inference. A duration-only
-		// budget legitimately runs without the parser, and an unconditional
-		// requirement would refuse to build a configuration that works today. This is
-		// safe to read here: validateRelationships calls Capabilities AFTER Configure,
-		// so p.cfg is populated.
-		RequiresLater: p.parserDependentLimits(),
-		Description:   "Enforce per-session token, call, and duration budgets via Redis.",
+		Description: "Enforce per-session token, call, and duration budgets via Redis.",
 	}
-}
-
-// parserDependentLimits names inference-parser when, and only when, a configured
-// limit is counted from what that parser publishes on the response.
-//
-// Duration is excluded deliberately: it is wall-clock, enforced on the request path,
-// and needs nothing from the response.
-func (p *SessionBudget) parserDependentLimits() []string {
-	c := p.cfg
-	countsTokensOrCalls := c.MaxTokens > 0 || c.MaxCalls > 0 ||
-		c.MaxInputTokens > 0 || c.MaxCacheReadTokens > 0 || c.MaxCacheWriteTokens > 0 ||
-		c.MaxOutputTokens > 0 || c.MaxReasoningTokens > 0
-	if !countsTokensOrCalls {
-		return nil
-	}
-	return []string{"inference-parser"}
 }
 
 func (p *SessionBudget) Configure(raw json.RawMessage) error {

@@ -86,11 +86,70 @@ func compileModel(pattern string) (modelMatcher, error) {
 // names, and a case mismatch would silently unprice the traffic rather than fail
 // visibly (toolprune/plugin.go:224-226).
 func (m modelMatcher) match(model string) bool {
-	lower := strings.ToLower(model)
+	lower := strings.ToLower(strings.TrimSpace(model))
 	if m.g.Match(lower) {
 		return true
 	}
-	return m.gPrefixed != nil && m.gPrefixed.Match(lower)
+	if m.gPrefixed != nil && m.gPrefixed.Match(lower) {
+		return true
+	}
+	// Literal keys also match a normalized form, so a gateway echoing a provider's
+	// native identifier still lands on its own version's row. Globs deliberately do
+	// NOT get this: an operator's pattern is matched against what came off the wire.
+	if m.exact {
+		if n := normalizeModelName(lower); n != lower {
+			return m.g.Match(n)
+		}
+	}
+	return false
+}
+
+// normalizeModelName reduces a provider's native model identifier to the bare name
+// LiteLLM's price map keys on.
+//
+// The "*/"+key form alone was anchored too tightly: it tolerated a slash-delimited
+// prefix and nothing else, so Bedrock's canonical
+// "anthropic.claude-opus-4-1-20250805-v1:0" — dot-delimited prefix, "-v1:0" tail —
+// still fell through to the family glob and was priced at the newest opus rate
+// instead of its own. Same for a ":thinking" suffix and for trailing whitespace.
+//
+// Applied only when matching a LITERAL key, and only if it changes the string, so
+// this can widen a match but never redirect one that already succeeded.
+//
+// Order matters: the tail suffixes come off before the prefix, because both can be
+// present at once.
+func normalizeModelName(s string) string {
+	// A ":"-delimited tail is a variant selector (":thinking") or Bedrock's version
+	// discriminator (":0"), never part of the billed model name.
+	if i := strings.LastIndexByte(s, ':'); i > 0 {
+		s = s[:i]
+	}
+	// Bedrock appends "-v<n>" after the dated name.
+	if i := strings.LastIndex(s, "-v"); i > 0 && isAllDigits(s[i+2:]) {
+		s = s[:i]
+	}
+	// A provider prefix, delimited by "/" (aws/, anthropic/) or "." (Bedrock's
+	// anthropic.claude-...). Anthropic model names contain no dots, so cutting at
+	// the last one is safe for matching.
+	if i := strings.LastIndexByte(s, '/'); i >= 0 {
+		s = s[i+1:]
+	}
+	if i := strings.LastIndexByte(s, '.'); i >= 0 {
+		s = s[i+1:]
+	}
+	return s
+}
+
+func isAllDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // specificity ranks how tightly a row names its target, for tie-breaks WITHIN one
@@ -161,11 +220,28 @@ func NewTable(entries []Entry) (*Table, error) {
 			if err := validHostPattern(host); err != nil {
 				return nil, fmt.Errorf("pricing: host pattern %q: %w", e.Host, err)
 			}
+			// A pattern carrying a port matched NOTHING and was accepted: hostKey
+			// strips the port from the endpoint, never from the pattern, so
+			// "gw.internal:4000" resolved unpriced for both gw.internal:4000 and
+			// gw.internal — or, with the bundled table on, silently billed that
+			// gateway at vendor list. Copying the endpoint out of a URL is the most
+			// likely way to write this field, so it is rejected with the fix named
+			// rather than normalized silently.
+			if bare := hostKey(host); bare != host {
+				return nil, fmt.Errorf("pricing: host pattern %q must not include a port (ports are stripped from the endpoint before matching, so this would never match); use %q", e.Host, bare)
+			}
+		}
+		// Copy the thresholds: aliasing the caller's slice meant a Table was not
+		// actually immutable, so a caller mutating the Entry it passed in would
+		// change a live table under concurrent readers.
+		rates := e.Rates
+		if rates.Thresholds != nil {
+			rates.Thresholds = append([]ContextThreshold(nil), rates.Thresholds...)
 		}
 		t.rows = append(t.rows, row{
 			host:  host,
 			model: m,
-			rates: e.Rates,
+			rates: rates,
 			prov:  e.Prov,
 			spec: specificity{
 				namedHost: !anyHost(host),

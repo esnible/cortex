@@ -197,11 +197,17 @@ which version served the request. Input rate, old glob vs new exact row:
 | `claude-sonnet-4-5` | 1.52 | 3.00 | 1.97x |
 | `claude-sonnet-5` | 1.52 | 2.00 | 1.32x |
 | `claude-haiku-4-5` | 0.76 | 1.00 | 1.32x |
-| `claude-3-haiku-20240307` | 0.76 | 0.25 | **0.33x** |
+| `claude-3-haiku-20240307` | *unpriced* | 0.25 | newly priced |
 
-So the direction is not even uniform: older, more expensive models rise sharply while
-the cheapest fall. Only the newest member of each family lands on the 1.32x
-glob-to-glob ratio, because that is the rate its family glob now carries.
+So there is no single factor. Older, more expensive versions rise sharply; only the
+newest member of each family lands on the 1.32x glob-to-glob ratio, because that is
+the rate its family glob now carries.
+
+`claude-3-haiku-20240307` is a different case again, and worth stating precisely: the
+old `*claude-haiku-*` glob could not match a version-FIRST name at all, so that model
+was **unpriced** before this change rather than priced at 0.76. It is newly priced,
+not repriced downward — an earlier draft of this table showed it as a 0.33x decrease,
+which was wrong.
 
 The systematic part is what remains true: the old rates were measured on a discounted
 gateway and the new ones are vendor list, so a deployment on such a gateway is now

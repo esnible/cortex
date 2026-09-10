@@ -1,6 +1,10 @@
 package pricing
 
-import "testing"
+import (
+	"math"
+	"strings"
+	"testing"
+)
 
 // The bundled table's whole justification is per-version accuracy, and these assert
 // the RATE, not merely that something matched. The original bundled test fed
@@ -117,5 +121,105 @@ func TestResolution_CatchAllHostSpellingsRankEqually(t *testing.T) {
 		if got := v * tokensPerMillion; got != 7.00 {
 			t.Errorf("host %q: rate = %.2f/Mtok, want 7.00 — a catch-all shadowed an exact model", star, got)
 		}
+	}
+}
+
+// TestResolution_NativeProviderIdentifiers covers the identifier shapes a gateway
+// may echo verbatim. The "*/"+key form alone was anchored too tightly: it tolerated
+// a slash-delimited prefix and nothing else, so Bedrock's canonical form fell
+// through to the family glob and was priced at the newest opus rate.
+func TestResolution_NativeProviderIdentifiers(t *testing.T) {
+	tab, err := NewTable(Bundled())
+	if err != nil {
+		t.Fatal(err)
+	}
+	rate := func(model string) (float64, Provenance) {
+		r, p := tab.Resolve("api.anthropic.com", model, 0)
+		v, _ := r.For(TierInput)
+		return v * tokensPerMillion, p
+	}
+	want, _ := rate("claude-opus-4-1-20250805")
+	if want == 0 {
+		t.Fatal("fixture broken: the dated opus-4-1 row is missing")
+	}
+
+	for _, model := range []string{
+		"anthropic.claude-opus-4-1-20250805-v1:0", // Bedrock canonical
+		"anthropic.claude-opus-4-1-20250805",      // dot prefix only
+		"claude-opus-4-1-20250805-v1:0",           // version tail only
+		"claude-opus-4-1-20250805:thinking",       // variant selector
+		"  claude-opus-4-1-20250805  ",            // stray whitespace
+		"AWS/Claude-Opus-4-1-20250805",            // case plus prefix
+	} {
+		got, prov := rate(model)
+		if got != want {
+			t.Errorf("%q = %.2f/Mtok (%s), want %.2f — fell through to a family glob", model, got, prov, want)
+		}
+	}
+}
+
+func TestNewTable_RejectsAPortBearingHostPattern(t *testing.T) {
+	// It matched NOTHING and was accepted: hostKey strips the port from the endpoint,
+	// never from the pattern. Copying an endpoint out of a URL is the likeliest way
+	// to write this field, and the symptom was silent — unpriced, or billed at
+	// vendor list with the bundled table on.
+	var r Rates
+	r.Base[TierInput], r.Set[TierInput] = 1e-6, true
+	_, err := NewTable([]Entry{{Host: "gw.internal:4000", Model: "*", Rates: r, Prov: ProvConfigured}})
+	if err == nil {
+		t.Fatal("accepted a host pattern with a port, which can never match")
+	}
+	for _, want := range []string{"port", "gw.internal"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not mention %q", err, want)
+		}
+	}
+}
+
+func TestCost_RejectsHostileRates(t *testing.T) {
+	// Cost validated the token count and trusted the rate. Only config validated
+	// rates, so every other producer was unguarded — including phase 7's discovery
+	// path, where the numbers arrive from a remote gateway.
+	for name, bad := range map[string]float64{
+		"negative": -1e-6,
+		"+Inf":     math.Inf(1),
+		"-Inf":     math.Inf(-1),
+		"NaN":      math.NaN(),
+	} {
+		t.Run(name, func(t *testing.T) {
+			var r Rates
+			r.Base[TierInput], r.Set[TierInput] = bad, true
+			micros, ok := Cost(r, Usage{Input: 1000})
+			if ok {
+				t.Errorf("priced a request at a %s rate: %d micros", name, micros)
+			}
+			if micros != 0 {
+				t.Errorf("micros = %d, want 0", micros)
+			}
+		})
+	}
+}
+
+func TestTable_DoesNotAliasCallerThresholds(t *testing.T) {
+	// A Table is documented immutable; aliasing the caller's slice meant mutating the
+	// Entry afterwards changed a live table under concurrent readers.
+	var r Rates
+	r.Base[TierInput], r.Set[TierInput] = 3.0/tokensPerMillion, true
+	r.Thresholds = []ContextThreshold{{
+		AbovePromptTokens: 200_000,
+		Rate:              [numTiers]float64{TierInput: 6.0 / tokensPerMillion},
+		Set:               [numTiers]bool{TierInput: true},
+	}}
+	entries := []Entry{{Host: "*", Model: "*", Rates: r, Prov: ProvConfigured}}
+	tab, err := NewTable(entries)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries[0].Rates.Thresholds[0].Rate[TierInput] = 99.0 / tokensPerMillion
+
+	got, _ := tab.Resolve("h", "m", 300_000)
+	v, _ := got.For(TierInput)
+	if want := 6.0; v*tokensPerMillion != want {
+		t.Errorf("threshold rate = %.2f/Mtok after mutating the caller's slice, want %.2f", v*tokensPerMillion, want)
 	}
 }

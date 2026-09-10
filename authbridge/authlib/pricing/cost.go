@@ -20,6 +20,9 @@ import "math"
 //   - A negative count, which is a parser bug or a hostile body. A negative cost
 //     would corrode a running total that nothing re-derives.
 //   - No rates at all, which is the ProvNone case reaching here directly.
+//   - A rate that is negative or non-finite, wherever it came from. Trusting the
+//     rate while checking the count would let a hostile or buggy producer emit
+//     negative money or MaxInt64 micros.
 //
 // A tier with no rate but no tokens is fine: toolprune's table has no output rate
 // at all, and refusing there would unprice every request it measures.
@@ -37,6 +40,15 @@ func Cost(r Rates, u Usage) (micros int64, ok bool) {
 			continue
 		}
 		if !eff.Set[i] {
+			return 0, false
+		}
+		// The RATE is validated here, not only at config time. Cost previously
+		// checked the token count and trusted the rate, so a negative rate yielded
+		// ok=true with negative micros, +Inf yielded MaxInt64, and NaN was
+		// architecture-dependent. Only config.Build validated rates, which leaves
+		// every other producer unguarded — including the ProvDiscovered /model/info
+		// path, where the numbers come from a remote gateway.
+		if r := eff.Base[i]; r < 0 || math.IsNaN(r) || math.IsInf(r, 0) {
 			return 0, false
 		}
 		usd += float64(n) * eff.Base[i]
