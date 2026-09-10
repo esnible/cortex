@@ -264,15 +264,24 @@ func TestMigrateDeclined_DoesNotDropTheSource(t *testing.T) {
 func TestMigrateDeclined_TombstonesTheSource(t *testing.T) {
 	m := newTestGoneModel(t, session.DefaultSessionID)
 	m.events["ctx-42"] = make([]pipeline.SessionEvent, 1)
-	m.sessions = []session.SessionSummary{{ID: session.DefaultSessionID}, {ID: "ctx-42"}}
+	// "ctx-42" must NOT be in the previous list, or it is not an unseen id and
+	// rekeyedTo skips it — leaving migrateSession unentered and this test a
+	// duplicate of TestEvictionPlusNewSession_IsNotTreatedAsRekey. The matching
+	// CreatedAt is what proves the rename and gets us into migrateSession, which
+	// then declines because ctx-42 is already cached.
+	created := time.Now().Add(-time.Hour)
+	m.sessions = []session.SessionSummary{{ID: session.DefaultSessionID, CreatedAt: created}}
 
-	m.Update(sessionsLoadedMsg{{ID: "ctx-42", UpdatedAt: time.Now()}})
+	m.Update(sessionsLoadedMsg{{ID: "ctx-42", CreatedAt: created, UpdatedAt: time.Now()}})
 
 	if len(m.events[session.DefaultSessionID]) != 3 {
 		t.Fatal("source events were dropped")
 	}
 	if _, ok := m.gone[session.DefaultSessionID]; !ok {
 		t.Error("source was neither migrated nor tombstoned — retained but unreachable")
+	}
+	if got := len(m.events["ctx-42"]); got != 1 {
+		t.Errorf("existing target cache was clobbered: got %d events, want 1", got)
 	}
 }
 
