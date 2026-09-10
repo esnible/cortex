@@ -8,14 +8,14 @@ and read individual events as pretty-printed JSON.
 
 ```
 ┌─ abctl · http://localhost:9094 ────────────────────────────────┐
-│ ID                       UPDATED    EVENTS  ACTIVE             │
-│ ► ctx-abc-1234…          3s ago     42      ●                  │
-│   ctx-def-5678…          18m ago    15                         │
-│   default                —          8      gone                │
-│                                                                 │
+│ ID                       UPDATED    EVENTS  TOKENS  ACTIVE     │
+│ ► ctx-abc-1234…          3s ago     42      1,500   ●          │
+│   ctx-def-5678…          18m ago    15      900                │
+│   default                —          8       320     gone       │
+│                                                                │
 │ ● connected   2.1 ev/s                                         │
 │ [↑↓/jk] nav  [↵] drill  [/] filter  [?] keys  [q] quit         │
-└─────────────────────────────────────────────────────────────────┘
+└────────────────────────────────────────────────────────────────┘
 ```
 
 ## Install
@@ -93,8 +93,10 @@ The UI has these top-level panes. `Enter` drills in; `Esc` backs out.
 
 - **Sessions** (default): table of active sessions in the store, most
   recently updated first. Columns: ID, updated (relative), event count,
-  active marker. Sessions the server has stopped listing are kept at the
-  bottom marked `gone` — see [Retention](#retention).
+  token total, active marker. Sessions the server has stopped listing are
+  kept at the bottom marked `gone`, with their counts computed from
+  abctl's cache since no server summary remains — see
+  [Retention](#retention).
 - **Events**: per-session event table. `c` opens a column picker — a popup with
   a checkbox and a one-line description per column, since twelve abbreviated
   headers are not self-describing.

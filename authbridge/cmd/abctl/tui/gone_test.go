@@ -285,6 +285,49 @@ func TestMigrateDeclined_TombstonesTheSource(t *testing.T) {
 	}
 }
 
+// The README documents the sessions table's columns and shows a tombstone row
+// populating TOKENS. Pin the column set so the doc and the table cannot drift
+// again — they had, silently: the README listed four columns for five.
+func TestSessionsTable_ColumnsMatchDocumentedSet(t *testing.T) {
+	want := []string{"ID", "UPDATED", "EVENTS", "TOKENS", "ACTIVE"}
+	tbl := newSessionsTable()
+	got := make([]string, 0, len(want))
+	for _, c := range tbl.Columns() {
+		got = append(got, c.Title)
+	}
+	if len(got) != len(want) {
+		t.Fatalf("column count changed: got %v, want %v — update abctl/README.md", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("column %d: got %q, want %q — update abctl/README.md", i, got[i], want[i])
+		}
+	}
+}
+
+// And a tombstone row really does populate TOKENS from the cache, as the README's
+// diagram shows — it is not blank just because the server summary is gone.
+func TestGoneRow_PopulatesTokensFromCache(t *testing.T) {
+	m := newTestGoneModel(t, "vanished")
+	evs := m.events["vanished"]
+	evs[0].Phase = pipeline.SessionResponse
+	evs[0].Inference = &pipeline.InferenceExtension{TotalTokens: 320}
+	m.events["vanished"] = evs
+
+	m.Update(sessionsLoadedMsg{})
+	m.rebuildSessionsTable()
+
+	for _, r := range m.sessionsTbl.Rows() {
+		if r[0] == "vanished" {
+			if r[3] != "320" {
+				t.Errorf("TOKENS on a tombstone row = %q, want %q", r[3], "320")
+			}
+			return
+		}
+	}
+	t.Error("tombstone row missing")
+}
+
 // A cache key with no events must not be tombstoned. snapshotLoadedMsg assigns
 // m.events[id] unconditionally, so drilling into an empty session creates the key;
 // a tombstone there renders "id — 0 — gone", advertising events that do not exist.
