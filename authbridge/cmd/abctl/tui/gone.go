@@ -3,6 +3,7 @@ package tui
 import (
 	"fmt"
 	"sort"
+	"time"
 
 	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
 	"github.com/rossoctl/cortex/authbridge/authlib/session"
@@ -69,24 +70,25 @@ func (m *model) reconcileGone(summaries []session.SessionSummary) {
 	// events under the old key are the same events. Migrate them so the history
 	// stays attached to the surviving id, and follow the user's selection over.
 	//
-	// ORDERING DEPENDENCY: soleNewSession compares against m.sessions, which must
-	// still hold the PREVIOUS list. The caller therefore has to invoke this before
+	// ORDERING DEPENDENCY: rekeyedTo compares against m.sessions, which must still
+	// hold the PREVIOUS list. The caller therefore has to invoke this before
 	// assigning m.sessions = msg (see the sessionsLoadedMsg case in app.go). Swap
-	// those two lines and every id looks familiar, soleNewSession returns "", and
-	// rekeys silently stop migrating — the events survive under the old id, so the
-	// bug shows up only as a stale duplicate bucket rather than as a failure.
+	// those two lines and the previous "default" summary is gone, rekeyedTo returns
+	// "", and rekeys silently stop migrating — the events survive under the old id,
+	// so the bug shows up only as a stale duplicate bucket rather than as a failure.
 	//
-	// Two further conditions narrow this to a rename, because "default vanished
-	// and one unfamiliar id appeared" is also what an eviction of default plus an
-	// unrelated new session looks like — and migrating then would file the events
-	// under a session they never belonged to. A rename keeps the list the same
-	// size, and starts from a list that actually contained "default". Neither is
-	// proof (the server does not tell us), which is why the failure mode is now
-	// merely a missed migration rather than a wrong one: declining leaves the
-	// events viewable under the old id, tombstoned by the loop below.
-	if events, ok := m.events[session.DefaultSessionID]; ok && !serverIDs[session.DefaultSessionID] &&
-		len(summaries) == len(m.sessions) && hasSession(m.sessions, session.DefaultSessionID) {
-		if newID := soleNewSession(serverIDs, m.sessions); newID != "" {
+	// The discriminator is CreatedAt, not the shape of the list. Earlier revisions
+	// of this code guessed from "default vanished and one unfamiliar id appeared",
+	// narrowed with list-length and prior-membership checks. Those heuristics fail
+	// in the ordinary steady state at max_sessions: Append evicts when the count
+	// EXCEEDS the cap and evictOldestLocked removes exactly one entry, so session
+	// #101 arriving means one id vanishes and one appears with the length
+	// unchanged. If the evicted one was a stale "default" (it is spared only while
+	// it is activeID), every heuristic passed and default's history was filed under
+	// an unrelated session — the precise outcome the old comment claimed to
+	// prevent. See TestEvictionAtCapacity_DoesNotMisMigrate.
+	if events, ok := m.events[session.DefaultSessionID]; ok && !serverIDs[session.DefaultSessionID] {
+		if newID := rekeyedTo(summaries, m.sessions); newID != "" {
 			m.migrateSession(session.DefaultSessionID, newID, events)
 		}
 	}
@@ -122,35 +124,56 @@ func (m *model) reconcileGone(summaries []session.SessionSummary) {
 	}
 }
 
-// hasSession reports whether summaries contains id.
-func hasSession(summaries []session.SessionSummary, id string) bool {
-	for _, s := range summaries {
-		if s.ID == id {
-			return true
+// rekeyedTo returns the id that "default" was renamed to, or "" when no rename
+// can be proven. It is a proof, not a guess.
+//
+// Store.Rekey renames in place on the same *entry, so a rekeyed session carries
+// default's ORIGINAL CreatedAt; a session the store creates fresh gets
+// CreatedAt: now. Both values ride the wire as SessionSummary.CreatedAt
+// ("createdAt") and apiclient.ListSessions decodes them, so the timestamps are
+// available on both the previous list and the incoming one. Equal CreatedAt on an
+// id the client has never seen therefore identifies a rename and nothing else —
+// an evicted default plus an unrelated new session cannot fake it, because the
+// new session's CreatedAt is its own.
+//
+// Ambiguity still yields "": if several unseen ids share default's CreatedAt,
+// guessing which inherited the history would be worse than declining, and
+// declining is cheap (the events stay viewable under the old id, tombstoned).
+func rekeyedTo(summaries, prev []session.SessionSummary) string {
+	var created time.Time
+	for _, s := range prev {
+		if s.ID == session.DefaultSessionID {
+			created = s.CreatedAt
+			break
 		}
 	}
-	return false
-}
+	// No previous default summary — nothing to match against. Note this is also
+	// what a caller that already overwrote m.sessions looks like.
+	if created.IsZero() {
+		return ""
+	}
 
-// soleNewSession returns the id the store rekeyed to, or "" when that cannot be
-// established unambiguously. A rekey shows up as exactly one id that the server
-// now lists and abctl has never seen before; if several appeared, guessing which
-// inherited "default" would be worse than leaving the events where they are
-// (they stay viewable under the old id either way, just marked gone).
-func soleNewSession(serverIDs map[string]bool, prev []session.SessionSummary) string {
 	seen := make(map[string]bool, len(prev))
 	for _, s := range prev {
 		seen[s.ID] = true
 	}
+
 	found := ""
-	for id := range serverIDs {
-		if seen[id] {
+	for _, s := range summaries {
+		if seen[s.ID] {
+			continue
+		}
+		// .Equal, never ==: these came back through JSON, so the wall clocks match
+		// but the monotonic readings and *Location pointers need not. == compares
+		// the struct fields and returns false for the same instant — which would
+		// silently disable migration altogether rather than fail loudly.
+		if !s.CreatedAt.Equal(created) {
 			continue
 		}
 		if found != "" {
 			return "" // ambiguous
 		}
-		found = id
+		found = s.ID
 	}
 	return found
 }

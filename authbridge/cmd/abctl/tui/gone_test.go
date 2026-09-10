@@ -181,9 +181,12 @@ func TestForgetGoneExcept_KeepsTheOpenedSession(t *testing.T) {
 // events are the same events, so they follow the id — and so does the selection.
 func TestRekey_MigratesEventsAndSelection(t *testing.T) {
 	m := newTestGoneModel(t, session.DefaultSessionID)
-	m.sessions = []session.SessionSummary{{ID: session.DefaultSessionID}}
+	// Store.Rekey renames in place on the same *entry, so the new id reports
+	// default's ORIGINAL CreatedAt. That equality is what proves a rename.
+	created := time.Now().Add(-time.Hour)
+	m.sessions = []session.SessionSummary{{ID: session.DefaultSessionID, CreatedAt: created}}
 
-	m.Update(sessionsLoadedMsg{{ID: "ctx-42", UpdatedAt: time.Now()}})
+	m.Update(sessionsLoadedMsg{{ID: "ctx-42", CreatedAt: created, UpdatedAt: time.Now()}})
 
 	if len(m.events["ctx-42"]) != 3 {
 		t.Errorf("events did not follow the rekey: %d under the new id", len(m.events["ctx-42"]))
@@ -209,20 +212,23 @@ func TestRekey_MigratesEventsAndSelection(t *testing.T) {
 // tells a rekeyed id from one it already knew.
 //
 // This drives Update (not reconcileGone directly), so reordering the two lines in
-// the sessionsLoadedMsg case fails here. Without it a reorder would be silent: no
-// id looks new, soleNewSession returns "", and the rekey just stops migrating —
-// leaving a stale duplicate bucket rather than an error.
+// the sessionsLoadedMsg case fails here. Without it a reorder would be silent:
+// there is no previous "default" summary to read a CreatedAt from, rekeyedTo
+// returns "", and the rekey just stops migrating — leaving a stale duplicate
+// bucket rather than an error.
 func TestRekeyDetection_RunsBeforeSessionsIsReplaced(t *testing.T) {
 	m := newTestGoneModel(t, session.DefaultSessionID)
+	created := time.Now().Add(-time.Hour)
 	// "known" is already in the previous list, so only "ctx-42" is new. Were
-	// m.sessions replaced first, both would look known and nothing would migrate.
+	// m.sessions replaced first, there would be no default summary to match.
 	m.sessions = []session.SessionSummary{
-		{ID: session.DefaultSessionID}, {ID: "known"},
+		{ID: session.DefaultSessionID, CreatedAt: created},
+		{ID: "known", CreatedAt: created},
 	}
 
 	m.Update(sessionsLoadedMsg{
-		{ID: "known", UpdatedAt: time.Now()},
-		{ID: "ctx-42", UpdatedAt: time.Now()},
+		{ID: "known", CreatedAt: created, UpdatedAt: time.Now()},
+		{ID: "ctx-42", CreatedAt: created, UpdatedAt: time.Now()},
 	})
 
 	if len(m.events["ctx-42"]) != 3 {
@@ -292,19 +298,53 @@ func TestEmptyCacheKey_IsNotTombstoned(t *testing.T) {
 	}
 }
 
-// An eviction of "default" plus an unrelated new session looks exactly like a
-// rename to a naive check: default gone, one unfamiliar id present. Migrating
-// then would file the events under a session they never belonged to. The list
-// shrinking (2 previous, 2 now, but one of the previous was itself evicted) is
-// the tell — here the list grows past what a rename could produce.
-func TestEvictionPlusNewSession_IsNotTreatedAsRekey(t *testing.T) {
+// The steady state at max_sessions, which every list-shape heuristic gets wrong.
+//
+// Append evicts only when the count EXCEEDS the cap and evictOldestLocked removes
+// exactly one entry, so at capacity session #101 arriving means one id vanishes
+// and one appears with the LENGTH UNCHANGED. A stale "default" is the prime
+// candidate for eviction (it is spared only while it is activeID). An earlier
+// revision gated on list length plus prior membership and mis-migrated here,
+// filing default's history under a session it never belonged to — while the
+// banner correctly called it "evicted". CreatedAt is what separates the two: the
+// new session's own creation time cannot match default's.
+func TestEvictionAtCapacity_DoesNotMisMigrate(t *testing.T) {
 	m := newTestGoneModel(t, session.DefaultSessionID)
-	// Previously: default only. Now: two unrelated sessions, default evicted.
-	m.sessions = []session.SessionSummary{{ID: session.DefaultSessionID}}
+	created := time.Now().Add(-time.Hour)
+	// Previous list and new list are the SAME LENGTH, and the previous one did
+	// contain default — the two conditions the old heuristics checked.
+	m.sessions = []session.SessionSummary{
+		{ID: session.DefaultSessionID, CreatedAt: created},
+		{ID: "keeper", CreatedAt: created},
+	}
 
 	m.Update(sessionsLoadedMsg{
-		{ID: "other", UpdatedAt: time.Now()},
-		{ID: "unrelated", UpdatedAt: time.Now()},
+		{ID: "keeper", CreatedAt: created, UpdatedAt: time.Now()},
+		// Brand new: its own CreatedAt, not default's.
+		{ID: "unrelated-new", CreatedAt: time.Now(), UpdatedAt: time.Now()},
+	})
+
+	if ev, ok := m.events["unrelated-new"]; ok {
+		t.Errorf("default's %d events were filed under an unrelated session", len(ev))
+	}
+	if len(m.events[session.DefaultSessionID]) != 3 {
+		t.Error("default's events left their bucket without a proven rename")
+	}
+	if _, ok := m.gone[session.DefaultSessionID]; !ok {
+		t.Error("default should be tombstoned, not silently migrated")
+	}
+}
+
+// An eviction that also changes the list length must not migrate either.
+func TestEvictionPlusNewSession_IsNotTreatedAsRekey(t *testing.T) {
+	m := newTestGoneModel(t, session.DefaultSessionID)
+	created := time.Now().Add(-time.Hour)
+	// Previously: default only. Now: two unrelated sessions, default evicted.
+	m.sessions = []session.SessionSummary{{ID: session.DefaultSessionID, CreatedAt: created}}
+
+	m.Update(sessionsLoadedMsg{
+		{ID: "other", CreatedAt: time.Now(), UpdatedAt: time.Now()},
+		{ID: "unrelated", CreatedAt: time.Now(), UpdatedAt: time.Now()},
 	})
 
 	if _, ok := m.events["other"]; ok {
@@ -366,6 +406,36 @@ func TestForgetGone_RebuildsSessionsTable(t *testing.T) {
 	}
 	if !keptRow {
 		t.Error("the opened session lost its row; its retained events are unreachable")
+	}
+}
+
+// CreatedAt must be compared with .Equal(), not ==. Both sides arrive via JSON,
+// so the same instant can carry different monotonic readings and *Location
+// pointers; == compares struct fields and returns false, which would silently
+// disable migration rather than fail loudly. This models the round trip by
+// re-parsing an RFC3339 timestamp, the way encoding/json does.
+func TestRekeyDetection_UsesEqualNotStructCompare(t *testing.T) {
+	base := time.Now().Add(-time.Hour)
+	viaJSON, err := time.Parse(time.RFC3339Nano, base.Format(time.RFC3339Nano))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if base == viaJSON {
+		t.Skip("this platform's == happens to match; the .Equal contract still holds")
+	}
+	if !base.Equal(viaJSON) {
+		t.Fatal("precondition: the two should be the same instant")
+	}
+
+	m := newTestGoneModel(t, session.DefaultSessionID)
+	m.sessions = []session.SessionSummary{{ID: session.DefaultSessionID, CreatedAt: base}}
+
+	// The incoming summary carries the JSON-round-tripped timestamp.
+	m.Update(sessionsLoadedMsg{{ID: "ctx-42", CreatedAt: viaJSON, UpdatedAt: time.Now()}})
+
+	if len(m.events["ctx-42"]) != 3 {
+		t.Error("migration declined across a JSON round trip — CreatedAt is being " +
+			"compared with == rather than .Equal()")
 	}
 }
 
