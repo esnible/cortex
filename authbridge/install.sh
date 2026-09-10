@@ -80,14 +80,71 @@ installed_version() {
 	[ -x "${BIN_DIR}/$1" ] || return 0
 	"${BIN_DIR}/$1" --version 2>/dev/null | awk 'NR==1{print $NF}'
 }
+# SUPERVISOR_NAME is the human label; SUPERVISOR_CMD is the actual command the
+# messages name, so "launchctl may not be used here" reads as the thing the user
+# would otherwise reach for.
 case "$(uname -s)" in
-	Darwin) SUPERVISOR_NAME="launchd user agent" ;;
-	*) SUPERVISOR_NAME="systemd user unit" ;;
+	Darwin) SUPERVISOR_NAME="launchd user agent"; SUPERVISOR_CMD="launchctl" ;;
+	*) SUPERVISOR_NAME="systemd user unit"; SUPERVISOR_CMD="systemctl --user" ;;
 esac
 
 info() { printf '%s\n' "$*"; }
 warn() { printf 'warning: %s\n' "$*" >&2; }
 die()  { printf 'error: %s\n' "$*" >&2; exit 1; }
+
+# There is deliberately NO sandbox-detection probe here. We never try to GUESS whether
+# a sandbox will block launchd/systemd or /tmp — a passive probe cannot tell (a
+# permissive `(allow default)` seatbelt profile is a real sandbox that still lets
+# launchctl and /tmp work, while a restrictive one does not), and the earlier
+# heuristics (/tmp writability, `getconf DARWIN_USER_DIR` returning EIO) reported the
+# wrong thing under a permissive profile. The reliable kernel-level answer,
+# sandbox_check(getpid(), NULL, 0) == 1 (what Chromium's Seatbelt::IsSandboxed uses),
+# tells you that you ARE sandboxed but NOT whether any given operation is denied —
+# which is the only thing this installer cares about.
+#
+# So instead of detecting and pre-deciding, we ATTEMPT each restricted operation and
+# handle what actually fails: supervisor_usable() (a real `launchctl list` /
+# `systemctl --user` probe) plus the service-install attempt fall back to a plain
+# background process with a clear message, and ensure_tmpdir writes-then-falls-back to
+# a scratch dir under ~/.cortex. Nothing assumes the sandbox is restrictive; nothing
+# assumes it is permissive either.
+
+# ensure_tmpdir guarantees TMPDIR names a directory we can actually write, and is
+# exported. mktemp (used by the bootstrap and the download) and the release-tag scratch
+# file all honour TMPDIR; in a sandbox that denies /tmp, an unset or /tmp-based TMPDIR
+# makes every one of them fail. Falling back under CORTEX_DIR keeps all scratch state in
+# the one directory this installer already owns.
+#
+# An existing TMPDIR is used AS-IS — never overwritten with a normalised copy. We only
+# choose a value when the environment gave us none. Either way TMPDIR is exported on the
+# success path, so a later "${TMPDIR}" is safe under `set -u` even where the environment
+# never set it (routine on Linux; launchd hides this on macOS by setting a per-user one).
+ensure_tmpdir() {
+	# _probe is only for the write test — mkdir (atomic, fails on a pre-existing path)
+	# rather than a truncating `: >`, so a planted symlink at the predictable name cannot
+	# be followed (CWE-59). Strip a trailing slash from the probe path only, so a TMPDIR
+	# like "/tmp/" does not become "/tmp//.cortex-w..."; TMPDIR itself is left untouched.
+	if [ -n "${TMPDIR:-}" ]; then
+		_probe="${TMPDIR%/}/.cortex-w.$$.d"
+		if mkdir "${_probe}" 2>/dev/null; then
+			rmdir "${_probe}"
+			export TMPDIR
+			return 0
+		fi
+	else
+		# No TMPDIR in the environment: adopt the conventional /tmp if it is writable.
+		if mkdir "/tmp/.cortex-w.$$.d" 2>/dev/null; then
+			rmdir "/tmp/.cortex-w.$$.d"
+			TMPDIR="/tmp"
+			export TMPDIR
+			return 0
+		fi
+	fi
+	TMPDIR="${CORTEX_DIR}/tmp"
+	mkdir -p "${TMPDIR}" 2>/dev/null || die "no writable TMPDIR (${TMPDIR})"
+	export TMPDIR
+	info "Using ${TMPDIR} for temporary files (the default was not writable)."
+}
 
 # usage is a heredoc rather than sed over "$0": piped as `curl ... | sh -s -- --help`
 # the script has no file to read ($0 is "sh"), so the previous version printed
@@ -110,6 +167,15 @@ Options:
   --claude-code    after starting, offer to configure Claude Code to use it, so
                    it runs as plain `claude` with no environment variables
   --local          the default, spelled out
+  --no-service     do not use the OS service supervisor (launchd/systemd); start
+                   the proxy directly as a background process instead. Chosen
+                   automatically when the supervisor turns out to be unavailable
+                   (e.g. a macOS seatbelt sandbox that blocks launchctl), and always
+                   prints the environment variables to point ANY AI harness at
+                   Cortex, not just Claude Code
+  --stop           stop a running Cortex and exit — the supervised service if one
+                   is installed, and the background proxy from its pidfile. Does
+                   not download, install, or start anything. Safe to re-run.
   --yes, -y        do not prompt; answer yes to configuring Claude Code
   --ref=REF        install from a git ref instead of the newest release — both
                    this script and the binaries (e.g. --ref=main for unreleased
@@ -117,7 +183,9 @@ Options:
   -h, --help       this text
 
 After installing, to cut Claude Code's token cost:
-  abctl tools scan --write ~/.cortex/config.yaml
+  abctl tools scan --write ~/.cortex/config.yaml   (proposes which tools to prune)
+Then watch the $ saved on every prompt Claude Code sends, live in:
+  abctl
 USAGE
 }
 
@@ -126,12 +194,19 @@ MODE=local
 WIRE_CLAUDE_CODE=""
 ASSUME_YES=""
 WANT_REF=""
+# NO_SERVICE forces the proxy to run as a plain background process instead of under
+# the OS supervisor. There is no sandbox flag and no auto-detection: we attempt each
+# restricted operation (the supervisor, a writable TMPDIR) and fall back on whatever
+# actually fails, rather than deciding up front that this is a sandbox.
+NO_SERVICE=""
 for arg in "$@"; do
 	case "$arg" in
 		--install-only) MODE=install-only ;;
 		--claude-code) WIRE_CLAUDE_CODE=1 ;;
 		--yes | -y) ASSUME_YES=1 ;;
 		--ref=*) WANT_REF="${arg#*=}" ;;
+		--no-service) NO_SERVICE=1 ;;
+		--stop) MODE=stop ;;
 		# --local is the default; accepted so writing it out explicitly works, and
 		# so it mirrors the proxy flag of the same name.
 		--local) MODE=local ;;
@@ -139,7 +214,7 @@ for arg in "$@"; do
 			usage
 			exit 0
 			;;
-		*) die "unknown option: $arg (try --claude-code, --install-only, --local, --ref=REF, --yes, or no argument)" ;;
+		*) die "unknown option: $arg (try --claude-code, --install-only, --local, --no-service, --stop, --ref=REF, --yes, or no argument)" ;;
 	esac
 done
 # Removed knobs die rather than being ignored. Left set in someone's shell,
@@ -151,6 +226,8 @@ done
 [ -z "${AUTHBRIDGE_INSTALL_ONLY:-}" ] || die "AUTHBRIDGE_INSTALL_ONLY is no longer read. Pass --install-only instead."
 [ -z "${AUTHBRIDGE_VERSION:-}" ] || die "AUTHBRIDGE_VERSION is no longer read. Pass --ref=${AUTHBRIDGE_VERSION} instead."
 [ -z "${AUTHBRIDGE_REF:-}" ] || die "AUTHBRIDGE_REF is no longer read. Pass --ref=${AUTHBRIDGE_REF} instead."
+
+ensure_tmpdir
 
 command -v curl >/dev/null 2>&1 || die "curl is required"
 command -v tar  >/dev/null 2>&1 || die "tar is required"
@@ -322,7 +399,32 @@ SCRIPT_REF="${AUTHBRIDGE_SCRIPT_REF:-}"
 # able to install channel binaries: three separate situations all set SCRIPT_REF=main,
 # and only one of them was a request for unreleased builds.
 VERSION_REF="${SCRIPT_REF}"
-if [ -z "${SCRIPT_REF}" ]; then
+# Decide whether to re-exec the RELEASED copy of this script. That bootstrap exists for
+# the documented `curl … | sh` pipe: the code arrives over stdin ($0 is "sh", no file
+# on disk), and running the newest TESTED release beats running whatever landed on main.
+#
+# It must NOT fire when the script is run as a LOCAL FILE — a clone, or a fix under test
+# (`./install.sh`, `sh install.sh`). That file is what the user chose to run; silently
+# re-fetching the newest release and running THAT instead is why a fix in a cloned repo
+# did nothing — the "Using the installer from vX" line ran the OLD released code and
+# died. `[ -f "$0" ] && [ -r "$0" ]` is the discriminator: a readable file at $0 means a
+# real local script (skip the re-exec), while the pipe leaves $0 as "sh" with no such
+# file. Also skipped: offline (AUTHBRIDGE_SKIP_DOWNLOAD=1, nothing to fetch), --stop
+# (fetches nothing, and the released target predates the flag), and the re-exec'd child
+# or an AUTHBRIDGE_SCRIPT_REF pin (SCRIPT_REF already set).
+#
+# install_test.sh slices from `SCRIPT_REF=...` to the first line that is exactly `fi`,
+# so keep every `fi` below indented until the re-exec block's own closing `fi`.
+_reexec=1
+[ -n "${SCRIPT_REF}" ] && _reexec=""
+[ "${AUTHBRIDGE_SKIP_DOWNLOAD:-}" = "1" ] && _reexec=""
+[ "${MODE}" = "stop" ] && _reexec=""
+{ [ -f "$0" ] && [ -r "$0" ]; } && _reexec=""
+# When we are NOT re-execing and no script ref was pinned, the binaries still follow
+# --ref (WANT_REF), or the newest release when it is empty — so `--ref=X` selects X's
+# binaries even though this local script, not X's, is the one running.
+[ -z "${_reexec}" ] && [ -z "${SCRIPT_REF}" ] && VERSION_REF="${WANT_REF}"
+if [ -n "${_reexec}" ]; then
 	want_ref="${WANT_REF:-}"
 	if [ -z "${want_ref}" ]; then
 		want_ref="$(newest_release)" || true
@@ -430,16 +532,260 @@ DEMO_STATS_PORT=47602
 # download finish and then killed the proxy during startup.
 DEMO_HEALTH_PORT=47604
 
-# port_in_use exits 0 if something is already listening on the given loopback
-# port. Best-effort: uses lsof, then nc; if neither exists, it assumes free.
+# port_in_use exits 0 if something is already listening on the given loopback port.
+# Best-effort across platforms: lsof (macOS + many Linux), then ss (iproute2, the
+# default on modern Linux where lsof is often not installed), then nc; if none
+# exists, it assumes free. lsof is absent in some macOS sandboxes and ss is absent
+# on macOS, so trying all three is what makes one probe work everywhere.
 port_in_use() {
 	if command -v lsof >/dev/null 2>&1; then
 		lsof -nP -iTCP@127.0.0.1:"$1" -sTCP:LISTEN >/dev/null 2>&1
+	elif command -v ss >/dev/null 2>&1; then
+		# -Hlnt: no header, LISTEN state, numeric, TCP. `sport = :$1` filters by port
+		# but ignores the local ADDRESS, so restrict the Local Address:Port column ($4)
+		# to loopback (IPv4 127.0.0.1 or IPv6 [::1]) or a wildcard bind — a listener on
+		# an external interface only does not make the loopback port unavailable, and
+		# matching it would make the health poll return early and stop_cortex warn about
+		# a proxy that is not there. IPv6 loopback matters because the proxy may bind
+		# ::1 only: ss prints that as [::1]:PORT, which the IPv4 and wildcard patterns
+		# both miss, so without this the health poll would spin its full 10s.
+		ss -Hlnt "sport = :$1" 2>/dev/null \
+			| awk -v p=":$1" '$4 ~ ("(^|[^0-9])127\\.0\\.0\\.1"p"$")||($4 ~ ("^\\[::1\\]"p"$")||($4 ~ ("^(0\\.0\\.0\\.0|\\*|\\[::\\]|::)"p"$"))){f=1} END{exit !f}'
 	elif command -v nc >/dev/null 2>&1; then
 		nc -z 127.0.0.1 "$1" >/dev/null 2>&1
 	else
 		return 1
 	fi
+}
+
+# demo_ports_busy exits 0 if ANY of the local listener ports is already in use. Used
+# to tell a real "no supervisor" case (ports free -> safe to run unsupervised) from
+# the benign upgrade race (old proxy still holds the ports -> starting a second one
+# would just crash on the bind).
+demo_ports_busy() {
+	for _p in "${DEMO_FORWARD_PORT}" "${DEMO_SESSION_PORT}" "${DEMO_STATS_PORT}" "${DEMO_HEALTH_PORT}"; do
+		port_in_use "${_p}" && return 0
+	done
+	return 1
+}
+
+# service_install_action classifies the outcome of `abctl service install` into one
+# word, so the decision is one testable place instead of a chain of greps inline.
+#   $1 = abctl's exit status   $2 = abctl's combined stdout+stderr
+# Prints exactly one of:
+#   supervised — it worked.
+#   refused    — abctl declined ON PURPOSE (a `refus`* message, e.g. a config that
+#                would expose a listener). This is the one failure we must NOT paper
+#                over: running the same proxy unsupervised would defeat that check.
+#   ports-busy — non-zero, but our listener ports are held: the benign upgrade race
+#                (the old proxy is still draining). Falling back would crash a second
+#                proxy on the bound ports, so tell the user to wait and re-run.
+#   fallback   — any other non-zero: the OS supervisor simply cannot take the job here
+#                (launchd EIO in a sandbox, an absent systemd user bus, ...). Do what
+#                --no-service does and run the proxy directly, rather than die after a
+#                clean install. This is the default, so a NEW failure mode falls back
+#                (Cortex runs) instead of leaving it down.
+# The distinction is by exit + `refus` + ports, NOT a positive match on the failure
+# text: abctl prints the launchd EIO to stdout, so a stderr-only signature missed it
+# and the installer died where it should have fallen back.
+service_install_action() { # status output
+	[ "$1" = "0" ] && { printf 'supervised\n'; return 0; }
+	if printf '%s' "$2" | grep -qi 'refus'; then printf 'refused\n'; return 0; fi
+	if demo_ports_busy; then printf 'ports-busy\n'; return 0; fi
+	printf 'fallback\n'
+}
+
+# Where the unsupervised proxy records its pid, so a service-less install still has
+# exactly one process to find, check, and stop.
+PROXY_PIDFILE="${CORTEX_DIR}/proxy.pid"
+
+# supervisor_usable exits 0 when the OS service supervisor can actually be driven
+# here. This is the explicit access check to run BEFORE install, so a supervisor we
+# cannot use becomes a clean fall-through to the background start instead of a fatal
+# `die` after the binaries are already on disk.
+#
+#   macOS: in a seatbelt sandbox `launchctl bootstrap` fails with an I/O error
+#   (exit 5) that abctl surfaces as a plain non-zero exit. `launchctl print` on our
+#   own GUI domain can answer positively even when bootstrap cannot, so probe
+#   `launchctl list`, which needs a real, reachable user domain and fails when
+#   confined.
+#
+#   Linux: abctl installs a systemd *user* unit, which needs both systemctl and a
+#   running per-user manager (a session/D-Bus). That manager is absent in many
+#   containers, minimal images, and non-systemd inits (OpenRC, runit, s6), so a bare
+#   `command -v systemctl` is not enough — `systemctl --user show-environment` is a
+#   read-only call that succeeds only when the user manager is actually reachable.
+#
+# Only a preflight: the install attempt below still catches a supervisor that passes
+# this check but fails for another reason.
+supervisor_usable() {
+	if [ "$os" = "darwin" ]; then
+		command -v launchctl >/dev/null 2>&1 || return 1
+		launchctl list >/dev/null 2>&1
+	else
+		command -v systemctl >/dev/null 2>&1 || return 1
+		systemctl --user show-environment >/dev/null 2>&1
+	fi
+}
+
+# proxy_running exits 0 if the proxy we recorded in the pidfile is still alive AND is
+# actually our proxy. Validating both matters because stop_cortex signals this pid:
+#   - a non-numeric or negative pidfile would make `kill` parse its argument wrong;
+#   - after an unclean shutdown the OS can recycle the pid onto an unrelated process
+#     of the same user, which we must not SIGTERM/SIGKILL.
+# Where `ps` can name the process we require it to be authbridge-prox(y) — the same
+# check abctl's runningPID uses, so `abctl service install` and this script agree on
+# what counts as "our proxy". Where the sandbox hides processes from `ps`, ps prints
+# nothing and the pidfile remains the only handle, so we keep the kill -0 result.
+proxy_running() {
+	_pid=$(cat "${PROXY_PIDFILE}" 2>/dev/null) || return 1
+	case "${_pid}" in
+		"" | *[!0-9]*) return 1 ;;
+	esac
+	kill -0 "${_pid}" 2>/dev/null || return 1
+	_comm=$(ps -o comm= -p "${_pid}" 2>/dev/null) || return 0
+	[ -z "${_comm}" ] && return 0
+	case "${_comm}" in
+		*authbridge-prox*) return 0 ;;
+		*) return 1 ;;
+	esac
+}
+
+# start_unsupervised runs the proxy as a plain background process for environments
+# without a usable launchd/systemd. It uses the proxy's own --supervise restart loop
+# (built for exactly this — "launchd cannot be relied on"), so a crash still comes
+# back, and records the pid so stop/status have one process to target. Verified: on
+# a clean SIGTERM to this pid the listeners close and no child is left behind.
+start_unsupervised() {
+	if proxy_running; then
+		info "Cortex is already running (pid $(cat "${PROXY_PIDFILE}"))."
+		return 0
+	fi
+	nohup "${BIN_DIR}/authbridge-proxy" --local --supervise \
+		>>"${CORTEX_DIR}/proxy.log" 2>&1 &
+	_pid=$!
+	printf '%s\n' "${_pid}" > "${PROXY_PIDFILE}"
+	# Poll the health port rather than sleeping a fixed guess: come up fast, and fail
+	# fast and loudly if the proxy exits on startup (a taken port, a bad config).
+	_i=0
+	while [ "${_i}" -lt 10 ]; do
+		if ! kill -0 "${_pid}" 2>/dev/null; then
+			rm -f "${PROXY_PIDFILE}"
+			warn "the proxy exited immediately; see ${CORTEX_DIR}/proxy.log"
+			return 1
+		fi
+		port_in_use "${DEMO_HEALTH_PORT}" && return 0
+		_i=$((_i + 1))
+		sleep 1
+	done
+	# Alive but the health port never opened. Unusual, and worth surfacing, but the
+	# process is up — let the caller point at the log rather than kill something that
+	# may still be finishing startup.
+	warn "proxy started (pid ${_pid}) but the health port ${DEMO_HEALTH_PORT} did not open in time; check ${CORTEX_DIR}/proxy.log"
+	return 0
+}
+
+# stop_cortex stops a running Cortex — the supervised service if abctl installed one,
+# and the background proxy recorded in the pidfile — then reports on the ports so
+# "stopped" is verified rather than assumed. Re-runnable and safe: with nothing
+# running it says so and exits 0 rather than failing. This backs `install.sh --stop`,
+# and matters most in a sandbox, where `ps`/`pkill` are blind and the pidfile is the
+# only reliable handle on the process.
+stop_cortex() {
+	_stopped=""
+	# Supervised: hand it back to abctl, which owns the launchd/systemd unit. `service
+	# stop` exits non-zero with "no service installed" when there is none — that is a
+	# normal state here, not an error, so only a DIFFERENT failure is surfaced.
+	if [ -x "${BIN_DIR}/abctl" ]; then
+		if _svc_out=$("${BIN_DIR}/abctl" service stop 2>&1); then
+			info "Stopped the supervised service (${SUPERVISOR_NAME})."
+			_stopped=1
+		elif ! printf '%s' "${_svc_out}" | grep -qi "no service installed"; then
+			warn "abctl service stop reported: ${_svc_out}"
+		fi
+	fi
+	# Unsupervised: kill the process recorded in the pidfile — the only handle that
+	# works where the sandbox hides other processes from ps/pkill.
+	if proxy_running; then
+		_pid=$(cat "${PROXY_PIDFILE}")
+		info "Stopping the background proxy (pid ${_pid})..."
+		kill "${_pid}" 2>/dev/null || true
+		# Wait longer than the proxy's own 15s graceful drain before escalating, so a
+		# normal shutdown is never cut short into a SIGKILL that drops in-flight
+		# requests. This matches abctl's stopPID, which waits 18s for the same reason.
+		_i=0
+		while [ "${_i}" -lt 18 ] && kill -0 "${_pid}" 2>/dev/null; do
+			_i=$((_i + 1))
+			sleep 1
+		done
+		if kill -0 "${_pid}" 2>/dev/null; then
+			warn "pid ${_pid} did not exit after 18s; sending SIGKILL"
+			kill -9 "${_pid}" 2>/dev/null || true
+		fi
+		rm -f "${PROXY_PIDFILE}"
+		_stopped=1
+	elif [ -f "${PROXY_PIDFILE}" ]; then
+		# A stale pidfile from a proxy that already died: clear it so status stays honest.
+		rm -f "${PROXY_PIDFILE}"
+	fi
+	# Verify against the ports rather than trusting the kill. A port still held after
+	# we stopped what we know about means a foreign proxy this script did not start —
+	# worth naming, since in a sandbox it cannot be found through ps.
+	_busy=""
+	for _p in "${DEMO_FORWARD_PORT}" "${DEMO_SESSION_PORT}" "${DEMO_STATS_PORT}" "${DEMO_HEALTH_PORT}"; do
+		port_in_use "${_p}" && _busy="${_busy} ${_p}"
+	done
+	if [ -n "${_stopped}" ]; then
+		if [ -n "${_busy}" ]; then
+			warn "Cortex asked to stop, but these ports are still in use:${_busy}"
+			warn "  A proxy this script did not start may be holding them."
+		else
+			info "Cortex stopped; all ports free."
+		fi
+	elif [ -n "${_busy}" ]; then
+		warn "No Cortex service or live pidfile found, but these ports are in use:${_busy}"
+		warn "  If a proxy is running, stop it by its pid (this sandbox hides it from ps)."
+	else
+		info "Cortex is not running (no service, no live pidfile, ports free)."
+	fi
+}
+
+# print_env_instructions prints the environment variables that point ANY tool or AI
+# harness at Cortex — not just Claude Code, and not only via ~/.claude/settings.json.
+# ca_dir and the ports are read from the surrounding script at call time.
+print_env_instructions() {
+	info "  Point ANY AI tool / harness at Cortex with these environment variables:"
+	info "    HTTPS_PROXY=http://localhost:${DEMO_FORWARD_PORT}"
+	info "    HTTP_PROXY=http://localhost:${DEMO_FORWARD_PORT}"
+	info "    NODE_EXTRA_CA_CERTS=${ca_dir}/ca.crt        # Node tools (Claude Code, Codex, etc.); EXTENDS trust"
+	info ""
+	info "  Tools that REPLACE the trust store need the CA+roots bundle, not ca.crt:"
+	info "    SSL_CERT_FILE=${ca_dir}/bundle.crt          # Go, OpenSSL, and most others (Linux)"
+	info "    REQUESTS_CA_BUNDLE=${ca_dir}/bundle.crt     # Python requests / httpx"
+	info "    CURL_CA_BUNDLE=${ca_dir}/bundle.crt         # curl"
+	info "    GIT_SSL_CAINFO=${ca_dir}/bundle.crt         # git"
+	info ""
+	info "  Example — send one command through Cortex (works for any harness):"
+	info "    HTTPS_PROXY=http://localhost:${DEMO_FORWARD_PORT} \\"
+	info "      NODE_EXTRA_CA_CERTS=${ca_dir}/ca.crt \\"
+	info "      SSL_CERT_FILE=${ca_dir}/bundle.crt <your-agent-command>"
+	if [ "$(uname -s)" = "Darwin" ]; then
+		info ""
+		info "  On macOS, Go tools (go, gh) ignore SSL_CERT_FILE — trust the CA instead:"
+		info "    security add-trusted-cert -k ~/Library/Keychains/login.keychain-db \\"
+		info "      -p ssl ${ca_dir}/ca.crt"
+	fi
+}
+
+# print_local_start_help prints how to start/stop/inspect the proxy when it runs
+# unsupervised (no launchd/systemd), using the pidfile start_unsupervised wrote.
+print_local_start_help() {
+	info "  This environment has no usable OS service supervisor, so Cortex runs as a"
+	info "  plain background process (it will NOT restart after a reboot or logout):"
+	info "    start:   \"${BIN_DIR}/authbridge-proxy\" --local --supervise   (backgrounded)"
+	info "    stop:    kill \$(cat ${PROXY_PIDFILE})"
+	info "    status:  curl -fsS http://localhost:${DEMO_HEALTH_PORT}/ >/dev/null && echo up || echo down"
+	info "    logs:    tail -f ${CORTEX_DIR}/proxy.log"
 }
 
 # --- detect platform ---
@@ -456,6 +802,15 @@ case "$arch" in
 	arm64 | aarch64) arch=arm64 ;;
 	*) die "unsupported architecture: $arch (supported: amd64, arm64)" ;;
 esac
+
+# --- stop and exit, if asked ---
+# Placed after the helpers and platform detection (so stop_cortex has what it needs)
+# but before any download, preflight, or start — --stop must touch neither the
+# network nor the binaries.
+if [ "${MODE}" = "stop" ]; then
+	stop_cortex
+	exit 0
+fi
 
 # --- preflight: fail early (before downloading) if a listener port is taken ---
 if [ "$MODE" = "local" ]; then
@@ -681,42 +1036,60 @@ if [ "$MODE" = "install-only" ]; then
 	exit 0
 fi
 
-# --- run it as a service, not a background process ---
+# --- start it: under the OS supervisor when we can, as a plain process when we can't ---
 #
-# There is no "start it with nohup" path any more. A backgrounded process survives
-# neither a crash nor a logout, and once Claude Code's settings point at the proxy
-# that means Claude Code silently stops working — most reliably right after a
-# reboot. Handing it to the OS supervisor removes that whole class of problem, and
-# removes any reason for anyone to reach for kill or pkill.
-# This script now starts the proxy ONLY through `abctl service`, so an abctl that
-# predates that command cannot be driven by it. Say which mismatch it is, rather
-# than letting `unknown subcommand "service"` surface as a bare non-zero exit after
-# the binaries are already installed.
-if ! "${BIN_DIR}/abctl" service status >/dev/null 2>&1 &&
-	"${BIN_DIR}/abctl" service 2>&1 | grep -q "unknown subcommand"; then
-	# Only offer the matching-release URL when $version really is a tag: under
-	# AUTHBRIDGE_SKIP_DOWNLOAD it reads "already installed", which would otherwise
-	# be spliced into a nonsense URL.
-	case "${version}" in
-		v*)
-			die "the ${version} abctl has no 'service' command, which this installer needs
+# The preferred path hands the proxy to the OS supervisor (launchd/systemd), so it
+# survives a crash and a logout — once Claude Code's settings point at the proxy, a
+# proxy that dies silently stops Claude Code, most reliably right after a reboot.
+#
+# But not every environment HAS a usable supervisor: a macOS seatbelt sandbox, a
+# container with no user systemd, a minimal or non-systemd distro. There the old flow
+# installed the binaries and then died on `launchctl bootstrap failed` / a systemd
+# bus error. So we check access first (supervisor_usable), fall back to a plain
+# background process when it is missing, and either way print how to start it by hand
+# and the environment variables any AI harness needs — not just Claude Code.
+
+# If the supervisor was not already ruled out by --no-service, check now
+# whether it can actually be driven. Unusable -> run unsupervised rather than die.
+if [ -z "${NO_SERVICE}" ] && ! supervisor_usable; then
+	info "Detected a restricted environment: ${SUPERVISOR_CMD} may not be used here (no reachable user session)."
+	info "  Cortex will run as a plain background process instead."
+	NO_SERVICE=1
+fi
+
+# The service subcommand is only needed on the supervised path. Skip the abctl-age
+# check entirely when running unsupervised — the proxy binary is all we use there.
+if [ -z "${NO_SERVICE}" ]; then
+	# This script starts the proxy through `abctl service`, so an abctl that predates
+	# that command cannot be driven by it. Say which mismatch it is, rather than
+	# letting `unknown subcommand "service"` surface as a bare non-zero exit after the
+	# binaries are already installed.
+	if ! "${BIN_DIR}/abctl" service status >/dev/null 2>&1 &&
+		"${BIN_DIR}/abctl" service 2>&1 | grep -q "unknown subcommand"; then
+		# Only offer the matching-release URL when $version really is a tag: under
+		# AUTHBRIDGE_SKIP_DOWNLOAD it reads "already installed", which would otherwise
+		# be spliced into a nonsense URL.
+		case "${version}" in
+			v*)
+				die "the ${version} abctl has no 'service' command, which this installer needs
   in order to start Cortex. Either use the installer that shipped with it:
     curl -fsSL https://raw.githubusercontent.com/${REPO}/${version}/authbridge/install.sh | sh
   or install newer binaries with this script:
     --ref=<newer tag>"
-			;;
-		*)
-			die "the abctl in ${BIN_DIR} has no 'service' command, which this installer
+				;;
+			*)
+				die "the abctl in ${BIN_DIR} has no 'service' command, which this installer
   needs in order to start Cortex. Install a newer one — drop
   AUTHBRIDGE_SKIP_DOWNLOAD, or pass --ref=<a release that has it>."
-			;;
-	esac
+				;;
+		esac
+	fi
 fi
 
-# Materialise the config before handing the proxy to the supervisor. This used to
-# happen as a side effect of starting `--local` in the background; with the service
-# doing the starting, nothing else creates the file, and `abctl service install`
-# refuses to run without it.
+# Materialise the config before starting the proxy either way. This used to happen as
+# a side effect of starting `--local` in the background; with the service doing the
+# starting, nothing else creates the file, and `abctl service install` refuses to run
+# without it. The unsupervised start needs it just as much.
 if [ ! -f "${CORTEX_DIR}/config.yaml" ]; then
 	# Executed by explicit path, and REPORTED by the same explicit path. proxy_cmd is
 	# the display form — a bare "authbridge-proxy" when BIN_DIR is on PATH — so naming
@@ -731,31 +1104,63 @@ if [ ! -f "${CORTEX_DIR}/config.yaml" ]; then
 	fi
 fi
 
-info ""
-info "Setting up the ${SUPERVISOR_NAME}..."
-set +e
-# --proxy: use the binary this script just installed, not whatever happens to be
-# earlier on PATH. An end-to-end run found the unit pointing at an older
-# authbridge-proxy from another directory, which rejected --supervise and exited, so
-# the service never came up.
-"${BIN_DIR}/abctl" service install --yes --proxy "${BIN_DIR}/authbridge-proxy"
-svc_status=$?
-set -e
-# Exit 4 means the environment cannot manage services — a restricted sandbox, or a
-# shell without a usable launchd session. That is not a broken install, so it does not
-# get an error: abctl has already explained it and printed the command to run instead.
-# Reported from a real sandbox, where the only sign of trouble was launchctl's EIO.
-if [ "${svc_status}" = "4" ]; then
+# SUPERVISED records which start path actually took, so the closing summary offers
+# `service stop` only where a service really exists.
+SUPERVISED=""
+if [ -n "${NO_SERVICE}" ]; then
 	info ""
-	info "  Continuing without a service. Start Cortex in another terminal with the"
-	info "  command above, then come back and run \"${abctl_cmd}\"."
+	info "Starting Cortex as a background process (no OS service supervisor here)..."
+	start_unsupervised || die "could not start the proxy; see ${CORTEX_DIR}/proxy.log"
+else
 	info ""
-elif [ "${svc_status}" != "0" ]; then
-	die "could not set up the service (exit ${svc_status}).
-  Cortex is NOT running. Inspect the unit it would install with:
-    \"${abctl_cmd}\" service install --print-unit
-  or run the proxy in the foreground to see what it says:
-    \"${BIN_DIR}/authbridge-proxy\" --local"
+	info "Setting up the ${SUPERVISOR_NAME}..."
+	set +e
+	# --proxy: use the binary this script just installed, not whatever happens to be
+	# earlier on PATH. An end-to-end run found the unit pointing at an older
+	# authbridge-proxy from another directory, which rejected --supervise and exited,
+	# so the service never came up.
+	#
+	# Capture abctl's COMBINED output (2>&1) through tee: it stays visible live —
+	# including "Waiting for the previous Cortex to stop (up to 30s)..." — while also
+	# being recorded so service_install_action can read the failure reason. Capturing
+	# stderr alone was the bug behind "could not set up the service (exit 1)": abctl
+	# prints "launchctl bootstrap failed ... Input/output error" to STDOUT, so the old
+	# stderr-only signature matched nothing and the script died instead of falling back.
+	# abctl's exit status is carried through the pipe via a status file (POSIX sh has no
+	# PIPESTATUS). mktemp, not a predictable "$$" name, avoids the symlink-preplant shape
+	# (CWE-59); ensure_tmpdir has resolved a writable TMPDIR by now.
+	svc_out_file=$(mktemp "${TMPDIR}/cortex-svc-out.XXXXXX")
+	svc_st_file=$(mktemp "${TMPDIR}/cortex-svc-st.XXXXXX")
+	{ "${BIN_DIR}/abctl" service install --yes --proxy "${BIN_DIR}/authbridge-proxy" 2>&1; echo $? >"${svc_st_file}"; } | tee "${svc_out_file}"
+	svc_status=$(cat "${svc_st_file}" 2>/dev/null || echo 1)
+	svc_out=$(cat "${svc_out_file}" 2>/dev/null || true)
+	rm -f "${svc_out_file}" "${svc_st_file}"
+	set -e
+	case "$(service_install_action "${svc_status}" "${svc_out}")" in
+		supervised)
+			SUPERVISED=1
+			;;
+		refused)
+			# abctl declined on purpose (a config that would expose a listener, say).
+			# Running the same proxy unsupervised would defeat that check, so do not.
+			die "abctl refused to set up the service — a safety decision, not an
+  environment limit, so Cortex was NOT started. Its message was:
+    ${svc_out}"
+			;;
+		ports-busy)
+			die "the previous Cortex is still shutting down (its ports are still in use).
+  This is temporary — wait a few seconds and re-run. Starting an unsupervised proxy
+  now would only crash on the ports the old one still holds."
+			;;
+		fallback)
+			# The OS supervisor cannot take the job here (launchd EIO in a sandbox, an
+			# absent systemd user bus, ...). Do exactly what --no-service does rather
+			# than leaving Cortex down after a clean install — no flag required. This is
+			# reached even when supervisor_usable() passed but the real install failed.
+			warn "${SUPERVISOR_CMD} could not set up the service (exit ${svc_status}); running the proxy directly instead"
+			start_unsupervised || die "could not start the proxy; see ${CORTEX_DIR}/proxy.log"
+			;;
+	esac
 fi
 
 # tool-prune is in the config but INERT: its remove list is empty, so it does
@@ -790,20 +1195,26 @@ if [ -n "${WIRE_CLAUDE_CODE:-}" ]; then
 	set -e
 	case "${cc_status}" in
 		0)
-			# The service is already installed above — it is how the proxy runs now,
-			# not an option — so there is nothing to offer here.
 			info ""
-			info "  \"${abctl_cmd}\"                         watch traffic"
-			info "  \"${abctl_cmd}\" tools scan              propose unused tools to prune"
+			info "  \"${abctl_cmd}\"                         watch traffic — and the \$ saved on every Claude Code prompt"
+			info "  \"${abctl_cmd}\" tools scan              propose unused tools to prune (the \$ saved then shows live in \"${abctl_cmd}\")"
 			# `service stop` is meaningless where no service could be installed, so do
-			# not offer it there — the whole point of catching exit 4 is to stop handing
-			# people commands their environment cannot run.
-			if [ "${svc_status}" = "4" ]; then
-				info "  kill \$(pgrep -f authbridge-proxy)   stop Cortex (unsupervised)"
+			# not offer it there — offer the pidfile kill for the unsupervised path.
+			if [ -z "${SUPERVISED}" ]; then
+				info "  kill \$(cat ${PROXY_PIDFILE})   stop Cortex (unsupervised)"
 			else
 				info "  \"${abctl_cmd}\" service stop            stop Cortex"
 			fi
 			info "  \"${abctl_cmd}\" claude-code disable     undo"
+			info ""
+			# Claude Code is wired up, but other tools/harnesses on this machine still
+			# need the environment variables — print them so this install is not
+			# Claude-Code-only, and show the manual start when unsupervised.
+			if [ -z "${SUPERVISED}" ]; then
+				print_local_start_help
+				info ""
+			fi
+			print_env_instructions
 			info ""
 			exit 0
 			;;
@@ -823,29 +1234,26 @@ if [ -n "${WIRE_CLAUDE_CODE:-}" ]; then
 			;;
 	esac
 fi
-info "  Watch traffic:   \"${abctl_cmd}\""
-info "  Send traffic through it (e.g. Claude Code):"
-info "    HTTPS_PROXY=http://localhost:${DEMO_FORWARD_PORT} \\"
-info "      NODE_EXTRA_CA_CERTS=${ca_dir}/ca.crt \\"
-info "      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 claude"
+info "  Watch traffic:   \"${abctl_cmd}\"   (also shows the \$ saved on every Claude Code prompt)"
+info "  Prune unused tools to save more:  ${abctl_cmd} tools scan --write ${CORTEX_DIR}/config.yaml"
+info "    (tools scan only proposes the prune list; the actual \$ saved shows live in \"${abctl_cmd}\".)"
 info ""
-# NODE_EXTRA_CA_CERTS above is Node-specific and EXTENDS the trust store, so the
-# bare CA is correct for `claude`. Every other tool's CA variable REPLACES the
-# trust store, so pointing those at ca.crt leaves them trusting this CA and
-# nothing else — they need the CA+roots bundle instead.
-info "  Other tools (git, curl, python) need bundle.crt, not ca.crt:"
-info "    GIT_SSL_CAINFO=${ca_dir}/bundle.crt"
-info "      (also REQUESTS_CA_BUNDLE / CURL_CA_BUNDLE / SSL_CERT_FILE;"
-info "       \"${abctl_cmd}\" claude-code enable sets all of them for you)"
-info ""
-# SSL_CERT_FILE is the Go one, and Go on macOS reads roots from the keychain
-# rather than any CA file, so the variable is inert there. Only the keychain can
-# make go/gh trust the bridge on a Mac; on Linux SSL_CERT_FILE is enough.
-if [ "$(uname -s)" = "Darwin" ]; then
-	info "  On macOS, Go tools (go, gh) ignore SSL_CERT_FILE — trust the CA instead:"
-	info "    security add-trusted-cert -k ~/Library/Keychains/login.keychain-db \\"
-	info "      -p ssl ${ca_dir}/ca.crt"
+if [ -z "${SUPERVISED}" ]; then
+	print_local_start_help
 	info ""
 fi
-info "  Stop it:         \"${abctl_cmd}\" service stop      (start / restart / status too)"
+# The full, harness-agnostic environment block. `abctl claude-code enable` wires
+# these into ~/.claude/settings.json for Claude Code specifically; the variables
+# below are what every OTHER tool or agent needs, and are printed unconditionally so
+# this install is never Claude-Code-only.
+print_env_instructions
+info ""
+info "  Wire up Claude Code specifically (writes ~/.claude/settings.json):"
+info "    ${abctl_cmd} claude-code enable"
+info ""
+if [ -n "${SUPERVISED}" ]; then
+	info "  Stop it:         \"${abctl_cmd}\" service stop      (start / restart / status too)"
+else
+	info "  Stop it:         kill \$(cat ${PROXY_PIDFILE})   (running unsupervised)"
+fi
 info ""
