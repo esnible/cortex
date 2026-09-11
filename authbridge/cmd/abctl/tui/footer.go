@@ -14,6 +14,21 @@ import (
 func (m *model) footerView() string {
 	var status strings.Builder
 
+	// A sticky flash gets the whole line, starting at column 0.
+	//
+	// Yank is the case this exists for: the path is the longest thing the footer
+	// ever carries, and appending it after the ~32 columns of connection state,
+	// rate and drops pushed it off the right edge on a narrow terminal — the user
+	// saw "yanked → /Users/you/.cortex/abctl-" and could not read the filename,
+	// which is the whole point of showing it. Dropping the prefix while the notice
+	// is up buys those columns back; the prefix returns on the next keypress, and
+	// a sticky flash is by definition something the user just asked for and is
+	// reading right now.
+	if m.flash != "" && m.flashSticky {
+		return styleTitle.Render(fitFlashLine(m.flash, m.width)) + "\n" +
+			styleHint.Render(fitHintLine(m.helpView(), m.width))
+	}
+
 	// Connection state dot.
 	switch m.connState.phase {
 	case connOpen:
@@ -47,14 +62,45 @@ func (m *model) footerView() string {
 		status.WriteString(styleWarn.Render("   [paused]"))
 	}
 
-	// Flash message (e.g. "yanked → /tmp/...").
-	if m.flash != "" && time.Now().Before(m.flashUntil) {
+	// Flash message (e.g. "yanked → ~/.cortex/abctl-events/...").
+	if m.flash != "" && (m.flashSticky || time.Now().Before(m.flashUntil)) {
 		status.WriteString(styleTitle.Render("   " + m.flash))
 	}
 
 	hint := fitHintLine(m.helpView(), m.width)
 
 	return status.String() + "\n" + styleHint.Render(hint)
+}
+
+// fitFlashLine bounds a full-width flash to the terminal, truncating from the
+// LEFT so the tail survives. For a path the tail is the filename, which is what
+// the user retypes or completes against; the leading directories are the
+// guessable part, and the README states the directory anyway.
+func fitFlashLine(flash string, width int) string {
+	if width <= 0 || lipgloss.Width(flash) <= width {
+		return flash
+	}
+	const ell = "…"
+	budget := width - lipgloss.Width(ell)
+	if budget <= 0 {
+		return ell
+	}
+	// Walk backwards accumulating DISPLAY COLUMNS, not runes. An earlier version
+	// computed the budget in columns and then sliced by rune index, which
+	// overflowed on any wide character — a CJK path asked to fit 40 columns
+	// rendered 55, because each rune it kept was two columns wide.
+	r := []rune(flash)
+	used := 0
+	i := len(r)
+	for i > 0 {
+		w := lipgloss.Width(string(r[i-1]))
+		if used+w > budget {
+			break
+		}
+		used += w
+		i--
+	}
+	return ell + string(r[i:])
 }
 
 // fitHintLine trims a footer hint line to the terminal width, dropping whole
