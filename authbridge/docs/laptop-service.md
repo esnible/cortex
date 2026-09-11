@@ -205,7 +205,7 @@ The other reasons you may see, and what each one asks of you:
 | `passthrough-host` | A host Cortex deliberately does not intercept (GitHub, module proxies, package registries). | no |
 | `passthrough-port` | Not a port the bridge watches. | no |
 | `passthrough-nontls` | The bytes were not a TLS handshake, so there was nothing to terminate. | no |
-| `skip-cached` | An earlier handshake for this host failed, so it is not intercepted for **anyone** for a short window. Any failed handshake seeds this, not only a CA rejection — the seeding failure logged its own reason. The window starts at 30s and lengthens only if failures keep coming; the first client that *does* trust the CA clears it immediately. | find the earlier failure in `proxy.log` and fix that client |
+| `skip-cached` | An earlier handshake for this host failed, so it is not intercepted for **anyone** for a short window. Any failed handshake seeds this, not only a CA rejection — the seeding failure logged its own reason. The window starts at 30s and lengthens only if **rejections** keep coming — a hang-up or a cipher mismatch seeds it but never escalates it; the first client that *does* trust the CA clears it immediately. | find the earlier failure in `proxy.log` and fix that client |
 | `bridge-disabled` | No TLS bridge is configured. | only if you wanted one |
 | `client-hung-up` | The client vanished mid-handshake. Often a cancelled request; not evidence about trust, which is why it carries no advice. | usually no |
 | `handshake-failed` | Some other handshake failure — a version, cipher or ALPN mismatch, or Cortex failing to mint a certificate. | check `error=` in the log |

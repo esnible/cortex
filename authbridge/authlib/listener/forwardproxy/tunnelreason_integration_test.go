@@ -490,22 +490,8 @@ func TestOneStaleClientDoesNotSuppressAHealthyOne(t *testing.T) {
 		"until a window it did not cause elapses")
 }
 
-// TestRepeatedRejectionBacksOff: with nothing ever succeeding — a genuinely pinned
-// client — the window must escalate rather than break that client's handshake every
-// few seconds forever. This is the behaviour the skip was originally built for.
-func TestRepeatedRejectionBacksOff(t *testing.T) {
-	s, _, authority := bridgeForRejectTest(t)
-	host := hostOnly(authority)
-
-	var windows []time.Duration
-	for i := 0; i < 3; i++ {
-		s.TLSBridge.Skip.Succeed(host) // force a fresh attempt without waiting
-		for j := 0; j <= i; j++ {
-			s.bridgeServe(rejectingClient(t), authority, host, noopRecorder)
-		}
-		windows = append(windows, s.TLSBridge.Skip.Window(host))
-	}
-	if !(windows[0] < windows[1] && windows[1] < windows[2]) {
-		t.Errorf("windows did not escalate with consecutive rejections: %v", windows)
-	}
-}
+// Escalation itself — that a rejection lengthens the window and a transient failure
+// does not — is asserted in tlsbridge, where SkipSet's internals are reachable without
+// exporting a window accessor purely for a test. What belongs HERE is that bridgeServe
+// routes each failure class to the right call, which TestHangUpAlsoSeedsTheSkip and
+// TestClientRejectedCA_SkipsHostAfterwards cover between them.

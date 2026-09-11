@@ -293,15 +293,33 @@ func TestSkipSet_SucceedResetsBackoff(t *testing.T) {
 }
 
 // TestSkipSet_ExpiredEntryRestartsBackoff: a window that elapsed with no further
-// rejection is evidence the problem may be gone, so the next failure starts over
-// rather than continuing to climb.
+// failure is evidence the problem may be gone, so the next failure starts over rather
+// than continuing to climb.
+//
+// base is tightened as well as ttl, which the earlier version of this test did not do:
+// with base fixed at 30s every window capped to the tiny ttl regardless of the failure
+// count, so it exercised cap-and-reset and proved nothing about restarting a backoff its
+// name claimed to cover. Driving both lets it escalate for real and then reset.
 func TestSkipSet_ExpiredEntryRestartsBackoff(t *testing.T) {
 	s := NewSkipSet()
-	s.ttl = 40 * time.Millisecond
-	for i := 0; i < 3; i++ {
-		s.Fail("h")
+	s.base = 10 * time.Millisecond
+	s.ttl = 200 * time.Millisecond
+
+	s.Fail("h")
+	s.Fail("h")
+	s.Fail("h")
+	s.mu.RLock()
+	climbed := s.m["h"].failures
+	s.mu.RUnlock()
+	if climbed != 3 {
+		t.Fatalf("failures = %d after 3 consecutive rejections, want 3 (no real escalation "+
+			"happened, so the reset below would prove nothing)", climbed)
 	}
-	time.Sleep(60 * time.Millisecond)
+	if w := window(t, s, "h"); w <= s.base {
+		t.Errorf("window %v did not grow beyond the base %v", w, s.base)
+	}
+
+	time.Sleep(120 * time.Millisecond) // longer than the 3rd window (40ms), shorter than ttl
 	if s.Contains("h") {
 		t.Fatal("entry should have expired")
 	}
@@ -311,5 +329,60 @@ func TestSkipSet_ExpiredEntryRestartsBackoff(t *testing.T) {
 	s.mu.RUnlock()
 	if n != 1 {
 		t.Errorf("failures after an expired window = %d, want 1 (a fresh start)", n)
+	}
+}
+
+// TestSkipSet_TransientFailureDoesNotEscalate is the review's point made executable.
+//
+// Only a rejected leaf is evidence of a persistent trust problem. A hang-up or a cipher
+// mismatch still has to seed a skip — the forged handshake killed that connection — but
+// escalating on it lets a client that merely cancels a lot walk the host to the ceiling
+// and take every other client's observability with it.
+func TestSkipSet_TransientFailureDoesNotEscalate(t *testing.T) {
+	s := NewSkipSet()
+
+	s.FailTransient("h")
+	if !s.Contains("h") {
+		t.Fatal("a transient failure must still seed a skip; the retry needs the tunnel")
+	}
+	for i := 0; i < 5; i++ {
+		s.FailTransient("h")
+	}
+	// Asserted against base, not against the previous reading: every Fail re-dates the
+	// window from now, so two readings differ by microseconds even with no escalation
+	// at all. What matters is that the window never exceeds ONE base — an escalation
+	// would put it at 2x or more.
+	if got := window(t, s, "h"); got > s.base {
+		t.Errorf("window is %v after six transient failures, more than one base (%v); "+
+			"only a rejection should escalate", got, s.base)
+	}
+	s.mu.RLock()
+	n := s.m["h"].failures
+	s.mu.RUnlock()
+	if n != 1 {
+		t.Errorf("transient failures drove the count to %d, want it held at 1", n)
+	}
+}
+
+// TestSkipSet_TransientDoesNotShortenAnEarnedWindow: a transient failure must not
+// escalate, but it must not undo a longer window a real rejection already earned either
+// — otherwise a cancel-happy client could keep resetting a genuinely pinned host back to
+// the base and make it forge repeatedly.
+func TestSkipSet_TransientDoesNotShortenAnEarnedWindow(t *testing.T) {
+	s := NewSkipSet()
+	for i := 0; i < 4; i++ {
+		s.Fail("h")
+	}
+	earned := window(t, s, "h")
+
+	s.FailTransient("h")
+	if got := window(t, s, "h"); got < earned/2 {
+		t.Errorf("a transient failure cut the earned window from %v to %v", earned, got)
+	}
+	s.mu.RLock()
+	n := s.m["h"].failures
+	s.mu.RUnlock()
+	if n != 4 {
+		t.Errorf("failures = %d after a transient failure, want the earned 4", n)
 	}
 }

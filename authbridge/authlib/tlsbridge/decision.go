@@ -227,10 +227,15 @@ const (
 // rejected). Concurrent-safe; augments the static skip list. Entries expire
 // after skipTTL and the set is bounded to skipMax (oldest-expiry eviction).
 type SkipSet struct {
-	mu  sync.RWMutex
-	ttl time.Duration
-	max int
-	m   map[string]skipEntry
+	mu sync.RWMutex
+	// base is the first window and ttl the ceiling it doubles up to. base is a field
+	// rather than only a package const so a same-package test can drive the actual
+	// doubling: with base fixed at 30s, tightening ttl alone caps every window to ttl
+	// regardless of the failure count, which exercises cap-and-reset and not escalation.
+	base time.Duration
+	ttl  time.Duration
+	max  int
+	m    map[string]skipEntry
 }
 
 // skipEntry is one skipped host: when the window ends, and how many consecutive
@@ -241,7 +246,7 @@ type skipEntry struct {
 }
 
 func NewSkipSet() *SkipSet {
-	return &SkipSet{ttl: skipTTL, max: skipMax, m: map[string]skipEntry{}}
+	return &SkipSet{base: skipBackoffBase, ttl: skipTTL, max: skipMax, m: map[string]skipEntry{}}
 }
 
 // backoffFor is the window after n consecutive failures: base, doubling, capped at ttl.
@@ -254,16 +259,30 @@ func (s *SkipSet) backoffFor(n int) time.Duration {
 	if n > 32 {
 		return s.ttl
 	}
-	d := skipBackoffBase << (n - 1)
+	d := s.base << (n - 1)
 	if d > s.ttl || d <= 0 {
 		return s.ttl
 	}
 	return d
 }
 
-// Fail records that a client rejected this host's minted leaf, extending the skip
-// window. Consecutive failures back off; a Succeed in between resets the count.
-func (s *SkipSet) Fail(host string) {
+// Fail records a failure that IS evidence of a persistent trust problem — the client
+// rejected the minted leaf — and lengthens the window for each consecutive one. A
+// Succeed in between resets the count.
+func (s *SkipSet) Fail(host string) { s.fail(host, true) }
+
+// FailTransient records a failure that is NOT evidence about trust: a client that hung
+// up, a version or cipher mismatch, or our own minting failing. It still seeds a skip,
+// because the forged handshake killed that connection either way and the retry needs a
+// tunnel — but it does not escalate, so a client that merely cancels a lot cannot walk
+// the host up to the ceiling and take every other client's observability with it.
+//
+// Which one to call is the CALLER's decision, deliberately: it holds the classified
+// reason, and passing that vocabulary down here would make this package depend on the
+// session-event types it has no other business knowing about.
+func (s *SkipSet) FailTransient(host string) { s.fail(host, false) }
+
+func (s *SkipSet) fail(host string, escalate bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := time.Now()
@@ -290,7 +309,17 @@ func (s *SkipSet) Fail(host string) {
 	// having elapsed with no further rejection is evidence the problem may be gone.
 	n := 1
 	if e, ok := s.m[host]; ok && e.expiry.After(now) {
-		n = e.failures + 1
+		if escalate {
+			n = e.failures + 1
+		} else {
+			// Hold the count where it is: a transient failure must not lengthen the
+			// window, but it must not shorten one a real rejection already earned
+			// either.
+			n = e.failures
+			if n < 1 {
+				n = 1
+			}
+		}
 	}
 	// .Round(0) strips the monotonic reading so the expiry is a pure wall-clock
 	// time. Contains compares it against time.Now() via the wall clock, so an
@@ -313,10 +342,13 @@ func (s *SkipSet) Succeed(host string) {
 	delete(s.m, host)
 }
 
-// Window is the time left on a host's skip, or zero when it is not skipped. Exported
-// for tests in dependent packages that assert on backoff; the proxy itself only ever
-// asks Contains.
-func (s *SkipSet) Window(host string) time.Duration {
+// window is the time left on a host's skip, or zero when it is not skipped.
+//
+// Unexported: it exists for this package's tests, and the proxy only ever asks Contains.
+// It was briefly exported so a forwardproxy test could assert on backoff, which widened
+// authlib's public API for a test-only need — the assertions that wanted it live here
+// now instead, where the internals already are.
+func (s *SkipSet) window(host string) time.Duration {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	e, ok := s.m[host]
