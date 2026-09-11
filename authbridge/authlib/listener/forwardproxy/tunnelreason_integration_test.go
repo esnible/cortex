@@ -7,6 +7,7 @@ import (
 	"crypto/x509"
 	"encoding/pem"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -316,7 +317,7 @@ func TestHandleConnect_RecordsReason(t *testing.T) {
 			t.Fatal(err)
 		}
 		s := connectServer(t, store, &tlsbridge.Engine{Decision: d, Skip: tlsbridge.NewSkipSet()})
-		s.TLSBridge.Skip.Add(hostOnly(target)) // a previous client's rejection
+		s.TLSBridge.Skip.Fail(hostOnly(target)) // a previous client's rejection
 		ev := connectThrough(t, s, store, target, tlsRecordHead)
 		if ev == nil || ev.TunnelReason != pipeline.TunnelSkipCached {
 			t.Fatalf("reason = %v, want %q", ev, pipeline.TunnelSkipCached)
@@ -432,3 +433,65 @@ func TestPassthroughReasonNeverEmpty(t *testing.T) {
 		t.Errorf("unmapped reason = %q, want the sentinel %q", got, pipeline.TunnelPassthroughUnknown)
 	}
 }
+
+// trustingClient is a real TLS client that DOES trust the bridge CA, so it completes
+// the forged handshake. It sends a request and reads the reply so ServeConn has
+// something to serve, then closes.
+func trustingClient(t *testing.T, caPEM []byte) net.Conn {
+	t.Helper()
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(caPEM) {
+		t.Fatal("could not load the bridge CA into a pool")
+	}
+	return clientConnPair(t, func(raw net.Conn) {
+		tc := tls.Client(raw, &tls.Config{ServerName: "example.com", RootCAs: pool})
+		if err := tc.Handshake(); err != nil {
+			return
+		}
+		_, _ = tc.Write([]byte("GET / HTTP/1.1\r\nHost: example.com\r\n\r\n"))
+		_, _ = io.ReadFull(tc, make([]byte, 1))
+		_ = tc.Close()
+	})
+}
+
+// TestOneStaleClientDoesNotSuppressAHealthyOne is the scenario this change exists for.
+//
+// The skip set is keyed by host, and there is no durable client identity to key it by,
+// so one client's rejection tunnels every OTHER client's traffic to that host as well.
+// With a fixed ten-minute window re-armed on each attempt, a single agent holding a
+// stale CA cost a correctly-configured one nearly all of its observability — measured
+// on a real laptop as four rejections over a hundred minutes with one bridged request
+// in between.
+//
+// A success now clears the entry, so the healthy client restores interception itself
+// rather than waiting out a window it did not cause.
+func TestOneStaleClientDoesNotSuppressAHealthyOne(t *testing.T) {
+	s, _, authority := bridgeForRejectTest(t)
+	host := hostOnly(authority)
+
+	// 1. The stale client rejects our leaf; the host is skipped for everyone.
+	s.bridgeServe(rejectingClient(t), authority, host, noopRecorder)
+	if !s.TLSBridge.Skip.Contains(host) {
+		t.Fatal("a rejected forge did not skip the host")
+	}
+
+	// 2. The healthy client bridges. bridgeServe blocks serving the decrypted
+	//    connection, so run it and wait for the skip to clear.
+	go s.bridgeServe(trustingClient(t, s.TLSBridge.CAPEM), authority, host, noopRecorder)
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if !s.TLSBridge.Skip.Contains(host) {
+			return // cleared: the next connection from either client is intercepted again
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Error("a successful bridge did not clear the skip; the healthy client stays blind " +
+		"until a window it did not cause elapses")
+}
+
+// Escalation itself — that a rejection lengthens the window and a transient failure
+// does not — is asserted in tlsbridge, where SkipSet's internals are reachable without
+// exporting a window accessor purely for a test. What belongs HERE is that bridgeServe
+// routes each failure class to the right call, which TestHangUpAlsoSeedsTheSkip and
+// TestClientRejectedCA_SkipsHostAfterwards cover between them.

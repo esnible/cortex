@@ -638,8 +638,23 @@ func (s *Server) bridgeServe(client net.Conn, authority, host string, rec tunnel
 	// 2) Forge + terminate downstream.
 	tconn, err := s.TLSBridge.Term.Terminate(client, hostOnly(authority))
 	if err != nil {
-		s.TLSBridge.Skip.Add(host) // pinned client → its retry will passthrough
 		reason := handshakeFailureReason(err)
+		// Seed a skip either way — the forged handshake killed this connection, so the
+		// client's retry needs a tunnel whatever went wrong. But only ESCALATE for a
+		// real rejection: that is the one failure class that is evidence of a
+		// persistent trust problem. A client that merely cancels requests, or one
+		// tripping a cipher mismatch, would otherwise walk this host up to the ceiling
+		// and take every other client's observability with it — the same defect this
+		// change exists to fix, one level down.
+		//
+		// The decision is here rather than inside SkipSet because the reason vocabulary
+		// belongs to the session-event layer, and tlsbridge has no other business
+		// knowing about it.
+		if reason == pipeline.TunnelClientRejectedCA {
+			s.TLSBridge.Skip.Fail(host)
+		} else {
+			s.TLSBridge.Skip.FailTransient(host)
+		}
 		// UNCONDITIONAL, and it names the client. Success elsewhere must not silence
 		// this: it used to sit behind bridgedRequests == 0, which treats CA trust as a
 		// property of the deployment. It is a property of each client, and on a
@@ -679,6 +694,10 @@ func (s *Server) bridgeServe(client net.Conn, authority, host string, rec tunnel
 		// case, reached from the tunnel-threshold path.
 		return true // conn is dead post-forge; nothing left to tunnel
 	}
+	// A completed forged handshake is proof a client here trusts the CA, so it clears
+	// any skip left by a different client that does not — which is what stops one stale
+	// agent suppressing this host for everyone until a window elapses.
+	s.TLSBridge.Skip.Succeed(host)
 	// Bridged: record with no reason, which is what tells abctl to fold this row into
 	// the decrypted inner request whose own action is the interesting one.
 	markBridged(rec)
