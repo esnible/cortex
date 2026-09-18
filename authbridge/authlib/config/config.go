@@ -427,16 +427,20 @@ type SessionConfig struct {
 }
 
 // SessionIDHeaders returns the headers to consult for a client-supplied session
-// id, defaulting to the Claude Code session header when unset: bucketing per
-// coding-agent session is the point of running this on a laptop, and an operator
-// should not have to learn a header name to get it. An explicit empty list
-// disables the lookup.
+// id, defaulting to the known coding-agent session headers when unset: bucketing
+// per coding-agent session is the point of running this on a laptop, and an
+// operator should not have to learn a header name to get it. An explicit empty
+// list disables the lookup.
+//
+// The order is a precedence rule over clients, not a ranking — a request
+// carrying both headers buckets under the Claude Code id. See
+// session.IDFromHeaders.
 //
 // Whatever this returns, a request that carries none of the named headers
 // buckets exactly as it did before this option existed.
 func (s SessionConfig) SessionIDHeaders() []string {
 	if s.IDHeaders == nil {
-		return []string{session.ClaudeCodeSessionHeader}
+		return []string{session.ClaudeCodeSessionHeader, session.BobSessionHeader}
 	}
 	return s.IDHeaders
 }

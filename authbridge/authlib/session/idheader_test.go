@@ -180,3 +180,45 @@ func TestIDFromHeaders_AcceptsIDAtMaxLength(t *testing.T) {
 		t.Errorf("IDFromHeaders() rejected an id of exactly MaxSessionIDLen (%d)", MaxSessionIDLen)
 	}
 }
+
+// TestBobSessionHeader_IsCanonicalAndResolves pins the two properties of the Bob
+// header that a wrong constant would break silently rather than loudly.
+//
+// Casing first: IDFromHeaders reads through http.Header.Get, which canonicalizes
+// whatever it is handed, so a lowercase constant would work in production and
+// fail only here — where the fixture is a raw map literal, exactly as every other
+// test in this file builds one. That asymmetry is the trap, so assert the
+// constant's own form rather than relying on a round-trip to reveal it.
+//
+// Then that a Bob id actually resolves, and loses to a Claude Code id when both
+// are present. The precedence machinery is already covered generically by
+// TestIDFromHeaders_FirstConfiguredHeaderWins; what is untested is that the real
+// pair of constants is ordered the way config.SessionIDHeaders ships them.
+func TestBobSessionHeader_IsCanonicalAndResolves(t *testing.T) {
+	if got := http.CanonicalHeaderKey(BobSessionHeader); got != BobSessionHeader {
+		t.Errorf("BobSessionHeader = %q, want canonical form %q; a raw http.Header literal will not match it",
+			BobSessionHeader, got)
+	}
+
+	// The shipped default list, in order. Kept as a literal rather than imported
+	// from config: authlib/config imports this package, so the dependency cannot
+	// run the other way.
+	names := []string{ClaudeCodeSessionHeader, BobSessionHeader}
+
+	t.Run("a Bob id alone is used", func(t *testing.T) {
+		h := http.Header{BobSessionHeader: []string{"task-42"}}
+		if got := IDFromHeaders(h, names); got != "task-42" {
+			t.Errorf("IDFromHeaders() = %q, want %q", got, "task-42")
+		}
+	})
+
+	t.Run("a Claude Code id wins when both are present", func(t *testing.T) {
+		h := http.Header{
+			ClaudeCodeSessionHeader: []string{"claude-session"},
+			BobSessionHeader:        []string{"task-42"},
+		}
+		if got := IDFromHeaders(h, names); got != "claude-session" {
+			t.Errorf("IDFromHeaders() = %q, want %q", got, "claude-session")
+		}
+	})
+}
