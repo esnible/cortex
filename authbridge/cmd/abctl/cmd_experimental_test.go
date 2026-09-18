@@ -153,7 +153,7 @@ func TestReadClaudeSessions_TitlePrefersAiTitleThenCWD(t *testing.T) {
 		t.Fatalf("exit = %d, want 0; stderr=%s", code, errb.String())
 	}
 
-	got := readMetadataFile(t, filepath.Join(home, sessionMetaRel))
+	got := readMetadataFile(t, filepath.Join(home, tui.SessionMetadataRel))
 	if len(got) != 3 {
 		t.Fatalf("got %d entries, want 3: %v", len(got), got)
 	}
@@ -184,7 +184,7 @@ func TestReadClaudeSessions_PopulatesAgentFields(t *testing.T) {
 	if code := runExperimental([]string{"read-claude-sessions", "--dir", cfg}, &out, &errb); code != 0 {
 		t.Fatalf("exit = %d: %s", code, errb.String())
 	}
-	path, err := sessionMetadataPath()
+	path, err := tui.SessionMetadataPath()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -218,7 +218,7 @@ func TestReadClaudeSessions_IgnoresSubagentTranscripts(t *testing.T) {
 	if code := runExperimental([]string{"read-claude-sessions", "--dir", cfg}, &out, &errb); code != 0 {
 		t.Fatalf("exit = %d: %s", code, errb.String())
 	}
-	path, err := sessionMetadataPath()
+	path, err := tui.SessionMetadataPath()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -253,7 +253,7 @@ func TestReadClaudeSessions_HandlesALineOverTheScannerDefault(t *testing.T) {
 	if code := runExperimental([]string{"read-claude-sessions", "--dir", cfg}, &out, &errb); code != 0 {
 		t.Fatalf("exit = %d: %s", code, errb.String())
 	}
-	path, err := sessionMetadataPath()
+	path, err := tui.SessionMetadataPath()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -279,7 +279,7 @@ func TestReadClaudeSessions_SkipsMalformedLines(t *testing.T) {
 	if code := runExperimental([]string{"read-claude-sessions", "--dir", cfg}, &out, &errb); code != 0 {
 		t.Fatalf("exit = %d: %s", code, errb.String())
 	}
-	path, err := sessionMetadataPath()
+	path, err := tui.SessionMetadataPath()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -304,21 +304,92 @@ func TestReadClaudeSessions_MissingProjectsDirIsNotAnError(t *testing.T) {
 	if !strings.Contains(out.String(), "No transcripts") {
 		t.Errorf("stdout does not say the directory was empty:\n%s", out.String())
 	}
-	got := readMetadataFile(t, filepath.Join(home, sessionMetaRel))
+	got := readMetadataFile(t, filepath.Join(home, tui.SessionMetadataRel))
 	if len(got) != 0 {
 		t.Errorf("got %d entries, want none: %v", len(got), got)
 	}
 }
 
-// The file is rewritten whole: it reports what Claude Code holds now, so a session
-// whose transcript is gone must not linger from a previous run.
-func TestReadClaudeSessions_RewritesRatherThanMerges(t *testing.T) {
+// --merge (the default) upserts, so an entry the file already held survives a harvest
+// that no longer sees it — a second config dir, or a session Claude Code has pruned.
+// --merge=false is the explicit rebuild.
+func TestReadClaudeSessions_MergeUpsertsAndFalseRebuilds(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		args      []string
+		wantStale bool
+	}{
+		{"default merges", nil, true},
+		{"--merge=true merges", []string{"--merge=true"}, true},
+		{"--merge=false rebuilds", []string{"--merge=false"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := prefsHome(t)
+			path := filepath.Join(home, tui.SessionMetadataRel)
+			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path,
+				[]byte(`{"stale-session":{"title":"from an earlier run"}}`+"\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			cfg := filepath.Join(t.TempDir(), "claude")
+			writeSessionTranscript(t, filepath.Join(cfg, "projects", "-p"), "fresh.jsonl",
+				`{"type":"user","cwd":"/w"}`)
+
+			args := append([]string{"read-claude-sessions", "--dir", cfg}, tc.args...)
+			var out, errb bytes.Buffer
+			if code := runExperimental(args, &out, &errb); code != 0 {
+				t.Fatalf("exit = %d: %s", code, errb.String())
+			}
+
+			got := readMetadataFile(t, path)
+			if _, ok := got["fresh"]; !ok {
+				t.Errorf("the harvested session is missing: %v", got)
+			}
+			if _, ok := got["stale-session"]; ok != tc.wantStale {
+				t.Errorf("stale entry present = %v, want %v", ok, tc.wantStale)
+			}
+		})
+	}
+}
+
+// A harvest wins over the file for a key both hold: it just read the transcript, so
+// its title is the current one.
+func TestReadClaudeSessions_MergePrefersTheFreshHarvest(t *testing.T) {
 	home := prefsHome(t)
-	path := filepath.Join(home, sessionMetaRel)
+	path := filepath.Join(home, tui.SessionMetadataRel)
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, []byte(`{"stale-session":{"title":"gone"}}`+"\n"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(`{"s":{"title":"stale title"}}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := filepath.Join(t.TempDir(), "claude")
+	writeSessionTranscript(t, filepath.Join(cfg, "projects", "-p"), "s.jsonl",
+		`{"type":"ai-title","aiTitle":"current title"}`)
+
+	var out, errb bytes.Buffer
+	if code := runExperimental([]string{"read-claude-sessions", "--dir", cfg}, &out, &errb); code != 0 {
+		t.Fatalf("exit = %d: %s", code, errb.String())
+	}
+	if got := readMetadataFile(t, path)["s"].Title; got != "current title" {
+		t.Errorf("title = %q, want the freshly harvested one", got)
+	}
+}
+
+// A corrupt existing file must not be read as empty under --merge: that would rebuild
+// from scratch under the flag whose purpose is not losing entries. Refuse, and name
+// the way past it.
+func TestReadClaudeSessions_MergeRefusesACorruptFile(t *testing.T) {
+	home := prefsHome(t)
+	path := filepath.Join(home, tui.SessionMetadataRel)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("{not json"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
@@ -327,15 +398,25 @@ func TestReadClaudeSessions_RewritesRatherThanMerges(t *testing.T) {
 		`{"type":"user","cwd":"/w"}`)
 
 	var out, errb bytes.Buffer
-	if code := runExperimental([]string{"read-claude-sessions", "--dir", cfg}, &out, &errb); code != 0 {
-		t.Fatalf("exit = %d: %s", code, errb.String())
+	if code := runExperimental([]string{"read-claude-sessions", "--dir", cfg}, &out, &errb); code != 1 {
+		t.Errorf("exit = %d, want 1", code)
 	}
-	got := readMetadataFile(t, path)
-	if _, ok := got["stale-session"]; ok {
-		t.Error("a session no longer on disk survived the rewrite")
+	if !strings.Contains(errb.String(), "--merge=false") {
+		t.Errorf("stderr does not name the way past it: %q", errb.String())
 	}
-	if _, ok := got["fresh"]; !ok {
-		t.Errorf("the current session is missing: %v", got)
+	// The bad file is left alone rather than overwritten, so it can still be repaired.
+	b, err := os.ReadFile(path)
+	if err != nil || string(b) != "{not json" {
+		t.Errorf("the corrupt file was modified: %q, %v", b, err)
+	}
+
+	// --merge=false is that way past it.
+	var out2, errb2 bytes.Buffer
+	if code := runExperimental([]string{"read-claude-sessions", "--dir", cfg, "--merge=false"}, &out2, &errb2); code != 0 {
+		t.Fatalf("--merge=false exit = %d: %s", code, errb2.String())
+	}
+	if _, ok := readMetadataFile(t, path)["fresh"]; !ok {
+		t.Error("--merge=false did not rebuild the file")
 	}
 }
 
@@ -352,7 +433,7 @@ func TestReadClaudeSessions_ConfigDirResolution(t *testing.T) {
 		if code := runExperimental([]string{"read-claude-sessions"}, &out, &errb); code != 0 {
 			t.Fatalf("exit = %d: %s", code, errb.String())
 		}
-		path, err := sessionMetadataPath()
+		path, err := tui.SessionMetadataPath()
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -375,7 +456,7 @@ func TestReadClaudeSessions_ConfigDirResolution(t *testing.T) {
 		if code := runExperimental([]string{"read-claude-sessions", "--dir", flagCfg}, &out, &errb); code != 0 {
 			t.Fatalf("exit = %d: %s", code, errb.String())
 		}
-		path, err := sessionMetadataPath()
+		path, err := tui.SessionMetadataPath()
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -404,7 +485,7 @@ func TestReadClaudeSessions_FileModes(t *testing.T) {
 	if code := runExperimental([]string{"read-claude-sessions", "--dir", cfg}, &out, &errb); code != 0 {
 		t.Fatalf("exit = %d: %s", code, errb.String())
 	}
-	path := filepath.Join(home, sessionMetaRel)
+	path := filepath.Join(home, tui.SessionMetadataRel)
 	dfi, err := os.Stat(filepath.Dir(path))
 	if err != nil {
 		t.Fatal(err)

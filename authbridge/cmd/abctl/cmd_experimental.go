@@ -15,14 +15,6 @@ import (
 	"github.com/rossoctl/cortex/authbridge/cmd/abctl/tui"
 )
 
-// sessionMetaRel is where the harvested metadata lands, relative to the user's home.
-//
-// A sibling of abctl-config.yaml and claude-code-state.json, in the same ~/.cortex
-// tree rather than a new dotfile: it is abctl's own bookkeeping about an agent, not
-// something the agent or the proxy reads. Follows userCfgRel / cortexCfgRel /
-// stateRel so there is one tree to find and one to delete.
-const sessionMetaRel = ".cortex/session-metadata.json"
-
 // claudeConfigDirEnv is the variable Claude Code itself honours for relocating its
 // config tree. Read here so a user who has moved it is not told there are no
 // sessions; nothing else in abctl consults it today, which is why the two commands
@@ -68,11 +60,18 @@ The config directory is ` + claudeConfigDirEnv + ` when set, and ~/.claude other
 Only transcripts one level down (projects/<project>/<id>.jsonl) are read: deeper
 files are subagent transcripts, whose names are not session ids.
 
-The file is rewritten whole on every run — this reports what Claude Code holds now,
-not a history. Nothing in Cortex reads it yet.
+By default a run UPSERTS: entries for the sessions it finds are added or updated, and
+entries already in the file are left alone. That matters because a harvest only sees
+the sessions one config directory holds, so replacing the file would silently drop
+metadata for anything else it had — another config directory, or a session whose
+transcript Claude Code has since pruned. --merge=false rebuilds the file from this
+harvest alone, which is the way to drop stale entries on purpose.
+
+Nothing in Cortex reads the file yet.
 
 Flags:
-  --dir PATH   config directory to read instead of ` + claudeConfigDirEnv + ` / ~/.claude
+  --dir PATH     config directory to read instead of ` + claudeConfigDirEnv + ` / ~/.claude
+  --merge=false  replace the file instead of upserting into it
 
 Exit status: 0 done, 1 the directory could not be read or the file could not be
 written, 2 a usage error.
@@ -119,6 +118,13 @@ func runReadClaudeSessions(args []string, stdout, stderr io.Writer) int {
 	// went to stderr, splitting one failure across both streams.
 	fs.Usage = func() {}
 	dir := fs.String("dir", "", "Claude Code config directory")
+	// Default TRUE: the file is keyed by session id, and a harvest only ever sees the
+	// sessions its config dir holds. Overwriting would therefore make a second run
+	// with a different --dir, or a run after Claude Code pruned its own transcripts,
+	// silently drop entries the file already had — losing metadata that nothing else
+	// records. Upserting is the behaviour that cannot lose data; --merge=false is the
+	// explicit way to ask for a clean rebuild.
+	merge := fs.Bool("merge", true, "upsert into the existing file rather than replacing it")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			fmt.Fprint(stdout, readClaudeSessionsUsage)
@@ -150,11 +156,33 @@ func runReadClaudeSessions(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 
-	path, err := sessionMetadataPath()
+	path, err := tui.SessionMetadataPath()
 	if err != nil {
 		fmt.Fprintf(stderr, "abctl: %v\n", err)
 		return 1
 	}
+
+	harvested := len(meta)
+	if *merge {
+		existing, err := readSessionMetadata(path)
+		if err != nil {
+			// Refused rather than treated as empty. A corrupt file read as absent would
+			// silently rebuild from scratch under the flag whose whole purpose is not
+			// losing entries — the same trap readState exists to close for
+			// claude-code-state.json. Name the repair, and name the way past it.
+			fmt.Fprintf(stderr, "abctl: %v\n"+
+				"  Fix or move the file, or re-run with --merge=false to rebuild it.\n", err)
+			return 1
+		}
+		// This harvest wins per key: it just read the transcripts, so where both have a
+		// session the fresher title is here. Keys only the file has are kept — that is
+		// what merging is for.
+		for id, m := range meta {
+			existing[id] = m
+		}
+		meta = existing
+	}
+
 	if err := saveSessionMetadata(path, meta); err != nil {
 		fmt.Fprintf(stderr, "abctl: writing %s: %v\n", path, err)
 		return 1
@@ -163,8 +191,18 @@ func runReadClaudeSessions(args []string, stdout, stderr io.Writer) int {
 	// Reported rather than silent: the count is the only way to notice that a wrong
 	// --dir found nothing, and zero is not an error — a machine that has never run
 	// Claude Code legitimately has no transcripts.
-	fmt.Fprintf(stdout, "Wrote %d session(s) to %s\n", len(meta), path)
-	if len(meta) == 0 {
+	//
+	// Under --merge the total alone would be ambiguous: "wrote 109" reads the same
+	// whether this run harvested all 109 or harvested 2 and kept 107 from the file.
+	// Both numbers are reported so a wrong --dir is visible even when the file already
+	// held a good harvest.
+	if *merge && len(meta) != harvested {
+		fmt.Fprintf(stdout, "Wrote %d session(s) to %s (%d from %s, %d kept from the existing file)\n",
+			len(meta), path, harvested, configDir, len(meta)-harvested)
+	} else {
+		fmt.Fprintf(stdout, "Wrote %d session(s) to %s\n", len(meta), path)
+	}
+	if harvested == 0 {
 		fmt.Fprintf(stdout, "No transcripts under %s/projects — is that the right config directory?\n", configDir)
 	}
 	return 0
@@ -187,18 +225,6 @@ func defaultClaudeConfigDir() (string, error) {
 		return "", errors.New("cannot determine your home directory: it is empty")
 	}
 	return filepath.Join(home, ".claude"), nil
-}
-
-// sessionMetadataPath returns ~/.cortex/session-metadata.json.
-func sessionMetadataPath() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("cannot determine your home directory: %w", err)
-	}
-	if home == "" {
-		return "", errors.New("cannot determine your home directory: it is empty")
-	}
-	return filepath.Join(home, sessionMetaRel), nil
 }
 
 // readClaudeSessions harvests every session transcript under configDir/projects.
@@ -311,6 +337,34 @@ type transcriptMeta struct {
 	Type    string `json:"type"`
 	AiTitle string `json:"aiTitle"`
 	Cwd     string `json:"cwd"`
+}
+
+// readSessionMetadata reads the existing file, distinguishing absent from unreadable.
+//
+// An empty map with a nil error means genuinely no file yet — the first run, which is
+// not a problem. A non-nil error means a file was there and could not be trusted, and
+// the caller must say so out loud rather than proceeding: under --merge, treating a
+// corrupt file as empty would discard exactly the entries the flag exists to keep.
+// Same distinction, for the same reason, as readState in cmd_claudecode.go.
+//
+// A file holding JSON `null` decodes to a nil map, which is indistinguishable from an
+// empty object for merging purposes, so it is normalised rather than refused.
+func readSessionMetadata(path string) (map[string]tui.SessionMetadata, error) {
+	b, err := os.ReadFile(path) //nolint:gosec // operator-supplied path
+	if err != nil {
+		if os.IsNotExist(err) {
+			return map[string]tui.SessionMetadata{}, nil
+		}
+		return nil, err
+	}
+	var m map[string]tui.SessionMetadata
+	if uerr := json.Unmarshal(b, &m); uerr != nil {
+		return nil, fmt.Errorf("%s is not valid JSON: %w", path, uerr)
+	}
+	if m == nil {
+		return map[string]tui.SessionMetadata{}, nil
+	}
+	return m, nil
 }
 
 // saveSessionMetadata writes the map atomically, creating ~/.cortex if needed.

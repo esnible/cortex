@@ -1,5 +1,12 @@
 package tui
 
+import (
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+)
+
 // SessionMetadata is what a coding agent knows about one of its own sessions that
 // Cortex does not.
 //
@@ -38,4 +45,29 @@ type SessionMetadata struct {
 	// that lets a reader go and check: a title that looks wrong is answerable by
 	// opening the file it came from.
 	LogFile string `json:"logFile,omitempty"`
+}
+
+// SessionMetadataRel is the harvested metadata file, relative to the user's home.
+//
+// Exported so `abctl experimental read-claude-sessions`, which writes it from package
+// main, names the same path this package reads. Two constants for one path is the kind
+// of drift that only shows up as an empty column nobody can explain.
+//
+// Follows yankDirRel and cmd_claudecode.go's cortexCfgRel / stateRel, so there is one
+// ~/.cortex tree rather than a new dotfile per feature.
+const SessionMetadataRel = ".cortex/session-metadata.json"
+
+// SessionMetadataPath returns ~/.cortex/session-metadata.json.
+func SessionMetadataPath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("cannot determine your home directory: %w", err)
+	}
+	if home == "" {
+		// A separate branch, not folded into the one above: %w on a nil error renders as
+		// "%!w(<nil>)", which would make this path unreadable to whoever hits it. Same
+		// shape as yankDir and userConfigPath.
+		return "", errors.New("cannot determine your home directory: it is empty")
+	}
+	return filepath.Join(home, SessionMetadataRel), nil
 }
