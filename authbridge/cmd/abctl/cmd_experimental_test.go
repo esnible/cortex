@@ -8,6 +8,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/rossoctl/cortex/authbridge/cmd/abctl/tui"
 )
@@ -522,5 +523,271 @@ func TestReadClaudeSessions_LeavesNoTempFile(t *testing.T) {
 		if strings.HasSuffix(e.Name(), ".tmp") {
 			t.Errorf("tempfile left behind: %s", e.Name())
 		}
+	}
+}
+
+// A symlinked project directory is harvested, not skipped.
+//
+// os.ReadDir reports Lstat semantics, so DirEntry.IsDir() is FALSE for a symlink pointing at
+// a directory: the previous `if !e.IsDir() { continue }` dropped every session under one
+// without a word. Relocating a project directory, or sharing one between two config trees,
+// is a reasonable thing to do — and #1018 asks for multiple config directories, which is the
+// same shape.
+func TestReadClaudeSessions_FollowsSymlinkedProjectDir(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation needs privilege on Windows")
+	}
+	home := prefsHome(t)
+	cfg := filepath.Join(t.TempDir(), "claude")
+	if err := os.MkdirAll(filepath.Join(cfg, "projects"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	// The real directory lives outside the config tree; only a symlink is inside it.
+	elsewhere := filepath.Join(t.TempDir(), "relocated")
+	writeSessionTranscript(t, elsewhere, "bbbbbbbb-0000-0000-0000-000000000001.jsonl",
+		`{"type":"ai-title","aiTitle":"Behind a symlink"}`,
+	)
+	if err := os.Symlink(elsewhere, filepath.Join(cfg, "projects", "-linked")); err != nil {
+		t.Fatal(err)
+	}
+
+	var out, errb bytes.Buffer
+	if code := runExperimental([]string{"read-claude-sessions", "--dir", cfg}, &out, &errb); code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr=%s", code, errb.String())
+	}
+	got := readMetadataFile(t, filepath.Join(home, tui.SessionMetadataRel))
+	if w := got["bbbbbbbb-0000-0000-0000-000000000001"].Title; w != "Behind a symlink" {
+		t.Errorf("title = %q, want %q — the symlinked project dir was skipped", w, "Behind a symlink")
+	}
+}
+
+// One id in two project directories resolves to the NEWER transcript.
+//
+// ReadDir sorts by filename, so without an explicit rule the winner is whichever project
+// directory sorts later — alphabetical order silently deciding which title is current. Here
+// the newer transcript sits in the directory that sorts FIRST, so an implementation that just
+// takes the last write loses.
+func TestReadClaudeSessions_DuplicateIDPrefersTheNewerTranscript(t *testing.T) {
+	home := prefsHome(t)
+	cfg := filepath.Join(t.TempDir(), "claude")
+	const id = "cccccccc-0000-0000-0000-000000000001.jsonl"
+
+	writeSessionTranscript(t, filepath.Join(cfg, "projects", "aaa-first"), id,
+		`{"type":"ai-title","aiTitle":"NEWER"}`,
+	)
+	writeSessionTranscript(t, filepath.Join(cfg, "projects", "zzz-last"), id,
+		`{"type":"ai-title","aiTitle":"OLDER"}`,
+	)
+	// Make the alphabetically-first copy the newer one, so filename order and mtime order
+	// disagree and only an mtime rule gets this right.
+	old := time.Now().Add(-2 * time.Hour)
+	if err := os.Chtimes(filepath.Join(cfg, "projects", "zzz-last", id), old, old); err != nil {
+		t.Fatal(err)
+	}
+
+	var out, errb bytes.Buffer
+	if code := runExperimental([]string{"read-claude-sessions", "--dir", cfg}, &out, &errb); code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr=%s", code, errb.String())
+	}
+	got := readMetadataFile(t, filepath.Join(home, tui.SessionMetadataRel))
+	if w := got["cccccccc-0000-0000-0000-000000000001"].Title; w != "NEWER" {
+		t.Errorf("title = %q, want %q — alphabetical order beat mtime", w, "NEWER")
+	}
+}
+
+// A transcript with a line past the scanner buffer keeps its partial title AND is reported.
+//
+// Both halves matter. The title is best-effort by design, so the harvest must not fail — but
+// last-wins means the name returned may be an OLD claim with newer ones unread, and the
+// fallbacks make that indistinguishable from a session that simply has no title. Silence was
+// the bug; the earlier code discarded sc.Err() outright.
+func TestReadClaudeSessions_ReportsTruncatedTranscripts(t *testing.T) {
+	home := prefsHome(t)
+	cfg := filepath.Join(t.TempDir(), "claude")
+	proj := filepath.Join(cfg, "projects", "-huge")
+
+	// 17MB single line: past the 16MB ceiling, so the scanner stops there and the later
+	// title is never seen.
+	writeSessionTranscript(t, proj, "dddddddd-0000-0000-0000-000000000001.jsonl",
+		`{"type":"ai-title","aiTitle":"Seen before the wall"}`,
+		`{"pad":"`+strings.Repeat("x", 17*1024*1024)+`"}`,
+		`{"type":"ai-title","aiTitle":"NEVER READ"}`,
+	)
+
+	var out, errb bytes.Buffer
+	if code := runExperimental([]string{"read-claude-sessions", "--dir", cfg}, &out, &errb); code != 0 {
+		t.Fatalf("exit = %d, want 0 — one bad transcript must not fail the harvest; stderr=%s",
+			code, errb.String())
+	}
+	got := readMetadataFile(t, filepath.Join(home, tui.SessionMetadataRel))
+	if w := got["dddddddd-0000-0000-0000-000000000001"].Title; w != "Seen before the wall" {
+		t.Errorf("title = %q, want the partial title found before the oversized line", w)
+	}
+	if !strings.Contains(errb.String(), "read incompletely") {
+		t.Errorf("stderr does not report the truncated read: %q", errb.String())
+	}
+}
+
+// The --merge breakdown is printed whenever merging, including when nothing was kept.
+//
+// Gating the detailed line on "the totals differ" dropped it in exactly the case that needed
+// it: when the harvest is a SUPERSET of the file, kept is 0 and the totals match, so a
+// --merge run printed the same bare line as --merge=false.
+func TestReadClaudeSessions_MergeSummaryWhenHarvestIsASuperset(t *testing.T) {
+	home := prefsHome(t)
+	cfg := filepath.Join(t.TempDir(), "claude")
+	proj := filepath.Join(cfg, "projects", "-p")
+	writeSessionTranscript(t, proj, "eeeeeeee-0000-0000-0000-000000000001.jsonl",
+		`{"type":"ai-title","aiTitle":"One"}`,
+	)
+	writeSessionTranscript(t, proj, "eeeeeeee-0000-0000-0000-000000000002.jsonl",
+		`{"type":"ai-title","aiTitle":"Two"}`,
+	)
+
+	// Seed the file with a strict subset of what the harvest will find.
+	path := filepath.Join(home, tui.SessionMetadataRel)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	seed, err := json.Marshal(map[string]tui.SessionMetadata{
+		"eeeeeeee-0000-0000-0000-000000000001": {Title: "stale"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, seed, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var out, errb bytes.Buffer
+	if code := runExperimental([]string{"read-claude-sessions", "--dir", cfg}, &out, &errb); code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr=%s", code, errb.String())
+	}
+	if !strings.Contains(out.String(), "kept from the existing file") {
+		t.Errorf("merge run printed no breakdown, so it reads identically to --merge=false: %q",
+			out.String())
+	}
+	if !strings.Contains(out.String(), "0 kept") {
+		t.Errorf("want an explicit 0 kept, got %q", out.String())
+	}
+}
+
+// A failed write is reported and exits 1, rather than claiming success.
+//
+// The atomic-write path had no test at all: every failure branch removes the tempfile and
+// returns, so a silent success on a failed write would have looked exactly like a working
+// harvest with an empty result.
+func TestReadClaudeSessions_ReportsWriteFailure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("directory permissions do not block writes the same way on Windows")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores directory permissions")
+	}
+	home := prefsHome(t)
+	cfg := filepath.Join(t.TempDir(), "claude")
+	writeSessionTranscript(t, filepath.Join(cfg, "projects", "-p"),
+		"ffffffff-0000-0000-0000-000000000001.jsonl",
+		`{"type":"ai-title","aiTitle":"Doomed"}`,
+	)
+
+	// ~/.cortex exists but cannot be written into, so CreateTemp fails inside it.
+	dir := filepath.Join(home, ".cortex")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
+
+	var out, errb bytes.Buffer
+	if code := runExperimental([]string{"read-claude-sessions", "--dir", cfg}, &out, &errb); code != 1 {
+		t.Fatalf("exit = %d, want 1 on an unwritable metadata directory; stdout=%q stderr=%q",
+			code, out.String(), errb.String())
+	}
+	if !strings.Contains(errb.String(), "writing") {
+		t.Errorf("stderr does not name the write failure: %q", errb.String())
+	}
+	if strings.Contains(out.String(), "Wrote") {
+		t.Errorf("stdout claims success after a failed write: %q", out.String())
+	}
+}
+
+// An entry written concurrently by another run survives this run's save.
+//
+// The lost-update the review named: two --merge runs both read the file, both merge their own
+// harvest, and the second rename replaces the first's entries with a map that never contained
+// them. Unrecoverable once Claude Code prunes the transcript they came from, which is why it
+// is worth closing rather than documenting.
+//
+// Driven through recoverConcurrentEntries rather than through the command, because the window
+// being tested is INSIDE one run — between its read and its rename. Planting the competing
+// entry before invoking the command tests nothing: the ordinary merge picks it up, and the
+// test passes with the recovery deleted (confirmed by mutation). Here the map argument stands
+// for "what this run decided to write", the file stands for "what the other run left behind",
+// and the two deliberately disagree.
+func TestRecoverConcurrentEntries(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session-metadata.json")
+	const theirs = "99999999-0000-0000-0000-000000000009"
+	const ours = "11111111-0000-0000-0000-000000000001"
+
+	// On disk: the other run's write, which landed after this run had already read.
+	onDisk, err := json.Marshal(map[string]tui.SessionMetadata{
+		theirs: {Title: "From another run", AgentType: "Claude Code"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, onDisk, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// In hand: what this run was about to save, which knows nothing of theirs.
+	meta := map[string]tui.SessionMetadata{ours: {Title: "Ours"}}
+
+	recovered, err := recoverConcurrentEntries(path, meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recovered != 1 {
+		t.Errorf("recovered = %d, want 1", recovered)
+	}
+	got := readMetadataFile(t, path)
+	if w := got[theirs].Title; w != "From another run" {
+		t.Errorf("the concurrent entry was lost: %q", w)
+	}
+	if w := got[ours].Title; w != "Ours" {
+		t.Errorf("this run's own entry is missing: %q", w)
+	}
+
+	// Idempotent: a second pass finds nothing to do and must not rewrite the file.
+	again, err := recoverConcurrentEntries(path, meta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again != 0 {
+		t.Errorf("second pass recovered %d, want 0 — the merge is not idempotent", again)
+	}
+}
+
+// A corrupt file at recovery time is not fatal: our own save already succeeded.
+//
+// The asymmetry is deliberate. Before the save, a corrupt file is refused, because merging
+// into it would discard entries. Here the valid file is already on disk and this is a
+// best-effort attempt to also rescue someone else's entries — failing the command now would
+// report an error for a harvest that in fact succeeded.
+func TestRecoverConcurrentEntries_CorruptFileIsNotFatal(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session-metadata.json")
+	if err := os.WriteFile(path, []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := recoverConcurrentEntries(path, map[string]tui.SessionMetadata{"a": {}})
+	if err != nil {
+		t.Errorf("err = %v, want nil — the harvest already succeeded", err)
+	}
+	if recovered != 0 {
+		t.Errorf("recovered = %d, want 0", recovered)
 	}
 }
