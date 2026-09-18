@@ -192,17 +192,20 @@ func TestIDFromHeaders_AcceptsIDAtMaxLength(t *testing.T) {
 //
 // Then that a Bob id actually resolves, and loses to a Claude Code id when both
 // are present. The precedence machinery is already covered generically by
-// TestIDFromHeaders_FirstConfiguredHeaderWins; what is untested is that the real
-// pair of constants is ordered the way config.SessionIDHeaders ships them.
+// TestIDFromHeaders_FirstConfiguredHeaderWins; what this adds is the real pair of
+// constants rather than a stand-in literal.
 func TestBobSessionHeader_IsCanonicalAndResolves(t *testing.T) {
 	if got := http.CanonicalHeaderKey(BobSessionHeader); got != BobSessionHeader {
 		t.Errorf("BobSessionHeader = %q, want canonical form %q; a raw http.Header literal will not match it",
 			BobSessionHeader, got)
 	}
 
-	// The shipped default list, in order. Kept as a literal rather than imported
-	// from config: authlib/config imports this package, so the dependency cannot
-	// run the other way.
+	// A local copy of the shipped order, NOT a read of it: authlib/config imports
+	// this package, so it cannot be imported back here to assert the real default.
+	// That means a reorder in config.SessionIDHeaders would not fail this test —
+	// TestSessionConfig_SessionIDHeaders over in that package is the guard for
+	// that, and it asserts the list in order. What this fixture pins is the
+	// behavior of the pair once ordered, not the ordering itself.
 	names := []string{ClaudeCodeSessionHeader, BobSessionHeader}
 
 	t.Run("a Bob id alone is used", func(t *testing.T) {

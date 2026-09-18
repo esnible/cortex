@@ -409,11 +409,12 @@ type SessionConfig struct {
 	MaxSessions int `yaml:"max_sessions" json:"max_sessions"` // max concurrent sessions; default: 100 (<= 0 means default)
 
 	// IDHeaders names the request headers consulted, in order, for a
-	// client-supplied session id to bucket events under. Unset means the Claude
-	// Code session header; an explicit empty list turns header bucketing off and
-	// puts every session back in one shared bucket. Like Enabled above, the
-	// nil-versus-empty distinction is load-bearing — do not collapse it by
-	// assigning a default at load time.
+	// client-supplied session id to bucket events under. Unset means the built-in
+	// list of supported-agent headers (see SessionIDHeaders); an explicit list
+	// REPLACES that default rather than extending it, and an explicit empty list
+	// turns header bucketing off and puts every session back in one shared bucket.
+	// Like Enabled above, the nil-versus-empty distinction is load-bearing — do
+	// not collapse it by assigning a default at load time.
 	//
 	// The ids these headers carry are client-asserted and unauthenticated: a
 	// client can name any bucket, including another session's. The store is

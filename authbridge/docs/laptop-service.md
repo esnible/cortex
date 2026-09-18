@@ -63,9 +63,11 @@ different repos are two buckets, and resuming a session (`claude --resume`) file
 into the original one rather than starting a new one.
 
 This works because Claude Code puts `X-Claude-Code-Session-Id` on every inference
-request. Bob is grouped the same way, by the `X-Task-Id` it sets — but its buckets are
-named with a task id rather than a session uuid, so one bucket covers however long Bob
-reuses that task. Traffic that carries no such header falls back to the previous
+request. Bob, our internal coding agent (not the `bob` demo user), is grouped the same
+way, by the `X-Task-Id` it sets, but its buckets are named with a task id rather than a
+session uuid, so one bucket covers however long Bob reuses that task. Note that
+`X-Task-Id` is a generic name: traffic from anything else that sends it will be grouped
+under its value too. Traffic that carries no such header falls back to the previous
 behavior — the most recently active session, or the `default` bucket. In practice
 `default` collects Claude Code's own connectivity probe (`HEAD /api/hello`) and anything
 else that egresses through the proxy without announcing a session.
