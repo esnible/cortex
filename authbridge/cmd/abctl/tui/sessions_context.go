@@ -179,7 +179,7 @@ func foldSessionContext(events []pipeline.SessionEvent, run contextRun) contextR
 		if toolCount(e.Inference) == 0 {
 			continue
 		}
-		n := promptTokens(e.Inference)
+		n := pipeline.PromptTokens(e.Inference)
 		if n <= 0 {
 			continue
 		}

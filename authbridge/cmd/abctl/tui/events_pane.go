@@ -1173,7 +1173,7 @@ func (m *model) tokensCell(rows []eventRow, partner map[int]int, i int, ev *pipe
 		if s, ok := pruneSavingFor(resp); ok {
 			saved, projected, estimated = float64(s.TokensAvoided), s.Projected, s.Estimated
 		}
-		return formatTokensWithSaving(promptTokens(resp.Inference), saved, projected, estimated)
+		return formatTokensWithSaving(pipeline.PromptTokens(resp.Inference), saved, projected, estimated)
 	default:
 		return ""
 	}
