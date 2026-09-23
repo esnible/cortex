@@ -756,11 +756,11 @@ Expected: non-zero, `undefined: Merge`.
 // PromptContext is the fold's PUBLISHABLE state: enough to merge two of them, which a client
 // holding its own figure must do, and which a future restore-then-continue would do.
 //
-// A LOSSY PROJECTION, deliberately. msgs is omitted because it is the FALLBACK rule's
-// comparator and is slated for deletion once the supported proxy floor publishes agentRole
-// (see PromptContextFold). Omitting it coarsens exactly one arm of Merge —
-// unstated-versus-unstated — which a client reaches only against a proxy that publishes this
-// type without publishing agentRole. Persistence should store the FOLD, not this.
+// LOSSLESS with respect to the ORDERING: every field better() compares is here, so the
+// published order is the fold's order rather than a coarsening of it. An earlier draft dropped
+// msgs on the grounds that it was a transitional comparator; agentRole turns out to be empty
+// for every client that is not Claude Code, so Stated is a property of the CLIENT and the
+// fallback never retires. See PromptContextFold.
 type PromptContext struct {
 	Tokens int       `json:"tokens"`
 	Stated bool      `json:"stated"`

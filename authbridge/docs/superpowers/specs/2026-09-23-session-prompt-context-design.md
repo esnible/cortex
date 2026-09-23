@@ -493,11 +493,17 @@ disk**, and `PromptContext` is a lossy projection for **the wire**. Three uses, 
 **Restore order is free**, because the fold is commutative. This was a constraint in an earlier
 draft of this design; decision 6 removed it.
 
-**Rule versioning is the open problem.** The fold's rule is slated to change — the `msgs`
-fallback dies once the supported proxy floor publishes `agentRole`. A persisted figure computed
-under a retired rule **cannot be recomputed once its events are gone**. This is the class of
-problem `costledger/reprice.go` already solves after the fact (rate-card changes applied to
-historical rows), so there is precedent to follow, but it is a new instance of it.
+**Rule versioning is the open problem, though a smaller one than this section first claimed.**
+The original argument was that the rule is slated to change — the `msgs` fallback dying once the
+supported proxy floor publishes `agentRole` — so a persisted figure could outlive the rule that
+produced it. Task 6 removed that particular instance: `Stated` depends on the **client**, not the
+proxy version, so the fallback never retires and this rule is not scheduled to change at all.
+
+The general problem survives the specific one. Any future change to the ordering leaves persisted
+figures computed under the old one, and **a figure cannot be recomputed once its events are gone**
+— that is the price of a remembered maximum. It is the class of problem
+`costledger/reprice.go` already solves after the fact (rate-card changes applied to historical
+rows), so there is precedent to follow, but it would be a new instance of it.
 
 Mild in practice: the figure is a token count under every rule version, and a rule change
 alters *which turn wins*, not the units.
@@ -521,6 +527,9 @@ change as before.
 - **A rule-version field on `PromptContext`.** Dead weight until something writes to disk; the
   ledger solved the same problem after the fact.
 - **Client-side prefetch of timelines.** Superseded by the server field.
-- **Deleting the `msgs` fallback.** Blocked on the supported proxy floor publishing
-  `agentRole`; unrelated to this change.
+- **Deleting the `msgs` fallback.** Not deletable at all, and that is a finding rather than a
+  deferral: `agentRole` is empty for every client that is not Claude Code, so `Stated` is a
+  property of the client and no proxy-version floor retires the fallback. The pre-existing claim
+  to the contrary — inherited from `sessions_context.go`'s doc comment and repeated in
+  `sessions_context_test.go:72` — is wrong, and anything relying on it should stop.
 - **Anything in PR #1102.** Merged; complementary, not superseded.
