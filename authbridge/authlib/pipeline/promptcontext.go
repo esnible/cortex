@@ -346,16 +346,6 @@ func (p *PromptContext) candidate() candidate {
 	return candidate{tokens: p.Tokens, msgs: p.Msgs, at: p.At, stated: p.Stated}
 }
 
-// TokensOrZero is the figure, or zero when nothing is known — which contextGauge renders as an
-// em dash. A method on the pointer so a merge result can be read without a nil guard at every
-// call site.
-func (p *PromptContext) TokensOrZero() int {
-	if p == nil {
-		return 0
-	}
-	return p.Tokens
-}
-
 // Publish projects the fold for the wire, or nil when nothing can be said.
 //
 // NIL RATHER THAN A ZERO STRUCT, so the field is absent under omitempty. A session with only
@@ -412,6 +402,42 @@ func MergePromptContext(a, b *PromptContext) *PromptContext {
 	default:
 		return a
 	}
+}
+
+// TokensMergedWith is f's figure merged with a PUBLISHED one: the same figure
+// MergePromptContext(p, f.Publish()) carries, or zero where that is nil, without publishing f.
+//
+// IT EXISTS FOR THE ALLOCATION, and the measurement is the whole justification — this file does not
+// add a second entry point for tidiness. abctl's sessions row loop asks EVERY visible session for
+// its gauge on every rebuild, and a rebuild is one streamed event or one poll, so anything per-row
+// here is on the same hot path the fold itself exists to protect. Going through Publish() put a
+// 48-byte *PromptContext on the heap per row per rebuild: BenchmarkSessionContextPerEvent/folded
+// measured 184ns and 0 allocs against 344ns and 10 allocs for its ten sessions, a 1.9x regression on
+// the branch that does no folding at all.
+//
+// THE LITERAL CANNOT STAY ON THE STACK, which is why this is a signature change rather than a
+// compiler hint. Publish() inlines, but MergePromptContext does not — cost 110 against a budget of
+// 80 — and its parameters flow to its result, so the escape analysis spills the published struct
+// whatever the caller looks like. A fold is a VALUE, so comparing out of one allocates nothing.
+//
+// STILL ONE ORDERING. This defers to better() exactly as MergePromptContext does, so the two are
+// views of the same total order rather than two implementations of it — the property this file
+// protects everywhere, and the reason Msgs is on the wire at all. Only the identity handling is
+// restated, two lines of it, and TestPromptContextFold_TokensMergedWithAgreesWithMergePromptContext
+// pins the agreement over every combination of stated, unstated and absent.
+//
+// RETURNS THE FIGURE, not the winner, and that is not a shortcut: the only caller draws a gauge from
+// an int, and handing back a *PromptContext would put the allocation straight back.
+func (f PromptContextFold) TokensMergedWith(p *PromptContext) int {
+	if p == nil {
+		return f.tokens
+	}
+	// A zero fold is the monoid's identity here as everywhere: Publish() would return nil for it,
+	// and nil is what MergePromptContext returns the other operand for.
+	if f.tokens == 0 || better(p.candidate(), f.current()) {
+		return p.Tokens
+	}
+	return f.tokens
 }
 
 // toolCount and messageCount answer the two questions this file asks of a conversation, on either

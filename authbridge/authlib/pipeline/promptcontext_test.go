@@ -678,6 +678,71 @@ func TestMergePromptContext_IsTheSameOrderAsTheFold(t *testing.T) {
 	}
 }
 
+// THE ALLOCATION-FREE PATH MUST GIVE THE SAME ANSWER, which is the only thing standing between a
+// second entry point and the drift this file rejects everywhere else.
+//
+// TokensMergedWith exists because publishing the local fold to merge it allocated per row per
+// rebuild in abctl's sessions loop (see its doc for the numbers). It defers to better() exactly as
+// MergePromptContext does, so it cannot disagree about the ORDER — but it restates the identity
+// handling, and that is the part a reader has to take on trust. This takes it on evidence instead:
+// for every fold and every published figure, including the absent one, the two must agree on the
+// figure.
+//
+// THE FOLDS ARE BUILT BY FIELD rather than by folding events, because the point is to span the
+// comparison space — stated against unstated, a zero fold, and a pair that ties on every compared
+// field — not to re-test candidateOf.
+func TestPromptContextFold_TokensMergedWithAgreesWithMergePromptContext(t *testing.T) {
+	at := time.Now()
+	vals := []*PromptContext{
+		nil,
+		{Tokens: 100_000, Msgs: 952, At: at},
+		{Tokens: 700_000, Msgs: 2468, At: at.Add(-time.Hour)}, // unstated, most messages
+		{Tokens: 400_000, Msgs: 2468, At: at},                 // ties on msgs, later
+		{Tokens: 200_000, Stated: true, At: at},
+		{Tokens: 900_000, Stated: true, At: at.Add(-time.Minute)},
+		{Tokens: 500_000, Msgs: 600, Stated: true, At: at},
+	}
+	// The zero fold first: it is the identity, and it is the one operand whose Publish() is nil, so
+	// it is where a restated identity check would diverge.
+	folds := []PromptContextFold{{}}
+	for _, v := range vals[1:] {
+		folds = append(folds, PromptContextFold{
+			tokens: v.Tokens, msgs: v.Msgs, at: v.At, stated: v.Stated})
+	}
+
+	statedSeen, unstatedSeen, publishedWon, foldWon := false, false, false, false
+	for _, f := range folds {
+		for _, p := range vals {
+			want := 0
+			if merged := MergePromptContext(p, f.Publish()); merged != nil {
+				want = merged.Tokens
+			}
+			got := f.TokensMergedWith(p)
+			if got != want {
+				t.Errorf("fold %+v merged with %+v = %d, want %d — the allocation-free path has "+
+					"drifted from MergePromptContext", f.current(), p, got, want)
+			}
+			if p != nil && p.Stated {
+				statedSeen = true
+			}
+			if p != nil && !p.Stated {
+				unstatedSeen = true
+			}
+			if p != nil && want == p.Tokens && want != f.tokens {
+				publishedWon = true
+			}
+			if want == f.tokens && f.tokens != 0 && (p == nil || want != p.Tokens) {
+				foldWon = true
+			}
+		}
+	}
+	// Or the sweep could agree by never exercising a disagreement.
+	if !statedSeen || !unstatedSeen || !publishedWon || !foldWon {
+		t.Fatalf("the fixture does not span the space: stated=%v unstated=%v publishedWon=%v "+
+			"foldWon=%v", statedSeen, unstatedSeen, publishedWon, foldWon)
+	}
+}
+
 // THE SECOND MONOID, which the spec claims separately from the fold's. MergePromptContext is what
 // the client and any future restore call, so its laws are load-bearing independently.
 //

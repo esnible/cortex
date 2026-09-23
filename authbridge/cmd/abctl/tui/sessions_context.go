@@ -20,8 +20,14 @@ import (
 // server is nil for a proxy older than the field and for a session with no conversation to
 // measure. Both mean "nothing known", both are the merge's identity, and that is what lets this
 // need no version detection at all.
+//
+// THROUGH TokensMergedWith RATHER THAN pipeline.MergePromptContext, and the reason is the row loop
+// that calls this: publishing the local fold just to merge it put one 48-byte *PromptContext on the
+// heap per row per rebuild — 184ns/0 allocs to 344ns/10 allocs on
+// BenchmarkSessionContextPerEvent/folded. Same total order, same answer, no allocation; see
+// pipeline.PromptContextFold.TokensMergedWith for why the escape cannot be optimised away instead.
 func (m *model) sessionContextFor(id string, server *pipeline.PromptContext) int {
-	return pipeline.MergePromptContext(server, m.localContextFor(id)).TokensOrZero()
+	return m.localContextFor(id).TokensMergedWith(server)
 }
 
 // localContextFor is the fold abctl maintains itself, unchanged from before the server published
@@ -32,12 +38,15 @@ func (m *model) sessionContextFor(id string, server *pipeline.PromptContext) int
 // longer slice folds just its tail. Every path that does something else to m.events owes this
 // function an action — see the inventory on model.events — because a replacement of the SAME length
 // is invisible to the length check below.
-func (m *model) localContextFor(id string) *pipeline.PromptContext {
+//
+// RETURNS THE FOLD BY VALUE, not a published figure: this runs once per visible row per rebuild, and
+// a fold copy is registers where a Publish() is a heap allocation.
+func (m *model) localContextFor(id string) pipeline.PromptContextFold {
 	events := m.events[id]
 	run, ok := m.contextRun[id]
 	switch {
 	case ok && run.Folded() == len(events):
-		return run.Publish()
+		return run
 	case ok && run.Folded() < len(events):
 		run.AddAll(events[run.Folded():])
 		m.contextRun[id] = run
@@ -49,9 +58,9 @@ func (m *model) localContextFor(id string) *pipeline.PromptContext {
 		// session, so zeroing here would turn the gauge into a dash for a session still
 		// sending traffic.
 		m.rebaseSessionContext(id, events)
-		return m.contextRun[id].Publish()
+		return m.contextRun[id]
 	}
-	return run.Publish()
+	return run
 }
 
 // rebaseSessionContext re-folds a session whose events were REPLACED rather than appended to,

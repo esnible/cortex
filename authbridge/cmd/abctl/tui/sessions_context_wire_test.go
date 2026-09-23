@@ -648,3 +648,29 @@ func TestSessionsTable_ANilServerFigureKeepsTheLocalOne(t *testing.T) {
 		t.Errorf("got %d, want 500000", got)
 	}
 }
+
+// AND THE CACHED-ONLY ROW STILL DRAWS ITS GAUGE, which is the second call site — the one the server
+// does not list at all, so it passes nil and abctl's own fold is the ONLY possible source.
+//
+// On the RENDERED ROW, for the headline test's reason: the figure is not the row. This is also the
+// path a future "the server always sends it now, drop the local fold" simplification breaks, and it
+// would break it silently — the server has forgotten these sessions by definition (#870), so there
+// is nothing for such a change to fall back to.
+func TestSessionsTable_ACachedOnlyRowDrawsItsOwnFigure(t *testing.T) {
+	base := time.Now()
+	const id = "vanished"
+	m := &model{width: 200, pane: paneSessions, events: map[string][]pipeline.SessionEvent{
+		id: conversation("c1", base, 600, 500_000),
+	}}
+	m.sessionsTbl = newSessionsTable()
+
+	// The server lists nothing — a proxy restart, or any blip that empties /v1/sessions — so the
+	// row comes from cachedOnlySessionIDs and carries no summary to read a figure from.
+	m.Update(sessionsLoadedMsg{})
+
+	if len(m.sessions) != 0 {
+		t.Fatalf("the server list is %v, want empty — this test is about a row with no summary",
+			m.sessions)
+	}
+	assertGaugeFilled(t, heldContextCell(t, m, id), "on a cached-only row")
+}
