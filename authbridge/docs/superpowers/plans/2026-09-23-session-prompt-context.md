@@ -18,6 +18,7 @@ mergeable projection on `SessionSummary`, and have abctl merge it with its own f
 ## Global Constraints
 
 - **Worktree:** `/Users/haihuang/works/go/src/github.com/kagenti/kagenti-extensions/.worktrees/promptctx`, branch `feat/session-prompt-context`. All paths below are relative to `authbridge/`.
+- **`authbridge/` is a `go.work` WORKSPACE with no root `go.mod`**, so `go build ./...` and `go test ./...` there **fail** with "directory prefix . does not contain modules listed in go.work". Verified: `./...` exits 1, `./authlib/... ./cmd/abctl/...` exits 0. Always use the module-scoped form. (Found during Task 1; the first draft of this plan asserted the failing command.)
 - **One PR, 8 commits in 4 phases.** Phase A = tasks 1-3 (move), B = 4-5 (monoid), C = 6-7 (server), D = 8 (client).
 - **DCO is mandatory:** every commit uses `git commit -s`.
 - **Attribution:** end every commit message with `Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>`. NEVER `Co-Authored-By`, `Generated with`, or `Made-with`.
@@ -71,16 +72,21 @@ is the drift risk this design rejects for the rule itself.
 ```go
 package pipeline
 
-// PromptTokens is what a response's prompt cost, in tokens: input plus both cache tiers.
+// PromptTokens is the request's own billed token count: what the provider counted for
+// everything we sent. It lives on the response because the provider is the only party that
+// tokenizes, but it is a request-side quantity — which is what lets a request row show a
+// total at all.
 //
-// OUTPUT IS DELIBERATELY EXCLUDED. Measured across six live sessions it is 0.003%-2.2% of the
-// prompt and 0.2% on conversations near the context limit — a fifth of one eighth-block at 1M,
-// so including it would change no rendered pixel while making the figure mean something else.
+// OUTPUT IS DELIBERATELY EXCLUDED, which the prompt-context rule measured on the same
+// sessions: output is 0.003%-2.2% of the prompt and 0.2% on conversations near the context
+// limit, so folding it in would change no rendered pixel while making the figure mean
+// something else.
 //
-// The three-way sum FIRST, PromptTokens second, because zero on the sum means "this provider
-// reported the breakdown" and a provider that reports only a total sets the scalar instead.
-// Taking the scalar first would silently discard the cache tiers, which on a cached
-// conversation are ~99% of the prompt.
+// The PromptTokens fallback cannot currently fire, and is kept only to mirror
+// savedTokensAndCost: parsercommon.TokenUsage.Fill is the sole production writer of these
+// fields and sets PromptTokens to Input+CacheRead+CacheWrite — the same sum computed here —
+// so when the split is zero the aggregate is zero too. It costs nothing and would start
+// earning its keep if a parser ever published the aggregate directly.
 func PromptTokens(resp *InferenceExtension) int {
 	if resp == nil {
 		return 0
@@ -115,7 +121,7 @@ Each touched file needs `"github.com/rossoctl/cortex/authbridge/authlib/pipeline
 
 ```bash
 export LOG_DIR=/Users/haihuang/.claude/jobs/ecb7387f/tmp/promptctx
-HTTPS_PROXY= HTTP_PROXY= ALL_PROXY= go build ./... > $LOG_DIR/t1-build.log 2>&1; echo "BUILD:$?"
+HTTPS_PROXY= HTTP_PROXY= ALL_PROXY= go build ./authlib/... ./cmd/abctl/... > $LOG_DIR/t1-build.log 2>&1; echo "BUILD:$?"
 HTTPS_PROXY= HTTP_PROXY= ALL_PROXY= go test ./cmd/abctl/tui/ ./authlib/pipeline/ > $LOG_DIR/t1-test.log 2>&1; echo "TEST:$?"
 ```
 
@@ -296,7 +302,7 @@ Update the `model.contextRun` field type and the inventory comment on `model.eve
 - [ ] **Step 3: Verify — the existing suite is the assertion**
 
 ```bash
-HTTPS_PROXY= HTTP_PROXY= ALL_PROXY= go build ./... > $LOG_DIR/t2-build.log 2>&1; echo "BUILD:$?"
+HTTPS_PROXY= HTTP_PROXY= ALL_PROXY= go build ./authlib/... ./cmd/abctl/... > $LOG_DIR/t2-build.log 2>&1; echo "BUILD:$?"
 HTTPS_PROXY= HTTP_PROXY= ALL_PROXY= go test ./cmd/abctl/tui/ ./authlib/pipeline/ > $LOG_DIR/t2-test.log 2>&1; echo "TEST:$?"
 ```
 
@@ -1311,8 +1317,8 @@ the need for them, since an old proxy still leaves the open-a-session path as th
 - [ ] **Step 5: Whole-tree verification**
 
 ```bash
-HTTPS_PROXY= HTTP_PROXY= ALL_PROXY= go build ./... > $LOG_DIR/final-build.log 2>&1; echo "BUILD:$?"
-HTTPS_PROXY= HTTP_PROXY= ALL_PROXY= go test ./... > $LOG_DIR/final-test.log 2>&1; echo "TEST:$?"
+HTTPS_PROXY= HTTP_PROXY= ALL_PROXY= go build ./authlib/... ./cmd/abctl/... > $LOG_DIR/final-build.log 2>&1; echo "BUILD:$?"
+HTTPS_PROXY= HTTP_PROXY= ALL_PROXY= go test ./authlib/... ./cmd/abctl/... > $LOG_DIR/final-test.log 2>&1; echo "TEST:$?"
 grep -E "^(FAIL|--- FAIL)" $LOG_DIR/final-test.log
 ```
 
@@ -1360,8 +1366,8 @@ The body ends with `Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>`,
 
 ## Verification checklist
 
-- [ ] `go build ./...` clean
-- [ ] `go test ./...` clean except the known environmental failure
+- [ ] `go build ./authlib/... ./cmd/abctl/...` clean (NOT `./...` — see Global Constraints)
+- [ ] `go test ./authlib/... ./cmd/abctl/...` clean except the known environmental failure
 - [ ] The 13 moved rule tests pass in `authlib/pipeline`
 - [ ] `TestAppend_RunningTotalsMatchAFullRecomputation` still passes — cost's invariant untouched
 - [ ] The three PR #1102 repaint tests still pass
