@@ -64,7 +64,7 @@ default so the event list is uncapped.
 | 2 | Client merges rather than preferring one source | Neither source dominates: the server has seen everything since the proxy started, abctl only since it attached — but abctl's copy survives a proxy restart, which is the whole of #870. |
 | 3 | One PR, four ordered commits | Reviewability without the process cost of separate PRs; `git bisect` stays useful. |
 | 4 | Duplicate test fixtures, no shared helper package | See "Fixtures" below. |
-| 5 | Publish a mergeable object, not a bare int | A bare `max` cannot honour "stated beats unstated"; see "The hole in max". |
+| 5 | Publish a LOSSLESS mergeable object, not a bare int | A bare `max` cannot honour "stated beats unstated"; see "The hole in max". |
 | 6 | Make the fold commutative | Replay order stops mattering; `MergePromptContext` becomes associative. |
 | 7 | Design for persistence, document it, build none | No serialization code, no disk format, no flags. |
 
@@ -228,8 +228,12 @@ type PromptContext struct {
 	Tokens int       `json:"tokens"`
 	Stated bool      `json:"stated"` // which rule produced it; stated always beats unstated
 	At     time.Time `json:"at"`     // the winning turn's arrival, for latest-wins
+	Msgs   int       `json:"msgs"`   // the unstated rule's comparator; see below
 }
 ```
+
+**LOSSLESS**, carrying every field the fold's ordering reads. An earlier draft of this design
+dropped `Msgs`; Task 6 disproved the reason for dropping it — see "Msgs is published" below.
 
 On `SessionSummary`:
 
@@ -251,11 +255,36 @@ PromptContext *PromptContext `json:"promptContext,omitempty"`
 `ListSessions` gains one line — `PromptContext: sess.context.Publish()` — and stays `O(1)` in
 this dimension.
 
-### `msgs` stays internal
+### `Msgs` is published, and the reason it was not is false
 
-It is the fallback comparator and is slated for deletion "once the supported proxy floor
-publishes agentRole". Omitting it means two *unstated* folds merge only by token count, which
-is acceptable: that path exists only for proxies that do not send this field at all.
+The first draft omitted `msgs` on two grounds, both of which Task 6 disproved by reading
+`authlib/plugins/inferenceparser/subagent.go`:
+
+> *agentRole reports which caller under one client session made a request... **Empty when the
+> request says nothing, which is every client that is not Claude Code.***
+
+`agentRole()` returns `""` when there is no system message at all (`/v1/completions`), when the
+first system line lacks the required `x-anthropic-billing-header:` prefix, and on an unparseable
+body. So:
+
+1. **"That path exists only for proxies that do not send this field" was wrong.** Unstated figures
+   are a **live, current-proxy state** for any non-Claude-Code client. The unstated-versus-unstated
+   merge arm is a real path, not a version-skew relic.
+2. **"`msgs` is slated for deletion once the proxy floor publishes agentRole" was wrong.** `Stated`
+   depends on the **client**, not the proxy version, so the fallback comparator is permanent. (That
+   claim is inherited from the pre-existing `sessions_context.go` doc comment, so it is a wrong
+   statement already in the tree rather than one this design introduced — but it is wrong, and
+   anything relying on it should stop.)
+
+With the field permanent, omitting it bought nothing and cost exactness. Publishing it makes the
+projection **order-equivalent to the fold** instead of a coarsening, which:
+
+- collapses the "two combines over two different total orders" construct into one — a construct
+  that had already produced two reasoning errors in this design
+- makes the projection lossless, so persistence can restore from it directly rather than needing
+  the private fold (see *Future: persistence*)
+
+Cost: one int on the wire.
 
 ### The client needs no version detection
 
@@ -289,45 +318,48 @@ A bare `max` over token counts cannot honour that, and the bad case is **reachab
 Narrow, but it survives to production precisely because it needs a version transition to
 trigger. Hence the object.
 
-### Two combines, not one
+### One order, two views
 
-`msgs` is internal to the fold (§4), so there are **two** combining operations over **two
-different total orders**. Conflating them was a bug in an earlier draft of this spec.
+An earlier draft had **two** combining operations over two different total orders, because the
+projection dropped `msgs`. Publishing `Msgs` (§4) removed the difference, and with it a construct
+that had already caused two reasoning errors in this design.
 
-**Internal — `PromptContextFold`, where `msgs` is available.** Used by `Add`, `AddAll`, and any
-future fold-to-fold restore:
-
-```
-stated ≻ unstated
-  within stated:    order by (At, Tokens)
-  within unstated:  order by (msgs, At, Tokens)
-```
-
-**Published — `MergePromptContext(a, b *PromptContext)`, where `msgs` is not.** Used by the client:
+There is now **one** total order:
 
 ```
-MergePromptContext(a, b):
-  either nil         → the other               (nil is the identity)
-  exactly one Stated → that one                (stated beats unstated, any size)
-  both Stated        → later At; tie → larger Tokens
-  neither Stated     → later At; tie → larger Tokens   (degraded: msgs is not published)
+stated ≻ unstated                      a figure from a rule that cannot see subagents is not
+                                       evidence about the conversation, at any magnitude
+  within stated:    order by (At, Tokens, Msgs)
+  within unstated:  order by (Msgs, At, Tokens)
 ```
 
-The published order is a **coarser** version of the internal one — `Publish()` is a lossy
-projection. The coarsening only affects the unstated-versus-unstated arm, which exists solely
-for proxies that do not send this field at all, so in practice the client never takes it: if the
-server published an object, the server was new enough to publish `agentRole` too.
+`MergePromptContext` does not re-implement it. It projects each wire value back onto the fold's
+comparison type and defers to the same `better()` the fold uses:
 
-### Both are monoids
+```go
+func MergePromptContext(a, b *PromptContext) *PromptContext {
+	// nil is the identity, in either position
+	...
+	if better(b.candidate(), a.candidate()) {
+		return b
+	}
+	return a
+}
+```
 
-Ties resolve by larger `Tokens` instead of arrival order, which turns each rule from a
+**Two hand-written copies of one total order is the drift risk this design rejects elsewhere**, so
+they are not two copies. `TestMergePromptContext_IsTheSameOrderAsTheFold` pins the equivalence
+over an exhaustive 7×7 cross-product — that `MergePromptContext` agrees with `better` on every
+pair, and that `Publish().candidate() == f.current()` — so it is checked rather than trusted.
+
+### It is a monoid
+
+Ties resolve by an appended comparator instead of by arrival order, which turns the rule from a
 sequential latch into a **max over a total order**. A max over a total order is commutative and
-associative, so both combines are monoids — `nil` / the zero fold is the identity — and replay
-order never matters. The `stated` latch becomes a dominance relation rather than a one-way
-switch.
+associative, so the combine is a monoid with `nil` (and the zero fold) as its identity, and replay
+order never matters. The `stated` latch becomes a dominance relation rather than a one-way switch.
 
-`Add(e)` is therefore the internal combine against a candidate extracted from one event, not
-`MergePromptContext` — `MergePromptContext` cannot see `msgs`.
+`Add(e)` is that same combine against a candidate extracted from one event.
 
 The two formulations agree on every input **except ties that the old form resolved by arrival
 order** — a stated pair sharing a timestamp, or an unstated pair equal on both message count and
