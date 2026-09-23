@@ -618,6 +618,12 @@ func TestMergePromptContext_NeitherStatedRanksMsgsAheadOfAt(t *testing.T) {
 // Two claims, both over an exhaustive cross-product: Publish loses nothing better() reads, and
 // MergePromptContext picks whatever better() picks. Deferring to better() makes both true by
 // construction today — this pins them so that stops being a matter of trust.
+//
+// AND THIS IS WHERE THE FULLY-TIED RULE IS PINNED. The last two members are distinct pointers equal
+// on every compared field, which makes the cross-product assert that such a pair keeps a — better()
+// is false both ways, so the incumbent stands, exactly as the fold keeps its own. That pair belongs
+// HERE and not in the monoid fixture: the commutativity check there compares pointers, so a tied
+// pair would fail it for a reason that has nothing to do with the law.
 func TestMergePromptContext_IsTheSameOrderAsTheFold(t *testing.T) {
 	at := time.Now()
 	vals := []*PromptContext{
@@ -628,6 +634,22 @@ func TestMergePromptContext_IsTheSameOrderAsTheFold(t *testing.T) {
 		{Tokens: 200_000, Stated: true, At: at},
 		{Tokens: 900_000, Stated: true, At: at.Add(-time.Minute)},
 		{Tokens: 200_000, Msgs: 40, Stated: true, At: at},
+		{Tokens: 500_000, Msgs: 600, Stated: true, At: at}, // fully tied with the next, and distinct
+		{Tokens: 500_000, Msgs: 600, Stated: true, At: at},
+	}
+
+	// State the tie rule outright as well, so it survives a reshuffle of vals.
+	tiedA, tiedB := vals[len(vals)-2], vals[len(vals)-1]
+	if *tiedA != *tiedB || tiedA == tiedB {
+		t.Fatalf("the last two members must be equal in value and distinct in identity: %p %p",
+			tiedA, tiedB)
+	}
+	if got := MergePromptContext(tiedA, tiedB); got != tiedA {
+		t.Errorf("a fully tied pair merged to %p, want the left operand %p — ties keep the "+
+			"incumbent, as the fold does", got, tiedA)
+	}
+	if got := MergePromptContext(tiedB, tiedA); got != tiedB {
+		t.Errorf("reversed, a fully tied pair merged to %p, want the left operand %p", got, tiedB)
 	}
 
 	// Publish is lossless: a fold round-trips through the wire type without dropping a comparator.

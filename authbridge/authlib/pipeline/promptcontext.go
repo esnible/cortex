@@ -62,8 +62,8 @@ import "time"
 // not one: inferenceparser.agentRole returns "" for a request with no system message at all
 // (/v1/completions), for one whose first system line lacks the required billing-header prefix, and
 // on an unparseable body, so the answer depends on the CLIENT. Its own doc puts it plainly —
-// "every client that is not Claude Code". The same false premise is still stated in
-// cmd/abctl/tui/sessions_context.go, where this wording came from.
+// "every client that is not Claude Code". So there is no proxy version at which the unstated arm
+// stops being reachable, and anything resting on the assumption that there is should stop.
 //
 // A SESSION IS EITHER STATED OR IT IS NOT, and any stated turn outranks every unstated one,
 // however much longer the unstated one was: a figure chosen by a rule that cannot see subagents is
@@ -309,10 +309,15 @@ func (f *PromptContextFold) ResetFolded() { f.n = 0 }
 // PromptContext is the fold's PUBLISHABLE state: enough to merge two of them, which a client
 // holding its own figure must do, and which a future restore-then-continue would do.
 //
-// LOSSLESS, carrying every field better() compares — so the published order IS the fold's order
-// rather than a coarsening of it, and MergePromptContext is the same max over the same comparator.
-// That also makes persistence able to restore from this directly, instead of needing the
-// unexported fold.
+// LOSSLESS WITH RESPECT TO THE ORDERING, carrying every field better() compares — so the published
+// order IS the fold's order rather than a coarsening of it, and MergePromptContext is the same max
+// over the same comparator. Because those four fields are now the WHOLE struct, better() is a total
+// order on this type, which it was not while a comparator was missing from it.
+//
+// NOT A WHOLE FOLD, and this is not a claim that a restore path exists: n is deliberately
+// unpublished (it is a cursor into a caller's slice, not part of the answer) and there is no
+// PromptContext-to-fold constructor. What losslessness buys is that two published figures can be
+// COMPARED exactly, which is what a restore would need of them — not that one can be resumed from.
 //
 // MSGS IS PUBLISHED, AND THE REASON IT WAS NOT IS FALSE. An earlier draft dropped it as the
 // FALLBACK rule's comparator, "slated for deletion once the supported proxy floor publishes
