@@ -39,41 +39,18 @@ func benchContextEvents(n int) []pipeline.SessionEvent {
 //	go test ./tui/ -run XXX -bench BenchmarkSessionContextPerEvent
 func BenchmarkSessionContextPerEvent(b *testing.B) {
 	for _, n := range []int{1_000, 10_000} {
+		// NO SERVER FIGURE: an old proxy, and every cached-only row. TokensMergedWith returns at
+		// its nil guard, so this measures the fold and nothing else — which is what it measured
+		// before the server published anything, and therefore the baseline to compare against.
 		b.Run(fmt.Sprintf("folded/%d", n), func(b *testing.B) {
-			m := &model{events: map[string][]pipeline.SessionEvent{}}
-			ids := make([]string, 10)
-			for i := range ids {
-				ids[i] = fmt.Sprintf("s%d", i)
-				m.events[ids[i]] = benchContextEvents(n)
-				_ = m.sessionContextFor(ids[i], nil) // warm, as a running TUI is
-			}
-			// THE SLICE IS BUILT ONCE, OUTSIDE THE LOOP, and the run is rewound instead.
-			//
-			// An earlier version appended the delta inside the b.N loop, which made the
-			// measurement a function of how many iterations the sweep chose: the slice grew by a
-			// turn every iteration, so a default -benchtime spent most of its time in append and
-			// realloc — 152KB/op of it — and the per-event fold this benchmark exists to protect
-			// was the small term. It only read correctly under -benchtime 20x, which is a
-			// measurement you have to remember to ask for.
-			//
-			// Rewinding the winner's run to its pre-delta state is the same work with none of the
-			// growth: every iteration folds exactly the arriving events for ids[0] and takes the
-			// length-check hit for the other nine, which is the shape one streamed event has.
-			// What it adds is one map store per iteration, constant and tens of nanoseconds.
-			arriving := conversation("new", time.Now(), 999, 900_000)
-			head := m.events[ids[0]]
-			full := make([]pipeline.SessionEvent, 0, len(head)+len(arriving))
-			full = append(append(full, head...), arriving...)
-			warm := m.contextRun[ids[0]]
-			m.events[ids[0]] = full
-			b.ReportAllocs()
-			b.ResetTimer()
-			for i := 0; i < b.N; i++ {
-				m.contextRun[ids[0]] = warm // as if the delta had only just landed
-				for _, id := range ids {
-					_ = m.sessionContextFor(id, nil)
-				}
-			}
+			benchFoldedRows(b, n, false)
+		})
+		// AND WITH ONE, which is the branch production actually takes: every server-listed row
+		// carries a published figure now, so the nil case above measures the path a CURRENT proxy
+		// never reaches. Adding the merge to this loop was measured through this pair — see
+		// pipeline.PromptContextFold.TokensMergedWith for the numbers it is quoted by.
+		b.Run(fmt.Sprintf("folded+server/%d", n), func(b *testing.B) {
+			benchFoldedRows(b, n, true)
 		})
 		b.Run(fmt.Sprintf("rescan/%d", n), func(b *testing.B) {
 			evs := map[string][]pipeline.SessionEvent{}
@@ -88,5 +65,74 @@ func BenchmarkSessionContextPerEvent(b *testing.B) {
 				}
 			}
 		})
+	}
+}
+
+// benchFoldedRows is one streamed event's worth of work: ten warm sessions, one of which has a turn
+// to fold, asked for their gauges exactly as the row loop asks.
+//
+// withServer decides whether each row carries a published figure, which is the only difference
+// between the two sub-benchmarks above — same fixture, same loop, same slice indexing — so the delta
+// between them is the merge and nothing else.
+func benchFoldedRows(b *testing.B, n int, withServer bool) {
+	m := &model{events: map[string][]pipeline.SessionEvent{}}
+	ids := make([]string, 10)
+	for i := range ids {
+		ids[i] = fmt.Sprintf("s%d", i)
+		m.events[ids[i]] = benchContextEvents(n)
+		_ = m.sessionContextFor(ids[i], nil) // warm, as a running TUI is
+	}
+	// THE SLICE IS BUILT ONCE, OUTSIDE THE LOOP, and the run is rewound instead.
+	//
+	// An earlier version appended the delta inside the b.N loop, which made the measurement a
+	// function of how many iterations the sweep chose: the slice grew by a turn every iteration, so
+	// a default -benchtime spent most of its time in append and realloc — 152KB/op of it — and the
+	// per-event fold this benchmark exists to protect was the small term. It only read correctly
+	// under -benchtime 20x, which is a measurement you have to remember to ask for.
+	//
+	// Rewinding the winner's run to its pre-delta state is the same work with none of the growth:
+	// every iteration folds exactly the arriving events for ids[0] and takes the length-check hit
+	// for the other nine, which is the shape one streamed event has. What it adds is one map store
+	// per iteration, constant and tens of nanoseconds.
+	arriving := conversation("new", time.Now(), 999, 900_000)
+	head := m.events[ids[0]]
+	full := make([]pipeline.SessionEvent, 0, len(head)+len(arriving))
+	full = append(append(full, head...), arriving...)
+	warm := m.contextRun[ids[0]]
+	m.events[ids[0]] = full
+
+	// A SLICE IN LOCKSTEP WITH ids, ALL nil WHEN withServer IS FALSE, so both sub-benchmarks run
+	// the identical loop body and index it the identical way. A map would have put a mapaccess on
+	// the measured path of one case and not the other, and production reads this off a struct field.
+	servers := make([]*pipeline.PromptContext, len(ids))
+	if withServer {
+		// ONE FIGURE PER SESSION, TIED TO THAT SESSION'S OWN FOLD on Msgs and At, so better()
+		// runs past both of the unstated arm's leading comparators and settles on Tokens. That is
+		// the DEEPEST path through the comparison and therefore an upper bound on what the merge
+		// costs a row: a figure disagreeing on Msgs returns after one int compare, and a STATED
+		// one against these unstated fixtures returns on the dominance check before that.
+		//
+		// Derived from the folds rather than written out, so it cannot drift from the fixture.
+		// Tokens is one below the fold's, so the fold wins and both sub-benchmarks return the same
+		// figure — the comparison is the only thing that differs.
+		//
+		// ids[0] is published AFTER its delta is folded, because that is the state the loop below
+		// compares against; its run is then rewound to warm like every iteration does.
+		_ = m.sessionContextFor(ids[0], nil)
+		for i, id := range ids {
+			p := m.contextRun[id].Publish()
+			if p == nil {
+				b.Fatalf("%s published nothing, so this case is not exercising the merge", id)
+			}
+			servers[i] = &pipeline.PromptContext{Tokens: p.Tokens - 1, Msgs: p.Msgs, At: p.At}
+		}
+	}
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		m.contextRun[ids[0]] = warm // as if the delta had only just landed
+		for j, id := range ids {
+			_ = m.sessionContextFor(id, servers[j])
+		}
 	}
 }

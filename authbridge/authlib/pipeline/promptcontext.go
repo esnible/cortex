@@ -411,9 +411,18 @@ func MergePromptContext(a, b *PromptContext) *PromptContext {
 // add a second entry point for tidiness. abctl's sessions row loop asks EVERY visible session for
 // its gauge on every rebuild, and a rebuild is one streamed event or one poll, so anything per-row
 // here is on the same hot path the fold itself exists to protect. Going through Publish() put a
-// 48-byte *PromptContext on the heap per row per rebuild: BenchmarkSessionContextPerEvent/folded
-// measured 184ns and 0 allocs against 344ns and 10 allocs for its ten sessions, a 1.9x regression on
-// the branch that does no folding at all.
+// 48-byte *PromptContext on the heap per row per rebuild. On
+// BenchmarkSessionContextPerEvent/folded/10000, ten sessions per iteration and one of them with a
+// turn to fold:
+//
+//	184 ns/op    0 allocs/op   the int-returning path, before a server figure existed
+//	356 ns/op   10 allocs/op   merged by publishing f — exactly one allocation per row
+//	253 ns/op    0 allocs/op   as shipped, through this method
+//
+// Those first two were taken before the benchmark grew its second case, whose slice index costs the
+// baseline about a nanosecond. That second case, folded+server/10000, is where every row carries a
+// figure as a current proxy sends it: 342 ns/op and 0 allocs/op, so the comparison itself costs
+// about 9ns a row and allocates nothing.
 //
 // THE LITERAL CANNOT STAY ON THE STACK, which is why this is a signature change rather than a
 // compiler hint. Publish() inlines, but MergePromptContext does not — cost 110 against a budget of
@@ -425,6 +434,20 @@ func MergePromptContext(a, b *PromptContext) *PromptContext {
 // protects everywhere, and the reason Msgs is on the wire at all. Only the identity handling is
 // restated, two lines of it, and TestPromptContextFold_TokensMergedWithAgreesWithMergePromptContext
 // pins the agreement over every combination of stated, unstated and absent.
+//
+// THE COMPARISON IS INVERTED relative to MergePromptContext, and saying so is cheaper than leaving
+// the next reader to derive it: that function asks better(b, a) and keeps a — the SERVER figure, at
+// abctl's call site — where this asks better(p, f.current()) and keeps the FOLD. Both return the
+// same int, for a reason narrow enough to state outright: better() is false in both directions only
+// for candidates equal on every field it compares, and it compares all four of PromptContext's, so a
+// tie means the two token counts are equal as well and which operand is kept cannot show.
+//
+// SO THE EQUIVALENCE RESTS ON PromptContext STAYING LOSSLESS — the same invariant MergePromptContext's
+// own doc asserts, load-bearing here for a second reason. A comparator added to better() and NOT
+// published would make a tie with UNEQUAL tokens reachable, and these two would then disagree. The
+// sweep test cannot catch that: it builds its folds one-to-one from PromptContext values, so an
+// unpublished fold field is unconstructible in that fixture. Anything adding a field to better()
+// owes this method a look.
 //
 // RETURNS THE FIGURE, not the winner, and that is not a shortcut: the only caller draws a gauge from
 // an int, and handing back a *PromptContext would put the allocation straight back.

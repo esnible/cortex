@@ -691,6 +691,15 @@ func TestMergePromptContext_IsTheSameOrderAsTheFold(t *testing.T) {
 // THE FOLDS ARE BUILT BY FIELD rather than by folding events, because the point is to span the
 // comparison space — stated against unstated, a zero fold, and a pair that ties on every compared
 // field — not to re-test candidateOf.
+//
+// AND THAT IS ALSO THIS TEST'S ONE BLIND SPOT, named here rather than left to be discovered. The
+// folds are built ONE-TO-ONE from PromptContext values, so every fold in the sweep is by construction
+// publishable without loss — which is exactly the condition the two functions' agreement rests on.
+// TokensMergedWith keeps the FOLD on a tie where MergePromptContext keeps the server figure, and that
+// is invisible only because better() ties solely on equality of all four published fields, tokens
+// included. A comparator added to the fold and NOT to PromptContext would make a tie with UNEQUAL
+// tokens reachable and the two would diverge — and this fixture cannot express such a fold, so it
+// would stay green. Anything adding a field to better() has to look at TokensMergedWith directly.
 func TestPromptContextFold_TokensMergedWithAgreesWithMergePromptContext(t *testing.T) {
 	at := time.Now()
 	vals := []*PromptContext{

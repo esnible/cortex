@@ -23,9 +23,11 @@ import (
 //
 // THROUGH TokensMergedWith RATHER THAN pipeline.MergePromptContext, and the reason is the row loop
 // that calls this: publishing the local fold just to merge it put one 48-byte *PromptContext on the
-// heap per row per rebuild — 184ns/0 allocs to 344ns/10 allocs on
-// BenchmarkSessionContextPerEvent/folded. Same total order, same answer, no allocation; see
-// pipeline.PromptContextFold.TokensMergedWith for why the escape cannot be optimised away instead.
+// heap per row per rebuild — 356 ns/op and 10 allocs/op on
+// BenchmarkSessionContextPerEvent/folded/10000, against 184 before a server figure existed and 253
+// with no allocation as shipped. Same total order, same answer; see
+// pipeline.PromptContextFold.TokensMergedWith for the rest of the figures, for why the escape cannot
+// be optimised away instead, and for what the equivalence rests on.
 func (m *model) sessionContextFor(id string, server *pipeline.PromptContext) int {
 	return m.localContextFor(id).TokensMergedWith(server)
 }
