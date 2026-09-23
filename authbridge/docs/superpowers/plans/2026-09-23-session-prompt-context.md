@@ -36,7 +36,7 @@ mergeable projection on `SessionSummary`, and have abctl merge it with its own f
 
 | File | Responsibility | Action |
 |---|---|---|
-| `authlib/pipeline/promptcontext.go` | the fold: rule, ordering, `Add`/`AddAll`/`PromptContextOf`, `Publish`, `Merge` | **create** |
+| `authlib/pipeline/promptcontext.go` | the fold: rule, ordering, `Add`/`AddAll`/`PromptContextOf`, `Publish`, `MergePromptContext` | **create** |
 | `authlib/pipeline/tokens.go` | `PromptTokens(*InferenceExtension) int` | **create** |
 | `authlib/pipeline/promptcontext_test.go` | the 13 rule tests + monoid laws | **create** |
 | `authlib/pipeline/promptcontext_fixtures_test.go` | duplicated event fixtures | **create** |
@@ -630,7 +630,7 @@ is wrong; do not adjust the test.
 
 ---
 
-## Task 5: Add `PromptContext`, `Publish`, and `Merge`
+## Task 5: Add `PromptContext`, `Publish`, and `MergePromptContext`
 
 **Files:**
 - Modify: `authlib/pipeline/promptcontext.go`
@@ -640,7 +640,7 @@ is wrong; do not adjust the test.
 - Produces:
   - `type PromptContext struct { Tokens int; Stated bool; At time.Time }` with JSON tags `tokens`, `stated`, `at`
   - `func (f PromptContextFold) Publish() *PromptContext` — nil when `Tokens == 0`
-  - `func Merge(a, b *PromptContext) *PromptContext`
+  - `func MergePromptContext(a, b *PromptContext) *PromptContext`
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -671,7 +671,7 @@ func TestPromptContextFold_PublishIsNilWhenNothingIsKnown(t *testing.T) {
 // upgraded; abctl keeps running, because contextRun outlives everything but a pod switch. The
 // new proxy publishes a STATED 200k, the correct latest main-agent turn. max(700k, 200k) pins
 // the unsound figure permanently.
-func TestMerge_StatedBeatsUnstatedHoweverLarge(t *testing.T) {
+func TestMergePromptContext_StatedBeatsUnstatedHoweverLarge(t *testing.T) {
 	stated := &PromptContext{Tokens: 200_000, Stated: true, At: time.Now()}
 	unstated := &PromptContext{Tokens: 700_000, Stated: false, At: time.Now()}
 
@@ -688,7 +688,7 @@ func TestMerge_StatedBeatsUnstatedHoweverLarge(t *testing.T) {
 
 // NIL IS THE IDENTITY, which is what lets the client merge without version detection: an old
 // proxy sends no field, and that is a valid operand rather than a case to branch on.
-func TestMerge_NilIsTheIdentity(t *testing.T) {
+func TestMergePromptContext_NilIsTheIdentity(t *testing.T) {
 	x := &PromptContext{Tokens: 500_000, Stated: true, At: time.Now()}
 	if got := Merge(nil, x); got != x {
 		t.Errorf("Merge(nil, x) = %+v, want x", got)
@@ -702,7 +702,7 @@ func TestMerge_NilIsTheIdentity(t *testing.T) {
 }
 
 // Both stated: the later turn wins, which is the rule the column follows.
-func TestMerge_BothStatedTakesTheLater(t *testing.T) {
+func TestMergePromptContext_BothStatedTakesTheLater(t *testing.T) {
 	early := &PromptContext{Tokens: 900_000, Stated: true, At: time.Now()}
 	late := &PromptContext{Tokens: 200_000, Stated: true, At: early.At.Add(time.Minute)}
 	if got := Merge(early, late); got.Tokens != 200_000 {
@@ -716,7 +716,7 @@ func TestMerge_BothStatedTakesTheLater(t *testing.T) {
 // and it is the comparator that matters. Taking the larger figure here would pin a pre-compaction
 // context over the turn that followed it, which is the staleness this column exists to avoid; the
 // first draft of the design specified exactly that and Task 4 caught it.
-func TestMerge_NeitherStatedTakesTheLaterTurnNotTheLarger(t *testing.T) {
+func TestMergePromptContext_NeitherStatedTakesTheLaterTurnNotTheLarger(t *testing.T) {
 	at := time.Now()
 	later := &PromptContext{Tokens: 100_000, At: at}
 	earlierButBigger := &PromptContext{Tokens: 700_000, At: at.Add(-time.Hour)}
@@ -794,7 +794,7 @@ func (f PromptContextFold) Publish() *PromptContext {
 //	                  coarse — but At IS published, and "latest" is a far closer proxy for the
 //	                  dropped message count than "largest" is; taking the largest here would
 //	                  pin a pre-compaction figure)
-func Merge(a, b *PromptContext) *PromptContext {
+func MergePromptContext(a, b *PromptContext) *PromptContext {
 	switch {
 	case a == nil:
 		return b
@@ -829,7 +829,7 @@ func Merge(a, b *PromptContext) *PromptContext {
 ```go
 // THE SECOND MONOID, which the spec claims separately from the fold's. Merge is what the client
 // and any future restore call, so its laws are load-bearing independently.
-func TestMerge_IsACommutativeMonoid(t *testing.T) {
+func TestMergePromptContext_IsACommutativeMonoid(t *testing.T) {
 	at := time.Now()
 	vals := []*PromptContext{
 		nil,
@@ -1151,7 +1151,7 @@ func TestSessionSummary_PromptContextOmittedWhenNil(t *testing.T) {
 	//
 	// RESETS ON PROXY RESTART, like CostMicros and unlike a cost-ledger window, because the store
 	// is in-memory per-pod. A client that has been watching longer than this proxy has been up may
-	// hold a larger figure legitimately — see pipeline.Merge, which is how the two combine.
+	// hold a larger figure legitimately — see pipeline.MergePromptContext, which is how the two combine.
 	PromptContext *pipeline.PromptContext `json:"promptContext,omitempty"`
 ```
 
@@ -1192,7 +1192,7 @@ grep -n "SessionSummary" authlib/sessionapi/server.go
 - Modify: `cmd/abctl/tui/sessions_context_wire_test.go`
 
 **Interfaces:**
-- Consumes: `pipeline.Merge`, `pipeline.PromptContext`, `session.SessionSummary.PromptContext`
+- Consumes: `pipeline.MergePromptContext`, `pipeline.PromptContext`, `session.SessionSummary.PromptContext`
 - Produces: `(m *model) sessionContextFor(id string, server *pipeline.PromptContext) int`
 
 - [ ] **Step 1: Write the failing headline test — the actual bug, on the rendered row**
@@ -1270,14 +1270,14 @@ HTTPS_PROXY= HTTP_PROXY= ALL_PROXY= go test ./cmd/abctl/tui/ -run 'TestSessionsT
 // NEITHER SOURCE DOMINATES, which is why this merges rather than preferring one. The server has
 // seen everything since the PROXY started; abctl only since IT attached, which is usually less —
 // but abctl's copy survives a proxy restart, and destroying a figure it still holds because the
-// server forgot is #870's shape. pipeline.Merge resolves it by the rule rather than by size: a
+// server forgot is #870's shape. pipeline.MergePromptContext resolves it by the rule rather than by size: a
 // stated figure beats an unstated one at any magnitude.
 //
 // server is nil for a proxy older than the field and for a session with no conversation to
 // measure. Both mean "nothing known", both are the merge's identity, and that is what lets this
 // need no version detection at all.
 func (m *model) sessionContextFor(id string, server *pipeline.PromptContext) int {
-	return pipeline.Merge(server, m.localContextFor(id)).TokensOrZero()
+	return pipeline.MergePromptContext(server, m.localContextFor(id)).TokensOrZero()
 }
 
 // localContextFor is the fold abctl maintains itself, unchanged from before the server published
@@ -1408,7 +1408,7 @@ The body ends with `Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>`,
 ## Two risks flagged in the spec review, to resolve during implementation
 
 1. **Task 5's coarsening argument.** The spec claims a client never reaches the degraded
-   unstated-vs-unstated `Merge` arm, because any proxy publishing `PromptContext` also publishes
+   unstated-vs-unstated `MergePromptContext` arm, because any proxy publishing `PromptContext` also publishes
    `agentRole`. That is an inference about version coupling, not a verified fact. While in
    Task 6, check whether `agentRole` is populated unconditionally by the inference parser. If it
    can be absent on a proxy new enough to publish this field, `msgs` needs publishing after all —

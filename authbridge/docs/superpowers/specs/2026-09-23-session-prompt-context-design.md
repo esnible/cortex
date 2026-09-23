@@ -65,7 +65,7 @@ default so the event list is uncapped.
 | 3 | One PR, four ordered commits | Reviewability without the process cost of separate PRs; `git bisect` stays useful. |
 | 4 | Duplicate test fixtures, no shared helper package | See "Fixtures" below. |
 | 5 | Publish a mergeable object, not a bare int | A bare `max` cannot honour "stated beats unstated"; see "The hole in max". |
-| 6 | Make the fold commutative | Replay order stops mattering; `Merge` becomes associative. |
+| 6 | Make the fold commutative | Replay order stops mattering; `MergePromptContext` becomes associative. |
 | 7 | Design for persistence, document it, build none | No serialization code, no disk format, no flags. |
 
 ## §1 Where the fold lives
@@ -100,7 +100,7 @@ The per-event `Add` is what the server needs: `Append` has one event and no slic
 |---|---|
 | `PromptContext` | the publishable projection — §4 |
 | `(*PromptContextFold).Publish() *PromptContext` | project for the wire; **nil when `Tokens == 0`**, so "nothing can be said" stays distinct from a real figure |
-| `Merge(a, b *PromptContext) *PromptContext` | combine two published values — §5 |
+| `MergePromptContext(a, b *PromptContext) *PromptContext` | combine two published values — §5 |
 
 `Publish` returning a pointer is what makes `omitempty` behave: a zero fold must serialize as an
 absent field, not as `{"tokens":0,...}`.
@@ -223,7 +223,7 @@ and `apiclient/client.go:156`. No DTO duplication: one edit, both ends.
 ```go
 // PromptContext is the fold's publishable state: enough to MERGE two of them, which is what a
 // client holding its own figure must do, and what a future replay-then-continue restore would
-// do. See pipeline.Merge.
+// do. See pipeline.MergePromptContext.
 type PromptContext struct {
 	Tokens int       `json:"tokens"`
 	Stated bool      `json:"stated"` // which rule produced it; stated always beats unstated
@@ -267,7 +267,7 @@ is acceptable: that path exists only for proxies that do not send this field at 
 | new, just restarted | had turns pre-restart | omitted | `nil` |
 
 Rows 1, 2 and 4 are indistinguishable and **all want identical handling**: the server has said
-nothing, so the client's own figure stands. `nil` is a valid `Merge` operand, so this needs no
+nothing, so the client's own figure stands. `nil` is a valid `MergePromptContext` operand, so this needs no
 capability probe and no version compare — unlike `m.serverProjects`, which abctl must learn by
 echo for the timeline projection.
 
@@ -303,10 +303,10 @@ stated ≻ unstated
   within unstated:  order by (msgs, At, Tokens)
 ```
 
-**Published — `Merge(a, b *PromptContext)`, where `msgs` is not.** Used by the client:
+**Published — `MergePromptContext(a, b *PromptContext)`, where `msgs` is not.** Used by the client:
 
 ```
-Merge(a, b):
+MergePromptContext(a, b):
   either nil         → the other               (nil is the identity)
   exactly one Stated → that one                (stated beats unstated, any size)
   both Stated        → later At; tie → larger Tokens
@@ -327,7 +327,7 @@ order never matters. The `stated` latch becomes a dominance relation rather than
 switch.
 
 `Add(e)` is therefore the internal combine against a candidate extracted from one event, not
-`Merge` — `Merge` cannot see `msgs`.
+`MergePromptContext` — `MergePromptContext` cannot see `msgs`.
 
 The two formulations agree on every input **except ties that the old form resolved by arrival
 order** — a stated pair sharing a timestamp, or an unstated pair equal on both message count and
@@ -359,7 +359,7 @@ Cached-only rows (line 318) pass `nil` — no summary exists, so abctl's figure 
 `/v1/sessions` poll. No Enter, no snapshot, no wait.
 
 The §3 eviction case now resolves principledly: the server evicts under `maxSessions` pressure
-and recreates with a fresh fold; `Merge` sees `Stated=false, Tokens=0` against abctl's retained
+and recreates with a fresh fold; `MergePromptContext` sees `Stated=false, Tokens=0` against abctl's retained
 stated figure and takes abctl's. Correct — the conversation reached that size, only the store
 forgot.
 
@@ -435,7 +435,7 @@ One PR, four ordered commits:
 | # | Content | Reviewable as |
 |---|---|---|
 | 1 | move the fold to `authlib/pipeline`, verbatim | "confirm nothing changed" |
-| 2 | reformulate as a monoid; add `Merge`, `PromptContext` | behaviour delta confined to exact-timestamp ties, pinned by test |
+| 2 | reformulate as a monoid; add `MergePromptContext`, `PromptContext` | behaviour delta confined to exact-timestamp ties, pinned by test |
 | 3 | `entry.context`, `Append`, `ListSessions`, wire field | server observable via `curl /v1/sessions` |
 | 4 | client merge and gauge | what appears on screen |
 
