@@ -302,7 +302,7 @@ func (f *PromptContextFold) ResetFolded() { f.n = 0 }
 //
 // A LOSSY PROJECTION, deliberately. msgs is omitted because it is the FALLBACK rule's
 // comparator and is slated for deletion once the supported proxy floor publishes agentRole
-// (see PromptContextFold). Omitting it coarsens exactly one arm of Merge —
+// (see PromptContextFold). Omitting it coarsens exactly one arm of MergePromptContext —
 // unstated-versus-unstated — which a client reaches only against a proxy that publishes this
 // type without publishing agentRole. Persistence should store the FOLD, not this.
 type PromptContext struct {
@@ -324,12 +324,20 @@ func (f PromptContextFold) Publish() *PromptContext {
 	return &PromptContext{Tokens: f.tokens, Stated: f.stated, At: f.at}
 }
 
-// Merge combines two published figures, nil meaning "nothing known".
+// MergePromptContext combines two published figures, nil meaning "nothing known".
 //
-// THE PUBLISHED ORDER IS COARSER THAN THE FOLD'S — see PromptContext — but it is the same shape:
-// a max over a total order, so Merge is commutative, associative, and has nil as its identity.
-// That is what lets a client merge the server's figure with its own and need no version
+// THE PUBLISHED ORDER IS COARSER THAN THE FOLD'S — see PromptContext — but it is the same shape: a
+// max over a total order, so MergePromptContext is commutative, associative, and has nil as its
+// identity. That is what lets a client merge the server's figure with its own and need no version
 // detection: an old proxy sends nothing, and nothing is a valid operand.
+//
+// SPELLED OUT IN FULL, and a free function rather than a method. Bare `Merge` was rejected: this
+// package also owns pipelines, extensions, sessions, events and snapshots, and `pipeline.Merge(a,
+// b)` reads at the call site as "merge two pipelines". A method — `server.Merge(local)` — was
+// rejected too, and for a sharper reason than symmetry: nil is the identity of this monoid, so a
+// method would have to be callable on a NIL RECEIVER to accept the operand an old proxy actually
+// sends. That works in Go and it is a footgun, because nothing at the call site warns the next
+// reader that the receiver may be nil; two plainly nilable arguments say so in the signature.
 //
 //	stated ≻ unstated             a figure from a rule that cannot see subagents is not
 //	                              evidence, at any size
@@ -338,7 +346,7 @@ func (f PromptContextFold) Publish() *PromptContext {
 //	                  coarse — but At IS published, and "latest" is a far closer proxy for the
 //	                  dropped message count than "largest" is; taking the largest here would
 //	                  pin a pre-compaction figure)
-func Merge(a, b *PromptContext) *PromptContext {
+func MergePromptContext(a, b *PromptContext) *PromptContext {
 	switch {
 	case a == nil:
 		return b

@@ -410,6 +410,16 @@ func TestPromptContextFold_IsACommutativeMonoid(t *testing.T) {
 			// Associativity, over every 3-way contiguous grouping of every permutation. The
 			// second assertion is the one that keeps combine honest: a grouped combine must
 			// agree with folding the same turns event by event.
+			//
+			// WHAT THIS BLOCK EARNS ITS PLACE FOR IS THE SECOND ASSERTION, not the first, and
+			// the limitation is worth stating rather than leaving a reader to assume otherwise.
+			// No mutation of better() can fail the first assertion while leaving the
+			// commutativity sweep above green: associativity of a max fails only for a
+			// NON-TRANSITIVE comparator, and a sweep over all permutations of three or more
+			// candidates detects non-transitivity too — so the loop above reaches its Fatalf
+			// first. The independent claim here is that combining two FOLDS is a valid
+			// implementation of the operation, which is precisely what a restore-then-continue
+			// needs and what no amount of event-at-a-time permuting can check.
 			for _, order := range permsOf(len(turns)) {
 				for i := 1; i < len(order)-1; i++ {
 					for j := i + 1; j < len(order); j++ {
@@ -469,7 +479,7 @@ func TestPromptContextFold_PublishIsNilWhenNothingIsKnown(t *testing.T) {
 // upgraded; abctl keeps running, because contextRun outlives everything but a pod switch. The
 // new proxy publishes a STATED 200k, the correct latest main-agent turn. max(700k, 200k) pins
 // the unsound figure permanently.
-func TestMerge_StatedBeatsUnstatedHoweverLarge(t *testing.T) {
+func TestMergePromptContext_StatedBeatsUnstatedHoweverLarge(t *testing.T) {
 	stated := &PromptContext{Tokens: 200_000, Stated: true, At: time.Now()}
 	unstated := &PromptContext{Tokens: 700_000, Stated: false, At: time.Now()}
 
@@ -480,7 +490,7 @@ func TestMerge_StatedBeatsUnstatedHoweverLarge(t *testing.T) {
 		{"stated first", stated, unstated},
 		{"unstated first", unstated, stated},
 	} {
-		if got := Merge(tc.a, tc.b); got.Tokens != 200_000 {
+		if got := MergePromptContext(tc.a, tc.b); got.Tokens != 200_000 {
 			t.Errorf("%s: merged to %d, want 200000 — a figure from a rule that cannot see "+
 				"subagents is not evidence about the conversation", tc.name, got.Tokens)
 		}
@@ -489,24 +499,24 @@ func TestMerge_StatedBeatsUnstatedHoweverLarge(t *testing.T) {
 
 // NIL IS THE IDENTITY, which is what lets the client merge without version detection: an old
 // proxy sends no field, and that is a valid operand rather than a case to branch on.
-func TestMerge_NilIsTheIdentity(t *testing.T) {
+func TestMergePromptContext_NilIsTheIdentity(t *testing.T) {
 	x := &PromptContext{Tokens: 500_000, Stated: true, At: time.Now()}
-	if got := Merge(nil, x); got != x {
-		t.Errorf("Merge(nil, x) = %+v, want x", got)
+	if got := MergePromptContext(nil, x); got != x {
+		t.Errorf("MergePromptContext(nil, x) = %+v, want x", got)
 	}
-	if got := Merge(x, nil); got != x {
-		t.Errorf("Merge(x, nil) = %+v, want x", got)
+	if got := MergePromptContext(x, nil); got != x {
+		t.Errorf("MergePromptContext(x, nil) = %+v, want x", got)
 	}
-	if got := Merge(nil, nil); got != nil {
-		t.Errorf("Merge(nil, nil) = %+v, want nil", got)
+	if got := MergePromptContext(nil, nil); got != nil {
+		t.Errorf("MergePromptContext(nil, nil) = %+v, want nil", got)
 	}
 }
 
 // Both stated: the later turn wins, which is the rule the column follows.
-func TestMerge_BothStatedTakesTheLater(t *testing.T) {
+func TestMergePromptContext_BothStatedTakesTheLater(t *testing.T) {
 	early := &PromptContext{Tokens: 900_000, Stated: true, At: time.Now()}
 	late := &PromptContext{Tokens: 200_000, Stated: true, At: early.At.Add(time.Minute)}
-	if got := Merge(early, late); got.Tokens != 200_000 {
+	if got := MergePromptContext(early, late); got.Tokens != 200_000 {
 		t.Errorf("merged to %d, want 200000 — latest-wins, not largest", got.Tokens)
 	}
 }
@@ -517,7 +527,7 @@ func TestMerge_BothStatedTakesTheLater(t *testing.T) {
 // and it is the comparator that matters. Taking the larger figure here would pin a pre-compaction
 // context over the turn that followed it, which is the staleness this column exists to avoid; the
 // first draft of the design specified exactly that and Task 4 caught it.
-func TestMerge_NeitherStatedTakesTheLaterTurnNotTheLarger(t *testing.T) {
+func TestMergePromptContext_NeitherStatedTakesTheLaterTurnNotTheLarger(t *testing.T) {
 	at := time.Now()
 	later := &PromptContext{Tokens: 100_000, At: at}
 	earlierButBigger := &PromptContext{Tokens: 700_000, At: at.Add(-time.Hour)}
@@ -529,7 +539,7 @@ func TestMerge_NeitherStatedTakesTheLaterTurnNotTheLarger(t *testing.T) {
 		{"later first", later, earlierButBigger},
 		{"bigger first", earlierButBigger, later},
 	} {
-		if got := Merge(tc.a, tc.b); got.Tokens != 100_000 {
+		if got := MergePromptContext(tc.a, tc.b); got.Tokens != 100_000 {
 			t.Errorf("%s: merged to %d, want 100000 — the later turn wins; taking the larger "+
 				"figure would hold a pre-compaction context forever", tc.name, got.Tokens)
 		}
@@ -537,18 +547,18 @@ func TestMerge_NeitherStatedTakesTheLaterTurnNotTheLarger(t *testing.T) {
 
 	// Only a genuine timestamp tie falls through to the larger figure.
 	tied := &PromptContext{Tokens: 500_000, At: at}
-	if got := Merge(later, tied); got.Tokens != 500_000 {
+	if got := MergePromptContext(later, tied); got.Tokens != 500_000 {
 		t.Errorf("on an exact tie merged to %d, want 500000", got.Tokens)
 	}
 }
 
-// THE SECOND MONOID, which the spec claims separately from the fold's. Merge is what the client
-// and any future restore call, so its laws are load-bearing independently.
+// THE SECOND MONOID, which the spec claims separately from the fold's. MergePromptContext is what
+// the client and any future restore call, so its laws are load-bearing independently.
 //
 // THE VALUE SET SPANS BOTH CLASSES on purpose — two stated members and two unstated ones, plus
 // nil — so the laws are exercised across the dominance arm AND inside each class's own (At,
 // Tokens) ordering, rather than only where dominance settles it.
-func TestMerge_IsACommutativeMonoid(t *testing.T) {
+func TestMergePromptContext_IsACommutativeMonoid(t *testing.T) {
 	at := time.Now()
 	vals := []*PromptContext{
 		nil,
@@ -559,11 +569,11 @@ func TestMerge_IsACommutativeMonoid(t *testing.T) {
 	}
 	for _, x := range vals {
 		for _, y := range vals {
-			if Merge(x, y) != Merge(y, x) {
+			if MergePromptContext(x, y) != MergePromptContext(y, x) {
 				t.Errorf("not commutative for %+v, %+v", x, y)
 			}
 			for _, z := range vals {
-				if Merge(Merge(x, y), z) != Merge(x, Merge(y, z)) {
+				if MergePromptContext(MergePromptContext(x, y), z) != MergePromptContext(x, MergePromptContext(y, z)) {
 					t.Errorf("not associative for %+v, %+v, %+v", x, y, z)
 				}
 			}
