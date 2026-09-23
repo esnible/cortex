@@ -49,7 +49,8 @@ import "time"
 // restarts on the next turn rather than on the next five hundred.
 //
 // WITH NO ROLE STATED — a proxy older than the field — the rule falls back to the most messages,
-// ties to the latest: what this column did before, and the best an unstated stream supports. It
+// ties to the larger context and then to the latest: what this column did before, up to a tie-break
+// the sequential form left to arrival order (see better). It
 // pays the cost the role was added to remove. A compaction restarts the conversation at a low
 // message count while the pre-compaction request stays retained with 2,468 of them, so the gauge
 // keeps showing the old context, for the rest of the session if that request is never evicted. A
@@ -57,12 +58,13 @@ import "time"
 // would reintroduce the silence problem. The fallback, PromptContextFold.msgs and messageCount can
 // all be deleted once the supported proxy floor publishes agentRole.
 //
-// A SESSION IS EITHER STATED OR IT IS NOT, and one stated turn settles it. The first one takes the
-// column outright, however much longer an unstated predecessor was, because a figure chosen by a
-// rule that cannot see subagents is not evidence about the conversation — and taking it on the
-// spot is what makes an upgraded proxy's answer arrive on the next event. After that, unstated rows
-// are not candidates: a session whose proxy states roles has no reason to produce one, and
-// trusting it would hand the column to whatever sent it.
+// A SESSION IS EITHER STATED OR IT IS NOT, and any stated turn outranks every unstated one,
+// however much longer the unstated one was: a figure chosen by a rule that cannot see subagents is
+// not evidence about the conversation. So an upgraded proxy's first stated turn takes the column on
+// the event it arrives on, and an unstated row after it never takes it back — a session whose proxy
+// states roles has no reason to produce one, and trusting it would hand the column to whatever sent
+// it. Expressed as the top rank of a total order rather than as a one-way latch, so that which of
+// the two arrived first cannot matter (see better).
 //
 // THE PROMPT SIDE ONLY. PromptTokens is input + cache-read + cache-write; output is left out.
 // Measured on the same sessions it is 0.003%-2.2% of the prompt, and 0.2% on the conversations
@@ -122,16 +124,17 @@ type PromptContextFold struct {
 	// msgs is the FALLBACK rule's comparator and is not read once stated is true. It goes with
 	// messageCount when the unstated arm does.
 	msgs int
-	// stated says a role-declaring candidate has been folded for this session, which is what
-	// decides WHICH rule runs — latest-wins against most-messages. It is a property of the
-	// session's traffic rather than of one event, which is why it lives here: an unstated row
-	// arriving after a stated one must be skipped, and nothing in that row says so.
+	// stated says the WINNING candidate declared a role, which is what decides which rule ranked
+	// it — latest-wins against most-messages. It is carried on the fold rather than recomputed
+	// because it is half of what better() compares: an unstated row must lose to a stated one
+	// whichever order the two arrive in, and nothing in the unstated row says so.
 	stated bool
-	// at is WHEN the winning response arrived, and it exists because of the rebase. Ties go to
-	// the latest, which a single forward fold expresses as arrival order — but a rebase folds
-	// new events on top of a winner that is no longer in the slice, so arrival order says
-	// nothing about which of the two came first. Without this, opening an OLDER turn of equal
-	// length replaced a newer remembered figure (reproduced at 445k against a true 500k).
+	// at is WHEN the winning response arrived, and it exists because of the rebase. It is the
+	// stated arm's sole comparator and the unstated arm's last one — but a rebase folds new
+	// events on top of a winner that is no longer in the slice, so arrival order says nothing
+	// about which of the two came first and the timestamp has to be kept. Without this, opening
+	// an OLDER turn of equal length replaced a newer remembered figure (reproduced at 445k
+	// against a true 500k).
 	at time.Time
 }
 
@@ -146,29 +149,25 @@ func (f *PromptContextFold) AddAll(events []SessionEvent) {
 	f.n += len(events)
 }
 
-// Add folds one event into f.
-//
-// Forward, and the later turn wins — by TIMESTAMP, not by arrival order. Timestamp is the SOLE
-// comparator where the role is stated and the tie-break where it is not, so `at` carries both
-// rules. Arrival order says nothing once a rebase folds new events onto a winner that is no longer
-// in the slice, so an older turn would otherwise take it.
-//
-// At and not Seq, though a reviewer asked for Seq: the store's counter restarts at 1 when a session
-// is evicted and re-created under the same id (authlib/session/store.go), so Seq cannot order across
-// that boundary and wall-clock time can. Same reason a paging client sorts pages by At.
-//
-// `!Before` rather than `After`, so two candidates sharing a timestamp still resolve by arrival
-// order the way a pure fold did.
-func (f *PromptContextFold) Add(e *SessionEvent) {
+// candidate is one event's claim on the column: extracted, then compared.
+type candidate struct {
+	tokens int
+	msgs   int
+	at     time.Time
+	stated bool
+}
+
+// candidateOf extracts an event's claim, or a zero candidate if it makes none.
+func candidateOf(e *SessionEvent) candidate {
 	// RESPONSES ONLY, stated rather than relied on. The token counts arrive on the response
 	// pass, so a request snapshot carries zeroes and would be dropped by the PromptTokens
 	// check below anyway — but that is an accident of when SnapshotInference copies, not
-	// something this loop said. Checking the phase makes the doc above load-bearing and
+	// something this rule said. Checking the phase makes the doc above load-bearing and
 	// halves the candidates.
 	if e.Phase != SessionResponse || e.Inference == nil {
-		return
+		return candidate{}
 	}
-	// The tool manifest is the filter: no tools means a one-shot completion, read through
+	// The tool manifest is the first filter: no tools means a one-shot completion, read through
 	// toolCount so a projected event answers too.
 	//
 	// THE REQUEST SIDE IS NOT CONSULTED, because no copy on the way here can change a
@@ -181,32 +180,91 @@ func (f *PromptContextFold) Add(e *SessionEvent) {
 	// was there, pairing them would be dead code, and the map that needs is what made
 	// this function allocate on every call.
 	if toolCount(e.Inference) == 0 {
-		return
+		return candidate{}
+	}
+	// The role is the second filter. See the doc comment above for why a subagent cannot be
+	// filtered by size or by message count instead.
+	if e.Inference.AgentRole == AgentRoleSubagent {
+		return candidate{}
 	}
 	n := PromptTokens(e.Inference)
 	if n <= 0 {
+		return candidate{}
+	}
+	return candidate{
+		tokens: n,
+		msgs:   messageCount(e.Inference),
+		at:     e.At,
+		stated: e.Inference.AgentRole != "",
+	}
+}
+
+// better reports whether a outranks b under THE rule, expressed as a TOTAL ORDER rather than as
+// the sequential latch this replaced.
+//
+//	stated ≻ unstated                      one stated turn settles it, however much longer an
+//	                                       unstated predecessor was — a figure chosen by a rule
+//	                                       that cannot see subagents is not evidence
+//	  within stated:    (at, tokens, msgs)
+//	  within unstated:  (msgs, tokens, at)
+//
+// A max over a total order is commutative AND associative, which is what makes the fold a
+// monoid: replay order cannot change the answer, so a future restore-then-continue needs no
+// ordering guarantee. The trailing comparators exist only to make the STORED struct fully
+// determined; nothing reads msgs once stated is true, nor at once unstated.
+//
+// At and not Seq in the stated arm, though a reviewer asked for Seq: the store's counter restarts
+// at 1 when a session is evicted and re-created under the same id (authlib/session/store.go), so
+// Seq cannot order across that boundary and wall-clock time can. Same reason a paging client sorts
+// pages by At.
+//
+// THE PREDECESSOR'S ONE DISAGREEMENT, for the record: it compared with `!Before` and so let a
+// later ARRIVAL take a tie among unstated turns of equal message count and identical timestamp.
+// `tokens` now settles that case before `at` is consulted, which is the only input on which the
+// two forms differ. TestPromptContextFold_ExactTimestampTiesAreDeterministic pins it.
+func better(a, b candidate) bool {
+	if a.stated != b.stated {
+		return a.stated
+	}
+	if a.stated {
+		if !a.at.Equal(b.at) {
+			return a.at.After(b.at)
+		}
+		if a.tokens != b.tokens {
+			return a.tokens > b.tokens
+		}
+		return a.msgs > b.msgs
+	}
+	if a.msgs != b.msgs {
+		return a.msgs > b.msgs
+	}
+	if a.tokens != b.tokens {
+		return a.tokens > b.tokens
+	}
+	return a.at.After(b.at)
+}
+
+// Add folds one event into f, keeping the MAXIMUM under better's total order.
+//
+// A max rather than a sequential scan with a latch, and that is the whole of this function's
+// claim: arrival order says nothing once a rebase folds new events onto a winner that is no longer
+// in the slice, and a restore from disk has no order to offer at all.
+func (f *PromptContextFold) Add(e *SessionEvent) {
+	c := candidateOf(e)
+	if c.tokens == 0 {
 		return
 	}
-	// The role is the second filter, and the three arms below are the whole rule. See the
-	// doc comment above for why a subagent cannot be filtered by size or by message count,
-	// and why one stated turn switches the session's rule for good.
-	switch role := e.Inference.AgentRole; {
-	case role == AgentRoleSubagent:
-		return
-	case role != "" && !f.stated:
-		f.tokens, f.msgs, f.at, f.stated = n, messageCount(e.Inference), e.At, true
-	case role != "":
-		if !e.At.Before(f.at) {
-			f.tokens, f.at = n, e.At
-		}
-	case f.stated:
-		return
-	default:
-		if msgs := messageCount(e.Inference); msgs > f.msgs ||
-			(msgs == f.msgs && !e.At.Before(f.at)) {
-			f.tokens, f.msgs, f.at = n, msgs, e.At
-		}
+	// The zero fold is the monoid's identity: any candidate beats "nothing known yet", and
+	// better() must not be asked to compare against it — an unstated candidate would lose to a
+	// zero fold on msgs.
+	if f.tokens == 0 || better(c, f.current()) {
+		f.tokens, f.msgs, f.at, f.stated = c.tokens, c.msgs, c.at, c.stated
 	}
+}
+
+// current is the running answer as a candidate, so one order compares both sides of the max.
+func (f PromptContextFold) current() candidate {
+	return candidate{tokens: f.tokens, msgs: f.msgs, at: f.at, stated: f.stated}
 }
 
 // Tokens is the winning figure folded so far.

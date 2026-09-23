@@ -217,6 +217,73 @@ func TestSessionContext_AStatedSessionIgnoresUnstatedRows(t *testing.T) {
 	}
 }
 
+// EXACT-TIMESTAMP TIES NOW RESOLVE DETERMINISTICALLY, by the larger context.
+//
+// The sequential form fell through to arrival order here: two unstated turns with equal message
+// counts and the same timestamp gave 100k or 200k depending purely on which was folded first.
+// That is the only input on which this reformulation disagrees with its predecessor, and a
+// restore that folded a session's events in any other order would have inherited the
+// non-determinism.
+func TestPromptContextFold_ExactTimestampTiesAreDeterministic(t *testing.T) {
+	at := time.Now()
+	small := conversation("s", at, 600, 100_000)
+	large := conversation("l", at, 600, 200_000)
+
+	var a, b PromptContextFold
+	a.AddAll(append(append([]SessionEvent{}, small...), large...))
+	b.AddAll(append(append([]SessionEvent{}, large...), small...))
+
+	if a.Tokens() != b.Tokens() {
+		t.Errorf("fold order changed the answer: %d vs %d", a.Tokens(), b.Tokens())
+	}
+	if got := a.Tokens(); got != 200_000 {
+		t.Errorf("tie resolved to %d, want 200000 — the larger context wins", got)
+	}
+}
+
+// THE LAWS THE RESTORE PATH WILL RELY ON. Stated as tests because the spec claims them: if the
+// fold is not commutative and associative, replay order changes a persisted figure.
+func TestPromptContextFold_IsACommutativeMonoid(t *testing.T) {
+	base := time.Now()
+	turns := [][]SessionEvent{
+		conversation("c1", base, 1491, 830_000),
+		oneShot("o1", base.Add(time.Minute), 282_000),
+		mainAgent("m1", base.Add(2*time.Minute), 108, 217_121),
+		subagent("s1", base.Add(3*time.Minute), 186, 198_899),
+		conversation("c2", base.Add(4*time.Minute), 1509, 851_000),
+	}
+
+	foldOf := func(order []int) PromptContextFold {
+		var f PromptContextFold
+		for _, i := range order {
+			f.AddAll(turns[i])
+		}
+		f.ResetFolded() // n counts arrivals, not content; it is not part of the answer
+		return f
+	}
+
+	want := foldOf([]int{0, 1, 2, 3, 4})
+	for _, order := range [][]int{
+		{4, 3, 2, 1, 0}, {2, 0, 4, 1, 3}, {1, 4, 0, 3, 2}, {3, 2, 4, 0, 1},
+	} {
+		if got := foldOf(order); got != want {
+			t.Errorf("order %v gave %+v, want %+v — the fold is not commutative", order, got, want)
+		}
+	}
+
+	// Identity.
+	var zero PromptContextFold
+	if got := foldOf([]int{0}); got == zero {
+		t.Fatal("fixture folds to the zero value; this test proves nothing")
+	}
+	withZero := foldOf([]int{0})
+	withZero.AddAll(nil)
+	withZero.ResetFolded()
+	if withZero != foldOf([]int{0}) {
+		t.Error("folding nothing changed the answer; zero is not the identity")
+	}
+}
+
 // Nothing to say is zero, which the gauge renders as a dash rather than an empty track.
 func TestSessionContext_ZeroWhenNothingCanBeSaid(t *testing.T) {
 	base := time.Now()
