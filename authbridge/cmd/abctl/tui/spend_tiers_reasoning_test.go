@@ -18,12 +18,15 @@ func reasoningCounts() usage.Counts {
 	return c
 }
 
-// indentedRows returns the child rows — the ones this panel uses to say "part of
-// the row above" rather than "peer of it".
-func indentedRows(lines []string) []string {
+// childRows returns the reasoning child rows.
+//
+// Matched on childTierLabel for the reason tierRowsOnly is: "indented and mentions
+// reasoning" is a description of today's output, while the label is the thing
+// actually meant. Renamed from indentedRows to stop the predicate drifting back.
+func childRows(lines []string) []string {
 	var out []string
 	for _, l := range lines {
-		if strings.HasPrefix(l, " ") && strings.Contains(l, "reasoning") {
+		if strings.HasPrefix(l, childTierLabel) {
 			out = append(out, l)
 		}
 	}
@@ -41,7 +44,7 @@ func TestRenderTierRows_ReasoningIsAChildOfOutput(t *testing.T) {
 		switch {
 		case strings.HasPrefix(strings.TrimSpace(l), "output"):
 			outputAt = i
-		case strings.Contains(l, "reasoning"):
+		case strings.HasPrefix(l, childTierLabel):
 			reasoningAt = i
 		}
 	}
@@ -55,9 +58,12 @@ func TestRenderTierRows_ReasoningIsAChildOfOutput(t *testing.T) {
 		t.Errorf("reasoning is at %d and output at %d; the child must directly follow its parent",
 			reasoningAt, outputAt)
 	}
-	if !strings.HasPrefix(lines[reasoningAt], " ") {
-		t.Errorf("reasoning row %q is not indented; flush with the tiers it reads as a peer",
-			lines[reasoningAt])
+	// The label itself carries the indent, so matching it above is what proves the
+	// row is a child rather than a peer; this pins the indent has not been flattened
+	// out of childTierLabel while the tests kept passing.
+	if !strings.HasPrefix(childTierLabel, " ") {
+		t.Errorf("childTierLabel %q lost its indent; flush with the tiers it reads as a peer",
+			childTierLabel)
 	}
 }
 
@@ -70,7 +76,7 @@ func TestRenderTierRows_ChildIsExcludedFromTheHundredPercent(t *testing.T) {
 
 	total, counted := 0, 0
 	for _, l := range lines {
-		if strings.HasPrefix(l, " ") { // the child
+		if strings.HasPrefix(l, childTierLabel) { // the child, not a tier
 			continue
 		}
 		pct, ok := sharePercent(l)
@@ -91,26 +97,75 @@ func TestRenderTierRows_ChildIsExcludedFromTheHundredPercent(t *testing.T) {
 // Containment, checked as arithmetic rather than left to the label: a child that
 // renders a bigger figure than its parent is the one way this layout can lie, and
 // it would look authoritative doing it.
+//
+// THE MALFORMED FIXTURE IS THE POINT. A well-formed one (948 of 1,593) cannot
+// violate containment whatever the renderer does, so asserting it proves only that
+// the arithmetic is not wildly broken — the clamps that actually protect the
+// invariant never execute. Reasoning exceeding output should be impossible on the
+// wire, which is exactly why a gateway that reports it that way would go unnoticed
+// until the panel drew a child longer than its parent.
 func TestRenderTierRows_ReasoningNeverExceedsOutput(t *testing.T) {
-	lines := renderTierRows(reasoningCounts(), tierColumnWidth)
+	sane := reasoningCounts()
 
-	var outputPct, reasoningPct int
-	for _, l := range lines {
-		pct, ok := sharePercent(l)
-		if !ok {
-			continue
-		}
-		switch {
-		case strings.Contains(l, "reasoning"):
-			reasoningPct = pct
-		case strings.HasPrefix(strings.TrimSpace(l), "output"):
-			outputPct = pct
+	// Reasoning reported ABOVE output: the shape the clamps exist for.
+	inverted := reasoningCounts()
+	inverted.ReasoningTokens = 4_000 // > OutputTokens (1,593)
+
+	// Reasoning equal to output: the boundary, where clamping must not overshoot
+	// into making the child smaller than it is.
+	equal := reasoningCounts()
+	equal.ReasoningTokens = equal.OutputTokens
+
+	for _, tc := range []struct {
+		name string
+		c    usage.Counts
+	}{
+		{"well-formed", sane},
+		{"reasoning reported above output", inverted},
+		{"reasoning equal to output", equal},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var outputPct, reasoningPct int
+			var outputRow, reasoningRow string
+			for _, l := range renderTierRows(tc.c, tierColumnWidth) {
+				pct, ok := sharePercent(l)
+				if !ok {
+					continue
+				}
+				switch {
+				case strings.HasPrefix(l, childTierLabel):
+					reasoningPct, reasoningRow = pct, l
+				case strings.HasPrefix(strings.TrimSpace(l), "output"):
+					outputPct, outputRow = pct, l
+				}
+			}
+			if reasoningPct > outputPct {
+				t.Errorf("reasoning is %d%% of the bill but output is only %d%%; a subset cannot "+
+					"exceed its set\n  %s\n  %s", reasoningPct, outputPct, outputRow, reasoningRow)
+			}
+			// The money column must be clamped too, not just the share.
+			if reasoningRow == "" {
+				t.Fatal("no reasoning row rendered")
+			}
+			if drawnBarGlyphs(reasoningRow) > drawnBarGlyphs(outputRow) {
+				t.Errorf("the child's bar is longer than its parent's:\n  %s\n  %s",
+					outputRow, reasoningRow)
+			}
+		})
+	}
+}
+
+// drawnBarGlyphs counts the block glyphs in a rendered row, which is the bar's drawn
+// length. Counted rather than measured off an index because the bar sits between
+// two variable-width cells.
+func drawnBarGlyphs(row string) int {
+	n := 0
+	for _, r := range row {
+		if r >= '▏' && r <= '█' {
+			n++
 		}
 	}
-	if reasoningPct > outputPct {
-		t.Errorf("reasoning is %d%% of the bill but output is only %d%%; a subset cannot exceed its set",
-			reasoningPct, outputPct)
-	}
+	return n
 }
 
 // An unreported split renders the NOT-KNOWN cell, not $0.00 and not a vanished row.
@@ -122,7 +177,7 @@ func TestRenderTierRows_ReasoningNeverExceedsOutput(t *testing.T) {
 // either way — the same refusal renderTierRows makes for an absent tier.
 func TestRenderTierRows_UnreportedSplitIsNotKnownNotZero(t *testing.T) {
 	lines := renderTierRows(tierCounts(), tierColumnWidth)
-	child := indentedRows(lines)
+	child := childRows(lines)
 	if len(child) != 1 {
 		t.Fatalf("want exactly one child row even when unreported, got %d", len(child))
 	}
@@ -139,7 +194,7 @@ func TestRenderTierRows_UnreportedSplitIsNotKnownNotZero(t *testing.T) {
 func TestRenderTierRows_NoFigureWithoutOutputTokens(t *testing.T) {
 	c := reasoningCounts()
 	c.OutputTokens = 0
-	child := indentedRows(renderTierRows(c, tierColumnWidth))
+	child := childRows(renderTierRows(c, tierColumnWidth))
 	if len(child) != 1 {
 		t.Fatalf("want one child row, got %d", len(child))
 	}

@@ -154,8 +154,9 @@ type anthropicUsage struct {
 // Reasoning comes from output_tokens_details.thinking_tokens. This parser used to
 // carry a comment asserting Anthropic does not expose reasoning; that was true
 // once and is not now, and the stale comment is why the field stayed unread long
-// after the wire carried it. Verified against a live claude-opus-5 turn and
-// documented under build-with-claude/thinking-steering-and-cost.
+// after the wire carried it. Verified against a live claude-opus-5 turn, and
+// documented at
+// https://platform.claude.com/docs/en/build-with-claude/thinking-steering-and-cost
 func (u anthropicUsage) toNeutral() parsercommon.TokenUsage {
 	n := parsercommon.TokenUsage{
 		Input:   u.InputTokens,
@@ -354,7 +355,7 @@ func foldAnthropicFrame(frame []byte, state *inferenceStreamState, ext *pipeline
 	switch ev.Type {
 	case "message_start":
 		if ev.Message != nil {
-			mergeAnthropicPromptMaxSeen(state, ev.Message.Usage.toNeutral())
+			mergeAnthropicUsageMaxSeen(state, ev.Message.Usage.toNeutral())
 			state.hasUsage = true
 		}
 	case "content_block_start":
@@ -398,30 +399,38 @@ func foldAnthropicFrame(frame []byte, state *inferenceStreamState, ext *pipeline
 			// message_delta; non-beta path carries no input counts here.
 			// Max-seen per sub-field handles both without clobbering.
 			neutral := ev.Usage.toNeutral()
-			mergeAnthropicPromptMaxSeen(state, neutral)
+			mergeAnthropicUsageMaxSeen(state, neutral)
 			if neutral.Output > 0 {
 				state.usage.Output = neutral.Output // cumulative
-			}
-			// Max-seen, for the reason the prompt side is: thinking_tokens rides
-			// only on message_delta, and a later frame that omits it (message_stop
-			// carries a details-free usage block) must not clear a real count.
-			// mergeAnthropicPromptMaxSeen already unioned the Present bit.
-			if neutral.Reasoning > state.usage.Reasoning {
-				state.usage.Reasoning = neutral.Reasoning
 			}
 			state.hasUsage = true
 		}
 	}
 }
 
-// mergeAnthropicPromptMaxSeen updates prompt-side sub-fields with
-// max-seen semantics so a later event carrying zero cannot clobber an
-// earlier real count. See foldAnthropicFrame for why both events need
-// this.
-func mergeAnthropicPromptMaxSeen(state *inferenceStreamState, incoming parsercommon.TokenUsage) {
+// mergeAnthropicUsageMaxSeen updates every sub-field this function owns with
+// max-seen semantics so a later event carrying zero cannot clobber an earlier
+// real count. See foldAnthropicFrame for why both events need this.
+//
+// EVERY SUB-FIELD, which is what the name change records. It merged only the
+// prompt side while Present was unioned here for ALL kinds, so a value and its
+// presence bit travelled on different paths: reasoning's bit was set here from
+// either event, but its value was merged in the message_delta branch alone. A
+// gateway putting output_tokens_details on message_start would therefore set
+// KindReasoning with a value of 0, and `abctl cost` would print
+// "reasoning (of output) 0" — the exact claim
+// TestInferenceParser_AnthropicMessages_ThinkingTokensAbsent exists to forbid.
+//
+// Output is deliberately NOT here: it is cumulative on the wire rather than
+// max-seen, and foldAnthropicFrame assigns it directly.
+func mergeAnthropicUsageMaxSeen(state *inferenceStreamState, incoming parsercommon.TokenUsage) {
 	// Presence is a union across events: once a sub-field is observed on
-	// the wire, later events that omit it must not clear the bit.
+	// the wire, later events that omit it must not clear the bit. Kept beside the
+	// value merges below so nothing can set a bit this function does not also fill.
 	state.usage.Present |= incoming.Present
+	if incoming.Reasoning > state.usage.Reasoning {
+		state.usage.Reasoning = incoming.Reasoning
+	}
 	if incoming.Input > state.usage.Input {
 		state.usage.Input = incoming.Input
 	}

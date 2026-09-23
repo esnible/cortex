@@ -71,7 +71,7 @@ func TestSplitTokens_AnthropicSSE_NonBeta(t *testing.T) {
 }
 
 // ?beta=true SSE: message_start carries only input_tokens; cache counts
-// arrive on message_delta. Exercises mergeAnthropicPromptMaxSeen.
+// arrive on message_delta. Exercises mergeAnthropicUsageMaxSeen.
 func TestSplitTokens_AnthropicSSE_Beta(t *testing.T) {
 	ext := &pipeline.InferenceExtension{Model: "claude-opus-4-8"}
 	body := []byte("data: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":9,\"output_tokens\":0}}}\n" +

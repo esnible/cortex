@@ -31,10 +31,15 @@ func tierCounts() usage.Counts {
 // and its money is already inside output's. Every assertion below about "each tier
 // row" therefore has to be made against the tiers, and a test that iterated raw
 // lines would be asserting tier properties of something that is not one.
+//
+// MATCHED ON childTierLabel, not on "any leading space". A leading-space test says
+// "indented" when the thing meant is "is the child", and the two come apart the
+// moment a tier row gains an indent: the helper would silently drop real tiers and
+// several assertions below would weaken without any of them failing.
 func tierRowsOnly(lines []string) []string {
 	var out []string
 	for _, l := range lines {
-		if strings.HasPrefix(l, " ") {
+		if strings.HasPrefix(l, childTierLabel) {
 			continue
 		}
 		out = append(out, l)
@@ -364,18 +369,17 @@ func TestRenderTierRows_ReasoningIsNotATier(t *testing.T) {
 		t.Errorf("numTierRows = %d but there are %d rate tiers; reasoning became a tier",
 			numTierRows, pricing.NumTiers)
 	}
-	// The reasoning row must be indented — flush left it reads as a fifth tier.
+	// The reasoning row must use the INDENTED label — flush left it reads as a fifth
+	// tier. Asserted as "carries childTierLabel" rather than "starts with a space",
+	// so the check names the thing meant instead of a property of today's spelling.
 	for _, l := range lines {
-		if strings.Contains(l, "reasoning") && !strings.HasPrefix(l, " ") {
+		if strings.Contains(l, "reasoning") && !strings.HasPrefix(l, childTierLabel) {
 			t.Errorf("reasoning row is flush with the tiers, so it reads as a peer: %q", l)
 		}
 	}
 	// And it must not be in the sum the tier rows own.
 	total := 0
-	for _, l := range lines {
-		if strings.HasPrefix(l, " ") {
-			continue
-		}
+	for _, l := range tierRowsOnly(lines) {
 		if pct, ok := sharePercent(l); ok {
 			total += pct
 		}

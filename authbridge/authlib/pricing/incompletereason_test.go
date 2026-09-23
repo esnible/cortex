@@ -35,7 +35,7 @@ func TestIncompleteReason(t *testing.T) {
 		// PresentKinds here is what a real truncated Anthropic stream carries —
 		// Input|CacheRead|Output, with the Output BIT set and its TALLY zero, because
 		// toNeutral asserts Input|Output unconditionally and
-		// mergeAnthropicPromptMaxSeen ORs the mask without ever assigning Output. The
+		// mergeAnthropicUsageMaxSeen ORs the mask without ever assigning Output. The
 		// fixture keeps that bit set on purpose: it is what makes this case
 		// indistinguishable from a reported zero by mask alone, and any future
 		// "simplification" to the bitmask has to fail here.

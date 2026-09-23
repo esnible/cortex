@@ -644,3 +644,89 @@ func TestInferenceParser_AnthropicMessages_ThinkingTokensAbsent(t *testing.T) {
 			ext.PresentKinds)
 	}
 }
+
+// TestInferenceParser_AnthropicMessages_ThinkingTokensPartiallyAbsent pins the
+// INNER nil check, which the outer one does not cover.
+//
+// A gateway can forward the output_tokens_details key without the count inside it
+// — an empty object, or an explicit null. Both leave the struct pointer non-nil
+// and the int pointer nil, so a guard that tested only the outer pointer would
+// dereference nil and panic the parser on a well-formed HTTP response. Neither
+// shape appeared in any fixture, so removing the inner check broke nothing that
+// any test could see.
+//
+// The correct outcome is the same as fully absent: KindReasoning stays CLEAR,
+// because a key with no number in it reported nothing.
+func TestInferenceParser_AnthropicMessages_ThinkingTokensPartiallyAbsent(t *testing.T) {
+	for _, tc := range []struct{ name, details string }{
+		{"empty details object", `"output_tokens_details": {}`},
+		{"explicit null count", `"output_tokens_details": {"thinking_tokens": null}`},
+		{"unrelated sub-field only", `"output_tokens_details": {"something_else": 7}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := NewInferenceParser()
+			pctx := &pipeline.Context{Path: "/v1/messages"}
+			pctx.Extensions.Inference = &pipeline.InferenceExtension{Model: "claude-opus-5", IsAction: true}
+
+			body := []byte(`{
+				"id": "msg_bdrk_4", "type": "message", "role": "assistant", "model": "claude-opus-5",
+				"content": [{"type": "text", "text": "ok"}],
+				"stop_reason": "end_turn",
+				"usage": {"input_tokens": 10, "output_tokens": 4, ` + tc.details + `}
+			}`)
+			// Must not panic, and must not claim a measurement.
+			p.OnResponseFrame(context.Background(), pctx, body, true)
+
+			ext := pctx.Extensions.Inference
+			if ext.ReasoningTokens != 0 {
+				t.Errorf("ReasoningTokens = %d, want 0", ext.ReasoningTokens)
+			}
+			if ext.PresentKinds&uint8(parsercommon.KindReasoning) != 0 {
+				t.Errorf("PresentKinds = %#b, want KindReasoning CLEAR for a count-free details object",
+					ext.PresentKinds)
+			}
+			// The kinds that WERE reported must survive the partial details object.
+			if ext.OutputTokens != 4 {
+				t.Errorf("OutputTokens = %d, want 4", ext.OutputTokens)
+			}
+		})
+	}
+}
+
+// TestInferenceParser_AnthropicMessages_ThinkingTokensOnMessageStart pins that a
+// value and its presence bit travel together.
+//
+// Anthropic puts output_tokens_details on message_delta today, which is why the
+// streaming fixture above does. Nothing guarantees that: a gateway may relay it on
+// message_start instead. When the value merge lived in the message_delta branch
+// while Present was unioned for every event, this input set KindReasoning with a
+// value of 0 — and `abctl cost` would print "reasoning (of output) 0", the exact
+// claim ThinkingTokensAbsent forbids.
+func TestInferenceParser_AnthropicMessages_ThinkingTokensOnMessageStart(t *testing.T) {
+	p := NewInferenceParser()
+	pctx := &pipeline.Context{Path: "/v1/messages"}
+	pctx.Extensions.Inference = &pipeline.InferenceExtension{Model: "claude-opus-5", Stream: true, IsAction: true}
+
+	frames := [][]byte{
+		[]byte(`{"type":"message_start","message":{"id":"msg_bdrk_5","type":"message","role":"assistant","usage":{"input_tokens":22,"output_tokens":6,"output_tokens_details":{"thinking_tokens":119}}}}`),
+		[]byte(`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}`),
+		// No details here, so only the max-seen merge can carry the earlier value.
+		[]byte(`{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":22,"output_tokens":235}}`),
+	}
+	for _, f := range frames {
+		p.OnResponseFrame(context.Background(), pctx, f, false)
+	}
+	p.OnResponseFrame(context.Background(), pctx, nil, true)
+
+	ext := pctx.Extensions.Inference
+	if ext.ReasoningTokens != 119 {
+		t.Errorf("ReasoningTokens = %d, want 119 from message_start", ext.ReasoningTokens)
+	}
+	if ext.PresentKinds&uint8(parsercommon.KindReasoning) == 0 {
+		t.Errorf("PresentKinds = %#b, want KindReasoning set", ext.PresentKinds)
+	}
+	// The bit must never be set with a zero value: that is the reported-zero lie.
+	if ext.PresentKinds&uint8(parsercommon.KindReasoning) != 0 && ext.ReasoningTokens == 0 {
+		t.Error("KindReasoning is set with a value of 0; presence and value diverged")
+	}
+}
