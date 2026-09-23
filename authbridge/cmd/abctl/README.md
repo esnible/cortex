@@ -501,12 +501,13 @@ abctl is for, and the other three are surfaces you visit and leave.
   and who spent it, by model, endpoint or agent:
 
   ```
-    WHERE IT WENT                    BY MODEL
-  output      ██████ $2.70           claude-opus-5   $4.55   35 req   5.6M tokens
-  cache-read  ███▌   $1.62
-  input       ▍      $0.22
-  cache-write —
-     [a] [model] · endpoint · agent   [w] 1h   esc closes
+    WHERE IT WENT                              BY MODEL
+  output        54% ████████████     $5.85   claude-opus-5         $11.12      17 req
+   └ reasoning  31% ███████▏         $3.48   claude-sonnet-5       <$0.01       2 req
+  cache-read    35% ███████▉         $3.90   claude-haiku-4-5      <$0.01     120 req
+  cache-write    8% █▉               $0.98   (other)              <$0.01+       9 req
+  input          3% ▊                $0.39
+   [a] [model] · endpoint · agent   [w] 1h   esc closes
   ```
 
   The tier figures are **modelled, not measured**: the split comes from the rate
@@ -514,8 +515,16 @@ abctl is for, and the other three are surfaces you visit and leave.
   because a gateway reports one number per call and never breaks it down. They
   are apportioned so the column sums to the window total exactly, and a tier the
   rate table says nothing about shows `—` rather than `$0.00`, which would claim
-  the tier was free. Below 72 columns the tier column drops and the panel
+  the tier was free. Below 85 columns the tier column drops and the panel
   degrades to the by-model breakdown alone.
+
+  `└ reasoning` is a **child of output, not a fifth tier**. Reasoning has no rate
+  of its own — it is the share of the generated tokens the model spent thinking,
+  billed at the output rate — so its figure is already inside output's, and only
+  the four unindented rows sum to the window total. Its share is denominated in
+  that same total, which is what makes `31% ⊂ 54%` read as containment. The row is
+  always present and shows `—` when the provider reports no split, as every
+  non-Anthropic endpoint does.
 
   These rows carry **no** `~`, unlike the sessions table's `SAVED~`. The caveat is
   real but this panel has no money heading to hang it on — `WHERE IT WENT` names

@@ -236,6 +236,39 @@ func TestRenderTierRows_UnreportedSplitIsNotKnownNotZero(t *testing.T) {
 	}
 }
 
+// A REPORTED SPLIT TOO SMALL TO APPORTION MUST NOT RENDER $0.00.
+//
+// The apportionment multiply truncates, so a real reasoning count whose share of the
+// window falls below one micro yields micros == 0 — reachable on a small window,
+// around a hundred output tokens at opus-5 rates. Printing that as "$0.00" asserts
+// the reasoning was FREE, which is the claim renderTierRows refuses for a tier
+// (tiers[tier] == 0 takes the not-known cell); the child needs the same escape.
+//
+// Not "<$0.01" either: that form means "too small to state", while what is true here
+// is that the apportionment resolved no figure at all.
+func TestRenderTierRows_TinyShareIsNotKnownNotFree(t *testing.T) {
+	// 1 reasoning token of 900 output, against 300 apportioned output micros:
+	// 300 * 1/900 = 0.333, which truncates to zero.
+	c := usage.Counts{
+		Requests: 3, CostMicros: 4_000,
+		InputCostMicros: 900, CacheReadCostMicros: 2_800, OutputCostMicros: 300,
+		OutputTokens: 900, ReasoningTokens: 1,
+		PresentKinds: uint8(usage.KindInput | usage.KindCacheRead | usage.KindOutput | usage.KindReasoning),
+	}
+	child := childRows(renderTierRows(c, tierColumnWidth))
+	if len(child) != 1 {
+		t.Fatalf("want one child row, got %d", len(child))
+	}
+	if strings.Contains(child[0], "$0.00") {
+		t.Errorf("child row = %q renders $0.00 for a REPORTED split; that asserts the "+
+			"reasoning was free", child[0])
+	}
+	if !strings.Contains(child[0], emptyCell) {
+		t.Errorf("child row = %q, want the not-known cell when the share apportions to "+
+			"nothing", child[0])
+	}
+}
+
 // Reasoning reported but nothing generated: no denominator, so no defensible figure.
 // The row stays (height is constant) and says it does not know.
 func TestRenderTierRows_NoFigureWithoutOutputTokens(t *testing.T) {

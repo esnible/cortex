@@ -235,6 +235,19 @@ func reasoningChildRow(c usage.Counts, tiers [pricing.NumTiers]int64, ok bool,
 	if micros > tiers[pricing.TierOutput] {
 		micros = tiers[pricing.TierOutput]
 	}
+	// APPORTIONED TO NOTHING IS NOT APPORTIONED TO ZERO, and this is the child's
+	// version of the `tiers[tier] == 0` escape the tier rows take. The multiply above
+	// truncates, so a real reasoning count whose share of the window falls below one
+	// micro lands here — reachable on a small window, around a hundred output tokens at
+	// opus-5 rates. Rendering it would print "$0.00", which asserts the reasoning was
+	// FREE: the one claim renderTierRows refuses for a tier, arriving through the child.
+	//
+	// The not-known cell instead. The tier rows cannot say "<$0.01" here either — that
+	// form means "too small to state", and what is true is that the apportionment could
+	// not resolve a figure at all.
+	if micros == 0 {
+		return notKnown
+	}
 	// Floored against the same total the tier rows use, so the child is comparable down
 	// the column. Deliberately NOT tierShares, which must keep summing to 100 across
 	// exactly the four tiers.

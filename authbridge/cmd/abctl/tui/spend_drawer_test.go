@@ -1825,3 +1825,93 @@ func TestPaneView_DrawsTheDrawersStoredError(t *testing.T) {
 			"no reader is the defect renderSpendDrawer's error path exists to end:\n%s", out)
 	}
 }
+
+// reasoningSnap is tierSnap with a reported reasoning split, so the drawer is
+// exercised with a real child FIGURE rather than only the not-known cell. No other
+// drawer fixture sets one, which is why the populated child was never rendered here.
+func reasoningSnap() *usage.Snapshot {
+	s := tierSnap()
+	s.Totals.OutputTokens = 1593
+	s.Totals.ReasoningTokens = 948
+	s.Totals.PresentKinds = uint8(usage.KindOutput | usage.KindReasoning)
+	return s
+}
+
+// TestRenderSpendDrawer_EmitsEveryTierPlusTheChild is the regression test for the
+// bug this feature shipped and nothing caught: the assembly loop was bounded by
+// numTierRows while the tier column had grown to tierPanelLines, so inserting the
+// child DISPLACED a row instead of adding one. The ranking is by cost descending, so
+// what fell off was the cheapest tier — `input` simply vanished from a panel still
+// claiming to break down the whole bill.
+//
+// It was found by rendering the panel and reading it, not by a test. Only the line
+// COUNT was pinned, and the count was still right: five left rows either way. Pinning
+// the labels is what makes the next such regression fail here.
+func TestRenderSpendDrawer_EmitsEveryTierPlusTheChild(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		snap *usage.Snapshot
+	}{
+		{"reasoning reported", reasoningSnap()},
+		{"reasoning unreported", tierSnap()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			joined := strings.Join(renderSpendDrawer(tc.snap, nil, usage.GroupModel, "1h", 100), "\n")
+			// Every rate tier, by name. "input" last in the cost ranking is the one the
+			// old bound dropped.
+			for _, label := range []string{"input", "cache-write", "cache-read", "output"} {
+				if !strings.Contains(joined, label) {
+					t.Errorf("the panel omits the %q tier:\n%s", label, joined)
+				}
+			}
+			// And the child, whatever it renders.
+			if !strings.Contains(joined, "reasoning") {
+				t.Errorf("the panel omits the reasoning child:\n%s", joined)
+			}
+		})
+	}
+}
+
+// The child sits directly under output IN THE DRAWER, not just in renderTierRows.
+// A regression that emitted five left rows but inserted the child at the wrong index
+// would pass both the line count and the label check above.
+func TestRenderSpendDrawer_ChildFollowsOutput(t *testing.T) {
+	lines := renderSpendDrawer(reasoningSnap(), nil, usage.GroupModel, "1h", 100)
+	outputAt, childAt := -1, -1
+	for i, l := range lines {
+		switch {
+		case strings.Contains(l, "reasoning"):
+			childAt = i
+		case strings.Contains(l, "output"):
+			outputAt = i
+		}
+	}
+	if outputAt < 0 || childAt < 0 {
+		t.Fatalf("output at %d, child at %d; both must render:\n%s",
+			outputAt, childAt, strings.Join(lines, "\n"))
+	}
+	if childAt != outputAt+1 {
+		t.Errorf("child is at line %d and output at %d; the child must directly follow "+
+			"its parent:\n%s", childAt, outputAt, strings.Join(lines, "\n"))
+	}
+}
+
+// With a split reported, the drawer must show the child's FIGURE — the populated
+// path, which no other drawer fixture reaches.
+func TestRenderSpendDrawer_ChildCarriesItsFigure(t *testing.T) {
+	var child string
+	for _, l := range renderSpendDrawer(reasoningSnap(), nil, usage.GroupModel, "1h", 100) {
+		if strings.Contains(l, "reasoning") {
+			child = l
+		}
+	}
+	if child == "" {
+		t.Fatal("no reasoning row")
+	}
+	if strings.Contains(child, emptyCell) {
+		t.Errorf("child row = %q shows the not-known cell despite a reported split", child)
+	}
+	if !strings.Contains(child, "$") {
+		t.Errorf("child row = %q carries no figure", child)
+	}
+}
