@@ -20,18 +20,24 @@ import (
 // constant and every state returns exactly this many rows — enforced by the return type
 // rather than by a guard, see renderTierRows.
 //
-// Four and not five: reasoning is a subset of output, not a sibling tier, so a row for it
-// would double-count the same money at the most expensive rate there is. It stays in
-// `abctl cost`'s token line.
+// Four and not five: reasoning is a subset of output, not a sibling tier, so counting it
+// here would double-count the same money at the most expensive rate there is. It IS shown
+// — as an indented child of output, see childTierLabel — but it is not a tier, which is
+// why this constant stays pinned to the rate count and tierPanelLines carries the
+// rendered height.
 const numTierRows = pricing.NumTiers
 
 // tierBarWidth is the widest a bar may be. Bars are decoration over a figure that is
 // already printed, so they yield their space before the figures do.
 const tierBarWidth = 12
 
-// tierLabelWidth is the label column. Sized to "cache-write", the longest of the four, so
-// the bars start at one column whatever the mix.
-const tierLabelWidth = 11
+// tierLabelWidth is the label column, sized to the longest label so the bars start at
+// one column whatever the mix.
+//
+// 12, not 11: the longest label is no longer "cache-write" (11) but the reasoning
+// child's " └ reasoning" (12), whose two leading columns are the indent that says it
+// is part of the row above.
+const tierLabelWidth = 12
 
 // tierPctWidth is the share column: "100%" at its widest, right-aligned.
 //
@@ -63,6 +69,26 @@ var tierLabels = map[pricing.Tier]string{
 	pricing.TierCacheRead:  "cache-read",
 	pricing.TierOutput:     "output",
 }
+
+// childTierLabel is the reasoning row's label, EXACTLY tierLabelWidth runes so the
+// bars still start at one column whatever the mix.
+//
+// "reasoning", not "thinking", because that is the word every other surface in this
+// repo uses for it — usage.Counts.ReasoningTokens, parsercommon KindReasoning, and
+// `abctl cost`'s own "reasoning (of output)" line. Anthropic's wire field is
+// thinking_tokens, and that name stays where it belongs: on the JSON tag that reads
+// it.
+//
+// Indented and hung off a box-drawing stem rather than flush left, because the label
+// has to carry a fact the money column cannot: this row's dollars are already inside
+// the row above it. Flush left it reads as a fifth tier and the column stops adding
+// up to the bill.
+const childTierLabel = " └ reasoning"
+
+// tierPanelLines is the panel's MAXIMUM height: the four tiers plus the optional
+// reasoning child. Separate from numTierRows, which stays pinned to
+// pricing.NumTiers because that is a count of RATES and reasoning is not one.
+const tierPanelLines = numTierRows + 1
 
 // tierOrder is the declaration order, which is deliberately NOT the display order.
 var tierOrder = [numTierRows]pricing.Tier{
@@ -150,7 +176,107 @@ func renderTierRows(c usage.Counts, width int) []string {
 		}
 		out[i] = clipRow(row, width)
 	}
-	return out[:]
+	// The child row is appended into a SLICE rather than written into the array,
+	// because it is optional: the array's length is the guarantee that every tier got
+	// a row, and a fifth slot in it would be an empty string on the common path.
+	// ALWAYS APPENDED, never conditional. The panel's height must not follow its data —
+	// layout() reserves it from a constant it cannot consult, and a renderer whose
+	// height varied is what TestRenderTierRows_HeightIsConstant records as having
+	// overflowed this pane by five rows and under-filled it by six. When no reasoning
+	// split was reported the child renders the not-known cell, which is exactly what an
+	// absent TIER does two branches above.
+	return insertAfterOutput(out[:], order,
+		reasoningChildRow(c, tiers, ok, shares, peak, budget, width))
+}
+
+// reasoningChildRow renders the reasoning row that hangs under output.
+//
+// NOT A FIFTH TIER, and the whole shape of this function follows from that. Reasoning
+// has no rate of its own: it is a subset of output, billed at the output rate, which
+// pricing.Usage and usage.Counts both state in their own words and which is why
+// ApportionTiers returns exactly pricing.NumTiers figures that sum to the bill. So
+// this row is derived here rather than apportioned there, it is excluded from
+// tierShares, and it is indented so a reader does not add it to the column.
+//
+// THE MONEY IS APPORTIONED FROM OUTPUT'S DISPLAYED FIGURE, not from
+// c.OutputCostMicros. The displayed figure is already scaled to the gateway's
+// authoritative total, so deriving from the raw mix would put a child on screen that
+// does not divide into the parent printed directly above it.
+//
+// The share is denominated in the TOTAL, like every other row, even though the share
+// of OUTPUT (56% here, against 15% of the bill) is the more interesting number. Two
+// denominators in one column is the defect renderTierRows already refuses — "a row
+// cannot state a percentage of one total beside a figure from another" — and the
+// containment reads from the indent anyway: 15% under 27% is visibly a part of it.
+func reasoningChildRow(c usage.Counts, tiers [pricing.NumTiers]int64, ok bool,
+	shares [pricing.NumTiers]int, peak int64, budget, width int) string {
+	notKnown := clipRow(fmt.Sprintf("%-*s %s", tierLabelWidth, childTierLabel, emptyCell), width)
+
+	// The present bit decides, as everywhere else: a clear bit with a zero value means
+	// nothing reported a split, which is not the same as a split of zero. A provider
+	// that exposes no reasoning counter gets the not-known cell, never $0.00 — the same
+	// refusal renderTierRows makes for a tier absent from the mix.
+	if !ok || c.PresentKinds&usage.KindReasoning == 0 && c.ReasoningTokens == 0 {
+		return notKnown
+	}
+	// No denominator, no defensible figure. Reasoning cannot be a share of an output
+	// that was never counted.
+	if c.OutputTokens <= 0 || tiers[pricing.TierOutput] <= 0 {
+		return notKnown
+	}
+	// Float ratio bounded by the parent, the form ApportionTiers uses and for its
+	// reason: the integer product of two window-sized sums overflows int64.
+	micros := int64(float64(tiers[pricing.TierOutput]) *
+		(float64(c.ReasoningTokens) / float64(c.OutputTokens)))
+	// CLAMPED TO THE PARENT. Reasoning should never exceed output on the wire, but a
+	// gateway that reports them inconsistently would otherwise draw a child longer than
+	// the bar above it — a lie that looks authoritative. Clamp rather than refuse: the
+	// figure is still the best available, and the parent bounds it.
+	if micros > tiers[pricing.TierOutput] {
+		micros = tiers[pricing.TierOutput]
+	}
+	// Floored against the same total the tier rows use, so the child is comparable down
+	// the column. Deliberately NOT tierShares, which must keep summing to 100 across
+	// exactly the four tiers.
+	pct := 0
+	if c.CostMicros > 0 {
+		pct = int(micros * 100 / c.CostMicros)
+	}
+	// The child can never out-rank its parent's share once clamped, but floor division
+	// can tie them; the indent still distinguishes the rows.
+	if pct > shares[pricing.TierOutput] {
+		pct = shares[pricing.TierOutput]
+	}
+	label := childTierLabel
+	var row string
+	switch {
+	case budget > 0:
+		row = fmt.Sprintf("%-*s %s %-*s %s", tierLabelWidth, label,
+			tierShareCell(pct, micros), budget, tierBar(micros, peak, budget),
+			tierMoneyCell(micros))
+	default:
+		row = fmt.Sprintf("%-*s %s %s", tierLabelWidth, label,
+			tierShareCell(pct, micros), tierMoneyCell(micros))
+	}
+	return clipRow(row, width)
+}
+
+// insertAfterOutput places the child directly beneath output, wherever the cost
+// ranking put it. Adjacency is what carries "part of the row above" to a reader who
+// has not learned the indent convention, so it has to follow the rank rather than
+// sit at a fixed line.
+func insertAfterOutput(rows []string, order [numTierRows]pricing.Tier, child string) []string {
+	at := len(rows) // fall back to last, so a missing output row cannot drop the child
+	for i, tier := range order {
+		if tier == pricing.TierOutput {
+			at = i + 1
+			break
+		}
+	}
+	out := make([]string, 0, len(rows)+1)
+	out = append(out, rows[:at]...)
+	out = append(out, child)
+	return append(out, rows[at:]...)
 }
 
 // tierShareCell is one tier's share of the window, right-aligned.

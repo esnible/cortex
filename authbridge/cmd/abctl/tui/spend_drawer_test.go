@@ -1299,12 +1299,30 @@ func TestRenderSpendDrawer_DoesNotRestateTheBandsFigures(t *testing.T) {
 	}
 }
 
-// The tree glyphs are gone: they implied a parent row that does not exist.
+// No ORPHAN tree glyph. The original rule was "no glyphs at all", because every row
+// they prefixed was top-level and the glyph implied a parent none of them had. The
+// reasoning row is the first row in this panel that genuinely has one — output,
+// directly above it — so the glyph is now allowed exactly where it tells the truth.
+// The invariant is unchanged: a glyph must have its parent on the preceding line.
+//
+// "├" stays banned outright. It means "more siblings follow", and reasoning is the
+// only child this panel has.
 func TestRenderSpendDrawer_HasNoOrphanTreeGlyph(t *testing.T) {
-	joined := strings.Join(renderSpendDrawer(tierSnap(), nil, usage.GroupModel, "1h", 100), "\n")
-	for _, glyph := range []string{"└", "├"} {
-		if strings.Contains(joined, glyph) {
-			t.Errorf("the panel still draws %q, which implies a parent row:\n%s", glyph, joined)
+	lines := renderSpendDrawer(tierSnap(), nil, usage.GroupModel, "1h", 100)
+	joined := strings.Join(lines, "\n")
+	if strings.Contains(joined, "├") {
+		t.Errorf("the panel draws \"├\", which claims a sibling follows:\n%s", joined)
+	}
+	for i, l := range lines {
+		if !strings.Contains(l, "└") {
+			continue
+		}
+		if i == 0 {
+			t.Errorf("row 0 carries \"└\" with nothing above it to be a child of:\n%s", joined)
+			continue
+		}
+		if !strings.Contains(lines[i-1], "output") {
+			t.Errorf("row %d carries \"└\" but the line above it is not output:\n%s", i, joined)
 		}
 	}
 }

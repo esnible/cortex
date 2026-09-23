@@ -186,9 +186,17 @@ var (
 		"model", "messages", "temperature", "maxTokens", "topP",
 		"stream", "tools", "toolChoice",
 	}
+	// reasoningTokens is a SUBSET of completionTokens, not a sibling: it is the share
+	// of the generated tokens the model spent reasoning, billed at the output rate.
+	// Adding the two double-counts every one of them.
+	//
+	// THIS PANE IS WHERE THE EXACT FIGURE LIVES. The events table shows one total per
+	// row and the spend drawer shows a proportion, so a reader who wants the number
+	// rather than the shape comes here — which is also why the key needs no
+	// abbreviating: there is room for the whole word, unlike a table column.
 	inferenceRespKeys = []string{
 		"model", "completion", "finishReason", "promptTokens",
-		"completionTokens", "totalTokens", "toolCalls",
+		"completionTokens", "reasoningTokens", "totalTokens", "toolCalls",
 		"cacheWriteTokens", "cacheReadTokens",
 	}
 	mcpReqKeys  = []string{"method", "rpcId", "params"}

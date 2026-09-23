@@ -56,11 +56,19 @@ const (
 	// full height, and layout() reserving fewer is not a cosmetic slip — the view comes out
 	// taller than the terminal and the footer goes off the bottom, which is the failure
 	// spendStripReservesRow's own doc describes for one row.
-	// Now: one HEADER row, the taller of the two columns, and the hint line. Both columns
-	// are four rows — numTierRows on the left, spendDrawerSeries ranked series plus the
-	// "(other)" band on the right — so the arithmetic is numTierRows + 2 and the two
-	// columns are the same height by construction rather than by coincidence.
-	spendDrawerLines = numTierRows + 2
+	// Now: one HEADER row, the taller of the two columns, and the hint line. The left
+	// column is tierPanelLines — numTierRows plus the optional reasoning child that
+	// hangs under output — and the right is spendDrawerSeries ranked series plus the
+	// "(other)" band, so the reservation is the taller of the two plus the two fixed
+	// rows.
+	//
+	// RESERVED UNCONDITIONALLY, even though the child row only renders when a provider
+	// reports a reasoning split. Reserving the maximum costs one row of body height on
+	// traffic that has no split; reserving the actual height would make the drawer's
+	// size depend on the data, so pressing `$` on a session that happens to report
+	// thinking would push the footer off the bottom — exactly the failure this comment
+	// already records.
+	spendDrawerLines = max(tierPanelLines, spendDrawerSeries+1) + 2
 )
 
 // spendDrawerAxes are the breakdown axes `g` cycles through.
@@ -713,10 +721,18 @@ func renderSpendDrawer(snap *usage.Snapshot, err error, axis usage.Group, window
 
 	out := make([]string, 0, spendDrawerLines)
 	out = append(out, drawerHeaders(axis, twoCol, width))
-	for i := 0; i < numTierRows; i++ {
-		// NO BRANCH GLYPHS. "├" and "└" implied a parent row that does not exist — there is no
-		// node above these — and the column header now names the grouping the glyphs were
-		// gesturing at.
+	// tierPanelLines, NOT numTierRows: the left column is the four rate tiers PLUS the
+	// reasoning row that hangs under output. Bounded by numTierRows this loop dropped
+	// the last tier to make room for the child — cheapest tier first, so `input` simply
+	// vanished from a panel that still claimed to break down the whole bill.
+	//
+	// The right column is shorter and its slots are filled by the `i < len(rows)` guard
+	// below, so the two columns stay the same height by construction.
+	for i := 0; i < tierPanelLines; i++ {
+		// NO BRANCH GLYPHS BETWEEN THE COLUMNS' OWN ROWS. "├" and "└" once prefixed every
+		// row here and implied a parent none of them had; the column headers name the
+		// grouping instead. The one "└" now in the panel is the reasoning row's, which does
+		// have a parent directly above it — that is the distinction, not the glyph.
 		series := ""
 		if i < len(rows) {
 			series = fitStripFigures(" ", drawerFigures(rows[i]), seriesWidth)
