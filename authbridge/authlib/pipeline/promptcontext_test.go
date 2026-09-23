@@ -132,6 +132,38 @@ func TestSessionContext_UnstatedRoleHoldsThePreCompactionFigure(t *testing.T) {
 	}
 }
 
+// WITH NO MESSAGE COUNTS AT ALL, THE UNSTATED ARM IS LATEST-WINS — and `at` has to be the
+// comparator that says so, ahead of tokens.
+//
+// This is the degenerate input the fallback actually meets on the wire, not a constructed one. A
+// view=summary timeline that projects without setting MessageCount leaves messageCount() returning
+// 0 for EVERY candidate, so all of them tie on msgs and whatever comes second decides the entire
+// answer. The two candidates here are a compaction: the pre-compaction turn is large and early, the
+// post-compaction turn is later and much smaller.
+//
+// Order tokens ahead of at and the larger figure wins, which pins 999,623 against a conversation
+// that restarted at 400,249 — for the rest of the session, since nothing will ever outgrow it. That
+// is the stale-figure failure this column exists to fix, reached through the one input where
+// message count cannot rank anything. So tokens is a FINAL tie-break for pairs that agree on both
+// msgs and at, never a substitute for at.
+//
+// Note this does not contradict TestSessionContext_UnstatedRoleHoldsThePreCompactionFigure above:
+// there the counts are present and rank the turns, and holding the old figure is the accepted cost
+// of having no role to read. Here there is nothing to rank by, and recency is all that is left.
+func TestSessionContext_UnstatedWithNoCountsFollowsTheLatestTurn(t *testing.T) {
+	base := time.Now()
+	// msgs 0 on both: len(Messages) == 0 and MessageCount unset, which is exactly what
+	// summarizeEvent produces on a proxy built before the counts landed.
+	evs := conversation("pre-compaction", base, 0, 999_623)
+	evs = append(evs, conversation("post-compaction", base.Add(time.Hour), 0, 400_249)...)
+
+	if got, want := PromptContextOf(evs), 400_249; got != want {
+		t.Errorf("PromptContextOf = %d, want %d — with no counts to rank by the later turn wins; "+
+			"a larger-context tie-break ahead of the timestamp pins the pre-compaction figure",
+			got, want)
+	}
+}
+
 // THE CASE THIS RULE WAS CHANGED FOR, with the reported session's own figures.
 //
 // c39dae31 compacted at 21:32:20 after a turn at 2,468 messages and 999,623 prompt tokens. Ten
