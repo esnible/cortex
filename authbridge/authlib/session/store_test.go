@@ -2,6 +2,7 @@ package session
 
 import (
 	"encoding/json"
+	"fmt"
 	"math"
 	"sync"
 	"testing"
@@ -839,6 +840,141 @@ func TestAppend_RunningTotalsMatchAFullRecomputation(t *testing.T) {
 					"subtraction path was never exercised", held, tc.maxEvents)
 			}
 		})
+	}
+}
+
+// promptContextTurn is a request/response pair as the store records one: manifest and message
+// count on both sides, token counts on the response, since the provider is the only party that
+// tokenizes. ntools == 0 makes it a one-shot, which the rule excludes.
+func promptContextTurn(id string, at time.Time, msgs, ntools, context int) []pipeline.SessionEvent {
+	inf := func() *pipeline.InferenceExtension {
+		tools := make([]pipeline.InferenceTool, ntools)
+		return &pipeline.InferenceExtension{
+			Model:     "claude-opus-5",
+			Messages:  make([]pipeline.InferenceMessage, msgs),
+			Tools:     tools,
+			AgentRole: pipeline.AgentRoleMain,
+		}
+	}
+	resp := inf()
+	resp.InputTokens, resp.CacheReadTokens = 300, context-300
+	return []pipeline.SessionEvent{
+		{At: at, RequestID: id, Phase: pipeline.SessionRequest,
+			Direction: pipeline.Outbound, Inference: inf()},
+		{At: at.Add(time.Second), RequestID: id, Phase: pipeline.SessionResponse,
+			Direction: pipeline.Outbound, Inference: resp},
+	}
+}
+
+// THE FIGURE OUTLIVES THE EVENTS IT WAS READ FROM, which is the opposite of the invariant
+// TestAppend_RunningTotalsMatchAFullRecomputation holds for cost.
+//
+// cost is a SUM and stays equal to sumCost(Events), shedding whatever a trim evicts — that is
+// what scopes the COST column exactly like the TOKENS column beside it. This is a MAXIMUM, and
+// a maximum over a trimmed slice does not understate, it reports a small conversation when the
+// conversation is large and merely aged out.
+//
+// THE SECOND ASSERTION FORBIDS A FUTURE "FIX". Making this recomputable from Events — the
+// instinct, by analogy to cost — reintroduces exactly the bug this field exists to remove: the
+// gauge blanking because the store forgot the turn. That regression must fail here rather than
+// look like a consistency improvement.
+func TestAppend_PromptContextSurvivesATrim(t *testing.T) {
+	const maxEvents = 4
+	s := New(time.Hour, maxEvents, 0)
+	defer s.Close()
+	base := time.Now()
+
+	// The winning agentic turn, then enough one-shots to evict it. Nothing here is an intent
+	// event — planTrim's pin needs an INBOUND A2A request and these are outbound inference —
+	// so the trim is a plain FIFO drop and the winning turn really does leave the slice.
+	for _, e := range promptContextTurn("win", base, 600, 27, 500_000) {
+		s.Append("sess", e)
+	}
+	for i := 0; i < maxEvents*2; i++ {
+		for _, e := range promptContextTurn(fmt.Sprintf("o%d", i),
+			base.Add(time.Duration(i+1)*time.Minute), 3, 0, 7_000) {
+			s.Append("sess", e)
+		}
+	}
+
+	var got *pipeline.PromptContext
+	for _, sum := range s.ListSessions() {
+		if sum.ID == "sess" {
+			got = sum.PromptContext
+		}
+	}
+	if got == nil {
+		t.Fatal("no figure after the trim — the gauge went blank for a session that reached 500k")
+	}
+	if got.Tokens != 500_000 {
+		t.Errorf("reported %d, want 500000", got.Tokens)
+	}
+
+	// And it is NOT recomputable from what survived. View is the accessor for the events an
+	// entry still holds — this package has no Snapshot method — and it copies the whole slice.
+	var live pipeline.PromptContextFold
+	live.AddAll(s.View("sess").Events)
+	if live.Tokens() == got.Tokens {
+		t.Error("a recomputation over surviving events matched the stored figure, so this test " +
+			"is not exercising the trim — raise the one-shot count")
+	}
+}
+
+// The ordinary path: Append maintains the figure, ListSessions reports it, and a session with
+// nothing to say reports nil rather than zero.
+func TestAppend_MaintainsThePromptContextFigure(t *testing.T) {
+	s := New(time.Hour, 0, 0)
+	defer s.Close()
+	base := time.Now()
+	for _, e := range promptContextTurn("c1", base, 600, 27, 500_000) {
+		s.Append("agentic", e)
+	}
+	for _, e := range promptContextTurn("o1", base, 3, 0, 282_000) {
+		s.Append("oneshot", e)
+	}
+
+	for _, sum := range s.ListSessions() {
+		switch sum.ID {
+		case "agentic":
+			if sum.PromptContext == nil || sum.PromptContext.Tokens != 500_000 {
+				t.Errorf("agentic: %+v, want tokens=500000", sum.PromptContext)
+			}
+			if sum.PromptContext != nil && !sum.PromptContext.Stated {
+				t.Error("agentic: Stated=false, but the fixture declares AgentRoleMain")
+			}
+		case "oneshot":
+			if sum.PromptContext != nil {
+				t.Errorf("oneshot: %+v, want nil — no manifest means no conversation to measure",
+					sum.PromptContext)
+			}
+		}
+	}
+}
+
+// A session the store forgets entirely has no figure: the entry goes, and the fold with it. A
+// session recreated under the same id starts fresh, consistent with nextSeq restarting at 1.
+func TestPromptContext_WholeEntryEvictionDropsTheFigure(t *testing.T) {
+	s := New(time.Hour, 0, 1) // maxSessions=1
+	defer s.Close()
+	base := time.Now()
+	for _, e := range promptContextTurn("c1", base, 600, 27, 500_000) {
+		s.Append("first", e)
+	}
+	for _, e := range promptContextTurn("c2", base.Add(time.Minute), 600, 27, 100_000) {
+		s.Append("second", e)
+	}
+	for _, sum := range s.ListSessions() {
+		if sum.ID == "first" {
+			t.Error("the evicted session is still listed; this test is not exercising eviction")
+		}
+	}
+	for _, e := range promptContextTurn("c3", base.Add(2*time.Minute), 3, 0, 9_000) {
+		s.Append("first", e)
+	}
+	for _, sum := range s.ListSessions() {
+		if sum.ID == "first" && sum.PromptContext != nil {
+			t.Errorf("recreated session carried a figure forward: %+v", sum.PromptContext)
+		}
 	}
 }
 

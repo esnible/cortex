@@ -87,6 +87,19 @@ type entry struct {
 	// larger, and it is the only way to subtract without either parsing again or re-deriving
 	// the pin rule. applyTrim reshapes this and Events together for that second reason.
 	money []eventMoney
+
+	// context is the CONTEXT gauge's answer for this session: the largest main-agent prompt
+	// total seen, maintained by Append and read by ListSessions.
+	//
+	// A REMEMBERED MAXIMUM, NOT A SUM, and that is the whole difference from cost above. It is
+	// deliberately NOT maintained in lockstep with Events: a trim does nothing to it, because a
+	// maximum over a trimmed slice does not understate the way a partial sum does — it reports a
+	// small conversation when the conversation is large and merely aged out. See
+	// TestAppend_PromptContextSurvivesATrim, and pipeline.PromptContextFold for the rule.
+	//
+	// So this needs none of the machinery cost needs: no subtraction on trim, and no parallel
+	// per-event slice to make that subtraction decode-free. Fixed size per SESSION.
+	context pipeline.PromptContextFold
 }
 
 // MaxSessionIDLen is the longest session ID the store keeps intact; longer ids
@@ -298,6 +311,18 @@ func (s *Store) Append(sessionID string, event pipeline.SessionEvent) {
 	sess.money = append(sess.money, money)
 	sess.cost.Add(money.cost)
 	sess.avoided.Add(money.avoided)
+	// AND THE PROMPT-CONTEXT FIGURE, which unlike the two above sheds nothing on trim.
+	//
+	// BEFORE THE TRIM BLOCK BELOW, load-bearing rather than incidental: an event appended and
+	// immediately evicted still has to contribute, because the figure outlives the events it was
+	// read from.
+	//
+	// NOT HOISTED ABOVE THE LOCK like moneyOf, and that is not an oversight. moneyOf is a
+	// json.Unmarshal and was hoisted because of a measured regression; this is a phase check, a
+	// nil check, len(Tools), three int adds and one comparison — tens of nanoseconds, no
+	// allocation, NO DECODE. Splitting it to hoist the extraction would add an exported type for
+	// plumbing alone and save nothing measurable.
+	sess.context.Add(&event)
 	sess.UpdatedAt = now
 	s.activeID = sessionID
 
@@ -610,6 +635,10 @@ type SessionSummary struct {
 	// tell apart from a real one.
 	Saturated bool `json:"saturated,omitempty"`
 	Active    bool `json:"active"` // true if this is the most recently updated session
+	// PromptContext is how full this session's conversation is, from entry.context. Task 7 adds
+	// the wire tag and the doc comment that argues the field; this task adds the field so
+	// Append's maintenance of the fold has somewhere to be read from.
+	PromptContext *pipeline.PromptContext
 }
 
 // ListSessions returns summaries for every non-expired session. Order is
@@ -639,7 +668,12 @@ func (s *Store) ListSessions() []SessionSummary {
 			// sums, which is why one flag covers them — the same reasoning
 			// usage.Counts.Saturated gives for covering every money field in a Counts.
 			Saturated: sess.cost.Saturated || sess.avoided.Saturated,
-			Active:    id == s.activeID,
+			// Read, not computed, and for a second reason the two above do not have: this one
+			// CANNOT be recomputed here. The fold is a maximum over turns the session may no
+			// longer hold, so a walk of sess.Events would blank the gauge on exactly the long
+			// conversations it exists for. See entry.context.
+			PromptContext: sess.context.Publish(),
+			Active:        id == s.activeID,
 		})
 	}
 	// Most recently updated first.
