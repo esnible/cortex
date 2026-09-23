@@ -8,7 +8,7 @@ abctl's uptime, by computing the figure server-side and publishing it on `/v1/se
 **Architecture:** Lift the prompt-context fold from `cmd/abctl/tui` into `authlib/pipeline`
 (zero new dependency edges — `authlib/session` already imports it). Reformulate it as a max
 over a total order so it is a commutative monoid. Maintain one per session on `Store.Append`,
-following the `cost`/`avoided` precedent rather than summing in `ListSessions`. Publish a lossy
+following the `cost`/`avoided` precedent rather than summing in `ListSessions`. Publish a lossless
 mergeable projection on `SessionSummary`, and have abctl merge it with its own figure.
 
 **Tech Stack:** Go 1.26, `charmbracelet/bubbles` table, `encoding/json`. No new dependencies.
@@ -1394,26 +1394,37 @@ The body ends with `Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>`,
 
 ## Verification checklist
 
-- [ ] `go build ./authlib/... ./cmd/abctl/...` clean (NOT `./...` — see Global Constraints)
-- [ ] `go test ./authlib/... ./cmd/abctl/...` clean except the known environmental failure
-- [ ] The 13 moved rule tests pass in `authlib/pipeline`
-- [ ] `TestAppend_RunningTotalsMatchAFullRecomputation` still passes — cost's invariant untouched
-- [ ] The three PR #1102 repaint tests still pass
-- [ ] Both monoid law tests pass
-- [ ] `gofmt -l` on changed files prints nothing
-- [ ] `golangci-lint --new-from-rev=upstream/main` clean
-- [ ] Every commit has `Signed-off-by` and `Assisted-By`; none has `Co-Authored-By`
-- [ ] `git log --format='%an <%ae>'` shows a real account, not a placeholder
+- [x] `go build ./authlib/... ./cmd/abctl/...` clean (NOT `./...` — see Global Constraints)
+- [x] `go test ./authlib/... ./cmd/abctl/...` clean except the known environmental failure
+  (`TestRunExec_BeforeFirstStartRunsAndSaysWhatIsLost`, pre-existing, unrelated to this change)
+- [x] The 13 moved rule tests pass in `authlib/pipeline`
+- [x] `TestAppend_RunningTotalsMatchAFullRecomputation` still passes — cost's invariant untouched
+- [x] The three PR #1102 repaint tests still pass
+- [x] Both monoid law tests pass (`TestPromptContextFold_IsACommutativeMonoid`,
+  `TestMergePromptContext_IsACommutativeMonoid`)
+- [x] `gofmt -l` on changed files prints nothing
+- [x] `golangci-lint` clean, run per module (the `go.work` workspace has no root module for a
+  single whole-tree invocation)
+- [x] Every commit has `Signed-off-by` and `Assisted-By`; none has `Co-Authored-By`
+- [x] `git log --format='%an <%ae>'` shows a real account, not a placeholder (23 commits, one
+  real identity throughout)
 
-## Two risks flagged in the spec review, to resolve during implementation
+## Two risks flagged in the spec review, resolved during implementation
 
-1. **Task 5's coarsening argument.** The spec claims a client never reaches the degraded
-   unstated-vs-unstated `MergePromptContext` arm, because any proxy publishing `PromptContext` also publishes
-   `agentRole`. That is an inference about version coupling, not a verified fact. While in
-   Task 6, check whether `agentRole` is populated unconditionally by the inference parser. If it
-   can be absent on a proxy new enough to publish this field, `msgs` needs publishing after all —
-   stop and report rather than proceeding.
-2. **Task 6's trim test.** It must force a trim through the exported API. `maxEvents` is settable
-   via `New(ttl, maxEvents, maxSessions)`, so this should work — but if `planTrim`'s intent-pin
-   rule keeps more than expected, the one-shot count needs raising. The test's second assertion
-   catches that case and says so.
+1. **Task 5's coarsening argument — resolved NO, the spec's inference was wrong.** The spec had
+   claimed a client never reaches the degraded unstated-vs-unstated `MergePromptContext` arm,
+   because any proxy publishing `PromptContext` also publishes `agentRole`. Reading
+   `authlib/plugins/inferenceparser/subagent.go` in Task 6 showed `agentRole()` returns `""`
+   whenever a request carries no system message, an unparseable body, or a first system line
+   missing the `x-anthropic-billing-header:` prefix — which is every client that is not Claude
+   Code. So the unstated-vs-unstated arm is a live, current-proxy path rather than a
+   version-skew relic, and the stop-and-report condition fired: `Msgs` is now published on the
+   wire (design §4, "`Msgs` is published, and the reason it was not is false") instead of being
+   dropped from `PromptContext`.
+2. **Task 6's trim test — resolved YES, it forces eviction on the plan's own numbers.** With
+   `maxEvents = 4`, the `maxEvents*2 = 8` one-shot events appended after the winning turn
+   overflow the FIFO window through the exported `New`/`Append` path, and no intent-pin rule
+   protects them (they carry outbound inference events, not an inbound A2A request).
+   `TestAppend_PromptContextSurvivesATrim`'s second assertion — recomputing from
+   `s.View("sess").Events` must NOT equal the stored figure — confirms the winning turn actually
+   left the slice rather than merely aging past an unexercised assertion.

@@ -92,7 +92,8 @@ func (m *model) rebaseSessionContext(id string, events []pipeline.SessionEvent) 
 	// The previous run with its COUNTER reset, rather than a field-by-field copy of it. Naming
 	// the fields to carry is how the At tie-break went missing from exactly this literal: a
 	// rebase seeded tokens and msgs, dropped at, and an older turn of equal length then took the
-	// column. Reset-what-changes carries the next field added to contextRun by default.
+	// column. Reset-what-changes carries the next field added to pipeline.PromptContextFold by
+	// default.
 	prev := m.contextRun[id]
 	prev.ResetFolded()
 	prev.AddAll(events)

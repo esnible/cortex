@@ -1,7 +1,7 @@
 # Session prompt-context figure — design
 
 Date: 2026-09-23
-Status: approved, not yet implemented
+Status: implemented
 
 ## Problem
 
@@ -437,8 +437,11 @@ separate.
   `Stated` and `At`
 - stated beats unstated regardless of size, in both combines
 - the tie-break delta: exact-timestamp ties now resolve by larger `Tokens`, deterministically
-- the coarsening is confined as claimed: the published combine differs from the internal one
-  **only** on unstated-versus-unstated
+- the published combine and the internal one **agree everywhere**: they are the same total
+  order, not two that happen to coincide —
+  `TestMergePromptContext_IsTheSameOrderAsTheFold` pins that `MergePromptContext` agrees with
+  `better()` on every pair of an exhaustive 7×7 cross-product, and that `Publish().candidate() ==
+  f.current()`
 
 **Store**
 
@@ -478,17 +481,29 @@ Estimated ~1,785 lines changed, of which ~1,070 is movement in commit 1.
 Not built here. Three things recorded now because they are cheap to write and expensive to
 rediscover.
 
-**Persist the fold, not the published projection.** `PromptContext` drops `msgs` (§4), so
-restoring from it would permanently coarsen the session's ordering. The full
-`PromptContextFold` is 48 bytes including `msgs`, so there is no reason to persist the lossy
-form: restore fold-to-fold using the **internal** combine, then keep folding live events.
+**Persisting the published projection is viable now — with one caveat.** `PromptContext` carries
+every field the ordering reads (`Msgs` is published, see §4), so it is order-equivalent to the
+fold: a restore can compare a persisted `PromptContext` against a live figure and continue
+correctly, deferring to the same `better()` that `MergePromptContext` and
+`PromptContextFold.TokensMergedWith` both already use. What `PromptContext` still is not: a
+complete fold. `PromptContextFold.n` — the slice cursor that a caller's incremental `AddAll`
+advances and that `Add` alone never touches — is not published, and there is no
+`PromptContext`-to-fold constructor. So a restore gets a figure to compare and continue from, not
+a rehydrated fold ready to resume `AddAll`'s bookkeeping in place; whichever path implements this
+still has to decide how (or whether) `n` gets reconstructed, or route subsequent folding through
+`Add` rather than `AddAll`.
 
-Nothing else needs reconstructing — contrast `cost`, whose invariant is
+Nothing else about the figure needs reconstructing — contrast `cost`, whose invariant is
 lockstep-with-`Events`-including-on-trim and which needs its `money` sidecar rebuilt and its
 trims replayed.
 
-This qualifies a slogan from an earlier draft: the fold is one representation for **memory and
-disk**, and `PromptContext` is a lossy projection for **the wire**. Three uses, two shapes.
+This retires a slogan from an earlier draft: the fold was one representation for **memory and
+disk**, and `PromptContext` a lossy projection for **the wire** — three uses, two shapes, one of
+them coarser. Publishing `Msgs` collapsed that coarsening (§4): `PromptContext` is now
+order-equivalent to the fold rather than a lossy view of it. The shapes still differ — the fold
+alone carries `n`, bookkeeping for a caller's incremental fold that the wire has no use for — but
+the difference is bookkeeping, not information the ordering reads. Three uses, two shapes, one
+ordering.
 
 **Restore order is free**, because the fold is commutative. This was a constraint in an earlier
 draft of this design; decision 6 removed it.
