@@ -1,15 +1,20 @@
 package pipeline
 
-// PromptTokens is what a response's prompt cost, in tokens: input plus both cache tiers.
+// PromptTokens is the request's own billed token count: what the provider counted for
+// everything we sent. It lives on the response because the provider is the only party that
+// tokenizes, but it is a request-side quantity — which is what lets a request row show a
+// total at all.
 //
-// OUTPUT IS DELIBERATELY EXCLUDED. Measured across six live sessions it is 0.003%-2.2% of the
-// prompt and 0.2% on conversations near the context limit — a fifth of one eighth-block at 1M,
-// so including it would change no rendered pixel while making the figure mean something else.
+// OUTPUT IS DELIBERATELY EXCLUDED, which the prompt-context rule measured on the same
+// sessions: output is 0.003%-2.2% of the prompt and 0.2% on conversations near the context
+// limit, so folding it in would change no rendered pixel while making the figure mean
+// something else.
 //
-// The three-way sum FIRST, PromptTokens second, because zero on the sum means "this provider
-// reported the breakdown" and a provider that reports only a total sets the scalar instead.
-// Taking the scalar first would silently discard the cache tiers, which on a cached
-// conversation are ~99% of the prompt.
+// The PromptTokens fallback cannot currently fire, and is kept only to mirror
+// savedTokensAndCost: parsercommon.TokenUsage.Fill is the sole production writer of these
+// fields and sets PromptTokens to Input+CacheRead+CacheWrite — the same sum computed here —
+// so when the split is zero the aggregate is zero too. It costs nothing and would start
+// earning its keep if a parser ever published the aggregate directly.
 func PromptTokens(resp *InferenceExtension) int {
 	if resp == nil {
 		return 0
