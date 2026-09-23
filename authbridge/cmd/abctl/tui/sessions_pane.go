@@ -274,7 +274,10 @@ func (m *model) rebuildSessionsTable() {
 				padLeft(sessionMoneyCell(s.CostMicros, s.Saturated, costW), costW),
 				padLeft(sessionMoneyCell(s.AvoidedMicros, s.Saturated, savedW), savedW))
 		}
-		row = append(row, padLeft(contextGauge(m.sessionContextFor(s.ID), contextW), contextW))
+		// The server's published figure is merged with abctl's own — see sessionContextFor for
+		// why neither source dominates. It is what lets a row idle since before abctl attached
+		// draw a gauge on the first poll, with nothing opened.
+		row = append(row, padLeft(contextGauge(m.sessionContextFor(s.ID, s.PromptContext), contextW), contextW))
 		rows = append(rows, row)
 		// APPENDED IN LOCKSTEP, one line apart, so the two cannot drift: the row carries what
 		// a reader sees and this carries what the code acts on.
@@ -315,7 +318,9 @@ func (m *model) rebuildSessionsTable() {
 		}
 		// These rows DO have a context, and it is the one case where abctl's cache is the only
 		// possible source: the server has forgotten the session, so nothing else could answer.
-		row = append(row, padLeft(contextGauge(m.sessionContextFor(id), contextW), contextW))
+		// It does not list these rows at all, so there is no summary and no published figure —
+		// hence the nil, which is the merge's identity.
+		row = append(row, padLeft(contextGauge(m.sessionContextFor(id, nil), contextW), contextW))
 		rows = append(rows, row)
 		ids = append(ids, id)
 	}

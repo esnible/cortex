@@ -115,7 +115,7 @@ func TestSessionContextFor_AProjectedSnapshotKeepsTheStreamsFigure(t *testing.T)
 	m := &model{events: map[string][]pipeline.SessionEvent{id: full}}
 	m.sessionsTbl = newSessionsTable()
 
-	if got, want := m.sessionContextFor(id), 500_000; got != want {
+	if got, want := m.sessionContextFor(id, nil), 500_000; got != want {
 		t.Fatalf("from the stream: %d, want %d", got, want)
 	}
 
@@ -124,7 +124,7 @@ func TestSessionContextFor_AProjectedSnapshotKeepsTheStreamsFigure(t *testing.T)
 	// stops testing the rebase. The counts-less window is the case the memory exists for.
 	m.Update(snapshotLoadedMsg{id: id, events: projectedNoCounts(full), projected: true})
 
-	if got, want := m.sessionContextFor(id), 500_000; got != want {
+	if got, want := m.sessionContextFor(id, nil), 500_000; got != want {
 		t.Errorf("after a view=summary snapshot: %d, want %d — the column blanked on drill-in",
 			got, want)
 	}
@@ -142,7 +142,7 @@ func TestSessionContextFor_AnOlderPageKeepsTheFigure(t *testing.T) {
 	full := conversation("c1", base, 600, 500_000)
 	m := pagedModel(t, full)
 
-	if got, want := m.sessionContextFor("sess-1"), 500_000; got != want {
+	if got, want := m.sessionContextFor("sess-1", nil), 500_000; got != want {
 		t.Fatalf("from the stream: %d, want %d", got, want)
 	}
 	// The snapshot leaves the slice projected — and clears the paging state, so [o] rebuilds it.
@@ -153,7 +153,7 @@ func TestSessionContextFor_AnOlderPageKeepsTheFigure(t *testing.T) {
 	older := projectedNoCounts(conversation("c0", base.Add(-time.Hour), 40, 62_000))
 	m.applyOlderPage(olderPageLoadedMsg{id: "sess-1", events: older, serverOldest: 1})
 
-	if got, want := m.sessionContextFor("sess-1"), 500_000; got != want {
+	if got, want := m.sessionContextFor("sess-1", nil), 500_000; got != want {
 		t.Errorf("after an older page: %d, want %d — nothing in the slice can answer this "+
 			"question any more, so the remembered figure is the only source left", got, want)
 	}
@@ -174,7 +174,7 @@ func TestSessionContextFor_ADetailFetchFillsTheGauge(t *testing.T) {
 	// source of a figure at all. Against a current proxy the snapshot answers on its own — see
 	// TestSessionsTable_AnIdleSessionsSnapshotFillsTheGauge.
 	m := &model{events: map[string][]pipeline.SessionEvent{id: projectedNoCounts(full)}}
-	if got := m.sessionContextFor(id); got != 0 {
+	if got := m.sessionContextFor(id, nil); got != 0 {
 		t.Fatalf("a projected timeline: %d, want 0 (the dash)", got)
 	}
 
@@ -182,7 +182,7 @@ func TestSessionContextFor_ADetailFetchFillsTheGauge(t *testing.T) {
 	resp := full[1]
 	m.replaceHeldEvent(id, &resp)
 
-	if got, want := m.sessionContextFor(id), 500_000; got != want {
+	if got, want := m.sessionContextFor(id, nil), 500_000; got != want {
 		t.Errorf("after the detail fetch: %d, want %d — the write-back was invisible to the "+
 			"length check", got, want)
 	}
@@ -197,7 +197,7 @@ func TestSessionContextFor_APodSwitchVoidsTheFigure(t *testing.T) {
 	m.parentCtx, m.ctx = context.Background(), context.Background()
 	m.cancel = func() {}
 
-	if got, want := m.sessionContextFor("sess-1"), 500_000; got != want {
+	if got, want := m.sessionContextFor("sess-1", nil), 500_000; got != want {
 		t.Fatalf("on the first pod: %d, want %d", got, want)
 	}
 
@@ -205,7 +205,7 @@ func TestSessionContextFor_APodSwitchVoidsTheFigure(t *testing.T) {
 	// The next pod happens to have a session with the same id and the same event count.
 	m.events["sess-1"] = conversation("other", base.Add(time.Hour), 40, 62_000)
 
-	if got, want := m.sessionContextFor("sess-1"), 62_000; got != want {
+	if got, want := m.sessionContextFor("sess-1", nil), 62_000; got != want {
 		t.Errorf("on the second pod: %d, want %d — the previous pod's context carried over",
 			got, want)
 	}
@@ -219,18 +219,18 @@ func TestSessionContextFor_AReleaseOfItsEventsKeepsTheFigure(t *testing.T) {
 	m := &model{events: map[string][]pipeline.SessionEvent{
 		id: conversation("c1", time.Now(), 600, 500_000),
 	}}
-	if got, want := m.sessionContextFor(id), 500_000; got != want {
+	if got, want := m.sessionContextFor(id, nil), 500_000; got != want {
 		t.Fatalf("before the release: %d, want %d", got, want)
 	}
 
 	delete(m.events, id) // what the picker's prune does
-	if got, want := m.sessionContextFor(id), 500_000; got != want {
+	if got, want := m.sessionContextFor(id, nil), 500_000; got != want {
 		t.Errorf("after the release: %d, want %d", got, want)
 	}
 	// And a later streamed turn still wins — on the message count here, since these fixtures
 	// state no role.
 	m.events[id] = conversation("c2", time.Now().Add(time.Minute), 900, 700_000)
-	if got, want := m.sessionContextFor(id), 700_000; got != want {
+	if got, want := m.sessionContextFor(id, nil), 700_000; got != want {
 		t.Errorf("after a new turn: %d, want %d", got, want)
 	}
 }
@@ -258,18 +258,18 @@ func TestSessionContextFor_ATieAcrossARebaseKeepsTheLaterTurn(t *testing.T) {
 
 	m := &model{events: map[string][]pipeline.SessionEvent{id: all}}
 	m.sessionsTbl = newSessionsTable()
-	if got, want := m.sessionContextFor(id), 500_000; got != want {
+	if got, want := m.sessionContextFor(id, nil), 500_000; got != want {
 		t.Fatalf("from the stream: %d, want %d", got, want)
 	}
 	m.Update(snapshotLoadedMsg{id: id, events: projectedNoCounts(all), projected: true})
-	if got, want := m.sessionContextFor(id), 500_000; got != want {
+	if got, want := m.sessionContextFor(id, nil), 500_000; got != want {
 		t.Fatalf("after the snapshot: %d, want %d", got, want)
 	}
 
 	resp := older[1] // the detail pane fetched the older turn's response
 	m.replaceHeldEvent(id, &resp)
 
-	if got, want := m.sessionContextFor(id), 500_000; got != want {
+	if got, want := m.sessionContextFor(id, nil), 500_000; got != want {
 		t.Errorf("after opening the older turn: %d, want %d — an older tie took the column",
 			got, want)
 	}
@@ -290,13 +290,13 @@ func TestSessionsTable_AnIdleSessionsSnapshotFillsTheGauge(t *testing.T) {
 
 	m := &model{events: map[string][]pipeline.SessionEvent{}}
 	m.sessionsTbl = newSessionsTable()
-	if got := m.sessionContextFor(id); got != 0 {
+	if got := m.sessionContextFor(id, nil); got != 0 {
 		t.Fatalf("before the snapshot: %d, want 0 — abctl holds nothing for this session", got)
 	}
 
 	m.Update(snapshotLoadedMsg{id: id, events: projected(evs), projected: true})
 
-	if got, want := m.sessionContextFor(id), 851_000; got != want {
+	if got, want := m.sessionContextFor(id, nil), 851_000; got != want {
 		t.Errorf("after the snapshot: %d, want %d — the conversation's figure, not the "+
 			"one-shot's 7,000 and not a dash", got, want)
 	}
@@ -320,7 +320,7 @@ func TestSessionsTable_AProjectedUnstatedTimelinePicksTheMainThread(t *testing.T
 	m.sessionsTbl = newSessionsTable()
 	m.Update(snapshotLoadedMsg{id: id, events: projected(evs), projected: true})
 
-	if got, want := m.sessionContextFor(id), 851_000; got != want {
+	if got, want := m.sessionContextFor(id, nil), 851_000; got != want {
 		t.Errorf("after the snapshot: %d, want %d — the subagent spoke last and is a candidate; "+
 			"with no role stated only the message count keeps the column on the main thread",
 			got, want)
@@ -343,7 +343,7 @@ func TestSessionsTable_AProjectedTimelineReadsTheRole(t *testing.T) {
 	m.sessionsTbl = newSessionsTable()
 	m.Update(snapshotLoadedMsg{id: id, events: projected(evs), projected: true})
 
-	if got, want := m.sessionContextFor(id), 217_121; got != want {
+	if got, want := m.sessionContextFor(id, nil), 217_121; got != want {
 		t.Errorf("after the snapshot: %d, want %d — a longer, later subagent took the column, so "+
 			"the projected row states no role", got, want)
 	}
@@ -370,7 +370,7 @@ func TestSessionContextFor_DoesNotRescanTheFoldedPrefix(t *testing.T) {
 		m := &model{events: map[string][]pipeline.SessionEvent{
 			id: conversation("c1", base, 600, 500_000),
 		}}
-		if got, want := m.sessionContextFor(id), 500_000; got != want {
+		if got, want := m.sessionContextFor(id, nil), 500_000; got != want {
 			t.Fatalf("the first fold: %d, want %d", got, want)
 		}
 		// Same length, so only a re-read of the prefix can notice.
@@ -380,7 +380,7 @@ func TestSessionContextFor_DoesNotRescanTheFoldedPrefix(t *testing.T) {
 
 	t.Run("a repeat call with nothing appended", func(t *testing.T) {
 		m := poisoned(t)
-		if got, want := m.sessionContextFor(id), 500_000; got != want {
+		if got, want := m.sessionContextFor(id, nil), 500_000; got != want {
 			t.Errorf("repeat call = %d, want %d — 999000 means the length check stopped "+
 				"short-circuiting, so every row rescans on every rebuild", got, want)
 		}
@@ -390,7 +390,7 @@ func TestSessionContextFor_DoesNotRescanTheFoldedPrefix(t *testing.T) {
 		m := poisoned(t)
 		m.events[id] = append(m.events[id],
 			conversation("c2", base.Add(time.Hour), 700, 600_000)...)
-		if got, want := m.sessionContextFor(id), 600_000; got != want {
+		if got, want := m.sessionContextFor(id, nil), 600_000; got != want {
 			t.Errorf("after one turn = %d, want %d — 999000 means the delta fold became a "+
 				"whole-slice fold", got, want)
 		}
@@ -406,7 +406,7 @@ func TestSessionContextFor_ThePickerReleaseKeepsTheFigure(t *testing.T) {
 	base := time.Now()
 	m := fitModel(t, paneEvents, 200, 40, conversation("c1", base, 600, 500_000))
 	m.events["other"] = conversation("c2", base, 900, 700_000)
-	if got, want := m.sessionContextFor("other"), 700_000; got != want {
+	if got, want := m.sessionContextFor("other", nil), 700_000; got != want {
 		t.Fatalf("before the release: %d, want %d", got, want)
 	}
 
@@ -423,7 +423,7 @@ func TestSessionContextFor_ThePickerReleaseKeepsTheFigure(t *testing.T) {
 	for _, id := range []string{"sess-1", "other"} {
 		if _, held := m.events[id]; !held {
 			released = true
-			if got := m.sessionContextFor(id); got == 0 {
+			if got := m.sessionContextFor(id, nil); got == 0 {
 				t.Errorf("%q had its events released and its gauge went to a dash", id)
 			}
 		}
@@ -527,7 +527,7 @@ func TestSessionsTable_ASnapshotRepaintsTheGaugeItFilled(t *testing.T) {
 	m.Update(snapshotLoadedMsg{
 		id: id, events: projected(conversation("c1", base, 600, 500_000)), projected: true})
 
-	if got, want := m.sessionContextFor(id), 500_000; got != want {
+	if got, want := m.sessionContextFor(id, nil), 500_000; got != want {
 		t.Fatalf("the figure is %d, want %d — this test is about the ROW, which cannot be "+
 			"right until the figure is", got, want)
 	}
@@ -554,7 +554,7 @@ func TestSessionsTable_AnOlderPageRepaintsTheGauge(t *testing.T) {
 		events:       projected(conversation("c0", base.Add(-time.Hour), 40, 62_000)),
 		serverOldest: 1})
 
-	if got, want := m.sessionContextFor("sess-1"), 62_000; got != want {
+	if got, want := m.sessionContextFor("sess-1", nil), 62_000; got != want {
 		t.Fatalf("the figure is %d, want %d", got, want)
 	}
 	// 62,000 of 1M draws a half-block sliver and no full block — see assertGaugeFilled.
@@ -589,8 +589,62 @@ func TestSessionsTable_ADetailFetchRepaintsTheGauge(t *testing.T) {
 	resp := full[1] // what GetEvent returns: the manifest is back
 	m.Update(detailEventLoadedMsg{sessionID: "s", seq: resp.Seq, event: &resp})
 
-	if got, want := m.sessionContextFor("s"), 500_000; got != want {
+	if got, want := m.sessionContextFor("s", nil), 500_000; got != want {
 		t.Fatalf("the figure is %d, want %d", got, want)
 	}
 	assertGaugeFilled(t, heldContextCell(t, m, "s"), "after the detail fetch")
+}
+
+// THE BUG THIS WHOLE CHANGE EXISTS FOR: a session idle since before abctl attached shows a gauge
+// on the first /v1/sessions poll, with no Enter, no snapshot and no wait.
+//
+// Asserted on the RENDERED ROW rather than on sessionContextFor, because a correct figure that
+// nothing paints is the defect PR #1102 fixed and this file's own tests missed.
+func TestSessionsTable_AnIdleRowShowsTheServersFigureWithoutBeingOpened(t *testing.T) {
+	base := time.Now()
+	const id = "idle"
+	m := &model{width: 200, pane: paneSessions, events: map[string][]pipeline.SessionEvent{}}
+	m.sessionsTbl = newSessionsTable()
+
+	// What the poll delivers: a row abctl holds no events for, carrying the server's figure.
+	m.Update(sessionsLoadedMsg([]session.SessionSummary{{
+		ID: id, UpdatedAt: base, EventCount: 1509,
+		PromptContext: &pipeline.PromptContext{Tokens: 851_000, Stated: true, At: base},
+	}}))
+
+	assertGaugeFilled(t, heldContextCell(t, m, id), "on the first poll")
+}
+
+// AND THE PROXY-UPGRADE REGRESSION, which is why PromptContext carries Stated.
+func TestSessionsTable_AStatedServerFigureBeatsAStaleUnstatedLocalOne(t *testing.T) {
+	base := time.Now()
+	const id = "s"
+	// abctl's own figure, folded from a proxy that stated no roles: the documented
+	// stale-fallback case, 700k held from before a compaction.
+	m := &model{width: 200, pane: paneSessions, events: map[string][]pipeline.SessionEvent{
+		id: conversation("pre", base.Add(-time.Hour), 2468, 700_000),
+	}}
+	m.sessionsTbl = newSessionsTable()
+	if got := m.sessionContextFor(id, nil); got != 700_000 {
+		t.Fatalf("local figure is %d, want 700000 — the fixture is not exercising the fallback", got)
+	}
+
+	server := &pipeline.PromptContext{Tokens: 200_000, Stated: true, At: base}
+	if got := m.sessionContextFor(id, server); got != 200_000 {
+		t.Errorf("merged to %d, want 200000 — a stated figure beats an unstated one at any "+
+			"size, so max() over token counts is not the rule", got)
+	}
+}
+
+// An old proxy sends nothing, and nothing must not blank a row abctl can answer for itself.
+func TestSessionsTable_ANilServerFigureKeepsTheLocalOne(t *testing.T) {
+	base := time.Now()
+	const id = "s"
+	m := &model{width: 200, events: map[string][]pipeline.SessionEvent{
+		id: conversation("c1", base, 600, 500_000),
+	}}
+	m.sessionsTbl = newSessionsTable()
+	if got := m.sessionContextFor(id, nil); got != 500_000 {
+		t.Errorf("got %d, want 500000", got)
+	}
 }

@@ -69,8 +69,12 @@ func oneShot(id string, at time.Time, context int) []pipeline.SessionEvent {
 //
 // conversation and oneShot above state NOTHING, so every test written before this field existed
 // exercises the fallback rule — and that is deliberate rather than an oversight: the two rules
-// have to be pinned separately, because a proxy older than the field is the case the fallback is
-// for. mainAgent and subagent below are their stated counterparts.
+// have to be pinned separately, because the fallback is a PERMANENT path rather than a
+// version-skew relic. An earlier version of this comment said "a proxy older than the field is the
+// case the fallback is for", which reads stated as a proxy capability; it is a CLIENT property.
+// inferenceparser.agentRole returns "" for every client that is not Claude Code — it requires the
+// x-anthropic-billing-header: prefix on the first system line — so no proxy version retires the
+// unstated arm. mainAgent and subagent below are their stated counterparts.
 func roled(evs []pipeline.SessionEvent, role pipeline.AgentRole) []pipeline.SessionEvent {
 	for i := range evs {
 		evs[i].Inference.AgentRole = role

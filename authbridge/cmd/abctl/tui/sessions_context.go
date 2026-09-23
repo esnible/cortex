@@ -8,18 +8,36 @@ import (
 	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
 )
 
-// sessionContextFor is the gauge's figure for one session, folded rather than rescanned.
+// sessionContextFor is the gauge's figure for one session: abctl's own remembered fold merged
+// with whatever the server published for that row.
 //
-// Appending is the only growth path that preserves the prefix, so a longer slice folds just its
-// tail. Every path that does something else to m.events owes this function an action — see the
-// inventory on model.events — because a replacement of the SAME length is invisible to the length
-// check below.
-func (m *model) sessionContextFor(id string) int {
+// NEITHER SOURCE DOMINATES, which is why this merges rather than preferring one. The server has
+// seen everything since the PROXY started; abctl only since IT attached, which is usually less —
+// but abctl's copy survives a proxy restart, and destroying a figure it still holds because the
+// server forgot is #870's shape. pipeline.MergePromptContext resolves it by the rule rather than by
+// size: a stated figure beats an unstated one at any magnitude.
+//
+// server is nil for a proxy older than the field and for a session with no conversation to
+// measure. Both mean "nothing known", both are the merge's identity, and that is what lets this
+// need no version detection at all.
+func (m *model) sessionContextFor(id string, server *pipeline.PromptContext) int {
+	return pipeline.MergePromptContext(server, m.localContextFor(id)).TokensOrZero()
+}
+
+// localContextFor is the fold abctl maintains itself, unchanged from before the server published
+// anything — see the retention inventory on model.events for why it is a remembered maximum rather
+// than a cache.
+//
+// FOLDED RATHER THAN RESCANNED. Appending is the only growth path that preserves the prefix, so a
+// longer slice folds just its tail. Every path that does something else to m.events owes this
+// function an action — see the inventory on model.events — because a replacement of the SAME length
+// is invisible to the length check below.
+func (m *model) localContextFor(id string) *pipeline.PromptContext {
 	events := m.events[id]
 	run, ok := m.contextRun[id]
 	switch {
 	case ok && run.Folded() == len(events):
-		return run.Tokens()
+		return run.Publish()
 	case ok && run.Folded() < len(events):
 		run.AddAll(events[run.Folded():])
 		m.contextRun[id] = run
@@ -31,9 +49,9 @@ func (m *model) sessionContextFor(id string) int {
 		// session, so zeroing here would turn the gauge into a dash for a session still
 		// sending traffic.
 		m.rebaseSessionContext(id, events)
-		return m.contextRun[id].Tokens()
+		return m.contextRun[id].Publish()
 	}
-	return run.Tokens()
+	return run.Publish()
 }
 
 // rebaseSessionContext re-folds a session whose events were REPLACED rather than appended to,
@@ -42,7 +60,7 @@ func (m *model) sessionContextFor(id string) int {
 // Called wherever the length check cannot interpret what happened: the snapshot load (a projected
 // copy of the same window, often the same length), the older-page merge (older events land before
 // the folded ones, and the page cap can drop newer ones off the end), the detail pane's write-back
-// (one event swapped in place for its full self, length unchanged), and sessionContextFor's own
+// (one event swapped in place for its full self, length unchanged), and localContextFor's own
 // fallback for a slice shorter than the run.
 //
 // KEEPS tokens, msgs AND at, and re-folds the whole new slice on top of them. Keeping the figure is

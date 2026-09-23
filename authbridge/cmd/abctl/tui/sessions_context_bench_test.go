@@ -45,7 +45,7 @@ func BenchmarkSessionContextPerEvent(b *testing.B) {
 			for i := range ids {
 				ids[i] = fmt.Sprintf("s%d", i)
 				m.events[ids[i]] = benchContextEvents(n)
-				_ = m.sessionContextFor(ids[i]) // warm, as a running TUI is
+				_ = m.sessionContextFor(ids[i], nil) // warm, as a running TUI is
 			}
 			// THE SLICE IS BUILT ONCE, OUTSIDE THE LOOP, and the run is rewound instead.
 			//
@@ -71,7 +71,7 @@ func BenchmarkSessionContextPerEvent(b *testing.B) {
 			for i := 0; i < b.N; i++ {
 				m.contextRun[ids[0]] = warm // as if the delta had only just landed
 				for _, id := range ids {
-					_ = m.sessionContextFor(id)
+					_ = m.sessionContextFor(id, nil)
 				}
 			}
 		})

@@ -346,6 +346,16 @@ func (p *PromptContext) candidate() candidate {
 	return candidate{tokens: p.Tokens, msgs: p.Msgs, at: p.At, stated: p.Stated}
 }
 
+// TokensOrZero is the figure, or zero when nothing is known — which contextGauge renders as an
+// em dash. A method on the pointer so a merge result can be read without a nil guard at every
+// call site.
+func (p *PromptContext) TokensOrZero() int {
+	if p == nil {
+		return 0
+	}
+	return p.Tokens
+}
+
 // Publish projects the fold for the wire, or nil when nothing can be said.
 //
 // NIL RATHER THAN A ZERO STRUCT, so the field is absent under omitempty. A session with only
