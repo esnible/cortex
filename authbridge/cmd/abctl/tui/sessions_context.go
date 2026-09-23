@@ -8,13 +8,6 @@ import (
 	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
 )
 
-// sessionContext is a temporary shim: the rule now lives in pipeline, but the 13 rule tests
-// still live in this package and call this name. The next task moves those tests into
-// pipeline's own package and deletes this function.
-func sessionContext(events []pipeline.SessionEvent) int {
-	return pipeline.PromptContextOf(events)
-}
-
 // sessionContextFor is the gauge's figure for one session, folded rather than rescanned.
 //
 // Appending is the only growth path that preserves the prefix, so a longer slice folds just its
@@ -54,7 +47,7 @@ func (m *model) sessionContextFor(id string) int {
 //
 // KEEPS tokens, msgs AND at, and re-folds the whole new slice on top of them. Keeping the figure is
 // what makes the column survive a snapshot from a proxy whose projection states no counts — see
-// sessionContext for what the timeline can and cannot say. Re-folding rather than just re-basing n
+// pipeline.PromptContextOf for what the timeline can and cannot say. Re-folding rather than just re-basing n
 // is what lets the new slice WIN: nothing here assumes the replacement is poorer, so a detail fetch that puts a longer
 // conversation back in place beats the remembered one on message count exactly as a streamed turn
 // would.

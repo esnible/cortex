@@ -36,7 +36,7 @@ func TestSessionContextFor_FoldMatchesAFullRescan(t *testing.T) {
 		m.events[id] = all
 
 		got := m.sessionContextFor(id)
-		want := sessionContext(all)
+		want := pipeline.PromptContextOf(all)
 		if got != want {
 			t.Fatalf("after %d events: folded %d, rescan %d", len(all), got, want)
 		}
@@ -102,7 +102,7 @@ func TestSessionContextFor_AReplacementRebasesRatherThanDropping(t *testing.T) {
 	// A SHORTER one does not WHERE NO ROLE IS STATED, and this is the knowingly-stale case. If the
 	// server has evicted the pre-compaction request, a refetch carries only the short
 	// post-compaction conversation and the gauge keeps the old figure — the same trade-off
-	// sessionContext documents for the live case, reached by a different route. A dash or a
+	// pipeline.PromptContextOf documents for the live case, reached by a different route. A dash or a
 	// subagent's figure is worse; the fix is the role, one subtest down.
 	t.Run("a shorter one keeps the remembered figure", func(t *testing.T) {
 		m := newModel()
@@ -150,8 +150,8 @@ func TestFoldSessionContext_TiesKeepTheLatest(t *testing.T) {
 	evs := conversation("first", base, 700, 445_000)
 	evs = append(evs, conversation("second", base.Add(time.Minute), 700, 448_000)...)
 
-	if got, want := sessionContext(evs), 448_000; got != want {
-		t.Errorf("sessionContext = %d, want %d", got, want)
+	if got, want := pipeline.PromptContextOf(evs), 448_000; got != want {
+		t.Errorf("pipeline.PromptContextOf = %d, want %d", got, want)
 	}
 	// And the same answer when the two arrive in separate folds, which is the production path.
 	m := &model{events: map[string][]pipeline.SessionEvent{"s": evs[:2]}}

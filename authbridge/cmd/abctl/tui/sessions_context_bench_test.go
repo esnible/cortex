@@ -28,7 +28,7 @@ func benchContextEvents(n int) []pipeline.SessionEvent {
 // gauge. rebuildSessionsTable runs on every streamed event and retention is unbounded, so a rescan
 // here is O(events) per session per event — on the pane abctl opens on.
 //
-// This benchmark exists because that regression shipped once. The first version of sessionContext
+// This benchmark exists because that regression shipped once. The first version of the rule
 // made two full passes and allocated a map per call; measured at 100k events it cost 6.10ms and
 // 3.49MB per session per event, against ~14ns for the tail scan it replaced. Dropping the map and
 // the dead paired-request check took the whole-slice cost to 0.51ms and no allocation, and folding
@@ -84,7 +84,7 @@ func BenchmarkSessionContextPerEvent(b *testing.B) {
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
 				for _, e := range evs {
-					_ = sessionContext(e)
+					_ = pipeline.PromptContextOf(e)
 				}
 			}
 		})

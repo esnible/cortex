@@ -66,21 +66,21 @@ func project(events []pipeline.SessionEvent, counts bool) []pipeline.SessionEven
 // two ints the projection records before dropping the slices.
 func TestSessionContext_ReadsAProjectedTimelineThroughTheCounts(t *testing.T) {
 	full := conversation("c1", time.Now(), 600, 500_000)
-	if got, want := sessionContext(full), 500_000; got != want {
+	if got, want := pipeline.PromptContextOf(full), 500_000; got != want {
 		t.Fatalf("unprojected fixture = %d, want %d", got, want)
 	}
-	if got, want := sessionContext(projected(full)), 500_000; got != want {
+	if got, want := pipeline.PromptContextOf(projected(full)), 500_000; got != want {
 		t.Errorf("projected = %d, want %d — the counts are what make a delivered row readable",
 			got, want)
 	}
 	// And a one-shot stays a one-shot through the projection: a manifest of zero is STATED as
 	// zero, which is the same answer the slice gave.
-	if got := sessionContext(projected(oneShot("o1", time.Now(), 282_000))); got != 0 {
+	if got := pipeline.PromptContextOf(projected(oneShot("o1", time.Now(), 282_000))); got != 0 {
 		t.Errorf("a projected one-shot = %d, want 0", got)
 	}
 	// A proxy that projects without stating the counts cannot be read, and must not be guessed
 	// at: this is the case contextRun's remembered figure exists for.
-	if got := sessionContext(projectedNoCounts(full)); got != 0 {
+	if got := pipeline.PromptContextOf(projectedNoCounts(full)); got != 0 {
 		t.Errorf("projected with no counts = %d, want 0", got)
 	}
 }
@@ -97,8 +97,8 @@ func TestSessionContext_StillReadsAnOldProxysSlices(t *testing.T) {
 			}
 		}
 	}
-	if got, want := sessionContext(evs), 500_000; got != want {
-		t.Errorf("sessionContext = %d, want %d — counts-only reading would blank every row "+
+	if got, want := pipeline.PromptContextOf(evs), 500_000; got != want {
+		t.Errorf("pipeline.PromptContextOf = %d, want %d — counts-only reading would blank every row "+
 			"served by a proxy that predates them", got, want)
 	}
 }
