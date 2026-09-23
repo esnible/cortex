@@ -319,9 +319,10 @@ func (s *Store) Append(sessionID string, event pipeline.SessionEvent) {
 	//
 	// NOT HOISTED ABOVE THE LOCK like moneyOf, and that is not an oversight. moneyOf is a
 	// json.Unmarshal and was hoisted because of a measured regression; this is a phase check, a
-	// nil check, len(Tools), three int adds and one comparison — tens of nanoseconds, no
-	// allocation, NO DECODE. Splitting it to hoist the extraction would add an exported type for
-	// plumbing alone and save nothing measurable.
+	// nil check, len(Tools), two AgentRole comparisons, a messageCount read, three int adds and
+	// one comparison, and — once the fold already holds a figure — better()'s time.Time
+	// Equal/After chain: tens of nanoseconds, no allocation, NO DECODE. Splitting it to hoist the
+	// extraction would add an exported type for plumbing alone and save nothing measurable.
 	sess.context.Add(&event)
 	sess.UpdatedAt = now
 	s.activeID = sessionID
@@ -635,10 +636,26 @@ type SessionSummary struct {
 	// tell apart from a real one.
 	Saturated bool `json:"saturated,omitempty"`
 	Active    bool `json:"active"` // true if this is the most recently updated session
-	// PromptContext is how full this session's conversation is, from entry.context. Task 7 adds
-	// the wire tag and the doc comment that argues the field; this task adds the field so
-	// Append's maintenance of the fold has somewhere to be read from.
-	PromptContext *pipeline.PromptContext
+	// PromptContext is how full this session's conversation got, by the rule in
+	// pipeline.PromptContextFold: the largest main-agent request seen, in prompt tokens.
+	//
+	// LIFETIME-MAX, NOT SCOPED TO WHAT THE STORE HOLDS — unlike TotalTokens and CostMicros
+	// above, and the asymmetry is deliberate rather than an inconsistency. Those are sums, and a
+	// sum over a trimmed slice understates by a known amount, which is why CostMicros can
+	// honestly call itself the cost of the events in this session. This is a maximum, and a
+	// maximum over a trimmed slice does not understate — it reports a small conversation when the
+	// conversation is large and merely aged out of the store. A client showing the three on one
+	// row must not present any of them as a check on another.
+	//
+	// A POINTER SO ABSENT AND ZERO STAY APART, which is the same standing rule CostMicros states
+	// for its omitempty: an unknown figure must never render as a real one. A session with only
+	// one-shot completions has no conversation to measure and is indistinguishable here from one
+	// nobody observed; both must reach a client as an absent field so it can draw an em dash.
+	//
+	// RESETS ON PROXY RESTART, like CostMicros and unlike a cost-ledger window, because the store
+	// is in-memory per-pod. A client that has been watching longer than this proxy has been up may
+	// hold a larger figure legitimately — see pipeline.MergePromptContext, which is how the two combine.
+	PromptContext *pipeline.PromptContext `json:"promptContext,omitempty"`
 }
 
 // ListSessions returns summaries for every non-expired session. Order is
@@ -668,12 +685,12 @@ func (s *Store) ListSessions() []SessionSummary {
 			// sums, which is why one flag covers them — the same reasoning
 			// usage.Counts.Saturated gives for covering every money field in a Counts.
 			Saturated: sess.cost.Saturated || sess.avoided.Saturated,
-			// Read, not computed, and for a second reason the two above do not have: this one
-			// CANNOT be recomputed here. The fold is a maximum over turns the session may no
-			// longer hold, so a walk of sess.Events would blank the gauge on exactly the long
-			// conversations it exists for. See entry.context.
+			Active:    id == s.activeID,
+			// Read, not computed — and unlike TotalTokens above this is NOT a walk. Folding the rule
+			// here instead would repeat the mistake entry.cost documents: O(events) per session
+			// under the read lock, on abctl's two-second poll, in front of a lock whose writer side
+			// is Append on the proxy's request path, with maxEvents unset by default.
 			PromptContext: sess.context.Publish(),
-			Active:        id == s.activeID,
 		})
 	}
 	// Most recently updated first.

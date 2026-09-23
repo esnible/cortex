@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -933,9 +934,13 @@ func TestAppend_MaintainsThePromptContextFigure(t *testing.T) {
 		s.Append("oneshot", e)
 	}
 
+	// Both flagged so an absent session fails loudly instead of the switch below silently
+	// asserting nothing for it — a missing case here would otherwise pass.
+	var sawAgentic, sawOneshot bool
 	for _, sum := range s.ListSessions() {
 		switch sum.ID {
 		case "agentic":
+			sawAgentic = true
 			if sum.PromptContext == nil || sum.PromptContext.Tokens != 500_000 {
 				t.Errorf("agentic: %+v, want tokens=500000", sum.PromptContext)
 			}
@@ -943,11 +948,18 @@ func TestAppend_MaintainsThePromptContextFigure(t *testing.T) {
 				t.Error("agentic: Stated=false, but the fixture declares AgentRoleMain")
 			}
 		case "oneshot":
+			sawOneshot = true
 			if sum.PromptContext != nil {
 				t.Errorf("oneshot: %+v, want nil — no manifest means no conversation to measure",
 					sum.PromptContext)
 			}
 		}
+	}
+	if !sawAgentic {
+		t.Error("\"agentic\" session missing from ListSessions — the assertions above never ran")
+	}
+	if !sawOneshot {
+		t.Error("\"oneshot\" session missing from ListSessions — the assertions above never ran")
 	}
 }
 
@@ -971,10 +983,58 @@ func TestPromptContext_WholeEntryEvictionDropsTheFigure(t *testing.T) {
 	for _, e := range promptContextTurn("c3", base.Add(2*time.Minute), 3, 0, 9_000) {
 		s.Append("first", e)
 	}
+	// Flagged so a "first" absent from the list (the recreate silently failing) fails loudly
+	// instead of the check below asserting nothing.
+	var sawRecreated bool
 	for _, sum := range s.ListSessions() {
-		if sum.ID == "first" && sum.PromptContext != nil {
-			t.Errorf("recreated session carried a figure forward: %+v", sum.PromptContext)
+		if sum.ID == "first" {
+			sawRecreated = true
+			if sum.PromptContext != nil {
+				t.Errorf("recreated session carried a figure forward: %+v", sum.PromptContext)
+			}
 		}
+	}
+	if !sawRecreated {
+		t.Error("recreated \"first\" session missing from ListSessions — the assertion above never ran")
+	}
+}
+
+// NIL MUST SERIALIZE AS AN ABSENT FIELD, not as {"tokens":0}. A client reading zero would draw
+// an empty track where the column's contract is an em dash, and "barely used" and "not known"
+// are different answers this column has to keep apart.
+func TestSessionSummary_PromptContextOmittedWhenNil(t *testing.T) {
+	b, err := json.Marshal(SessionSummary{ID: "s"})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	// Case-insensitive: an untagged field marshals under its exact Go name, "PromptContext"
+	// (capital P), not "promptContext" — a case-sensitive check here would never see it and
+	// would pass whether or not the tag exists, pinning nothing.
+	if strings.Contains(strings.ToLower(string(b)), "promptcontext") {
+		t.Errorf("a nil figure serialized as %s, want the field absent", b)
+	}
+
+	at := time.Now().UTC().Truncate(time.Second)
+	b, err = json.Marshal(SessionSummary{
+		ID:            "s",
+		PromptContext: &pipeline.PromptContext{Tokens: 851_000, Stated: true, At: at, Msgs: 1509},
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var back SessionSummary
+	if err := json.Unmarshal(b, &back); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if back.PromptContext == nil {
+		t.Fatal("the figure did not survive the round trip")
+	}
+	// All four fields, not the three PromptContext held before Msgs joined it — the fold's
+	// current() and better() both compare Msgs, so dropping it here would silently pin a
+	// round trip that loses part of the total order.
+	if back.PromptContext.Tokens != 851_000 || !back.PromptContext.Stated ||
+		!back.PromptContext.At.Equal(at) || back.PromptContext.Msgs != 1509 {
+		t.Errorf("round-tripped to %+v", back.PromptContext)
 	}
 }
 
