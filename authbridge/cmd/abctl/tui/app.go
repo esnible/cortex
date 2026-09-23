@@ -358,7 +358,7 @@ type model struct {
 	// event, so a full scan there is O(events) per session per event. It is a remembered
 	// maximum rather than a cache of the slice: the events can stop carrying the evidence
 	// (view=summary strips it) while the answer stays true.
-	contextRun map[string]contextRun
+	contextRun map[string]pipeline.PromptContextFold
 	// sessionsData is what an agent knows about its own sessions that the proxy does
 	// not — a title, mostly. Read once at startup from ~/.cortex/session-metadata.json,
 	// which `abctl experimental read-claude-sessions` writes; empty when that has never

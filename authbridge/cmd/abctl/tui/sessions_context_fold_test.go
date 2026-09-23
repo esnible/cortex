@@ -42,8 +42,8 @@ func TestSessionContextFor_FoldMatchesAFullRescan(t *testing.T) {
 		}
 	}
 	// And the run really was folded rather than rescanned: every event has been accounted for.
-	if run := m.contextRun[id]; run.n != len(all) {
-		t.Errorf("folded %d events, slice holds %d", run.n, len(all))
+	if run := m.contextRun[id]; run.Folded() != len(all) {
+		t.Errorf("folded %d events, slice holds %d", run.Folded(), len(all))
 	}
 }
 
