@@ -518,7 +518,7 @@ func candidateOf(e *SessionEvent) candidate {
 //	                                       unstated predecessor was — a figure chosen by a rule
 //	                                       that cannot see subagents is not evidence
 //	  within stated:    (at, tokens, msgs)
-//	  within unstated:  (msgs, tokens, at)
+//	  within unstated:  (msgs, at, tokens)
 //
 // A max over a total order is commutative AND associative, which is what makes the fold a
 // monoid: replay order cannot change the answer, so a future restore-then-continue needs no
@@ -540,10 +540,15 @@ func better(a, b candidate) bool {
 	if a.msgs != b.msgs {
 		return a.msgs > b.msgs
 	}
-	if a.tokens != b.tokens {
-		return a.tokens > b.tokens
+	// At BEFORE tokens, and the ordering here is load-bearing: the original rule broke unstated
+	// ties by timestamp, so tokens must be APPENDED to that, never substituted for it. A
+	// view=summary timeline that projects without MessageCount ties every candidate at msgs == 0,
+	// which hands the whole answer to whatever comes next — and "largest context wins" there pins
+	// the pre-compaction figure, the exact staleness this column exists to avoid.
+	if !a.at.Equal(b.at) {
+		return a.at.After(b.at)
 	}
-	return a.at.After(b.at)
+	return a.tokens > b.tokens
 }
 
 func (f *PromptContextFold) Add(e *SessionEvent) {
@@ -705,13 +710,34 @@ func TestMerge_BothStatedTakesTheLater(t *testing.T) {
 	}
 }
 
-// THE COARSENING IS CONFINED TO ONE ARM, which is the spec's claim for omitting msgs.
-func TestMerge_NeitherStatedFallsBackToLargerTokens(t *testing.T) {
-	a := &PromptContext{Tokens: 100_000, At: time.Now()}
-	b := &PromptContext{Tokens: 700_000, At: time.Now().Add(-time.Hour)}
-	if got := Merge(a, b); got.Tokens != 700_000 {
-		t.Errorf("merged to %d, want 700000 — msgs is not published, so this arm is coarse "+
-			"by design and takes the larger figure", got.Tokens)
+// THE COARSENING IS CONFINED TO msgs, and it does NOT degrade to "largest wins".
+//
+// With the message count unpublished, the timestamp is what remains of the fold's unstated order —
+// and it is the comparator that matters. Taking the larger figure here would pin a pre-compaction
+// context over the turn that followed it, which is the staleness this column exists to avoid; the
+// first draft of the design specified exactly that and Task 4 caught it.
+func TestMerge_NeitherStatedTakesTheLaterTurnNotTheLarger(t *testing.T) {
+	at := time.Now()
+	later := &PromptContext{Tokens: 100_000, At: at}
+	earlierButBigger := &PromptContext{Tokens: 700_000, At: at.Add(-time.Hour)}
+
+	for _, tc := range []struct {
+		name string
+		a, b *PromptContext
+	}{
+		{"later first", later, earlierButBigger},
+		{"bigger first", earlierButBigger, later},
+	} {
+		if got := Merge(tc.a, tc.b); got.Tokens != 100_000 {
+			t.Errorf("%s: merged to %d, want 100000 — the later turn wins; taking the larger "+
+				"figure would hold a pre-compaction context forever", tc.name, got.Tokens)
+		}
+	}
+
+	// Only a genuine timestamp tie falls through to the larger figure.
+	tied := &PromptContext{Tokens: 500_000, At: at}
+	if got := Merge(later, tied); got.Tokens != 500_000 {
+		t.Errorf("on an exact tie merged to %d, want 500000", got.Tokens)
 	}
 }
 ```
@@ -764,7 +790,10 @@ func (f PromptContextFold) Publish() *PromptContext {
 //	stated ≻ unstated             a figure from a rule that cannot see subagents is not
 //	                              evidence, at any size
 //	  both stated:    later At wins; tie → larger Tokens
-//	  neither stated: larger Tokens (msgs is unpublished, so this arm is coarse)
+//	  neither stated: later At wins; tie → larger Tokens (msgs is unpublished, so this arm is
+//	                  coarse — but At IS published, and "latest" is a far closer proxy for the
+//	                  dropped message count than "largest" is; taking the largest here would
+//	                  pin a pre-compaction figure)
 func Merge(a, b *PromptContext) *PromptContext {
 	switch {
 	case a == nil:
@@ -776,18 +805,17 @@ func Merge(a, b *PromptContext) *PromptContext {
 			return a
 		}
 		return b
-	case a.Stated:
+	// ONE ARM FOR BOTH, deliberately: once the stated/unstated question is settled above, the
+	// remaining order is (At, Tokens) either way. The fold's internal order differs between the
+	// two arms only because it can read msgs, which this projection drops — and with msgs gone,
+	// the unstated arm's original timestamp comparator is exactly what is left of it.
+	default:
 		if !a.At.Equal(b.At) {
 			if a.At.After(b.At) {
 				return a
 			}
 			return b
 		}
-		if a.Tokens >= b.Tokens {
-			return a
-		}
-		return b
-	default:
 		if a.Tokens >= b.Tokens {
 			return a
 		}

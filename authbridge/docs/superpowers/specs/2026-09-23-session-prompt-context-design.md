@@ -300,7 +300,7 @@ future fold-to-fold restore:
 ```
 stated ≻ unstated
   within stated:    order by (At, Tokens)
-  within unstated:  order by (msgs, Tokens)
+  within unstated:  order by (msgs, At, Tokens)
 ```
 
 **Published — `Merge(a, b *PromptContext)`, where `msgs` is not.** Used by the client:
@@ -310,7 +310,7 @@ Merge(a, b):
   either nil         → the other               (nil is the identity)
   exactly one Stated → that one                (stated beats unstated, any size)
   both Stated        → later At; tie → larger Tokens
-  neither Stated     → larger Tokens           (degraded: msgs is not published)
+  neither Stated     → later At; tie → larger Tokens   (degraded: msgs is not published)
 ```
 
 The published order is a **coarser** version of the internal one — `Publish()` is a lossy
@@ -329,10 +329,21 @@ switch.
 `Add(e)` is therefore the internal combine against a candidate extracted from one event, not
 `Merge` — `Merge` cannot see `msgs`.
 
-The two formulations agree on every input **except exact-timestamp ties among equal-message
-unstated turns**, where the old form fell through to arrival order. That is a real behaviour
-delta, confined and tested, and it is why the reformulation is its own commit rather than part
-of the move.
+The two formulations agree on every input **except ties that the old form resolved by arrival
+order** — a stated pair sharing a timestamp, or an unstated pair equal on both message count and
+timestamp. In both arms the new comparator is *appended* to the old one, not substituted for it.
+
+That distinction was wrong in the first draft of this spec and Task 4 caught it: the draft gave
+the unstated order as `(msgs, Tokens)`, replacing the original's timestamp comparator instead of
+appending to it. The consequence was not hypothetical. A `view=summary` timeline that projects
+without `MessageCount` ties **every** candidate at `msgs == 0`, so the second comparator decides
+the entire answer — and "largest context wins" there pins the pre-compaction figure, which is
+precisely the stale-figure failure this column exists to avoid. Corrected to `(msgs, At, Tokens)`,
+which also restores the mutation coverage that
+`TestSessionContextFor_ATieAcrossARebaseKeepsTheLaterTurn` provides for the `at` comparator.
+
+The remaining delta is confined and tested, and it is why the reformulation is its own commit
+rather than part of the move.
 
 ### Client wiring
 
