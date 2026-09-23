@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 
@@ -139,13 +140,33 @@ func TestRenderTierRows_ReasoningNeverExceedsOutput(t *testing.T) {
 					outputPct, outputRow = pct, l
 				}
 			}
+			if reasoningRow == "" {
+				t.Fatal("no reasoning row rendered")
+			}
 			if reasoningPct > outputPct {
 				t.Errorf("reasoning is %d%% of the bill but output is only %d%%; a subset cannot "+
 					"exceed its set\n  %s\n  %s", reasoningPct, outputPct, outputRow, reasoningRow)
 			}
-			// The money column must be clamped too, not just the share.
-			if reasoningRow == "" {
-				t.Fatal("no reasoning row rendered")
+			// THE MONEY CELL NEEDS ITS OWN ASSERTION, and it is the one that catches a
+			// money clamp deleted on its own. pct is derived from the ALREADY-clamped
+			// micros and then clamped a SECOND time against the output tier's share, so
+			// the share check above stays green when only the money clamp is removed —
+			// while the dollar figure and the bar both render several times output.
+			rMoney, rOK := rowMoney(reasoningRow)
+			oMoney, oOK := rowMoney(outputRow)
+			if rOK && oOK && rMoney > oMoney {
+				t.Errorf("the child's figure $%.4f exceeds its parent's $%.4f:\n  %s\n  %s",
+					rMoney, oMoney, outputRow, reasoningRow)
+			}
+			// THE COUNTER MUST COUNT, asserted before it is trusted. The first version
+			// of drawnBarGlyphs used an inverted rune range and returned 0 for every
+			// row, so the comparison below was 0 > 0 and could not fail while the
+			// commit message claimed it checked the bar. A dead assertion is worse than
+			// an absent one: it reads as coverage. This guard makes that class of
+			// mistake fail loudly instead of silently passing.
+			if drawnBarGlyphs(outputRow) == 0 {
+				t.Fatalf("drawnBarGlyphs counted no glyphs in %q; the bar assertion below "+
+					"cannot fail", outputRow)
 			}
 			if drawnBarGlyphs(reasoningRow) > drawnBarGlyphs(outputRow) {
 				t.Errorf("the child's bar is longer than its parent's:\n  %s\n  %s",
@@ -155,17 +176,43 @@ func TestRenderTierRows_ReasoningNeverExceedsOutput(t *testing.T) {
 	}
 }
 
+// barGlyphs are the eight block glyphs tierBar draws with, U+2588 through U+258F.
+//
+// A SET, NOT A RANGE, and the reason is worth keeping: the glyphs run BACKWARDS
+// against visual width. '█' (full) is U+2588, the LOWEST code point, and '▏' (one
+// eighth) is U+258F, the highest. Written as `r >= '▏' && r <= '█'` — which reads
+// correctly as "from thinnest to fullest" — it compiles, vets clean, and is
+// unsatisfiable: the counter returned 0 for every row, so the assertion using it
+// could not fail. A set cannot be ordered wrongly.
+const barGlyphs = "█▉▊▋▌▍▎▏"
+
 // drawnBarGlyphs counts the block glyphs in a rendered row, which is the bar's drawn
 // length. Counted rather than measured off an index because the bar sits between
 // two variable-width cells.
 func drawnBarGlyphs(row string) int {
 	n := 0
 	for _, r := range row {
-		if r >= '▏' && r <= '█' {
+		if strings.ContainsRune(barGlyphs, r) {
 			n++
 		}
 	}
 	return n
+}
+
+// rowMoney reads the dollar figure a rendered row ends with.
+//
+// Returns false for the not-known cell, which carries no figure — a row without one
+// is not a row whose figure is zero, which is the distinction this panel is built on.
+func rowMoney(row string) (float64, bool) {
+	i := strings.LastIndex(row, "$")
+	if i < 0 {
+		return 0, false
+	}
+	v, err := strconv.ParseFloat(strings.TrimSpace(row[i+1:]), 64)
+	if err != nil {
+		return 0, false
+	}
+	return v, true
 }
 
 // An unreported split renders the NOT-KNOWN cell, not $0.00 and not a vanished row.

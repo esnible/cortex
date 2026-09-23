@@ -426,7 +426,16 @@ func foldAnthropicFrame(frame []byte, state *inferenceStreamState, ext *pipeline
 func mergeAnthropicUsageMaxSeen(state *inferenceStreamState, incoming parsercommon.TokenUsage) {
 	// Presence is a union across events: once a sub-field is observed on
 	// the wire, later events that omit it must not clear the bit. Kept beside the
-	// value merges below so nothing can set a bit this function does not also fill.
+	// value merges below so that every kind merged HERE has its bit and its value set
+	// in one place.
+	//
+	// KindOutput is the one exception, and naming it is the point: toNeutral asserts
+	// that bit unconditionally, so this union sets it while Output is filled in
+	// foldAnthropicFrame instead — it is cumulative on the wire, not max-seen. That
+	// split predates this function and pricing.outputUncounted depends on it. The
+	// exception is written down because the reasoning bug this signature was changed
+	// to fix was a bit set here and a value filled elsewhere; an unqualified claim
+	// that it cannot happen would hide the one place it still does.
 	state.usage.Present |= incoming.Present
 	if incoming.Reasoning > state.usage.Reasoning {
 		state.usage.Reasoning = incoming.Reasoning

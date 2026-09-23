@@ -186,7 +186,7 @@ func renderTierRows(c usage.Counts, width int) []string {
 	// split was reported the child renders the not-known cell, which is exactly what an
 	// absent TIER does two branches above.
 	return insertAfterOutput(out[:], order,
-		reasoningChildRow(c, tiers, ok, shares, peak, budget, width))
+		reasoningChildRow(c, tiers, ok, peak, budget, width))
 }
 
 // reasoningChildRow renders the reasoning row that hangs under output.
@@ -209,7 +209,7 @@ func renderTierRows(c usage.Counts, width int) []string {
 // cannot state a percentage of one total beside a figure from another" — and the
 // containment reads from the indent anyway: 15% under 27% is visibly a part of it.
 func reasoningChildRow(c usage.Counts, tiers [pricing.NumTiers]int64, ok bool,
-	shares [pricing.NumTiers]int, peak int64, budget, width int) string {
+	peak int64, budget, width int) string {
 	notKnown := clipRow(fmt.Sprintf("%-*s %s", tierLabelWidth, childTierLabel, emptyCell), width)
 
 	// The present bit decides, as everywhere else: a clear bit with a zero value means
@@ -238,14 +238,22 @@ func reasoningChildRow(c usage.Counts, tiers [pricing.NumTiers]int64, ok bool,
 	// Floored against the same total the tier rows use, so the child is comparable down
 	// the column. Deliberately NOT tierShares, which must keep summing to 100 across
 	// exactly the four tiers.
+	//
+	// NO SECOND CLAMP HERE, and the omission is deliberate rather than an oversight.
+	// This share is derived from micros AFTER the clamp above, so it is already bounded
+	// by the parent's:
+	//
+	//	floor(micros*100/total) <= floor(tiers[output]*100/total) <= shares[output]
+	//
+	// the right-hand step holding because tierShares only ever ADDS its rounding
+	// remainder to the largest share, never subtracts. A `pct > shares[output]` guard
+	// was written here first and was unreachable — no fixture could enter it, and
+	// mutation-testing confirmed removing it changed no output. Unreachable code with
+	// an untestable branch is worse than none: it implies a hazard that does not exist
+	// and invites a reader to protect the wrong invariant.
 	pct := 0
 	if c.CostMicros > 0 {
 		pct = int(micros * 100 / c.CostMicros)
-	}
-	// The child can never out-rank its parent's share once clamped, but floor division
-	// can tie them; the indent still distinguishes the rows.
-	if pct > shares[pricing.TierOutput] {
-		pct = shares[pricing.TierOutput]
 	}
 	label := childTierLabel
 	var row string

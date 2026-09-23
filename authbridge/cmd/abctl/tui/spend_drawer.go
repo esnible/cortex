@@ -729,15 +729,19 @@ func renderSpendDrawer(snap *usage.Snapshot, err error, axis usage.Group, window
 	// The right column is shorter and its slots are filled by the `i < len(rows)` guard
 	// below, so the two columns stay the same height by construction.
 	//
-	// READ FROM THE SLICE when there is one, rather than trusting the constant to agree
-	// with it. tiers[i] below is indexed bare, and renderTierRows returning fewer rows
-	// than tierPanelLines would be an out-of-range panic in the middle of a render —
-	// a crashed TUI, from a contract held only by a test in another package. Deriving
-	// the bound makes the two impossible to disagree; the constant still governs the
-	// one-column path, where tiers is nil and the loop never indexes it.
+	// THE LOWER OF THE TWO, because the constant and the slice each guard a different
+	// failure and neither alone guards both.
+	//
+	// tiers[i] below is indexed bare, so renderTierRows returning FEWER rows than
+	// tierPanelLines is an out-of-range panic mid-render — a crashed TUI, from a
+	// contract held only by a test in another package. Reading the length alone fixes
+	// that but removes the ceiling: renderTierRows returning MORE rows (a second child)
+	// would emit more body rows than spendDrawerLines reserves and push the footer off
+	// the terminal, which is the failure the block above documents. min keeps both, and
+	// the one-column path takes tierPanelLines because tiers is nil and never indexed.
 	bound := tierPanelLines
 	if twoCol {
-		bound = len(tiers)
+		bound = min(tierPanelLines, len(tiers))
 	}
 	for i := 0; i < bound; i++ {
 		// NO BRANCH GLYPHS BETWEEN THE COLUMNS' OWN ROWS. "├" and "└" once prefixed every
