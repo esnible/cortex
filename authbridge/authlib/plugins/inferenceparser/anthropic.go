@@ -129,18 +129,33 @@ func parseAnthropicRequest(body []byte) *pipeline.InferenceExtension {
 //
 // Cache fields are *int so an omitted field on the wire (e.g. message_start
 // on the ?beta=true path) stays absent in Present rather than being asserted
-// as a reported zero.
+// as a reported zero. OutputTokensDetails is a pointer for the same reason, and
+// it needs it more: it is absent on message_start and on message_stop, and
+// present only on message_delta.
 type anthropicUsage struct {
 	InputTokens              int  `json:"input_tokens"`
 	OutputTokens             int  `json:"output_tokens"`
 	CacheCreationInputTokens *int `json:"cache_creation_input_tokens"`
 	CacheReadInputTokens     *int `json:"cache_read_input_tokens"`
+
+	// OutputTokensDetails splits output_tokens by what generated it. Anthropic
+	// reports exactly one sub-field, thinking_tokens: the share of output spent on
+	// internal reasoning. It is a SUBSET of OutputTokens, not a sibling.
+	OutputTokensDetails *struct {
+		ThinkingTokens *int `json:"thinking_tokens"`
+	} `json:"output_tokens_details"`
 }
 
 // toNeutral maps Anthropic's usage onto TokenUsage. Input and Output are
-// always emitted by the Messages API; cache sub-fields are observed via
-// their pointers so an absent field stays absent in Present. Reasoning is
-// not exposed by Anthropic.
+// always emitted by the Messages API; cache sub-fields and the output-token
+// details are observed via their pointers so an absent field stays absent in
+// Present.
+//
+// Reasoning comes from output_tokens_details.thinking_tokens. This parser used to
+// carry a comment asserting Anthropic does not expose reasoning; that was true
+// once and is not now, and the stale comment is why the field stayed unread long
+// after the wire carried it. Verified against a live claude-opus-5 turn and
+// documented under build-with-claude/thinking-steering-and-cost.
 func (u anthropicUsage) toNeutral() parsercommon.TokenUsage {
 	n := parsercommon.TokenUsage{
 		Input:   u.InputTokens,
@@ -154,6 +169,12 @@ func (u anthropicUsage) toNeutral() parsercommon.TokenUsage {
 	if u.CacheCreationInputTokens != nil {
 		n.CacheWrite = *u.CacheCreationInputTokens
 		n.Present |= parsercommon.KindCacheWrite
+	}
+	// Both pointers are checked: a details object present but empty (a gateway that
+	// forwards the key without the count) reports nothing, and must not set the bit.
+	if u.OutputTokensDetails != nil && u.OutputTokensDetails.ThinkingTokens != nil {
+		n.Reasoning = *u.OutputTokensDetails.ThinkingTokens
+		n.Present |= parsercommon.KindReasoning
 	}
 	return n
 }
@@ -380,6 +401,13 @@ func foldAnthropicFrame(frame []byte, state *inferenceStreamState, ext *pipeline
 			mergeAnthropicPromptMaxSeen(state, neutral)
 			if neutral.Output > 0 {
 				state.usage.Output = neutral.Output // cumulative
+			}
+			// Max-seen, for the reason the prompt side is: thinking_tokens rides
+			// only on message_delta, and a later frame that omits it (message_stop
+			// carries a details-free usage block) must not clear a real count.
+			// mergeAnthropicPromptMaxSeen already unioned the Present bit.
+			if neutral.Reasoning > state.usage.Reasoning {
+				state.usage.Reasoning = neutral.Reasoning
 			}
 			state.hasUsage = true
 		}
