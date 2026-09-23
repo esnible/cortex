@@ -297,6 +297,76 @@ func (f PromptContextFold) Folded() int { return f.n }
 // blanks a live session's gauge, because a view=summary timeline may carry no candidate at all.
 func (f *PromptContextFold) ResetFolded() { f.n = 0 }
 
+// PromptContext is the fold's PUBLISHABLE state: enough to merge two of them, which a client
+// holding its own figure must do, and which a future restore-then-continue would do.
+//
+// A LOSSY PROJECTION, deliberately. msgs is omitted because it is the FALLBACK rule's
+// comparator and is slated for deletion once the supported proxy floor publishes agentRole
+// (see PromptContextFold). Omitting it coarsens exactly one arm of Merge —
+// unstated-versus-unstated — which a client reaches only against a proxy that publishes this
+// type without publishing agentRole. Persistence should store the FOLD, not this.
+type PromptContext struct {
+	Tokens int       `json:"tokens"`
+	Stated bool      `json:"stated"`
+	At     time.Time `json:"at"`
+}
+
+// Publish projects the fold for the wire, or nil when nothing can be said.
+//
+// NIL RATHER THAN A ZERO STRUCT, so the field is absent under omitempty. A session with only
+// one-shot calls has no conversation to measure and is indistinguishable from one nobody has
+// observed; both must render as an em dash rather than as a figure. Same standing rule
+// SessionSummary.CostMicros states for its own omitempty.
+func (f PromptContextFold) Publish() *PromptContext {
+	if f.tokens == 0 {
+		return nil
+	}
+	return &PromptContext{Tokens: f.tokens, Stated: f.stated, At: f.at}
+}
+
+// Merge combines two published figures, nil meaning "nothing known".
+//
+// THE PUBLISHED ORDER IS COARSER THAN THE FOLD'S — see PromptContext — but it is the same shape:
+// a max over a total order, so Merge is commutative, associative, and has nil as its identity.
+// That is what lets a client merge the server's figure with its own and need no version
+// detection: an old proxy sends nothing, and nothing is a valid operand.
+//
+//	stated ≻ unstated             a figure from a rule that cannot see subagents is not
+//	                              evidence, at any size
+//	  both stated:    later At wins; tie → larger Tokens
+//	  neither stated: later At wins; tie → larger Tokens (msgs is unpublished, so this arm is
+//	                  coarse — but At IS published, and "latest" is a far closer proxy for the
+//	                  dropped message count than "largest" is; taking the largest here would
+//	                  pin a pre-compaction figure)
+func Merge(a, b *PromptContext) *PromptContext {
+	switch {
+	case a == nil:
+		return b
+	case b == nil:
+		return a
+	case a.Stated != b.Stated:
+		if a.Stated {
+			return a
+		}
+		return b
+	// ONE ARM FOR BOTH, deliberately: once the stated/unstated question is settled above, the
+	// remaining order is (At, Tokens) either way. The fold's internal order differs between the
+	// two arms only because it can read msgs, which this projection drops — and with msgs gone,
+	// the unstated arm's original timestamp comparator is exactly what is left of it.
+	default:
+		if !a.At.Equal(b.At) {
+			if a.At.After(b.At) {
+				return a
+			}
+			return b
+		}
+		if a.Tokens >= b.Tokens {
+			return a
+		}
+		return b
+	}
+}
+
 // toolCount and messageCount answer the two questions this file asks of a conversation, on either
 // shape the API delivers.
 //

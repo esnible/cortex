@@ -273,46 +273,301 @@ func TestPromptContextFold_ExactTimestampTiesAreDeterministic(t *testing.T) {
 	}
 }
 
+// permsOf enumerates every permutation of [0,n), so a commutativity claim is made over ALL orders
+// rather than over the handful an author happened to type out. n is 5 or 6 here.
+func permsOf(n int) [][]int {
+	idx := make([]int, n)
+	for i := range idx {
+		idx[i] = i
+	}
+	var out [][]int
+	var rec func(k int)
+	rec = func(k int) {
+		if k == n {
+			out = append(out, append([]int(nil), idx...))
+			return
+		}
+		for i := k; i < n; i++ {
+			idx[k], idx[i] = idx[i], idx[k]
+			rec(k + 1)
+			idx[k], idx[i] = idx[i], idx[k]
+		}
+	}
+	rec(0)
+	return out
+}
+
 // THE LAWS THE RESTORE PATH WILL RELY ON. Stated as tests because the spec claims them: if the
 // fold is not commutative and associative, replay order changes a persisted figure.
+//
+// TWO FIXTURES, BECAUSE ONE CANNOT REACH BOTH ARMS. The first version of this test carried a
+// single stated candidate, so stated dominance decided every permutation on its own and neither
+// arm's internal ordering was ever the comparator that settled the answer — the sequential latch
+// this reformulation replaced would have passed it unchanged, which is no test of the
+// reformulation at all. So: one fixture whose answer is settled INSIDE the stated arm by
+// (at, tokens), and one with no stated candidate anywhere, whose answer is settled inside the
+// unstated arm by (msgs, at, tokens).
+//
+// AND ASSOCIATIVITY, NOT ONLY COMMUTATIVITY. Permuting turns one at a time cannot distinguish the
+// two laws: a restore combines whole FOLDS, so the grouped form — ((A,B),C) against (A,(B,C)) —
+// is the shape the persisted figure actually depends on.
 func TestPromptContextFold_IsACommutativeMonoid(t *testing.T) {
 	base := time.Now()
-	turns := [][]SessionEvent{
-		conversation("c1", base, 1491, 830_000),
-		oneShot("o1", base.Add(time.Minute), 282_000),
-		mainAgent("m1", base.Add(2*time.Minute), 108, 217_121),
-		subagent("s1", base.Add(3*time.Minute), 186, 198_899),
-		conversation("c2", base.Add(4*time.Minute), 1509, 851_000),
-	}
 
-	foldOf := func(order []int) PromptContextFold {
-		var f PromptContextFold
-		for _, i := range order {
-			f.AddAll(turns[i])
-		}
-		f.ResetFolded() // n counts arrivals, not content; it is not part of the answer
-		return f
-	}
-
-	want := foldOf([]int{0, 1, 2, 3, 4})
-	for _, order := range [][]int{
-		{4, 3, 2, 1, 0}, {2, 0, 4, 1, 3}, {1, 4, 0, 3, 2}, {3, 2, 4, 0, 1},
+	for _, tc := range []struct {
+		name  string
+		want  int
+		turns [][]SessionEvent
+	}{
+		{
+			// THE STATED ARM DECIDES HERE. Dominance over the unstated turn settles only which
+			// CLASS wins; (at, tokens) has to settle the rest — m2 beats m1 on at, and beats m3
+			// on tokens at an equal at.
+			name: "stated candidates ranked among themselves",
+			want: 400_249,
+			turns: [][]SessionEvent{
+				conversation("c1", base, 1491, 830_000),                // unstated, and much larger
+				oneShot("o1", base.Add(time.Minute), 282_000),          // no manifest: makes no claim
+				mainAgent("m1", base.Add(2*time.Minute), 108, 217_121), // stated, earlier
+				subagent("s1", base.Add(3*time.Minute), 186, 198_899),  // states a role, filtered out
+				mainAgent("m2", base.Add(5*time.Minute), 40, 400_249),  // stated and LATEST: wins
+				mainAgent("m3", base.Add(5*time.Minute), 30, 300_000),  // ties m2 on at, smaller
+			},
+		},
+		{
+			// THE UNSTATED ARM DECIDES HERE, because nothing states a role at all — the case the
+			// fixture above cannot reach, since one stated candidate is enough to end every
+			// comparison on dominance. All three of its comparators are load-bearing: u3 loses on
+			// msgs though it is both later and far larger, u4 loses on at at an equal count, and
+			// u2 takes it from u1 on tokens at an equal (msgs, at).
+			name: "no stated candidate at all",
+			want: 500_000,
+			turns: [][]SessionEvent{
+				conversation("u1", base.Add(8*time.Minute), 1509, 400_000),
+				conversation("u2", base.Add(8*time.Minute), 1509, 500_000),
+				conversation("u3", base.Add(20*time.Minute), 1491, 999_000),
+				conversation("u4", base.Add(time.Minute), 1509, 900_000),
+				oneShot("o1", base.Add(30*time.Minute), 282_000),
+			},
+		},
 	} {
-		if got := foldOf(order); got != want {
-			t.Errorf("order %v gave %+v, want %+v — the fold is not commutative", order, got, want)
+		t.Run(tc.name, func(t *testing.T) {
+			turns := tc.turns
+
+			// foldOf folds whole turns, in the order given. n counts arrivals rather than
+			// content, so it is reset out of every comparison.
+			foldOf := func(order []int) PromptContextFold {
+				var f PromptContextFold
+				for _, i := range order {
+					f.AddAll(turns[i])
+				}
+				f.ResetFolded()
+				return f
+			}
+
+			// combine is the fold's binary operation applied to two FOLDS rather than to a fold
+			// and an event: the same max over the same production comparator Add uses, with the
+			// same zero-fold identity. It is not a second copy of the rule — better() is the
+			// rule, and the assertion that a grouped combine equals the event-by-event fold is
+			// what pins this helper to Add. A restore-then-continue needs exactly this operation.
+			combine := func(a, b PromptContextFold) PromptContextFold {
+				switch {
+				case a.tokens == 0:
+					return b
+				case b.tokens == 0:
+					return a
+				case better(b.current(), a.current()):
+					return b
+				default:
+					return a
+				}
+			}
+
+			ident := make([]int, len(turns))
+			for i := range ident {
+				ident[i] = i
+			}
+			want := foldOf(ident)
+
+			var zero PromptContextFold
+			if want == zero {
+				t.Fatal("fixture folds to the zero value; this test proves nothing")
+			}
+			if got := want.Tokens(); got != tc.want {
+				t.Fatalf("fixture folds to %d, want %d — the fixture no longer exercises the arm "+
+					"this case exists for; read the comment before changing the expectation",
+					got, tc.want)
+			}
+
+			// Commutativity, over every permutation of the turns.
+			for _, order := range permsOf(len(turns)) {
+				if got := foldOf(order); got != want {
+					t.Fatalf("order %v gave %+v, want %+v — the fold is not commutative",
+						order, got, want)
+				}
+			}
+
+			// Associativity, over every 3-way contiguous grouping of every permutation. The
+			// second assertion is the one that keeps combine honest: a grouped combine must
+			// agree with folding the same turns event by event.
+			for _, order := range permsOf(len(turns)) {
+				for i := 1; i < len(order)-1; i++ {
+					for j := i + 1; j < len(order); j++ {
+						a, b, c := foldOf(order[:i]), foldOf(order[i:j]), foldOf(order[j:])
+						left, right := combine(combine(a, b), c), combine(a, combine(b, c))
+						if left != right {
+							t.Fatalf("order %v grouped at %d,%d: ((A,B),C) = %+v but "+
+								"(A,(B,C)) = %+v — the fold is not associative",
+								order, i, j, left, right)
+						}
+						if left != want {
+							t.Fatalf("order %v grouped at %d,%d folded to %+v, want %+v — "+
+								"combining group folds disagrees with folding the events",
+								order, i, j, left, want)
+						}
+					}
+				}
+			}
+
+			// Identity, both ways it gets used: folding no events, and combining a zero fold.
+			withNothing := foldOf(ident)
+			withNothing.AddAll(nil)
+			withNothing.ResetFolded()
+			if withNothing != want {
+				t.Error("folding nothing changed the answer; zero is not the identity")
+			}
+			if combine(want, zero) != want || combine(zero, want) != want {
+				t.Error("combining a zero fold changed the answer; zero is not the identity")
+			}
+		})
+	}
+}
+
+// NIL IS "NOTHING KNOWN", and it must survive the round trip as an ABSENT field rather than as a
+// zero object. contextGauge renders 0 as an em dash and a real figure as a track; a
+// {"tokens":0} on the wire would assert a figure the server does not have.
+func TestPromptContextFold_PublishIsNilWhenNothingIsKnown(t *testing.T) {
+	var f PromptContextFold
+	if got := f.Publish(); got != nil {
+		t.Errorf("a zero fold published %+v, want nil", got)
+	}
+	f.AddAll(oneShot("o1", time.Now(), 282_000)) // no manifest: makes no claim
+	if got := f.Publish(); got != nil {
+		t.Errorf("a one-shot-only session published %+v, want nil", got)
+	}
+	f.AddAll(conversation("c1", time.Now(), 600, 500_000))
+	got := f.Publish()
+	if got == nil || got.Tokens != 500_000 {
+		t.Fatalf("published %+v, want tokens=500000", got)
+	}
+}
+
+// THE HOLE A BARE max LEFT OPEN, and the reason PromptContext carries Stated at all.
+//
+// abctl attaches to a proxy predating agentRole, folds unstated turns, and lands on the
+// documented stale-fallback figure — 700k held from before a compaction. The proxy is then
+// upgraded; abctl keeps running, because contextRun outlives everything but a pod switch. The
+// new proxy publishes a STATED 200k, the correct latest main-agent turn. max(700k, 200k) pins
+// the unsound figure permanently.
+func TestMerge_StatedBeatsUnstatedHoweverLarge(t *testing.T) {
+	stated := &PromptContext{Tokens: 200_000, Stated: true, At: time.Now()}
+	unstated := &PromptContext{Tokens: 700_000, Stated: false, At: time.Now()}
+
+	for _, tc := range []struct {
+		name string
+		a, b *PromptContext
+	}{
+		{"stated first", stated, unstated},
+		{"unstated first", unstated, stated},
+	} {
+		if got := Merge(tc.a, tc.b); got.Tokens != 200_000 {
+			t.Errorf("%s: merged to %d, want 200000 — a figure from a rule that cannot see "+
+				"subagents is not evidence about the conversation", tc.name, got.Tokens)
+		}
+	}
+}
+
+// NIL IS THE IDENTITY, which is what lets the client merge without version detection: an old
+// proxy sends no field, and that is a valid operand rather than a case to branch on.
+func TestMerge_NilIsTheIdentity(t *testing.T) {
+	x := &PromptContext{Tokens: 500_000, Stated: true, At: time.Now()}
+	if got := Merge(nil, x); got != x {
+		t.Errorf("Merge(nil, x) = %+v, want x", got)
+	}
+	if got := Merge(x, nil); got != x {
+		t.Errorf("Merge(x, nil) = %+v, want x", got)
+	}
+	if got := Merge(nil, nil); got != nil {
+		t.Errorf("Merge(nil, nil) = %+v, want nil", got)
+	}
+}
+
+// Both stated: the later turn wins, which is the rule the column follows.
+func TestMerge_BothStatedTakesTheLater(t *testing.T) {
+	early := &PromptContext{Tokens: 900_000, Stated: true, At: time.Now()}
+	late := &PromptContext{Tokens: 200_000, Stated: true, At: early.At.Add(time.Minute)}
+	if got := Merge(early, late); got.Tokens != 200_000 {
+		t.Errorf("merged to %d, want 200000 — latest-wins, not largest", got.Tokens)
+	}
+}
+
+// THE COARSENING IS CONFINED TO msgs, and it does NOT degrade to "largest wins".
+//
+// With the message count unpublished, the timestamp is what remains of the fold's unstated order —
+// and it is the comparator that matters. Taking the larger figure here would pin a pre-compaction
+// context over the turn that followed it, which is the staleness this column exists to avoid; the
+// first draft of the design specified exactly that and Task 4 caught it.
+func TestMerge_NeitherStatedTakesTheLaterTurnNotTheLarger(t *testing.T) {
+	at := time.Now()
+	later := &PromptContext{Tokens: 100_000, At: at}
+	earlierButBigger := &PromptContext{Tokens: 700_000, At: at.Add(-time.Hour)}
+
+	for _, tc := range []struct {
+		name string
+		a, b *PromptContext
+	}{
+		{"later first", later, earlierButBigger},
+		{"bigger first", earlierButBigger, later},
+	} {
+		if got := Merge(tc.a, tc.b); got.Tokens != 100_000 {
+			t.Errorf("%s: merged to %d, want 100000 — the later turn wins; taking the larger "+
+				"figure would hold a pre-compaction context forever", tc.name, got.Tokens)
 		}
 	}
 
-	// Identity.
-	var zero PromptContextFold
-	if got := foldOf([]int{0}); got == zero {
-		t.Fatal("fixture folds to the zero value; this test proves nothing")
+	// Only a genuine timestamp tie falls through to the larger figure.
+	tied := &PromptContext{Tokens: 500_000, At: at}
+	if got := Merge(later, tied); got.Tokens != 500_000 {
+		t.Errorf("on an exact tie merged to %d, want 500000", got.Tokens)
 	}
-	withZero := foldOf([]int{0})
-	withZero.AddAll(nil)
-	withZero.ResetFolded()
-	if withZero != foldOf([]int{0}) {
-		t.Error("folding nothing changed the answer; zero is not the identity")
+}
+
+// THE SECOND MONOID, which the spec claims separately from the fold's. Merge is what the client
+// and any future restore call, so its laws are load-bearing independently.
+//
+// THE VALUE SET SPANS BOTH CLASSES on purpose — two stated members and two unstated ones, plus
+// nil — so the laws are exercised across the dominance arm AND inside each class's own (At,
+// Tokens) ordering, rather than only where dominance settles it.
+func TestMerge_IsACommutativeMonoid(t *testing.T) {
+	at := time.Now()
+	vals := []*PromptContext{
+		nil,
+		{Tokens: 100_000, At: at},
+		{Tokens: 700_000, At: at.Add(-time.Hour)},
+		{Tokens: 200_000, Stated: true, At: at},
+		{Tokens: 900_000, Stated: true, At: at.Add(-time.Minute)},
+	}
+	for _, x := range vals {
+		for _, y := range vals {
+			if Merge(x, y) != Merge(y, x) {
+				t.Errorf("not commutative for %+v, %+v", x, y)
+			}
+			for _, z := range vals {
+				if Merge(Merge(x, y), z) != Merge(x, Merge(y, z)) {
+					t.Errorf("not associative for %+v, %+v, %+v", x, y, z)
+				}
+			}
+		}
 	}
 }
 
