@@ -49,8 +49,8 @@ import "time"
 // restarts on the next turn rather than on the next five hundred.
 //
 // WITH NO ROLE STATED — a proxy older than the field — the rule falls back to the most messages,
-// ties to the larger context and then to the latest: what this column did before, up to a tie-break
-// the sequential form left to arrival order (see better). It
+// ties to the latest, and then to the larger context: what this column did before, plus a final
+// tie-break for the one pair the sequential form left to arrival order (see better). It
 // pays the cost the role was added to remove. A compaction restarts the conversation at a low
 // message count while the pre-compaction request stays retained with 2,468 of them, so the gauge
 // keeps showing the old context, for the rest of the session if that request is never evicted. A
@@ -130,11 +130,11 @@ type PromptContextFold struct {
 	// whichever order the two arrive in, and nothing in the unstated row says so.
 	stated bool
 	// at is WHEN the winning response arrived, and it exists because of the rebase. It is the
-	// stated arm's sole comparator and the unstated arm's last one — but a rebase folds new
-	// events on top of a winner that is no longer in the slice, so arrival order says nothing
-	// about which of the two came first and the timestamp has to be kept. Without this, opening
-	// an OLDER turn of equal length replaced a newer remembered figure (reproduced at 445k
-	// against a true 500k).
+	// stated arm's primary comparator and the unstated arm's tie-break on message count — but a
+	// rebase folds new events on top of a winner that is no longer in the slice, so arrival order
+	// says nothing about which of the two came first and the timestamp has to be kept. Without
+	// this, opening an OLDER turn of equal length replaced a newer remembered figure (reproduced
+	// at 445k against a true 500k).
 	at time.Time
 }
 
@@ -206,22 +206,35 @@ func candidateOf(e *SessionEvent) candidate {
 //	                                       unstated predecessor was — a figure chosen by a rule
 //	                                       that cannot see subagents is not evidence
 //	  within stated:    (at, tokens, msgs)
-//	  within unstated:  (msgs, tokens, at)
+//	  within unstated:  (msgs, at, tokens)
 //
 // A max over a total order is commutative AND associative, which is what makes the fold a
 // monoid: replay order cannot change the answer, so a future restore-then-continue needs no
-// ordering guarantee. The trailing comparators exist only to make the STORED struct fully
-// determined; nothing reads msgs once stated is true, nor at once unstated.
+// ordering guarantee.
 //
-// At and not Seq in the stated arm, though a reviewer asked for Seq: the store's counter restarts
-// at 1 when a session is evicted and re-created under the same id (authlib/session/store.go), so
-// Seq cannot order across that boundary and wall-clock time can. Same reason a paging client sorts
-// pages by At.
+// EACH ARM'S LAST COMPARATOR IS DETERMINISM FILLER and nothing else — msgs where the role is
+// stated, tokens where it is not. Both arms APPEND to the rule they inherited rather than replace
+// a comparator in it, which is the whole safety property of this reformulation: the leading
+// comparators are the rule, and the trailing one only settles pairs the rule cannot separate, so
+// the STORED struct comes out fully determined. Putting tokens AHEAD of at in the unstated arm was
+// tried and is wrong: a view=summary timeline that projects without MessageCount ties every
+// candidate at msgs == 0, so the second comparator decides the entire answer there, and
+// largest-context-wins pins a pre-compaction figure — the exact stale-figure failure this column
+// exists to avoid.
 //
-// THE PREDECESSOR'S ONE DISAGREEMENT, for the record: it compared with `!Before` and so let a
-// later ARRIVAL take a tie among unstated turns of equal message count and identical timestamp.
-// `tokens` now settles that case before `at` is consulted, which is the only input on which the
-// two forms differ. TestPromptContextFold_ExactTimestampTiesAreDeterministic pins it.
+// FULLY-TIED CANDIDATES KEEP THE INCUMBENT, which is not a bug: better returns false both ways for
+// two candidates equal on every field it compares, so Add does not replace, and two such candidates
+// are interchangeable for every purpose this package has.
+//
+// At and not Seq, though a reviewer asked for Seq: the store's counter restarts at 1 when a session
+// is evicted and re-created under the same id (authlib/session/store.go), so Seq cannot order across
+// that boundary and wall-clock time can. Same reason a paging client sorts pages by At.
+//
+// THE PREDECESSOR'S ONE DISAGREEMENT, for the record: it compared with `!Before`, so a later
+// ARRIVAL took a tie among unstated turns that agreed on both message count and timestamp — 100k or
+// 200k for the same session depending only on fold order. tokens now settles that pair, AFTER at
+// rather than before it, so `at` keeps the role it had and the delta is confined to genuinely
+// identical (msgs, at) pairs. TestPromptContextFold_ExactTimestampTiesAreDeterministic pins it.
 func better(a, b candidate) bool {
 	if a.stated != b.stated {
 		return a.stated
@@ -238,10 +251,10 @@ func better(a, b candidate) bool {
 	if a.msgs != b.msgs {
 		return a.msgs > b.msgs
 	}
-	if a.tokens != b.tokens {
-		return a.tokens > b.tokens
+	if !a.at.Equal(b.at) {
+		return a.at.After(b.at)
 	}
-	return a.at.After(b.at)
+	return a.tokens > b.tokens
 }
 
 // Add folds one event into f, keeping the MAXIMUM under better's total order.
@@ -254,9 +267,14 @@ func (f *PromptContextFold) Add(e *SessionEvent) {
 	if c.tokens == 0 {
 		return
 	}
-	// The zero fold is the monoid's identity: any candidate beats "nothing known yet", and
-	// better() must not be asked to compare against it — an unstated candidate would lose to a
-	// zero fold on msgs.
+	// The zero fold is the monoid's identity, stated explicitly even though better() already
+	// handles it: every candidate reaching here beats the zero fold on SOME comparator, whatever
+	// its role, so this disjunct changes no outcome today. Following the arms — a stated candidate
+	// wins on stated; an unstated one wins on msgs, or where its own count is 0 falls through and
+	// wins on at, since any representable timestamp is after time.Time{}; and if its At is unset
+	// too it wins on tokens, which the guard above proved non-zero. It is kept so that a future
+	// reordering of better()'s comparators cannot quietly make an empty fold a legitimate operand:
+	// the identity is a property of the monoid, not an accident of which field is compared last.
 	if f.tokens == 0 || better(c, f.current()) {
 		f.tokens, f.msgs, f.at, f.stated = c.tokens, c.msgs, c.at, c.stated
 	}
