@@ -470,6 +470,11 @@ func TestPromptContextFold_PublishIsNilWhenNothingIsKnown(t *testing.T) {
 	if got == nil || got.Tokens != 500_000 {
 		t.Fatalf("published %+v, want tokens=500000", got)
 	}
+	// Msgs travels too: it is the unstated arm's leading comparator, so a merge on the far end
+	// cannot rank this figure without it.
+	if got.Msgs != 600 {
+		t.Errorf("published msgs=%d, want 600", got.Msgs)
+	}
 }
 
 // THE HOLE A BARE max LEFT OPEN, and the reason PromptContext carries Stated at all.
@@ -512,26 +517,80 @@ func TestMergePromptContext_NilIsTheIdentity(t *testing.T) {
 	}
 }
 
-// Both stated: the later turn wins, which is the rule the column follows.
-func TestMergePromptContext_BothStatedTakesTheLater(t *testing.T) {
-	early := &PromptContext{Tokens: 900_000, Stated: true, At: time.Now()}
-	late := &PromptContext{Tokens: 200_000, Stated: true, At: early.At.Add(time.Minute)}
+// BOTH STATED: (At, Tokens, Msgs), in that order. At leads, because for a session that states its
+// roles the rule is just "the main agent's latest turn"; Tokens and then Msgs are determinism filler
+// for the pairs At cannot separate, which is the same shape better() has.
+func TestMergePromptContext_BothStatedFollowsAtThenTokensThenMsgs(t *testing.T) {
+	at := time.Now()
+
+	early := &PromptContext{Tokens: 900_000, Stated: true, At: at}
+	late := &PromptContext{Tokens: 200_000, Stated: true, At: at.Add(time.Minute)}
 	if got := MergePromptContext(early, late); got.Tokens != 200_000 {
 		t.Errorf("merged to %d, want 200000 — latest-wins, not largest", got.Tokens)
 	}
+
+	// At tied: the larger figure settles it.
+	small := &PromptContext{Tokens: 200_000, Stated: true, At: at}
+	big := &PromptContext{Tokens: 500_000, Stated: true, At: at}
+	if got := MergePromptContext(small, big); got.Tokens != 500_000 {
+		t.Errorf("on an At tie merged to %d, want 500000", got.Tokens)
+	}
+
+	// At and Tokens both tied: Msgs is the only thing left, and it must be read — which is only
+	// possible because it is now published. This pair was indistinguishable on the wire before.
+	short := &PromptContext{Tokens: 500_000, Msgs: 40, Stated: true, At: at}
+	long := &PromptContext{Tokens: 500_000, Msgs: 952, Stated: true, At: at}
+	for _, tc := range []struct {
+		name string
+		a, b *PromptContext
+	}{
+		{"short first", short, long},
+		{"long first", long, short},
+	} {
+		if got := MergePromptContext(tc.a, tc.b); got.Msgs != 952 {
+			t.Errorf("%s: merged to msgs=%d, want 952 — Msgs is the stated arm's final "+
+				"comparator and is now on the wire", tc.name, got.Msgs)
+		}
+	}
 }
 
-// THE COARSENING IS CONFINED TO msgs, and it does NOT degrade to "largest wins".
+// NEITHER STATED: (Msgs, At, Tokens), and Msgs LEADS. That precedence is the point of publishing
+// it, so it is pinned here rather than assumed.
 //
-// With the message count unpublished, the timestamp is what remains of the fold's unstated order —
-// and it is the comparator that matters. Taking the larger figure here would pin a pre-compaction
-// context over the turn that followed it, which is the staleness this column exists to avoid; the
-// first draft of the design specified exactly that and Task 4 caught it.
-func TestMergePromptContext_NeitherStatedTakesTheLaterTurnNotTheLarger(t *testing.T) {
+// The published order used to be a coarsening — no Msgs on the wire, so one arm served both classes
+// and an unstated pair resolved on At. That was defensible only while the field was believed
+// transitional, and it is not: inferenceparser.agentRole returns "" for every client that is not
+// Claude Code, so the unstated arm is a live path on a CURRENT proxy and the merge has to rank it
+// the way the fold does.
+func TestMergePromptContext_NeitherStatedRanksMsgsAheadOfAt(t *testing.T) {
 	at := time.Now()
+
+	// MSGS AND At DISAGREE, which is the case that separates the full order from the old coarse
+	// one: under the coarse rule the later turn won, and it must now lose. Figures from c39dae31's
+	// compaction, the session this column was reported for.
+	longerButEarlier := &PromptContext{Tokens: 999_623, Msgs: 2468, At: at.Add(-time.Hour)}
+	shorterButLater := &PromptContext{Tokens: 400_249, Msgs: 952, At: at}
+	for _, tc := range []struct {
+		name string
+		a, b *PromptContext
+	}{
+		{"longer first", longerButEarlier, shorterButLater},
+		{"later first", shorterButLater, longerButEarlier},
+	} {
+		if got := MergePromptContext(tc.a, tc.b); got.Msgs != 2468 {
+			t.Errorf("%s: merged to msgs=%d tokens=%d, want msgs=2468 — with no role stated the "+
+				"most messages wins and At only breaks a msgs tie, which is the fold's own order; "+
+				"resolving on At here would be the old coarse rule",
+				tc.name, got.Msgs, got.Tokens)
+		}
+	}
+
+	// MSGS TIED AT ZERO, which is not a contrived input: a view=summary timeline that projects
+	// without MessageCount leaves every candidate at 0, so At decides the whole answer there. It
+	// must take the LATER turn, not the larger figure — taking the larger would hold a
+	// pre-compaction context for the rest of the session.
 	later := &PromptContext{Tokens: 100_000, At: at}
 	earlierButBigger := &PromptContext{Tokens: 700_000, At: at.Add(-time.Hour)}
-
 	for _, tc := range []struct {
 		name string
 		a, b *PromptContext
@@ -540,33 +599,97 @@ func TestMergePromptContext_NeitherStatedTakesTheLaterTurnNotTheLarger(t *testin
 		{"bigger first", earlierButBigger, later},
 	} {
 		if got := MergePromptContext(tc.a, tc.b); got.Tokens != 100_000 {
-			t.Errorf("%s: merged to %d, want 100000 — the later turn wins; taking the larger "+
-				"figure would hold a pre-compaction context forever", tc.name, got.Tokens)
+			t.Errorf("%s: merged to %d, want 100000 — on a msgs tie the later turn wins; taking "+
+				"the larger figure would hold a pre-compaction context forever",
+				tc.name, got.Tokens)
 		}
 	}
 
-	// Only a genuine timestamp tie falls through to the larger figure.
+	// Msgs AND At both tied: only then does the larger figure settle it.
 	tied := &PromptContext{Tokens: 500_000, At: at}
 	if got := MergePromptContext(later, tied); got.Tokens != 500_000 {
-		t.Errorf("on an exact tie merged to %d, want 500000", got.Tokens)
+		t.Errorf("on a msgs and At tie merged to %d, want 500000", got.Tokens)
+	}
+}
+
+// THE PROJECTION IS ORDER-EQUIVALENT TO THE FOLD, which is the invariant publishing Msgs bought and
+// the one a future hand-written second copy of the order would break.
+//
+// Two claims, both over an exhaustive cross-product: Publish loses nothing better() reads, and
+// MergePromptContext picks whatever better() picks. Deferring to better() makes both true by
+// construction today — this pins them so that stops being a matter of trust.
+func TestMergePromptContext_IsTheSameOrderAsTheFold(t *testing.T) {
+	at := time.Now()
+	vals := []*PromptContext{
+		{Tokens: 100_000, Msgs: 952, At: at},
+		{Tokens: 700_000, Msgs: 2468, At: at.Add(-time.Hour)},
+		{Tokens: 400_000, Msgs: 2468, At: at},
+		{Tokens: 400_000, Msgs: 0, At: at},
+		{Tokens: 200_000, Stated: true, At: at},
+		{Tokens: 900_000, Stated: true, At: at.Add(-time.Minute)},
+		{Tokens: 200_000, Msgs: 40, Stated: true, At: at},
+	}
+
+	// Publish is lossless: a fold round-trips through the wire type without dropping a comparator.
+	for _, v := range vals {
+		f := PromptContextFold{tokens: v.Tokens, msgs: v.Msgs, at: v.At, stated: v.Stated}
+		p := f.Publish()
+		if p == nil {
+			t.Fatalf("%+v published nil", v)
+		}
+		if got := p.candidate(); got != f.current() {
+			t.Errorf("round trip lost a field: published %+v, folded %+v", got, f.current())
+		}
+	}
+
+	for _, a := range vals {
+		for _, b := range vals {
+			want := a
+			if better(b.candidate(), a.candidate()) {
+				want = b
+			}
+			if got := MergePromptContext(a, b); got != want {
+				t.Errorf("MergePromptContext(%+v, %+v) = %+v, but better() ranks %+v first — the "+
+					"wire order has drifted from the fold's", a, b, got, want)
+			}
+		}
 	}
 }
 
 // THE SECOND MONOID, which the spec claims separately from the fold's. MergePromptContext is what
 // the client and any future restore call, so its laws are load-bearing independently.
 //
-// THE VALUE SET SPANS BOTH CLASSES on purpose — two stated members and two unstated ones, plus
-// nil — so the laws are exercised across the dominance arm AND inside each class's own (At,
-// Tokens) ordering, rather than only where dominance settles it.
+// THE VALUE SET SPANS BOTH CLASSES on purpose — three stated members and three unstated ones, plus
+// nil — so the laws are exercised across the dominance arm AND inside each class's own ordering,
+// rather than only where dominance settles it. Every member differs from every other on at least
+// one compared field, which matters because the commutativity check below compares POINTERS: two
+// distinct but fully tied operands would each be kept as the left one and fail it.
+//
+// AND Msgs IS LOAD-BEARING HERE, not carried along. The overall maximum is the last member, which
+// wins only on the stated arm's Msgs comparator — it ties the fourth member on both At and Tokens.
+// Before Msgs was published those two were indistinguishable on the wire.
 func TestMergePromptContext_IsACommutativeMonoid(t *testing.T) {
 	at := time.Now()
 	vals := []*PromptContext{
 		nil,
-		{Tokens: 100_000, At: at},
-		{Tokens: 700_000, At: at.Add(-time.Hour)},
+		{Tokens: 100_000, Msgs: 952, At: at},
+		{Tokens: 700_000, Msgs: 2468, At: at.Add(-time.Hour)}, // unstated, most messages
+		{Tokens: 400_000, Msgs: 2468, At: at},                 // ties on msgs, later
 		{Tokens: 200_000, Stated: true, At: at},
 		{Tokens: 900_000, Stated: true, At: at.Add(-time.Minute)},
+		{Tokens: 200_000, Msgs: 40, Stated: true, At: at}, // ties At+Tokens above, wins on Msgs
 	}
+
+	// Check that claim rather than assert it, so the fixture cannot quietly stop exercising Msgs.
+	var top *PromptContext
+	for _, v := range vals {
+		top = MergePromptContext(top, v)
+	}
+	if top != vals[6] {
+		t.Fatalf("overall max is %+v, want %+v — the fixture no longer turns on the stated arm's "+
+			"Msgs comparator", top, vals[6])
+	}
+
 	for _, x := range vals {
 		for _, y := range vals {
 			if MergePromptContext(x, y) != MergePromptContext(y, x) {

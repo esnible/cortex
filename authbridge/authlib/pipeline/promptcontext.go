@@ -48,15 +48,22 @@ import "time"
 // once — at the compaction — so the column tracks the conversation, and follows it when it
 // restarts on the next turn rather than on the next five hundred.
 //
-// WITH NO ROLE STATED — a proxy older than the field — the rule falls back to the most messages,
-// ties to the latest, and then to the larger context: what this column did before, plus a final
-// tie-break for the one pair the sequential form left to arrival order (see better). It
-// pays the cost the role was added to remove. A compaction restarts the conversation at a low
-// message count while the pre-compaction request stays retained with 2,468 of them, so the gauge
-// keeps showing the old context, for the rest of the session if that request is never evicted. A
-// stale figure still beats one that flips to a subagent's, and a window would not fix it — it
-// would reintroduce the silence problem. The fallback, PromptContextFold.msgs and messageCount can
-// all be deleted once the supported proxy floor publishes agentRole.
+// WITH NO ROLE STATED the rule falls back to the most messages, ties to the latest, and then to the
+// larger context: what this column did before, plus a final tie-break for the one pair the
+// sequential form left to arrival order (see better). It pays the cost the role was added to remove.
+// A compaction restarts the conversation at a low message count while the pre-compaction request
+// stays retained with 2,468 of them, so the gauge keeps showing the old context, for the rest of the
+// session if that request is never evicted. A stale figure still beats one that flips to a
+// subagent's, and a window would not fix it — it would reintroduce the silence problem.
+//
+// AND THAT FALLBACK IS PERMANENT, not a version-skew relic to be deleted. An earlier version of
+// this comment said the fallback, PromptContextFold.msgs and messageCount could all go "once the
+// supported proxy floor publishes agentRole" — which reads the field as a proxy capability. It is
+// not one: inferenceparser.agentRole returns "" for a request with no system message at all
+// (/v1/completions), for one whose first system line lacks the required billing-header prefix, and
+// on an unparseable body, so the answer depends on the CLIENT. Its own doc puts it plainly —
+// "every client that is not Claude Code". The same false premise is still stated in
+// cmd/abctl/tui/sessions_context.go, where this wording came from.
 //
 // A SESSION IS EITHER STATED OR IT IS NOT, and any stated turn outranks every unstated one,
 // however much longer the unstated one was: a figure chosen by a rule that cannot see subagents is
@@ -121,8 +128,10 @@ func PromptContextOf(events []SessionEvent) int {
 type PromptContextFold struct {
 	n      int // events folded so far
 	tokens int
-	// msgs is the FALLBACK rule's comparator and is not read once stated is true. It goes with
-	// messageCount when the unstated arm does.
+	// msgs is the FALLBACK rule's LEADING comparator, and the stated arm's final determinism
+	// filler. PERMANENT, not transitional: stated depends on the client rather than on the proxy
+	// version (see PromptContextOf), so the unstated arm is a live path and this field is published
+	// on the wire as PromptContext.Msgs.
 	msgs int
 	// stated says the WINNING candidate declared a role, which is what decides which rule ranked
 	// it — latest-wins against most-messages. It is carried on the fold rather than recomputed
@@ -300,15 +309,36 @@ func (f *PromptContextFold) ResetFolded() { f.n = 0 }
 // PromptContext is the fold's PUBLISHABLE state: enough to merge two of them, which a client
 // holding its own figure must do, and which a future restore-then-continue would do.
 //
-// A LOSSY PROJECTION, deliberately. msgs is omitted because it is the FALLBACK rule's
-// comparator and is slated for deletion once the supported proxy floor publishes agentRole
-// (see PromptContextFold). Omitting it coarsens exactly one arm of MergePromptContext —
-// unstated-versus-unstated — which a client reaches only against a proxy that publishes this
-// type without publishing agentRole. Persistence should store the FOLD, not this.
+// LOSSLESS, carrying every field better() compares — so the published order IS the fold's order
+// rather than a coarsening of it, and MergePromptContext is the same max over the same comparator.
+// That also makes persistence able to restore from this directly, instead of needing the
+// unexported fold.
+//
+// MSGS IS PUBLISHED, AND THE REASON IT WAS NOT IS FALSE. An earlier draft dropped it as the
+// FALLBACK rule's comparator, "slated for deletion once the supported proxy floor publishes
+// agentRole". Stated depends on the CLIENT, not on the proxy version:
+// inferenceparser.agentRole returns "" for a request with no system message at all
+// (/v1/completions), for one whose first system line lacks the required billing-header prefix,
+// and on an unparseable body — "every client that is not Claude Code", as its own doc says. So an
+// unstated figure is a live state on a CURRENT proxy rather than a version-skew relic, the
+// unstated-versus-unstated arm is a real path, and msgs is permanent.
+//
+// Omitting it therefore bought nothing and cost exactness. It left two combining operations over
+// two DIFFERENT total orders which had to be kept in agreement by hand — the drift risk this
+// design rejects everywhere else, and one that had already produced two reasoning errors here.
+// The cost of carrying it is one int on the wire.
 type PromptContext struct {
 	Tokens int       `json:"tokens"`
-	Stated bool      `json:"stated"`
-	At     time.Time `json:"at"`
+	Stated bool      `json:"stated"` // which rule ranked it; stated always beats unstated
+	At     time.Time `json:"at"`     // the winning turn's arrival, for latest-wins
+	Msgs   int       `json:"msgs"`   // the unstated rule's LEADING comparator; see better
+}
+
+// candidate projects a published figure back onto the fold's comparison type, and is the whole
+// mechanism by which the wire order and the fold order cannot disagree: there is ONE ordering,
+// better(), and both are views of it. Total in both directions because PromptContext is lossless.
+func (p *PromptContext) candidate() candidate {
+	return candidate{tokens: p.Tokens, msgs: p.Msgs, at: p.At, stated: p.Stated}
 }
 
 // Publish projects the fold for the wire, or nil when nothing can be said.
@@ -321,15 +351,33 @@ func (f PromptContextFold) Publish() *PromptContext {
 	if f.tokens == 0 {
 		return nil
 	}
-	return &PromptContext{Tokens: f.tokens, Stated: f.stated, At: f.at}
+	return &PromptContext{Tokens: f.tokens, Stated: f.stated, At: f.at, Msgs: f.msgs}
 }
 
 // MergePromptContext combines two published figures, nil meaning "nothing known".
 //
-// THE PUBLISHED ORDER IS COARSER THAN THE FOLD'S — see PromptContext — but it is the same shape: a
-// max over a total order, so MergePromptContext is commutative, associative, and has nil as its
+// THE SAME ORDER AS THE FOLD'S, and it DEFERS to better() rather than restating it. PromptContext
+// is lossless (see there), so there is exactly one total order here, not two that have to be kept
+// in agreement by hand:
+//
+//	stated ≻ unstated             a figure from a rule that cannot see subagents is not
+//	                              evidence, at any size
+//	  within stated:    (At, Tokens, Msgs)
+//	  within unstated:  (Msgs, At, Tokens)
+//
+// A HAND-WRITTEN SECOND COPY WAS THE EARLIER SHAPE, and it is worth recording why it went. With
+// Msgs unpublished this function had a single arm serving both classes, documented as "(At, Tokens)
+// either way" — true only because the comparator that distinguishes the two arms had been dropped
+// from the wire. Publishing Msgs makes the orders genuinely differ, which would mean maintaining
+// better()'s two arms twice; deferring instead makes disagreement impossible by construction.
+//
+// A max over a total order, so MergePromptContext is commutative, associative, and has nil as its
 // identity. That is what lets a client merge the server's figure with its own and need no version
 // detection: an old proxy sends nothing, and nothing is a valid operand.
+//
+// FULLY-TIED OPERANDS KEEP a, exactly as the fold keeps its incumbent: better() is false both ways
+// for two figures equal on every field it compares, and two such figures are interchangeable for
+// every purpose this package has.
 //
 // SPELLED OUT IN FULL, and a free function rather than a method. Bare `Merge` was rejected: this
 // package also owns pipelines, extensions, sessions, events and snapshots, and `pipeline.Merge(a,
@@ -338,40 +386,16 @@ func (f PromptContextFold) Publish() *PromptContext {
 // method would have to be callable on a NIL RECEIVER to accept the operand an old proxy actually
 // sends. That works in Go and it is a footgun, because nothing at the call site warns the next
 // reader that the receiver may be nil; two plainly nilable arguments say so in the signature.
-//
-//	stated ≻ unstated             a figure from a rule that cannot see subagents is not
-//	                              evidence, at any size
-//	  both stated:    later At wins; tie → larger Tokens
-//	  neither stated: later At wins; tie → larger Tokens (msgs is unpublished, so this arm is
-//	                  coarse — but At IS published, and "latest" is a far closer proxy for the
-//	                  dropped message count than "largest" is; taking the largest here would
-//	                  pin a pre-compaction figure)
 func MergePromptContext(a, b *PromptContext) *PromptContext {
 	switch {
 	case a == nil:
 		return b
 	case b == nil:
 		return a
-	case a.Stated != b.Stated:
-		if a.Stated {
-			return a
-		}
+	case better(b.candidate(), a.candidate()):
 		return b
-	// ONE ARM FOR BOTH, deliberately: once the stated/unstated question is settled above, the
-	// remaining order is (At, Tokens) either way. The fold's internal order differs between the
-	// two arms only because it can read msgs, which this projection drops — and with msgs gone,
-	// the unstated arm's original timestamp comparator is exactly what is left of it.
 	default:
-		if !a.At.Equal(b.At) {
-			if a.At.After(b.At) {
-				return a
-			}
-			return b
-		}
-		if a.Tokens >= b.Tokens {
-			return a
-		}
-		return b
+		return a
 	}
 }
 
