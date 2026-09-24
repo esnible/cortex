@@ -99,9 +99,10 @@ func (c Counts) ApportionTiers() (tiers [pricing.NumTiers]int64, ok bool) {
 // here" — never $0.00, which would assert the reasoning was free: a count that is zero
 // or negative, a missing denominator, or a share that truncates below one micro.
 //
-// THE PRESENT BIT IS NOT CONSULTED. It separates "nothing reported" from "reported
-// zero", which matters to a renderer choosing between the not-known cell and "$0.00",
-// but neither has a figure to apportion. A positive count with the bit CLEAR does
+// THE PRESENT BIT IS NOT CONSULTED HERE, because neither "nothing reported" nor
+// "reported zero" has a figure to apportion. The bit separates them, and a caller that
+// needs to — the spend drawer does, to choose between the not-known cell and an exact
+// "$0.00" — reads PresentKinds itself. A positive count with the bit CLEAR does
 // apportion: that is a producer predating PresentKinds, where the value is the only
 // evidence there is.
 //

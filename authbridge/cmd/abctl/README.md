@@ -529,14 +529,18 @@ abctl is for, and the other three are surfaces you visit and leave.
   of its own — it is the share of the generated tokens the model spent thinking,
   billed at the output rate — so its figure is already inside output's, and only
   the four unindented rows sum to the window total. Its share is denominated in
-  that same total, which is what makes `31% ⊂ 54%` read as containment. The row is
-  always present and shows `—` when no reasoning split was reported — either because
-  the endpoint does not report one, or because the apportioned share fell below a
-  micro. Anthropic reports it as `output_tokens_details.thinking_tokens` and
-  OpenAI-format endpoints as `completion_tokens_details.reasoning_tokens`; both are
-  read.
+  that same total, which is what makes `31% ⊂ 54%` read as containment.
 
-  These rows carry **no** `~`, unlike the sessions table's `SAVED~`. The caveat is
+  The row is always present, in one of three states. A reported split shows its figure
+  with a `~`. A split reported as **zero** shows an exact `$0.00` and no `~` — the model
+  was asked to think and spent nothing on it, which is a measurement and the reading that
+  says an effort setting is not reaching the model. `—` means no figure: the endpoint
+  reports no split, or the apportioned share fell below a micro. Anthropic reports the
+  count as `output_tokens_details.thinking_tokens` and OpenAI-format endpoints as
+  `completion_tokens_details.reasoning_tokens`; both are read.
+
+  The four **tier** rows carry **no** `~`, unlike the sessions table's `SAVED~`
+  (the `└ reasoning` child does, for the reason given above). The caveat is
   real but this panel has no money heading to hang it on — `WHERE IT WENT` names
   the column, not the figures — so the choice was a tilde on every row or the
   sentence above, and the sentence won.

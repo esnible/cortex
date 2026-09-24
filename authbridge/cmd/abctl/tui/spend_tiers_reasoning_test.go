@@ -349,22 +349,48 @@ func TestSpendDrawerLines_AccountsForTheChildRow(t *testing.T) {
 	}
 }
 
-// A REPORTED ZERO through the whole renderer, which is the surface carrying the
-// "$0.00 is a lie" rule. ApportionReasoning refuses the figure, and what matters here
-// is what the panel does with that refusal: the not-known cell, never $0.00, and the
-// row still present so the height does not follow the data.
-func TestRenderTierRows_ReportedZeroIsNotKnownNotFree(t *testing.T) {
+// A REPORTED ZERO RENDERS $0.00, EXACTLY, AND WEARS NO MARKER.
+//
+// REVERSES A DECISION THIS TEST USED TO PIN. It asserted the not-known cell, on the
+// grounds that "$0.00 is a lie" — the rule the tier rows follow for `tiers[tier] == 0`.
+// That borrowing was wrong: a TIER apportioning to zero is absent from the modelled mix,
+// so its figure is unknown, while a reasoning count of zero means the provider MEASURED
+// the split and it was nothing. "—" for a value we have discards it.
+//
+// It also split the surfaces: `abctl cost`'s token line prints "reasoning (of output) 0"
+// for the same Counts, so the drawer and the CLI told different stories about one
+// measured fact — and ApportionReasoning's own doc frames the present bit as what
+// "matters to a renderer choosing between the not-known cell and $0.00", while no
+// renderer was making that choice.
+//
+// No marker either: zero tokens cost zero whatever the output rate, so this is the one
+// child figure with no token-ratio approximation in it for a marker to qualify.
+func TestRenderTierRows_ReportedZeroIsTheMeasurement(t *testing.T) {
 	c := reasoningCounts()
 	c.ReasoningTokens = 0 // measured, and measured as nothing: the bit stays set
 	child := childRows(renderTierRows(c, tierColumnWidth))
 	if len(child) != 1 {
 		t.Fatalf("want one child row for a reported zero, got %d", len(child))
 	}
-	if strings.Contains(child[0], "$0.00") {
-		t.Errorf("child row = %q asserts the reasoning was free", child[0])
+	if strings.Contains(child[0], emptyCell) {
+		t.Errorf("child row = %q shows the not-known cell for a MEASURED zero; the CLI's "+
+			"token line prints 0 for the same Counts", child[0])
 	}
-	if !strings.Contains(child[0], emptyCell) {
-		t.Errorf("child row = %q, want the not-known cell", child[0])
+	if got, ok := rowMoney(child[0]); !ok || got != 0 {
+		t.Errorf("child row = %q, want a $0.00 figure (parsed %v, ok=%v)", child[0], got, ok)
+	}
+	if strings.Contains(child[0], inexactMarker) {
+		t.Errorf("child row = %q wears %q; a zero costs zero at any rate, so nothing here "+
+			"is modelled", child[0], inexactMarker)
+	}
+	// An UNREPORTED split is still the not-known cell — that is the distinction the
+	// present bit exists to carry, and this is the half that must not move.
+	unreported := reasoningCounts()
+	unreported.ReasoningTokens = 0
+	unreported.PresentKinds = uint8(usage.KindOutput)
+	if got := childRows(renderTierRows(unreported, tierColumnWidth)); len(got) != 1 ||
+		!strings.Contains(got[0], emptyCell) {
+		t.Errorf("an unreported split rendered %q, want the not-known cell", got)
 	}
 }
 

@@ -229,6 +229,27 @@ func reasoningChildRow(c usage.Counts, tiers [pricing.NumTiers]int64, ok bool,
 	//
 	// ok from ApportionTiers gates first: with no mix to apportion by there is no output
 	// figure to take a share of.
+	// A REPORTED ZERO IS A MEASUREMENT, and it renders $0.00 — exactly, with no marker.
+	//
+	// Checked BEFORE ApportionReasoning, which refuses a zero count along with every
+	// other case it has no figure for. This row used to take the not-known cell here,
+	// copying the `tiers[tier] == 0` escape the tier rows make — the wrong borrowing. A
+	// TIER apportioning to zero is absent from the modelled mix, so its figure is
+	// unknown; a reasoning count of zero means the provider measured the split and it
+	// was nothing. "—" for a value we have discards it, and `abctl cost`'s token line
+	// prints "reasoning (of output) 0" for the same Counts, so the two surfaces told
+	// different stories about one measured fact.
+	//
+	// NO inexactMarker: zero tokens cost zero whatever the output rate, so this is the
+	// one child figure that is not modelled at all. The marker qualifies the token-ratio
+	// approximation and there is no ratio here to qualify.
+	//
+	// It is also the observation worth having — effort reached the model and bought no
+	// reasoning — which is unreadable as "—".
+	if ok && c.PresentKinds&usage.KindReasoning != 0 && c.ReasoningTokens == 0 {
+		return clipRow(fmt.Sprintf("%-*s %s %s", tierLabelWidth, childTierLabel,
+			tierShareCell(0, 0), tierMoneyCell(0)), width)
+	}
 	micros, hasFigure := c.ApportionReasoning(tiers[pricing.TierOutput])
 	if !ok || !hasFigure {
 		return notKnown
