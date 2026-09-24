@@ -741,24 +741,31 @@ func TestCandidateOf_RefusesANonPositiveFigure(t *testing.T) {
 //
 // Mutation-checked: dropping Round(0) from either constructor fails this.
 func TestPromptContextFold_CandidateTimestampsCarryNoMonotonicReading(t *testing.T) {
+	// STRUCT EQUALITY, NOT Equal(), and deliberately: t.Equal(t.Round(0)) is TRUE by definition —
+	// Equal falls back to the wall clock as soon as one operand has no monotonic reading — so it
+	// answers nothing about whether the reading is there. Comparing the struct is the documented way
+	// to see it, and naming the helper keeps a linter's "probably want Equal" suggestion from reading
+	// like an unnoticed mistake.
+	carriesMonotonic := func(ts time.Time) bool { return ts != ts.Round(0) }
+
 	// time.Now() is the only way to GET a monotonic reading, so the fixture has to start from one or
 	// the assertions below hold vacuously. A FIXTURE GUARD rather than a skip, which is this file's
 	// idiom: a test that cannot exercise its property should say so loudly rather than report a pass.
 	now := time.Now()
-	if now == now.Round(0) {
+	if !carriesMonotonic(now) {
 		t.Fatal("time.Now() carries no monotonic reading here, so there is nothing to strip and " +
 			"this test proves nothing")
 	}
 
 	var f PromptContextFold
 	f.AddAll(conversation("c1", now, 600, 500_000))
-	if got := f.current().at; got != got.Round(0) {
+	if got := f.current().at; carriesMonotonic(got) {
 		t.Errorf("a folded candidate's at is %v, which still carries a monotonic reading — "+
 			"candidateOf must strip it", got)
 	}
 
 	p := &PromptContext{Tokens: 500_000, Msgs: 600, Stated: true, At: now}
-	if got := p.candidate().at; got != got.Round(0) {
+	if got := p.candidate().at; carriesMonotonic(got) {
 		t.Errorf("a published figure's candidate at is %v, which still carries a monotonic reading — "+
 			"PromptContext.candidate must strip it", got)
 	}
