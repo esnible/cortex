@@ -17,7 +17,9 @@ type JWKSVerifier struct {
 	cache   *jwk.Cache
 }
 
-// JWKSOption configures JWKSVerifier behavior.
+// JWKSOption configures JWKSVerifier behavior. No options are defined
+// today; the type and the variadic stay so adding one is not a signature
+// change for NewJWKSVerifier or NewLazyJWKSVerifier.
 type JWKSOption func(*jwksConfig)
 
 type jwksConfig struct {

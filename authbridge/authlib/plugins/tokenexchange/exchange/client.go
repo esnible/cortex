@@ -38,7 +38,9 @@ type Client struct {
 	httpClient *http.Client
 }
 
-// Option configures the exchange client.
+// Option configures the exchange client. No options are defined today;
+// the type and the variadic stay so adding one is not a signature change
+// for NewClient.
 type Option func(*Client)
 
 // NewClient creates a token exchange client.

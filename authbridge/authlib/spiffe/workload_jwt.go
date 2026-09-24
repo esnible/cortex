@@ -9,11 +9,9 @@ import (
 )
 
 // JWTSource is the per-fetch JWT-SVID interface satisfied by workloadJWT.
-// Identical signature to authlib/plugins/tokenexchange/spiffe.JWTSource —
-// the two declarations live in separate packages to avoid an import
-// cycle (the framework spiffe package would otherwise have to import
-// the tokenexchange-internal package), and Go's structural typing lets
-// one implementation satisfy both interfaces.
+// It is declared in this framework package rather than inside
+// token-exchange, its only consumer today, so Provider.JWTSource can
+// hand it out without the framework importing plugin-internal code.
 type JWTSource interface {
 	FetchToken(ctx context.Context) (string, error)
 }
