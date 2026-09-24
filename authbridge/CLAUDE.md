@@ -359,7 +359,7 @@ proxy). envoy-sidecar mode handles mTLS at the Envoy data-plane level
 instead — see the **envoy-sidecar mTLS** subsection below.
 
 ```yaml
-# authbridge-runtime ConfigMap (top-level)
+# authbridge-runtime-config ConfigMap (top-level)
 mtls:
   mode: strict          # permissive | strict (omit block entirely for off)
   # cert_file / key_file / bundle_file optional —

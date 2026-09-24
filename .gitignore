@@ -114,6 +114,10 @@ cortex-ca/
 # binary beside the source, where it is easy to stage by accident — it was, once.
 /authbridge/scripts/profile-tags/profile-tags
 /authbridge/scripts/readme-demo/readme-demo
+# ...and the authbridge/ spellings, for the same reason as the cmd/* ones above:
+# `go build ./scripts/...` from authbridge/ drops them there, not in the package dir.
+authbridge/profile-tags
+authbridge/readme-demo
 
 # Output dir for `make abctl` / `make authbridge-proxy`.
 /bin/

@@ -126,8 +126,8 @@ AuthBridge solves the challenge of **secure service-to-service authentication** 
 │            │            ▼                                             │
 │  ┌─────────┴───────────────────────────────────────────────────────┐  │
 │  │  Your App                                                       │  │
-│  │  (SVIDs are fetched in-process by the sidecar above over the     │  │
-│  │   SPIRE Workload API; no spiffe-helper container)                │  │
+│  │  (SVIDs are fetched in-process by the sidecar above over the    │  │
+│  │   SPIRE Workload API; no spiffe-helper container)               │  │
 │  └─────────────────────────────────────────────────────────────────┘  │
 └───────────────────────────────────────────────────────────────────────┘
    ▲

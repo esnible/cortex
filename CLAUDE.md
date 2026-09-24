@@ -418,7 +418,7 @@ cd authbridge && podman build -f cmd/authbridge-proxy/Dockerfile \
    - `/shared/client-id.txt` — operator-created Secret mount, read by authbridge (`jwt-validation`'s `audience_file`)
    - `/shared/client-secret.txt` — operator-created Secret mount, read by authbridge (`token-exchange`)
 
-4. **Port Coordination:** Envoy listens on 15123 (outbound) and 15124 (inbound). The ext-proc listens on 9090. The `proxy-init` iptables rules redirect to these ports.
+3. **Port Coordination:** Envoy listens on 15123 (outbound) and 15124 (inbound). The ext-proc listens on 9090. The `proxy-init` iptables rules redirect to these ports.
 
 ## Gotchas and Known Issues
 
