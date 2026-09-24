@@ -257,74 +257,6 @@ func rowMoney(row string) (float64, bool) {
 	return v, true
 }
 
-// An unreported split renders the NOT-KNOWN cell, not $0.00 and not a vanished row.
-//
-// The row must still be there: the panel's height is reserved from a constant that
-// layout() cannot consult, and a height that followed the data is the defect
-// TestRenderTierRows_HeightIsConstant exists for. And it must not read $0.00, which
-// would assert the model did no reasoning when the truth is that nothing reported
-// either way — the same refusal renderTierRows makes for an absent tier.
-func TestRenderTierRows_UnreportedSplitIsNotKnownNotZero(t *testing.T) {
-	lines := renderTierRows(tierCounts(), tierColumnWidth)
-	child := childRows(lines)
-	if len(child) != 1 {
-		t.Fatalf("want exactly one child row even when unreported, got %d", len(child))
-	}
-	if !strings.Contains(child[0], emptyCell) {
-		t.Errorf("child row = %q, want the not-known cell", child[0])
-	}
-	if strings.Contains(child[0], "$0.00") {
-		t.Errorf("child row = %q, want no $0.00 — that asserts the model did no reasoning", child[0])
-	}
-}
-
-// A REPORTED SPLIT TOO SMALL TO APPORTION MUST NOT RENDER $0.00.
-//
-// The apportionment multiply truncates, so a real reasoning count whose share of the
-// window falls below one micro yields micros == 0 — reachable on a small window,
-// around a hundred output tokens at opus-5 rates. Printing that as "$0.00" asserts
-// the reasoning was FREE, which is the claim renderTierRows refuses for a tier
-// (tiers[tier] == 0 takes the not-known cell); the child needs the same escape.
-//
-// Not "<$0.01" either: that form means "too small to state", while what is true here
-// is that the apportionment resolved no figure at all.
-func TestRenderTierRows_TinyShareIsNotKnownNotFree(t *testing.T) {
-	// 1 reasoning token of 900 output, against 300 apportioned output micros:
-	// 300 * 1/900 = 0.333, which truncates to zero.
-	c := usage.Counts{
-		Requests: 3, CostMicros: 4_000,
-		InputCostMicros: 900, CacheReadCostMicros: 2_800, OutputCostMicros: 300,
-		OutputTokens: 900, ReasoningTokens: 1,
-		PresentKinds: uint8(usage.KindInput | usage.KindCacheRead | usage.KindOutput | usage.KindReasoning),
-	}
-	child := childRows(renderTierRows(c, tierColumnWidth))
-	if len(child) != 1 {
-		t.Fatalf("want one child row, got %d", len(child))
-	}
-	if strings.Contains(child[0], "$0.00") {
-		t.Errorf("child row = %q renders $0.00 for a REPORTED split; that asserts the "+
-			"reasoning was free", child[0])
-	}
-	if !strings.Contains(child[0], emptyCell) {
-		t.Errorf("child row = %q, want the not-known cell when the share apportions to "+
-			"nothing", child[0])
-	}
-}
-
-// Reasoning reported but nothing generated: no denominator, so no defensible figure.
-// The row stays (height is constant) and says it does not know.
-func TestRenderTierRows_NoFigureWithoutOutputTokens(t *testing.T) {
-	c := reasoningCounts()
-	c.OutputTokens = 0
-	child := childRows(renderTierRows(c, tierColumnWidth))
-	if len(child) != 1 {
-		t.Fatalf("want one child row, got %d", len(child))
-	}
-	if !strings.Contains(child[0], emptyCell) {
-		t.Errorf("child row = %q, want the not-known cell with no output to apportion by", child[0])
-	}
-}
-
 // The panel's height is CONSTANT whether or not a split was reported. This is the
 // invariant the drawer's fixed reservation depends on.
 func TestRenderTierRows_HeightConstantAcrossReasoningStates(t *testing.T) {
@@ -359,70 +291,6 @@ func TestSpendDrawerLines_AccountsForTheChildRow(t *testing.T) {
 	if got := len(renderSpendDrawer(reasoningSnap(), nil, usage.GroupModel, "1h", w)); got != wantLines {
 		t.Errorf("the drawer emitted %d lines at width %d, want %d; either way the footer moves",
 			got, w, wantLines)
-	}
-}
-
-// A REPORTED ZERO RENDERS $0.00, EXACTLY, AND WEARS NO MARKER.
-//
-// REVERSES A DECISION THIS TEST USED TO PIN. It asserted the not-known cell, on the
-// grounds that "$0.00 is a lie" — the rule the tier rows follow for `tiers[tier] == 0`.
-// That borrowing was wrong: a TIER apportioning to zero is absent from the modelled mix,
-// so its figure is unknown, while a reasoning count of zero means the provider MEASURED
-// the split and it was nothing. "—" for a value we have discards it.
-//
-// It also split the surfaces: `abctl cost`'s token line prints "reasoning (of output) 0"
-// for the same Counts, so the drawer and the CLI told different stories about one
-// measured fact — and ApportionReasoning's own doc frames the present bit as what
-// "matters to a renderer choosing between the not-known cell and $0.00", while no
-// renderer was making that choice.
-//
-// No marker either: zero tokens cost zero whatever the output rate, so this is the one
-// child figure with no token-ratio approximation in it for a marker to qualify.
-func TestRenderTierRows_ReportedZeroIsTheMeasurement(t *testing.T) {
-	c := reasoningCounts()
-	c.ReasoningTokens = 0 // measured, and measured as nothing: the bit stays set
-	child := childRows(renderTierRows(c, tierColumnWidth))
-	if len(child) != 1 {
-		t.Fatalf("want one child row for a reported zero, got %d", len(child))
-	}
-	if strings.Contains(child[0], emptyCell) {
-		t.Errorf("child row = %q shows the not-known cell for a MEASURED zero; the CLI's "+
-			"token line prints 0 for the same Counts", child[0])
-	}
-	if got, ok := rowMoney(child[0]); !ok || got != 0 {
-		t.Errorf("child row = %q, want a $0.00 figure (parsed %v, ok=%v)", child[0], got, ok)
-	}
-	if strings.Contains(child[0], inexactMarker) {
-		t.Errorf("child row = %q wears %q; a zero costs zero at any rate, so nothing here "+
-			"is modelled", child[0], inexactMarker)
-	}
-	// An UNREPORTED split is still the not-known cell — that is the distinction the
-	// present bit exists to carry, and this is the half that must not move.
-	unreported := reasoningCounts()
-	unreported.ReasoningTokens = 0
-	unreported.PresentKinds = uint8(usage.KindOutput)
-	if got := childRows(renderTierRows(unreported, tierColumnWidth)); len(got) != 1 ||
-		!strings.Contains(got[0], emptyCell) {
-		t.Errorf("an unreported split rendered %q, want the not-known cell", got)
-	}
-}
-
-// A NEGATIVE count must not reach the bar or the share cell. Unreachable through the
-// live parser, which screens negatives at ingest — but renderTierRows takes a
-// usage.Counts from the ledger and from any other producer, and a negative here would
-// draw a bar from a negative length.
-func TestRenderTierRows_NegativeReasoningIsRefused(t *testing.T) {
-	c := reasoningCounts()
-	c.ReasoningTokens = -948
-	child := childRows(renderTierRows(c, tierColumnWidth))
-	if len(child) != 1 {
-		t.Fatalf("want one child row, got %d", len(child))
-	}
-	if !strings.Contains(child[0], emptyCell) {
-		t.Errorf("child row = %q, want the not-known cell for a negative count", child[0])
-	}
-	if strings.Contains(child[0], "-") {
-		t.Errorf("child row = %q carries a negative figure", child[0])
 	}
 }
 
@@ -669,15 +537,126 @@ func TestRenderTierRows_OnlyTheChildWearsTheInexactMarker(t *testing.T) {
 	}
 }
 
-// The not-known cell wears NO marker: inexactMarker qualifies a figure, and there is none
-// to qualify. A glyph there would claim an inexact number where the claim is that there
-// is no number.
-func TestRenderTierRows_NotKnownChildWearsNoMarker(t *testing.T) {
-	child := childRows(renderTierRows(tierCounts(), tierColumnWidth))
-	if len(child) != 1 {
-		t.Fatalf("want one child row, got %d", len(child))
-	}
-	if strings.Contains(child[0], inexactMarker) {
-		t.Errorf("child row = %q wears %q with no figure to qualify", child[0], inexactMarker)
+// THE CHILD CELL'S TRUTH TABLE — six states of ONE decision, which is why it is one table
+// and not six functions. Split across functions, each state asserted only the dimension
+// the round that found it cared about: the negative case never checked the marker, the
+// tiny-share case never checked the figure. Every row now asserts all three (cell, figure,
+// marker), so a state cannot be half-covered.
+//
+// The distinction the present bit exists to carry runs down the wantMoney column: nil is
+// "no defensible figure, show the not-known cell", and a pointer to 0 is "the provider
+// MEASURED the split and it was nothing". "-" for a value we have would discard it, and
+// "$0.00" for a value we lack asserts the model reasoned for free.
+func TestRenderTierRows_ChildCellTruthTable(t *testing.T) {
+	zero := func(f float64) *float64 { return &f }
+
+	reportedZero := reasoningCounts()
+	reportedZero.ReasoningTokens = 0 // measured, and measured as nothing: the bit stays set
+
+	zeroBitClear := reasoningCounts()
+	zeroBitClear.ReasoningTokens = 0
+	zeroBitClear.PresentKinds = uint8(usage.KindOutput) // nothing reported at all
+
+	noDenominator := reasoningCounts()
+	noDenominator.OutputTokens = 0
+
+	negative := reasoningCounts()
+	negative.ReasoningTokens = -948
+
+	for _, tc := range []struct {
+		name string
+		c    usage.Counts
+		// nil = the not-known cell; non-nil = that exact figure, in dollars.
+		wantMoney  *float64
+		wantMarker bool
+		why        string
+	}{
+		{
+			name: "unreported split",
+			c:    tierCounts(),
+			why: "no bit, no value: the row still renders (height is constant) and says it " +
+				"does not know. A $0.00 here would assert the model did no reasoning.",
+		},
+		{
+			name: "reported zero", c: reportedZero, wantMoney: zero(0), wantMarker: false,
+			why: "the provider measured the split and it was nothing. `abctl cost`'s token " +
+				"line prints 0 for the same Counts, so the not-known cell would split the " +
+				"two surfaces. No marker: a zero costs zero at any rate, so nothing here is " +
+				"modelled for a marker to qualify.",
+		},
+		{
+			name: "reported zero with the bit clear", c: zeroBitClear,
+			why: "the half of the present bit's job that must not move — same value as the " +
+				"row above, opposite cell, because nothing was reported.",
+		},
+		{
+			// 1 reasoning token of 900 output against 300 apportioned output micros:
+			// 300 * 1/900 = 0.333, which truncates to zero.
+			name: "share apportions to nothing",
+			c: usage.Counts{
+				Requests: 3, CostMicros: 4_000,
+				InputCostMicros: 900, CacheReadCostMicros: 2_800, OutputCostMicros: 300,
+				OutputTokens: 900, ReasoningTokens: 1,
+				PresentKinds: uint8(usage.KindInput | usage.KindCacheRead | usage.KindOutput |
+					usage.KindReasoning),
+			},
+			why: "the apportionment multiply truncates, so a REAL count whose share falls " +
+				"below one micro yields micros == 0 — reachable around a hundred output " +
+				"tokens at opus-5 rates. Not \"<$0.01\" either: that means \"too small to " +
+				"state\", and what is true here is that the apportionment resolved nothing.",
+		},
+		{
+			name: "no output to apportion by", c: noDenominator,
+			why: "reasoning reported but nothing generated: no denominator, no figure.",
+		},
+		{
+			name: "negative count", c: negative,
+			why: "unreachable through the live parser, which screens negatives at ingest — " +
+				"but renderTierRows takes a usage.Counts from the ledger and from any other " +
+				"producer, and a negative would draw a bar from a negative length.",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			child := childRows(renderTierRows(tc.c, tierColumnWidth))
+			if len(child) != 1 {
+				t.Fatalf("want exactly one child row in every state, got %d -- %s",
+					len(child), tc.why)
+			}
+			row := child[0]
+			gotMoney, hasMoney := rowMoney(row)
+			hasNotKnown := strings.Contains(row, emptyCell)
+
+			if tc.wantMoney == nil {
+				if !hasNotKnown {
+					t.Errorf("child row = %q, want the not-known cell -- %s", row, tc.why)
+				}
+				if hasMoney {
+					t.Errorf("child row = %q carries the figure $%.4f where there is none to "+
+						"state -- %s", row, gotMoney, tc.why)
+				}
+			} else {
+				if hasNotKnown {
+					t.Errorf("child row = %q shows the not-known cell for a MEASURED value "+
+						"-- %s", row, tc.why)
+				}
+				if !hasMoney {
+					t.Errorf("child row = %q carries no figure, want $%.2f -- %s",
+						row, *tc.wantMoney, tc.why)
+				} else if gotMoney != *tc.wantMoney {
+					t.Errorf("child row = %q parsed $%.4f, want $%.2f -- %s",
+						row, gotMoney, *tc.wantMoney, tc.why)
+				}
+			}
+
+			if got := strings.Contains(row, inexactMarker); got != tc.wantMarker {
+				t.Errorf("child row = %q wears %q = %v, want %v -- %s",
+					row, inexactMarker, got, tc.wantMarker, tc.why)
+			}
+
+			// A negative must not reach the row in any form, figure or bar.
+			if tc.name == "negative count" && strings.Contains(row, "-") {
+				t.Errorf("child row = %q carries a negative figure", row)
+			}
+		})
 	}
 }
