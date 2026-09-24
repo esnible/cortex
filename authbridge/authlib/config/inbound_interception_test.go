@@ -117,13 +117,6 @@ func TestValidate_InboundInterception(t *testing.T) {
 			}},
 			wantErr: true,
 		},
-		{
-			name: "waypoint rejects the field",
-			cfg: &Config{Mode: ModeWaypoint, Listener: ListenerConfig{
-				InboundInterception: InboundInterceptionTransparent,
-			}},
-			wantErr: true,
-		},
 	}
 
 	for _, tc := range tests {

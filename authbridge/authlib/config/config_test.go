@@ -27,17 +27,6 @@ func TestApplyPreset_EnvoySidecar(t *testing.T) {
 	}
 }
 
-func TestApplyPreset_Waypoint(t *testing.T) {
-	cfg := &Config{Mode: ModeWaypoint}
-	ApplyPreset(cfg)
-	if cfg.Listener.ExtAuthzAddr != ":9090" {
-		t.Errorf("ext_authz_addr = %q, want :9090", cfg.Listener.ExtAuthzAddr)
-	}
-	if cfg.Listener.ForwardProxyAddr != ":8080" {
-		t.Errorf("forward_proxy_addr = %q, want :8080", cfg.Listener.ForwardProxyAddr)
-	}
-}
-
 func TestApplyPreset_ProxySidecar(t *testing.T) {
 	cfg := &Config{Mode: ModeProxySidecar}
 	ApplyPreset(cfg)
@@ -129,16 +118,6 @@ func TestValidate_InvalidListenerCombo(t *testing.T) {
 	}
 }
 
-func TestValidate_WaypointRejectsExtProc(t *testing.T) {
-	cfg := &Config{
-		Mode:     ModeWaypoint,
-		Listener: ListenerConfig{ExtProcAddr: ":9090"},
-	}
-	if err := Validate(cfg); err == nil {
-		t.Error("expected error for waypoint + ext_proc_addr")
-	}
-}
-
 func TestValidate_ProxySidecarRequiresBackend(t *testing.T) {
 	cfg := &Config{Mode: ModeProxySidecar}
 	if err := Validate(cfg); err == nil {
@@ -191,7 +170,6 @@ func TestValidate_ValidConfigs(t *testing.T) {
 	}
 	for _, cfg := range []*Config{
 		withPipeline(&Config{Mode: ModeEnvoySidecar}),
-		withPipeline(&Config{Mode: ModeWaypoint}),
 		withPipeline(&Config{Mode: ModeProxySidecar, Listener: ListenerConfig{ReverseProxyBackend: "http://upstream"}}),
 	} {
 		if err := Validate(cfg); err != nil {
@@ -272,9 +250,9 @@ pipeline:
 func TestLoad(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "config.yaml")
-	content := `mode: waypoint
+	content := `mode: envoy-sidecar
 listener:
-  ext_authz_addr: "${TEST_ADDR}"
+  ext_proc_addr: "${TEST_ADDR}"
 `
 	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
 		t.Fatal(err)
@@ -286,11 +264,11 @@ listener:
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if cfg.Mode != ModeWaypoint {
-		t.Errorf("mode = %q, want waypoint", cfg.Mode)
+	if cfg.Mode != ModeEnvoySidecar {
+		t.Errorf("mode = %q, want envoy-sidecar", cfg.Mode)
 	}
-	if cfg.Listener.ExtAuthzAddr != ":19090" {
-		t.Errorf("ext_authz_addr = %q, want expanded value", cfg.Listener.ExtAuthzAddr)
+	if cfg.Listener.ExtProcAddr != ":19090" {
+		t.Errorf("ext_proc_addr = %q, want expanded value", cfg.Listener.ExtProcAddr)
 	}
 }
 

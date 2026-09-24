@@ -9,10 +9,6 @@ func ApplyPreset(cfg *Config) {
 	case ModeEnvoySidecar:
 		setDefault(&cfg.Listener.ExtProcAddr, ":9090")
 
-	case ModeWaypoint:
-		setDefault(&cfg.Listener.ExtAuthzAddr, ":9090")
-		setDefault(&cfg.Listener.ForwardProxyAddr, ":8080")
-
 	case ModeProxySidecar:
 		// Fill an addr default only for an active role (empty Roles => both),
 		// so a forward-only or reverse-only deployment doesn't bind the proxy
@@ -57,7 +53,6 @@ func ApplyPreset(cfg *Config) {
 	if cfg.Listener.BindLoopbackOnly {
 		for _, addr := range []*string{
 			&cfg.Listener.ExtProcAddr,
-			&cfg.Listener.ExtAuthzAddr,
 			&cfg.Listener.ForwardProxyAddr,
 			&cfg.Listener.ReverseProxyAddr,
 			&cfg.Listener.TransparentInboundAddr,

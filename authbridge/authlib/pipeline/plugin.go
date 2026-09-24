@@ -31,9 +31,7 @@ type PluginCapabilities struct {
 	//
 	// Pipeline.New rejects a pipeline that has more than one
 	// WritesRequestBody plugin per direction — mutation ordering would
-	// be ambiguous. Waypoint mode (ext_authz) cannot support body
-	// mutation at all: ext_authz has no body-mutation field. main.go
-	// enforces this at process boot.
+	// be ambiguous.
 	//
 	// Declaring this does NOT cost response streaming. Requests are
 	// never streamed — they arrive complete with a Content-Length and

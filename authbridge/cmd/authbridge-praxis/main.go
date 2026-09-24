@@ -16,7 +16,7 @@ import (
 	"github.com/rossoctl/cortex/authbridge/authlib/praxis"
 	"github.com/rossoctl/cortex/authbridge/authlib/runtimeutil"
 	"github.com/rossoctl/cortex/authbridge/authlib/spiffe"
-	// Only HTTP listeners are compiled in: no extproc/extauthz
+	// Only HTTP listeners are compiled in: no extproc
 	// (no gRPC, no envoy types).
 	// Plugins are wired via per-plugin plugins_<name>.go files, each gated
 	// by `//go:build include_plugin_<name>`. main.go imports no plugin

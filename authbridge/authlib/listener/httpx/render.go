@@ -1,6 +1,6 @@
 // Package httpx contains HTTP-listener helpers shared between the
-// forwardproxy and reverseproxy listeners. extproc and extauthz speak
-// gRPC and don't use this package.
+// forwardproxy and reverseproxy listeners. extproc speaks gRPC and
+// doesn't use this package.
 package httpx
 
 import (

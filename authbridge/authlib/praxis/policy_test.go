@@ -235,8 +235,9 @@ func TestBuildPolicy_AudienceFile_IsError(t *testing.T) {
 	}
 }
 
-// audience_mode: per-host is the waypoint shape and equally unrepresentable in
-// a static trusted_issuers list, so it fails for the same fail-open reason.
+// audience_mode: per-host derives the audience per request, which is equally
+// unrepresentable in a static trusted_issuers list, so it fails for the same
+// fail-open reason.
 func TestBuildPolicy_PerHostAudience_IsError(t *testing.T) {
 	_, err := BuildPolicy(proxySidecar(t, func(c *config.Config) {
 		c.Pipeline.Inbound.Plugins = []config.PluginEntry{jwtPlugin(t, map[string]any{

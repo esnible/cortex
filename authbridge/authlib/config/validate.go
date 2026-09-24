@@ -18,12 +18,12 @@ import (
 // WarnEmptyPipelines so the open-proxy condition is visible in logs.
 func Validate(cfg *Config) error {
 	switch cfg.Mode {
-	case ModeEnvoySidecar, ModeWaypoint, ModeProxySidecar:
+	case ModeEnvoySidecar, ModeProxySidecar:
 		// valid
 	case "":
-		return fmt.Errorf("mode is required (envoy-sidecar, waypoint, or proxy-sidecar)")
+		return fmt.Errorf("mode is required (envoy-sidecar or proxy-sidecar)")
 	default:
-		return fmt.Errorf("unknown mode %q (valid: envoy-sidecar, waypoint, proxy-sidecar)", cfg.Mode)
+		return fmt.Errorf("unknown mode %q (valid: envoy-sidecar, proxy-sidecar)", cfg.Mode)
 	}
 	if err := validateListeners(cfg); err != nil {
 		return err
@@ -90,25 +90,9 @@ func validateListeners(cfg *Config) error {
 		if cfg.Listener.InboundInterception != "" {
 			return fmt.Errorf("envoy-sidecar mode does not support inbound_interception (Envoy already intercepts inbound transparently)")
 		}
-		if cfg.Listener.ExtAuthzAddr != "" {
-			return fmt.Errorf("envoy-sidecar mode does not support ext_authz_addr (use waypoint mode)")
-		}
-	case ModeWaypoint:
-		if cfg.Listener.ExtProcAddr != "" {
-			return fmt.Errorf("waypoint mode does not support ext_proc_addr (use envoy-sidecar mode)")
-		}
-		if cfg.Listener.InboundInterception != "" {
-			return fmt.Errorf("waypoint mode does not support inbound_interception (the waypoint owns inbound)")
-		}
-		if cfg.Listener.ReverseProxyAddr != "" {
-			return fmt.Errorf("waypoint mode does not support reverse_proxy_addr")
-		}
 	case ModeProxySidecar:
 		if cfg.Listener.ExtProcAddr != "" {
 			return fmt.Errorf("proxy-sidecar mode does not support ext_proc_addr (use envoy-sidecar mode)")
-		}
-		if cfg.Listener.ExtAuthzAddr != "" {
-			return fmt.Errorf("proxy-sidecar mode does not support ext_authz_addr (use waypoint mode)")
 		}
 		for _, r := range cfg.Listener.Roles {
 			if r != RoleReverse && r != RoleForward {

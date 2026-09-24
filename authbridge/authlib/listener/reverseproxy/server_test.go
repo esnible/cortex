@@ -587,9 +587,9 @@ func TestReverseProxy_SchemeFromTLS(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			capturer := &schemeCapturePlugin{}
-			// BuildPipeline matches the construction used in
-			// extproc/extauthz scheme tests — keeps the four
-			// listener tests grep-parallel.
+			// BuildPipeline matches the construction used in the
+			// extproc scheme tests — keeps the three listener
+			// tests grep-parallel.
 			p, err := plugintesting.BuildPipeline([]pipeline.Plugin{capturer})
 			if err != nil {
 				t.Fatalf("BuildPipeline: %v", err)

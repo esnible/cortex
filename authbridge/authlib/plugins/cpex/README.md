@@ -287,8 +287,8 @@ listeners then choose the wire shape (`authbridge/authlib/listener/httpx/render.
   a policy deny, **502 Bad Gateway** for a CPEX-internal error, with a
   `{"error":"cpex.<code>",...}` body.
 
-(The gRPC listeners — extproc / extauthz — don't use this renderer and surface
-denials per their own protocol.)
+(The gRPC listener — extproc — doesn't use this renderer and surfaces
+denials per its own protocol.)
 
 A CPEX policy `deny` is a normal outcome and is always honored. `fail_open` only
 governs CPEX-internal failures (an FFI error, an unreachable backend, a

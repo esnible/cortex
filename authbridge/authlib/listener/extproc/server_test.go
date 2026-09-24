@@ -1490,8 +1490,8 @@ func keysOf(m map[string]json.RawMessage) []string {
 // OnRequest. Used by the per-listener scheme-wiring tests to verify
 // each listener populates the field from its transport-native source.
 //
-// Duplicated byte-for-byte across the four listener test packages
-// (extauthz, extproc, forwardproxy, reverseproxy) rather than
+// Duplicated byte-for-byte across the three listener test packages
+// (extproc, forwardproxy, reverseproxy) rather than
 // promoted to authlib/plugintesting — the plugin shape is only
 // useful in listener tests and not worth exporting. Each package
 // has a copy with this same godoc.

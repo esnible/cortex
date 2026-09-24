@@ -225,12 +225,6 @@ level=DEBUG msg="mcp-parser: no body, skipping"
 3. Check authbridge startup logs for `"mode", "envoy-sidecar"` — if it
    says the wrong mode, the config isn't being read
 
-### "waypoint mode does not support plugins that require body access"
-
-This fatal error means you configured `mcp-parser` in waypoint mode.
-ext_authz cannot forward request bodies (hard Envoy constraint). Use
-envoy-sidecar or proxy-sidecar mode instead.
-
 ### "Spurious response message received on gRPC stream"
 
 This Envoy warning means ext_proc sent a response that Envoy wasn't

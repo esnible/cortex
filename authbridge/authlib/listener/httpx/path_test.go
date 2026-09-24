@@ -7,7 +7,7 @@ import (
 
 // TestPathOnly pins the query-stripping invariant pipeline.Context.Path
 // promises. PathOnly is the single chokepoint upholding it for every
-// Envoy-fed listener (four ext_proc sites plus ext_authz), and that path now
+// Envoy-fed listener (four ext_proc sites), and that path now
 // reaches operators as SessionEvent.HTTPPath — so a regression here would put
 // query strings on the timeline and into anything exported from it.
 func TestPathOnly(t *testing.T) {

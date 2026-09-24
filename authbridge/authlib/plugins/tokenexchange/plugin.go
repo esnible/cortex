@@ -75,8 +75,8 @@ type tokenExchangeConfig struct {
 	// that arrive without a bearer token: "client-credentials" does an
 	// unprompted client_credentials exchange; "allow" forwards
 	// unchanged; "deny" rejects. Default: "deny" in all modes.
-	// Operators who need a different behavior (e.g. waypoint's historic
-	// "allow" default) must set it explicitly per plugin entry.
+	// Operators who need a different behavior must set it explicitly per
+	// plugin entry.
 	NoTokenPolicy string `json:"no_token_policy" description:"Behavior when outbound has no bearer token: client-credentials, allow, or deny." default:"deny" enum:"client-credentials,allow,deny"`
 
 	// Identity carries client credentials used for token exchange.
@@ -87,9 +87,9 @@ type tokenExchangeConfig struct {
 	Routes tokenExchangeRoutes `json:"routes" description:"Host-to-audience routing rules; non-matching hosts fall through to default_policy."`
 
 	// AudienceFromHost — when true, requests with no matching route use
-	// routing.ServiceNameFromHost(host) as the target audience. Used in
-	// waypoint mode.
-	AudienceFromHost bool `json:"audience_from_host" description:"When true, derive audience from host for unrouted requests (waypoint mode)." default:"false"`
+	// routing.ServiceNameFromHost(host) as the target audience, naming the
+	// audience after the destination service instead of a route entry.
+	AudienceFromHost bool `json:"audience_from_host" description:"When true, derive audience from host for unrouted requests." default:"false"`
 
 	ResolvePlaceholders bool `json:"resolve_placeholders" default:"false" description:"Resolve an inbound bearer carrying the placeholder prefix from the shared store to the real token before exchange. Unresolvable placeholders are denied (fail closed)."`
 }
@@ -377,24 +377,23 @@ func (p *TokenExchange) Configure(raw json.RawMessage) error {
 		}
 	}
 	// Track whether NoTokenPolicy arrived explicitly so we can warn
-	// waypoint-ish operators whose pre-migration deployments relied on
-	// the old mode-dependent default (waypoint=allow). applyDefaults
-	// fills in "deny" for everyone; without the explicit-set signal we
-	// can't tell the two cases apart at WARN time.
+	// operators whose pre-migration deployments relied on the old
+	// mode-dependent default. applyDefaults fills in "deny" for everyone;
+	// without the explicit-set signal we can't tell the two cases apart at
+	// WARN time.
 	noTokenPolicyExplicit := c.NoTokenPolicy != ""
 	c.applyDefaults()
 	if err := c.validate(); err != nil {
 		return fmt.Errorf("token-exchange config: %w", err)
 	}
 	// The old NoTokenPolicyForMode defaulted to "client-credentials" for
-	// envoy-sidecar, "allow" for waypoint, and "deny" for proxy-sidecar.
-	// The new uniform default is "deny". Warn whenever no_token_policy
-	// was defaulted so operators relying on either of the old
-	// mode-specific behaviors find out at boot rather than via a
-	// traffic regression.
+	// envoy-sidecar and "deny" for proxy-sidecar. The new uniform default
+	// is "deny". Warn whenever no_token_policy was defaulted so operators
+	// relying on the old mode-specific behavior find out at boot rather
+	// than via a traffic regression.
 	if !noTokenPolicyExplicit {
 		slog.Warn("token-exchange: no_token_policy defaulted to \"deny\"; " +
-			"prior defaults were mode-specific (envoy-sidecar: client-credentials, waypoint: allow, proxy-sidecar: deny). " +
+			"prior defaults were mode-specific (envoy-sidecar: client-credentials, proxy-sidecar: deny). " +
 			"Set no_token_policy explicitly (allow | deny | client-credentials) to silence this warning and pin the behavior.")
 	}
 

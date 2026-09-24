@@ -44,8 +44,7 @@ import (
 	"github.com/rossoctl/cortex/authbridge/authlib/shared"
 	"github.com/rossoctl/cortex/authbridge/authlib/spiffe"
 
-	// Only the ext_proc listener is compiled in (no ext_authz, no
-	// HTTP proxies).
+	// Only the ext_proc listener is compiled in (no HTTP proxies).
 	"github.com/rossoctl/cortex/authbridge/authlib/listener/extproc"
 	"github.com/rossoctl/cortex/authbridge/authlib/listener/skiphost"
 	// Plugins. Auth gates first, then the protocol parsers that

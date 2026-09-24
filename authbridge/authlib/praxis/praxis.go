@@ -352,11 +352,6 @@ func Convert(cfg *config.Config, opts *Options) (*Result, error) {
 				"data-plane listener, so there is no listener address to translate. Praxis "+
 				"replaces Envoy itself rather than the callout; the generated config uses the "+
 				"proxy-sidecar listener fields if present.")
-	case config.ModeWaypoint:
-		res.Warnings = append(res.Warnings,
-			"mode waypoint: AuthBridge runs as an ext_authz callout behind an Istio waypoint, "+
-				"so its inbound listener is the waypoint's, not its own. Only the forward-proxy "+
-				"address, if set, is translated.")
 	default:
 		return nil, fmt.Errorf("praxis: unknown AuthBridge mode %q", cfg.Mode)
 	}

@@ -194,9 +194,9 @@ func TestReloader_RefusesModeChange(t *testing.T) {
 	oldInPipeline := inH.Load()
 	newIn := emptyPipeline(t)
 	newOut := emptyPipeline(t)
-	b.set(builderResult{inbound: newIn, outbound: newOut, cfg: &config.Config{Mode: "waypoint"}})
+	b.set(builderResult{inbound: newIn, outbound: newOut, cfg: &config.Config{Mode: "proxy-sidecar"}})
 
-	writeConfig(t, cfgPath, "mode: waypoint\n")
+	writeConfig(t, cfgPath, "mode: proxy-sidecar\n")
 
 	waitFor(t, 2*time.Second, func() bool { return r.Status().ReloadsFailed >= 1 }, "reload to fail")
 	if inH.Load() != oldInPipeline {
@@ -583,7 +583,7 @@ func TestReloader_ARefusedReloadCommitsNothing(t *testing.T) {
 		{
 			// Unreloadable field: build succeeds, the check refuses it.
 			name:    "an unreloadable field",
-			newCfg:  &config.Config{Mode: "waypoint"},
+			newCfg:  &config.Config{Mode: "proxy-sidecar"},
 			wantWhy: "mode",
 		},
 		{

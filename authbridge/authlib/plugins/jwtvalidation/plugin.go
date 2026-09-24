@@ -80,7 +80,7 @@ type jwtValidationConfig struct {
 
 	// AudienceMode chooses how the expected audience is resolved:
 	// "static" (default) uses Audience/AudienceFile; "per-host" derives
-	// it from pctx.Host via routing.ServiceNameFromHost (waypoint mode).
+	// it from pctx.Host via routing.ServiceNameFromHost.
 	AudienceMode string `json:"audience_mode" description:"How to resolve expected audience: static or per-host." default:"static" enum:"static,per-host"`
 
 	// AllowedAudiences lists extra audience strings the sidecar accepts

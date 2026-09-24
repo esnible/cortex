@@ -673,7 +673,7 @@ The pipeline **does not own**:
 
 | Concern | Owner | Why |
 |---|---|---|
-| HTTP wire protocol (ext_proc gRPC, ext_authz, reverse/forward proxy) | `cmd/authbridge/listener/` | Each mode speaks a different wire; pipeline stays protocol-free |
+| HTTP wire protocol (ext_proc gRPC, reverse/forward proxy) | `cmd/authbridge/listener/` | Each mode speaks a different wire; pipeline stays protocol-free |
 | Body buffering negotiation (`ProcessingMode: BUFFERED`) | Listener reads `Pipeline.NeedsBody()` | Only listener can respond to the ext_proc handshake |
 | JWT issuance, client registration, Keycloak admin calls | Outside the pipeline (agent sidecars / operator) | Async concerns happening before/after any request flow |
 | Session store writes (`Store.Append`) | Listener, called after each phase | Plugins see only the read-only `SessionView` |
@@ -767,7 +767,7 @@ curl http://localhost:9093/config               # now-active config
 |---|---|---|
 | Plugin list (add / remove / reorder plugins) | ✅ | Pipeline is rebuilt from scratch |
 | A plugin's `config:` subtree (issuer, bypass paths, routes, JWKS URL, etc.) | ✅ | Plugin's `Configure` runs again with new bytes |
-| `mode` (`envoy-sidecar` / `waypoint` / `proxy-sidecar`) | ❌ | Different wire protocol + listener set; refuse reload |
+| `mode` (`envoy-sidecar` / `proxy-sidecar`) | ❌ | Different wire protocol + listener set; refuse reload |
 | `listener.*` (ports) | ❌ | Bound sockets; refuse reload |
 | `session.*` (TTL, MaxEvents, MaxSessions, ID headers) | ❌ | Every consumer reads the block once at startup — `session.New(...)` in each `cmd` main, `forwardproxy.Server.SessionIDHeaders` assigned before `ListenAndServe`. There is no live object to reach; refuse reload |
 | `cost_ledger.*` (`enabled`, `dir`, `retention_days`) | ❌ | The ledger is a `*costledger.Writer` opened once at startup and handed to the session store as a `Recorder`. Refuse reload |

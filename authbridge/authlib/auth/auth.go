@@ -24,8 +24,10 @@ type IdentityConfig struct {
 	Issuer    string   // expected JWT iss (jwt-validation); inbound debug logging only
 }
 
-// AudienceDeriver derives a target audience from a request host.
-// Used by waypoint mode to auto-derive audience from the destination service name.
+// AudienceDeriver derives a target audience from a request host, for the
+// per-host audience modes (jwt-validation's audience_mode: per-host and
+// token-exchange's audience_from_host) that name the audience after the
+// destination service instead of configuring it statically.
 // Returns "" if no derivation is possible (falls back to route config).
 type AudienceDeriver func(host string) string
 
@@ -38,7 +40,7 @@ type Config struct {
 	Router          *routing.Router
 	Identity        IdentityConfig
 	NoTokenPolicy   string          // NoTokenClientCredentials, NoTokenAllow, or NoTokenDeny
-	AudienceDeriver AudienceDeriver // optional, derives audience from host (waypoint mode)
+	AudienceDeriver AudienceDeriver // optional, derives audience from host (per-host audience modes)
 	Logger          *slog.Logger
 }
 
@@ -273,8 +275,8 @@ func (a *Auth) InboundAudiences() []string {
 
 // HandleInbound validates an inbound request's JWT token.
 // audience overrides the default expected audience when non-empty. This supports
-// waypoint mode where audience is derived per-request from the destination host.
-// For envoy-sidecar and proxy-sidecar modes, pass "" to use the configured default.
+// the per-host audience mode, where the audience is derived per request from the
+// destination host. Pass "" to use the configured default.
 func (a *Auth) HandleInbound(ctx context.Context, authHeader, path, audience string) *InboundResult {
 	// 1. Bypass check
 	if a.bypass != nil && a.bypass.Match(path) {
@@ -318,7 +320,7 @@ func (a *Auth) HandleInbound(ctx context.Context, authHeader, path, audience str
 	}
 	var audiences []string
 	if audience != "" {
-		audiences = []string{audience} // waypoint mode: single derived audience
+		audiences = []string{audience} // per-host mode: single derived audience
 	} else {
 		id := a.identity.Load()
 		if id != nil {
@@ -392,7 +394,7 @@ func (a *Auth) HandleOutbound(ctx context.Context, authHeader, host string) *Out
 	audience := resolved.Audience
 	scopes := resolved.Scopes
 
-	// If no audience from route and deriver is set, derive from host (waypoint pattern)
+	// If no audience from route and deriver is set, derive from host (per-host pattern)
 	if audience == "" && a.audienceDeriver != nil {
 		audience = a.audienceDeriver(host)
 		a.log.Debug("audience derived from host", "host", host, "audience", audience)

@@ -49,7 +49,7 @@ import (
 	"github.com/rossoctl/cortex/authbridge/authlib/tlsbridge"
 	"github.com/rossoctl/cortex/authbridge/authlib/usage"
 
-	// Only HTTP listeners are compiled in: no extproc/extauthz
+	// Only HTTP listeners are compiled in: no extproc
 	// (no gRPC, no envoy types).
 	"github.com/rossoctl/cortex/authbridge/authlib/listener/forwardproxy"
 	"github.com/rossoctl/cortex/authbridge/authlib/listener/reverseproxy"
