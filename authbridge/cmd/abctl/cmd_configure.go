@@ -115,14 +115,19 @@ func runConfigure(args []string, stdout, stderr io.Writer) int {
 		// `abctl claude-code` is — that spelling names a command that really worked and
 		// may sit in someone's script, whereas this one only ever printed a notice, so
 		// keeping it alive would be preserving a name nothing depended on.
-		// Default the verb to status for the bare `abctl configure bob`, which is the
-		// most likely spelling of all: the notice this replaced took no verb, so that
-		// is what a note or a shell history from before the rename holds. Joining an
-		// empty tail printed a command ending in a space with no verb, which on paste
-		// just reprints usage — the one input most likely to arrive got the one
-		// suggestion that does not work. status is the safe default: it is the verb
-		// that changes nothing.
-		action := strings.Join(args[1:], " ")
+		// Quoted per element, via the shellQuote exec already uses: the goal is a
+		// command that can be pasted, and joining raw args lost the quoting on
+		// anything containing a space or a backtick — `--rc "my rc file"` came back as
+		// three bare words. Defaulting to status covers the bare `configure bob`,
+		// which is the likeliest spelling of all since the notice this replaced took
+		// no verb; joining an empty tail printed a command ending in a space with no
+		// verb, which on paste just reprints usage. status is the safe default: it is
+		// the verb that changes nothing.
+		quoted := make([]string, 0, len(args)-1)
+		for _, a := range args[1:] {
+			quoted = append(quoted, shellQuote(a))
+		}
+		action := strings.Join(quoted, " ")
 		if action == "" {
 			action = "status"
 		}

@@ -99,7 +99,14 @@ func runBobShell(args []string, stdout, stderr io.Writer) int {
 
 	fs := flag.NewFlagSet("bobshell "+action, flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	yes := fs.Bool("yes", false, "do not prompt for confirmation")
+	// --yes only where there is a prompt to skip. status writes nothing and never
+	// asks, so registering it there would accept a flag that does nothing — and the
+	// help text already scopes it to enable and disable, which this makes true rather
+	// than aspirational. An unknown flag is flag's own usage error, so it exits 2.
+	yes := new(bool)
+	if action != "status" {
+		yes = fs.Bool("yes", false, "do not prompt for confirmation")
+	}
 	rcPath := fs.String("rc", "", "shell startup file to edit")
 	if err := fs.Parse(args[1:]); err != nil {
 		return 2
@@ -117,6 +124,15 @@ func runBobShell(args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 		*rcPath = p
+	}
+
+	// A --rc that cannot be an rc file is a usage error, so it exits 2 like every
+	// other one — the code --help documents. It used to surface the raw errno at exit
+	// 1 ("read /x/adir: is a directory"), which both contradicted the documented code
+	// and read like an internal failure rather than a correctable argument.
+	if fi, serr := os.Stat(*rcPath); serr == nil && fi.IsDir() {
+		fmt.Fprintf(stderr, "abctl: --rc %s is a directory; give the path of a shell startup file\n", *rcPath)
+		return 2
 	}
 
 	switch action {
@@ -270,7 +286,25 @@ func findBobShellBlock(lines []string) (start, end int, found bool) {
 		}
 	}
 	if start != -1 {
-		return start, start + 1, true
+		// A start marker with no end: the fence's far side was deleted or mangled by
+		// hand. Returning the marker alone left our own alias line below it behind, so
+		// status reported a block "with no alias line" while the shell had a LIVE
+		// alias, and disable removed the comment and exited 0 leaving that alias. Take
+		// the contiguous run of lines that this command could itself have written —
+		// the alias and a mangled end marker — and stop at anything else. Bounding it
+		// to lines adjacent to a marker we DID write is what keeps a user's own
+		// `alias bob=...` elsewhere in the file theirs: outside a block, we never
+		// claim a line just because it mentions bob.
+		end = start + 1
+		for end < len(lines) {
+			t := strings.TrimSpace(lines[end])
+			if strings.HasPrefix(t, "alias bob=") || strings.HasPrefix(t, "# <<< cortex abctl") {
+				end++
+				continue
+			}
+			break
+		}
+		return start, end, true
 	}
 	return -1, -1, false
 }
@@ -343,6 +377,46 @@ func readRC(path string) (lines []string, trailingNewline bool, err error) {
 	return strings.Split(strings.TrimSuffix(s, "\n"), "\n"), trailingNewline, nil
 }
 
+// resolveRC follows a symlinked rc file to the file that must actually be written.
+//
+// An rc file is very often a link into a dotfiles repo, and os.Rename over the link
+// REPLACES it with a regular file: the alias lands in a file the repo does not
+// track, the repo's own copy never gets it, and every later dotfile edit silently
+// stops reaching the shell. Backing up beside the link rather than the target is the
+// same shape of wrongness, so callers resolve once and use the result for both the
+// backup and the write — and for what they tell the user, which is why this is a
+// function rather than two lines inside writeRC. (writeSettings does not do this
+// because settings.json is rarely symlinked; rc files are symlinked far more often.)
+//
+// EvalSymlinks fails on a DANGLING link, which is a common real state rather than a
+// corrupt one: a dotfiles repo not yet cloned, or stow/chezmoi mid-setup. Falling
+// back to the link's own target reaches the same file the shell would, and creates
+// it — whereas leaving the path as the link walks straight into the clobber this
+// whole function exists to prevent. A relative target resolves against the link's
+// directory, the way the kernel reads it.
+// Callers that report the indirection to the user should gate on rcIsSymlink rather
+// than on resolveRC(p) != p: EvalSymlinks also resolves PARENT directories, so on
+// macOS a plain /tmp/rc comes back /private/tmp/rc and announcing that as "a link"
+// would be noise about a file the user did not link.
+func rcIsSymlink(path string) bool {
+	fi, err := os.Lstat(path)
+	return err == nil && fi.Mode()&os.ModeSymlink != 0
+}
+
+func resolveRC(path string) string {
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		return resolved
+	}
+	target, err := os.Readlink(path)
+	if err != nil {
+		return path // not a symlink at all, or unreadable: nothing to resolve.
+	}
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(filepath.Dir(path), target)
+	}
+	return filepath.Clean(target)
+}
+
 // writeRC backs the file up once, then replaces it atomically.
 //
 // The same discipline as writeSettings, and the backup-once rule matters more
@@ -368,18 +442,12 @@ func writeRC(path string, lines []string, trailingNewline bool) error {
 		// violation: disable removes our lines and restores the original tail.
 		body += "\n"
 	}
-	// Resolve a symlink and write through to its target. An rc file is very often a
-	// link into a dotfiles repo, and os.Rename over the link REPLACES it with a
-	// regular file: the alias lands in a file the repo does not track, the repo's
-	// own copy never gets it, and every later dotfile edit silently stops reaching
-	// the shell. Backing up beside the link rather than the target has the same
-	// shape of wrongness, so resolve before the backup so both land on the real
-	// file. (writeSettings does not do this because settings.json is rarely
-	// symlinked; rc files are symlinked far more often.)
-	if resolved, rerr := filepath.EvalSymlinks(path); rerr == nil {
-		path = resolved
-	}
-	mode := os.FileMode(0o600)
+	path = resolveRC(path)
+	// 0644 for a file we are creating, not 0600: the comment above about not
+	// tightening an existing rc file's mode applies just as much to the one we make,
+	// and every shell's own rc file is world-readable. An existing file's mode wins
+	// over this default.
+	mode := os.FileMode(0o644)
 	if cur, rerr := os.ReadFile(path); rerr == nil { //nolint:gosec // operator-supplied path
 		if fi, serr := os.Stat(path); serr == nil {
 			mode = fi.Mode().Perm()
@@ -398,7 +466,13 @@ func writeRC(path string, lines []string, trailingNewline bool) error {
 	if err := os.WriteFile(tmp, []byte(body), mode); err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	if err := os.Rename(tmp, path); err != nil {
+		// Remove it: after the resolve this sits inside the user's dotfiles repo,
+		// where an untracked .tmp is something they may well commit by accident.
+		os.Remove(tmp)
+		return err
+	}
+	return nil
 }
 
 func bobShellEnable(rcPath, abctlPath string, yes bool, stdout, stderr io.Writer) int {
@@ -418,7 +492,23 @@ func bobShellEnable(rcPath, abctlPath string, yes bool, stdout, stderr io.Writer
 	}
 
 	fmt.Fprintf(stdout, "Adds to %s:\n%s\n", rcPath, indentBlock(block))
-	fmt.Fprintf(stdout, "Nothing else in the file changes; a copy is kept as %s.bak\n\n", rcPath)
+	// resolveRC, not rcPath: writeRC follows a symlink, so on a linked rc file the
+	// backup lands beside the TARGET. Naming the link would send someone looking for
+	// the only pristine copy of a file they accreted by hand to a path that does not
+	// exist. Mentioning the target when it differs also makes the indirection visible
+	// before the write, which is the moment it matters.
+	// The path the user typed, unless the rc file is itself a link — in which case the
+	// backup really does land beside the TARGET, and naming the link would send
+	// someone looking for the only pristine copy of a hand-accreted file to a path
+	// that does not exist. resolveRC alone is not the right answer here: it also
+	// resolves parent directories, so a plain /tmp/rc would be announced as
+	// /private/tmp/rc.bak, which is true and unhelpful.
+	written := rcPath
+	if rcIsSymlink(rcPath) {
+		written = resolveRC(rcPath)
+		fmt.Fprintf(stdout, "%s is a link to %s, which is what gets written.\n", rcPath, written)
+	}
+	fmt.Fprintf(stdout, "Nothing else in the file changes; a copy is kept as %s.bak\n\n", written)
 	if !yes && !confirmFn(stdout) {
 		fmt.Fprintln(stdout, "Not changed.")
 		return exitDeclined
@@ -447,7 +537,15 @@ func bobShellDisable(rcPath string, yes bool, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "Nothing to do: no Cortex bob alias in %s.\n", rcPath)
 		return 0
 	}
-	fmt.Fprintf(stdout, "Removes from %s:\n%s\n", rcPath, indentBlock(bobShellAliasIn(lines)+"\n"))
+	// The removed lines verbatim, not bobShellAliasIn: on a block whose markers were
+	// hand-damaged that helper finds no alias and printed an EMPTY body, so the
+	// confirmation prompt showed nothing while the write removed real lines.
+	start, end, _ := findBobShellBlock(lines)
+	fmt.Fprintf(stdout, "Removes from %s:\n%s\n", rcPath, indentBlock(strings.Join(lines[start:end], "\n")+"\n"))
+	if rcIsSymlink(rcPath) {
+		written := resolveRC(rcPath)
+		fmt.Fprintf(stdout, "%s is a link to %s, which is what gets written.\n", rcPath, written)
+	}
 	if !yes && !confirmFn(stdout) {
 		fmt.Fprintln(stdout, "Not changed.")
 		return exitDeclined

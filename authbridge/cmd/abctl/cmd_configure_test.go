@@ -190,6 +190,18 @@ func TestConfigure_UsageErrors(t *testing.T) {
 		}
 	})
 
+	// The suggestion has to survive being pasted, which means quoting per element:
+	// joining raw args turned `--rc "my rc file"` into three bare words.
+	t.Run("old bob spelling keeps the quoting", func(t *testing.T) {
+		var out, errb bytes.Buffer
+		if code := runConfigure([]string{"bob", "enable", "--rc", "my rc file"}, &out, &errb); code != 2 {
+			t.Errorf("exit = %d, want 2", code)
+		}
+		if got := errb.String(); !strings.Contains(got, "--rc 'my rc file'") {
+			t.Errorf("the suggestion lost its quoting: %q", got)
+		}
+	})
+
 	t.Run("unknown agent", func(t *testing.T) {
 		var out, errb bytes.Buffer
 		if code := runConfigure([]string{"frobnicate"}, &out, &errb); code != 2 {

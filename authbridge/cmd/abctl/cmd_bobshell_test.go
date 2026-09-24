@@ -640,3 +640,269 @@ func TestBobShellEnable_WritesThroughASymlink(t *testing.T) {
 		t.Errorf("no backup beside the link target: %v", err)
 	}
 }
+
+// TestBobShellEnable_NamesTheBackupItActuallyWrites pins the MUST-FIX that the
+// symlink fix itself introduced: writeRC follows the link, so the backup lands beside
+// the target, and the message named the link. Being told where the only pristine copy
+// of a hand-accreted rc file lives and finding nothing there is the whole cost.
+func TestBobShellEnable_NamesTheBackupItActuallyWrites(t *testing.T) {
+	dir := t.TempDir()
+	real := filepath.Join(dir, "dotfiles", "zshrc")
+	if err := os.MkdirAll(filepath.Dir(real), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(real, []byte("# real rc\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, ".zshrc")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	var out, errb bytes.Buffer
+	if code := bobShellEnable(link, testAbctl, true, &out, &errb); code != 0 {
+		t.Fatalf("exit = %d, want 0 (stderr: %s)", code, errb.String())
+	}
+
+	// Whatever path the message names as the backup must be a file that exists.
+	named := ""
+	for _, line := range strings.Split(out.String(), "\n") {
+		if _, after, ok := strings.Cut(line, "a copy is kept as "); ok {
+			named = strings.TrimSpace(after)
+		}
+	}
+	if named == "" {
+		t.Fatalf("no backup path in the output:\n%s", out.String())
+	}
+	if _, err := os.Stat(named); err != nil {
+		t.Errorf("the message names a backup that does not exist (%s): %v", named, err)
+	}
+	if strings.Contains(out.String(), "is a link to") == false {
+		t.Error("the output does not mention that the rc file is a link")
+	}
+}
+
+// TestBobShellEnable_PlainFileMessageIsNotResolved is the other half: EvalSymlinks
+// resolves PARENT directories too, so on macOS a plain /tmp/rc comes back
+// /private/tmp/rc. Reporting that as "a link" — or naming the backup by it — is true
+// and unhelpful, so the notice is gated on the rc file itself being a link.
+func TestBobShellEnable_PlainFileMessageIsNotResolved(t *testing.T) {
+	rc := filepath.Join(t.TempDir(), ".zshrc")
+	if err := os.WriteFile(rc, []byte("# mine\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var out, errb bytes.Buffer
+	if code := bobShellEnable(rc, testAbctl, true, &out, &errb); code != 0 {
+		t.Fatalf("exit = %d, want 0", code)
+	}
+	if strings.Contains(out.String(), "is a link to") {
+		t.Errorf("a plain file was announced as a link:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "a copy is kept as "+rc+".bak") {
+		t.Errorf("the backup is not named by the path the user gave:\n%s", out.String())
+	}
+}
+
+// TestBobShellEnable_DanglingSymlinkIsFollowed covers the state a dotfiles repo is in
+// before it is cloned, or mid stow/chezmoi setup. EvalSymlinks fails on a broken link,
+// so without a Readlink fallback the path stays the link and os.Rename replaces it
+// with a regular file — the exact clobber the symlink fix exists to prevent, reached
+// by a different route.
+func TestBobShellEnable_DanglingSymlinkIsFollowed(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "dotfiles"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, ".zshrc")
+	if err := os.Symlink(filepath.Join("dotfiles", "zshrc"), link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	var out, errb bytes.Buffer
+	if code := bobShellEnable(link, testAbctl, true, &out, &errb); code != 0 {
+		t.Fatalf("exit = %d, want 0 (stderr: %s)", code, errb.String())
+	}
+	fi, err := os.Lstat(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode()&os.ModeSymlink == 0 {
+		t.Error("a dangling symlink was replaced by a regular file")
+	}
+	target := filepath.Join(dir, "dotfiles", "zshrc")
+	if got := readFile(t, target); !strings.Contains(got, bobShellAliasLine(testAbctl)) {
+		t.Errorf("the alias did not reach the dangling link's target:\n%s", got)
+	}
+}
+
+// TestBobShellEnable_CreatesWorldReadable — the comment about not silently tightening
+// an rc file's mode applies to the file this command creates, too. Every shell's own
+// rc file is world-readable; 0600 was an unexplained departure.
+func TestBobShellEnable_CreatesWorldReadable(t *testing.T) {
+	rc := filepath.Join(t.TempDir(), ".zshrc")
+	var out, errb bytes.Buffer
+	if code := bobShellEnable(rc, testAbctl, true, &out, &errb); code != 0 {
+		t.Fatalf("exit = %d, want 0", code)
+	}
+	fi, err := os.Stat(rc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := fi.Mode().Perm(); got != 0o644 {
+		t.Errorf("a from-scratch rc file has mode %o, want 644", got)
+	}
+}
+
+// TestBobShellBlock_SurvivesADamagedEndMarker pins the worse half of a hand-damaged
+// fence. With the end marker mangled the block went unfound, so status reported "not
+// enabled" while the shell had a LIVE alias, and disable removed the comment, exited
+// 0, and left the alias in place.
+func TestBobShellBlock_SurvivesADamagedEndMarker(t *testing.T) {
+	for _, tc := range []struct{ name, damage string }{
+		{"mangled", "# <<< cortex abctl MANGLED"},
+		{"deleted", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rc := filepath.Join(t.TempDir(), ".zshrc")
+			if err := os.WriteFile(rc, []byte("# mine\nexport AFTER=1\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			// The running binary, not testAbctl: status appends a "different abctl"
+			// hint after its verdict otherwise, and that hint is then the last line.
+			self, err := abctlPath()
+			if err != nil {
+				t.Fatalf("abctlPath: %v", err)
+			}
+			var out, errb bytes.Buffer
+			if code := bobShellEnable(rc, self, true, &out, &errb); code != 0 {
+				t.Fatalf("enable: exit = %d, want 0", code)
+			}
+			// Damage the far side of the fence, the way a hand-edit would.
+			lines := strings.Split(strings.TrimSuffix(readFile(t, rc), "\n"), "\n")
+			kept := make([]string, 0, len(lines))
+			for _, l := range lines {
+				if strings.HasPrefix(l, bobShellMarkerEnd) {
+					if tc.damage != "" {
+						kept = append(kept, tc.damage)
+					}
+					continue
+				}
+				kept = append(kept, l)
+			}
+			if err := os.WriteFile(rc, []byte(strings.Join(kept, "\n")+"\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			// status must not claim "not enabled" while the alias is live.
+			out.Reset()
+			if code := bobShellStatus(rc, &out); code != 0 {
+				t.Fatalf("status: exit = %d, want 0", code)
+			}
+			if got := lastLine(out.String()); !strings.HasPrefix(got, "enabled in ") {
+				t.Errorf("status = %q, want it to report the live alias as enabled", got)
+			}
+
+			// And disable must actually remove it.
+			out.Reset()
+			if code := bobShellDisable(rc, true, &out, &errb); code != 0 {
+				t.Fatalf("disable: exit = %d, want 0", code)
+			}
+			got := readFile(t, rc)
+			if strings.Contains(got, "alias bob") {
+				t.Errorf("disable exited 0 but left the live alias:\n%s", got)
+			}
+			if strings.Contains(got, "cortex abctl") {
+				t.Errorf("disable left a marker behind:\n%s", got)
+			}
+			if !strings.Contains(got, "export AFTER=1") {
+				t.Errorf("disable ate the user's line below the block:\n%s", got)
+			}
+		})
+	}
+}
+
+// TestBobShellDisable_LeavesAUserOwnedAliasAlone is the constraint that makes the
+// damaged-fence fix safe, and it is the one an over-broad fix breaks: an `alias bob`
+// the user wrote themselves, outside any marker, is neither reported as ours nor
+// removed as ours. A first attempt at the fix above scanned the whole file for
+// `alias bob=` and deleted exactly this line.
+func TestBobShellDisable_LeavesAUserOwnedAliasAlone(t *testing.T) {
+	rc := filepath.Join(t.TempDir(), ".zshrc")
+	original := "# mine\nalias bob='/usr/local/bin/bob --flag'\n"
+	if err := os.WriteFile(rc, []byte(original), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var out, errb bytes.Buffer
+	if code := bobShellStatus(rc, &out); code != 0 {
+		t.Fatalf("status: exit = %d, want 0", code)
+	}
+	if got := lastLine(out.String()); !strings.HasPrefix(got, "not enabled in ") {
+		t.Errorf("status = %q, want not-enabled for an alias we did not write", got)
+	}
+	out.Reset()
+	if code := bobShellDisable(rc, true, &out, &errb); code != 0 {
+		t.Fatalf("disable: exit = %d, want 0", code)
+	}
+	if got := readFile(t, rc); got != original {
+		t.Errorf("disable touched a user-owned alias:\nwant %q\ngot  %q", original, got)
+	}
+}
+
+// TestBobShellUsageErrorsExitTwo — --help documents 2 as the usage code, and a --rc
+// that cannot be an rc file is a usage error. It used to surface the raw errno at
+// exit 1 ("read /x/adir: is a directory"), contradicting the documented code and
+// reading like an internal failure rather than a correctable argument. --yes on
+// status is a usage error for a different reason: status never prompts, so accepting
+// the flag would accept one that does nothing.
+func TestBobShellUsageErrorsExitTwo(t *testing.T) {
+	dir := t.TempDir()
+	adir := filepath.Join(dir, "adir")
+	if err := os.MkdirAll(adir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rc := filepath.Join(dir, ".zshrc")
+	if err := os.WriteFile(rc, []byte("# mine\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"rc is a directory", []string{"enable", "--rc", adir, "--yes"}, "is a directory"},
+		{"disable rc is a directory", []string{"disable", "--rc", adir, "--yes"}, "is a directory"},
+		{"status rc is a directory", []string{"status", "--rc", adir}, "is a directory"},
+		{"yes is not a status flag", []string{"status", "--rc", rc, "--yes"}, "not defined"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var out, errb bytes.Buffer
+			if code := runBobShell(tc.args, &out, &errb); code != 2 {
+				t.Errorf("exit = %d, want 2 (stderr: %s)", code, errb.String())
+			}
+			if !strings.Contains(errb.String(), tc.want) {
+				t.Errorf("stderr = %q, want it to mention %q", errb.String(), tc.want)
+			}
+		})
+	}
+}
+
+// TestWriteRC_CleansUpItsTempFileOnFailure — after the symlink resolve the .tmp sits
+// inside the user's dotfiles repo, where an untracked file left by a failed write is
+// something they may well commit by accident. A directory at the destination makes
+// the rename fail without making the write fail.
+func TestWriteRC_CleansUpItsTempFileOnFailure(t *testing.T) {
+	dir := t.TempDir()
+	dest := filepath.Join(dir, ".zshrc")
+	// A non-empty directory where the file should go: os.WriteFile of the .tmp
+	// succeeds, os.Rename onto it does not.
+	if err := os.MkdirAll(filepath.Join(dest, "occupied"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeRC(dest, []string{"# x"}, true); err == nil {
+		t.Fatal("writeRC succeeded onto a non-empty directory, want an error")
+	}
+	if _, err := os.Stat(dest + ".tmp"); !os.IsNotExist(err) {
+		t.Errorf("the temp file outlived the failed write: %v", err)
+	}
+}
