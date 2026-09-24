@@ -47,8 +47,8 @@ providing end-to-end security:
 │  │                        │      → aud: github-tool                      │   │   │
 │  │                        │    - HTTPS: TLS passthrough                  │   │   │
 │  │                        │                                              │   │   │
-│  │                        │  spiffe-helper bundled inside the image      │   │   │
-│  │                        │  (gated by SPIRE_ENABLED).                   │   │   │
+│  │                        │  SVIDs fetched in-process over the           │   │   │
+│  │                        │  SPIRE Workload API.                         │   │   │
 │  │                        │  Keycloak client registration is             │   │   │
 │  │                        │  operator-managed; the resulting Secret      │   │   │
 │  │                        │  is mounted at /shared/client-{id,secret}.txt│   │   │

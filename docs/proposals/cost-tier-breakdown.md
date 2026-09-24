@@ -1,7 +1,9 @@
 # Per-Tier Cost Breakdown in abctl
 
-Status: proposed · 2026-09-19 · targets `authbridge/authlib/{pricing,costing,costevent,usage}`
-and `authbridge/cmd/abctl`
+Status: implemented · proposed 2026-09-19 · shipped in
+`authbridge/authlib/{pricing,costing,costevent,usage}` and
+`authbridge/cmd/abctl` (the `$` spend breakdown). Kept as the design record,
+not a live proposal.
 
 ## 1. Problem
 

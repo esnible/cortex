@@ -60,8 +60,8 @@ Two container images are published:
 
 | Image | Contents |
 |-------|----------|
-| `authbridge` | proxy-sidecar combined: authbridge-proxy binary + bundled spiffe-helper |
-| `authbridge-envoy` | envoy-sidecar combined: Envoy + ext_proc + bundled spiffe-helper |
+| `authbridge` | proxy-sidecar: the authbridge-proxy binary |
+| `authbridge-envoy` | envoy-sidecar combined: Envoy + ext_proc |
 | `authbridge-lite` | `authbridge-proxy` built with the `lite` profile (see `authbridge/scripts/profile-tags`), a sidecar minimum. A build variant, not a separate binary |
 
 | Mode | Image | Use Case | How It Works |
@@ -80,7 +80,7 @@ See [`docs/plugin-catalog.md`](./docs/plugin-catalog.md) for the full list of im
 
 ## Architecture (Operator-Injected)
 
-The following describes the operator-injected sidecar deployment. After cortex#411 each mode is served by its own combined image (one container per pod, with `spiffe-helper` bundled inside and gated by `SPIRE_ENABLED`). The legacy `authbridge-unified`, `authbridge-light`, `envoy-with-processor`, and standalone `client-registration` / `spiffe-helper` sidecars are gone.
+The following describes the operator-injected sidecar deployment. After cortex#411 each mode is served by its own image (one container per pod). SPIRE credentials are fetched **in-process** by `authlib/spiffe`'s Provider over the Workload API, driven by the top-level `spiffe:` block in the runtime config; the Provider also mirrors the SVIDs under `/opt/` for external readers. The legacy `authbridge-unified`, `authbridge-light`, `envoy-with-processor`, and standalone `client-registration` / `spiffe-helper` sidecars are gone — there is no bundled `spiffe-helper` binary and `SPIRE_ENABLED` no longer gates anything.
 
 ### What AuthBridge Does
 
@@ -126,8 +126,8 @@ AuthBridge solves the challenge of **secure service-to-service authentication** 
 │            │            ▼                                             │
 │  ┌─────────┴───────────────────────────────────────────────────────┐  │
 │  │  Your App                                                       │  │
-│  │  (spiffe-helper bundled inside the AuthBridge sidecar above,    │  │
-│  │   gated per-workload by SPIRE_ENABLED)                          │  │
+│  │  (SVIDs are fetched in-process by the sidecar above over the     │  │
+│  │   SPIRE Workload API; no spiffe-helper container)                │  │
 │  └─────────────────────────────────────────────────────────────────┘  │
 └───────────────────────────────────────────────────────────────────────┘
    ▲
@@ -158,7 +158,7 @@ flowchart TB
         end
         subgraph Containers["Containers"]
             App["Your Application"]
-            Sidecar["AuthBridge sidecar (combined image)<br/>name = mode-dependent:<br/>proxy-sidecar: authbridge-proxy<br/>envoy-sidecar: envoy-proxy<br/><br/>(spiffe-helper bundled inside,<br/>gated by SPIRE_ENABLED)"]
+            Sidecar["AuthBridge sidecar<br/>name = mode-dependent:<br/>proxy-sidecar: authbridge-proxy<br/>envoy-sidecar: envoy-proxy<br/><br/>(SVIDs fetched in-process via<br/>the SPIRE Workload API)"]
         end
     end
 
@@ -207,15 +207,16 @@ After cortex#411 a workload pod has the application
 container plus a single combined AuthBridge sidecar. In
 envoy-sidecar mode it also has a one-shot `proxy-init` init
 container; in proxy-sidecar mode (the cluster default) it does
-not. `spiffe-helper` is bundled inside the sidecar image; client
+not. SVIDs are fetched in-process by the sidecar over the SPIRE
+Workload API — there is no `spiffe-helper` container — and client
 registration runs in the operator, not the pod.
 
 | Component | Type | Mode | Purpose |
 |-----------|------|------|---------|
 | `proxy-init` | init | envoy-sidecar only | Sets up iptables to intercept inbound and outbound traffic (excludes Keycloak port to avoid token-exchange loops) |
 | `Your App` | container | both | Your application |
-| `authbridge-proxy` | container | proxy-sidecar (default) | Combined sidecar from the `authbridge` image: HTTP forward + reverse proxies, full plugin set (jwt-validation + token-exchange + a2a/mcp/inference parsers), bundled spiffe-helper gated by `SPIRE_ENABLED`. |
-| `envoy-proxy` | container | envoy-sidecar | Combined sidecar from the `authbridge-envoy` image: Envoy + ext_proc + bundled spiffe-helper. Validates inbound JWTs (signature + issuer via JWKS) and exchanges outbound tokens; HTTPS is TLS-passthrough. |
+| `authbridge-proxy` | container | proxy-sidecar (default) | Sidecar from the `authbridge` image: HTTP forward + reverse proxies, full plugin set (jwt-validation + token-exchange + a2a/mcp/inference parsers). Fetches SVIDs in-process when `spiffe:` is configured. |
+| `envoy-proxy` | container | envoy-sidecar | Combined sidecar from the `authbridge-envoy` image: Envoy + ext_proc. Validates inbound JWTs (signature + issuer via JWKS) and exchanges outbound tokens; HTTPS is TLS-passthrough. |
 
 ### Target Service Pod
 

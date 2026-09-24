@@ -1,6 +1,10 @@
 # Directional Body Capabilities and the `tool-prune` Plugin
 
-**Status**: Draft
+**Status**: Implemented — kept as the design record, not a live proposal.
+Shipped as the `tool-prune` plugin (`authbridge/authlib/plugins/toolprune`) plus
+the directional body capabilities in `authbridge/authlib/pipeline`. Read
+[`tool-prune-plugin.md`](../../authbridge/docs/tool-prune-plugin.md) for current
+behaviour.
 **Date**: September 2026
 
 This document specifies three changes that together let AuthBridge cut an agent's

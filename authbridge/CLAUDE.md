@@ -6,7 +6,7 @@ The sidecar injection webhook lives in [operator](https://github.com/rossoctl/op
 
 ## Binaries
 
-The unified `cmd/authbridge/` binary has been split into three mode-specific
+The unified `cmd/authbridge/` binary has been split into mode-specific
 binaries with shared auth logic in `authlib/`:
 
 - `cmd/authbridge-proxy/` — proxy-sidecar mode (default). HTTP forward + reverse
@@ -29,6 +29,14 @@ binaries with shared auth logic in `authlib/`:
   the CPEX framework (APL DSL + named CPEX policy plugins). The FFI ABI
   version lives in `cmd/authbridge-cpex/CPEX_FFI_VERSION`. The other
   binaries are pure-Go (CGO_ENABLED=0) and do not import the cpex package.
+- `cmd/authbridge-praxis/` — proxy-sidecar mode rendered into a
+  [Praxis](https://github.com/praxis-proxy/praxis) proxy configuration via
+  `authlib/praxis`. **Paused, not abandoned.** It ships in no image, has no
+  demo, no doc beyond this entry, and defines no `plugins_*.go` files, so it
+  registers no plugins. It is nonetheless deliberately retained and
+  deliberately kept compiling — it is in the `ci.yaml` binary matrix for
+  exactly that reason. Do not propose deleting it. It consumes
+  `config.Config`, so refactors of the shared config have to keep it building.
 - `authbridge-lite` (**image, not a separate binary**) — `cmd/authbridge-proxy`
   built with the `lite` profile, a sidecar minimum (see
   `authbridge/scripts/profile-tags` for the definition). For size-optimized
@@ -36,6 +44,10 @@ binaries with shared auth logic in `authlib/`:
 
 Each binary is hardcoded to its deployment shape; mode is no longer selected
 at runtime. The YAML `mode:` field must match the binary or boot fails.
+
+Not a sidecar, but the largest component in `cmd/` and the one the root README
+leads with: **`cmd/abctl/`**, the terminal UI over the session API (`:9094`).
+See [`cmd/abctl/README.md`](cmd/abctl/README.md) for flags and keybindings.
 
 ### Release binaries
 
@@ -97,29 +109,50 @@ authbridge/
 │   ├── CPEX_FFI_VERSION              #   pinned CPEX FFI ABI version (build-arg source of truth)
 │   └── entrypoint.sh
 │
+├── cmd/authbridge-praxis/            # proxy-sidecar rendered into a Praxis proxy config.
+│   ├── main.go                       #   PAUSED: ships in no image, registers no
+│   ├── Dockerfile                    #   plugins, has no demo — but deliberately kept
+│   └── entrypoint.sh                 #   and kept compiling. Do not delete.
+│
+├── cmd/abctl/                        # Terminal UI over the session API (:9094).
+│   ├── tui/                          #   Panes: sessions, events, pipeline, catalog
+│   ├── edit/, apiclient/,            #   Pipeline editing, API client, cluster
+│   │   cluster/, toolscan/           #   port-forward, tool manifest scanning
+│   └── README.md                     #   Full flags + keybindings
+│
 ├── proxy-init/                       # iptables init container (envoy-sidecar + proxy-sidecar enforce-redirect modes)
 │   ├── init-iptables.sh              #   iptables setup script
 │   ├── Dockerfile.init               #   proxy-init container image
 │   ├── Makefile                      #   docker-build-init + load-image targets
 │   └── README.md
 │
-├── demos/                            # Demo scenarios with full setup
-│   ├── README.md                     #   Demo index (recommended starting order)
-│   ├── weather-agent/                #   Getting-started demo (inbound validation only)
-│   │   ├── demo-ui.md
-│   │   ├── demo-ui-advanced.md       #   With token exchange + tool-side AuthBridge
-│   │   └── demo-with-abctl.md        #   Plugin-pipeline TUI walkthrough
-│   ├── token-exchange-routes/        #   Routes config reference (single + multi-target)
-│   │   ├── README.md
-│   │   └── routes.yaml
-│   ├── github-issue/                 #   GitHub integration demo
-│   │   ├── demo.md, demo-ui.md, demo-manual.md
-│   │   ├── setup_keycloak.py
-│   │   └── k8s/
-│   └── webhook/                      #   Webhook-based injection demo
-│       ├── README.md                 #     Webhook injection walkthrough
-│       ├── setup_keycloak.py
-│       └── k8s/                      #     Manifests including configmaps-webhook.yaml
+├── docs/                             # Plugin + framework reference
+│   ├── plugin-reference.md           #   Producer-side plugin contract
+│   ├── plugin-catalog.md             #   Per-plugin config fields
+│   ├── framework-architecture.md     #   Pipeline internals, hot-reload
+│   └── superpowers/{plans,specs}/    #   Dated design records. STILL WRITTEN TO —
+│                                     #   not an inert archive.
+│
+├── scripts/
+│   ├── profile-tags/                 # Build-tag resolver: one profile per artifact
+│   └── readme-demo/                  # Generates the README demo animation
+│
+├── storage/redis/                    # Redis driver for the storage.Store interface
+│                                     # (its own module; not in any CI job today)
+│
+├── sparc-service/                    # Python SPARC reflection service (own image)
+├── lineage-attach/                   # OTel shim + scripts for lineage propagation
+│
+├── demos/                            # 12 scenarios — see demos/README.md for the order
+│   ├── weather-agent/                #   Getting started (+ advanced, + abctl walkthrough)
+│   ├── github-issue/                 #   Token exchange + scope-based access (largest)
+│   ├── token-exchange-routes/        #   Routes config reference
+│   ├── mcp-parser/                   #   Enabling the outbound mcp-parser plugin
+│   ├── ibac/, hr-cpex/,              #   Guardrail / policy demos
+│   │   finance-sparc/                #   (self-contained Go modules: echo, ibac,
+│   ├── echo/, mtls/, lineage/        #    finance-sparc)
+│   ├── session-budget/               #   Redis-backed budget tracking
+│   └── context-guru/                 #   Opt-in context-guru plugin
 │
 └── keycloak_sync.py                  # Declarative Keycloak sync tool (routes.yaml driven)
 ```
@@ -216,26 +249,18 @@ Extensively documented shell script that sets up iptables for transparent traffi
 | `INBOUND_PORTS_EXCLUDE` | (empty) | Comma-separated ports to exclude |
 | `POD_IP` | (required) | Pod IP via Downward API; used as DNAT target for ambient mesh inbound interception |
 
-### client_registration.py
-
-Idempotent Python script that:
-1. Reads SPIFFE ID from `/opt/jwt_svid.token` JWT `sub` claim (when authbridge's `spiffe.Provider` mirror is writing the file — i.e., `spiffe:` is configured in `authbridge-runtime`)
-2. Falls back to `CLIENT_NAME` env var as client ID (if no SPIRE-issued JWT-SVID is mirrored)
-3. Creates or reuses a Keycloak client with token exchange enabled
-4. Retrieves the client secret and writes to `SECRET_FILE_PATH` (in cluster deployments, the webhook sets `SECRET_FILE_PATH=/shared/client-secret.txt` to match the shared-volume contract)
-
-**Keycloak client configuration created:**
-- `publicClient: False` (confidential/authenticated)
-- `serviceAccountsEnabled: True` (allows `client_credentials` grant)
-- `standardFlowEnabled: True`
-- `directAccessGrantsEnabled: True`
-- `standard.token.exchange.enabled: True`
-
-**Dependencies:** `python-keycloak==5.3.1`, `pyjwt==2.10.1`
-
 ### keycloak_sync.py
 
 Declarative Keycloak synchronization tool that maintains client scope mappings based on `routes.yaml`. Idempotent, used in multi-target demos for dynamic scope assignments.
+
+**Dependencies:** `authbridge/requirements.txt` — `python-keycloak>=7.1.1,<8`.
+Note `ci.yaml` pip-installs `python-keycloak==5.3.1` for the Python test job,
+two majors behind what the project declares.
+
+There is no longer a `client_registration.py` in this repo. Workload
+registration with Keycloak is the operator's job
+(`ClientRegistrationReconciler`), which creates the Secret carrying
+`client-id.txt` + `client-secret.txt` that the webhook mounts at `/shared/`.
 
 ### Envoy Configuration
 
@@ -246,10 +271,21 @@ Envoy config lives in the `envoy-config` ConfigMap rendered by the [rossoctl Hel
 The `demos/` directory contains the following scenarios (see `demos/README.md` for a recommended learning path):
 
 - **weather-agent/** -- Getting-started demo: inbound JWT validation with outbound passthrough. Simplest way to see AuthBridge in action (UI deployment). `demo-ui-advanced.md` extends this with outbound token exchange and tool-side AuthBridge; `demo-with-abctl.md` is a plugin-pipeline tooling walkthrough.
-- **webhook/** -- Shows how to use the webhook (now part of [operator](https://github.com/rossoctl/operator)) to automatically inject AuthBridge sidecars. Recommended starting point for webhook-based deployments.
-- **github-issue/** -- External API integration (GitHub) with inbound validation, outbound token exchange, and scope-based access control. Available as UI or manual deployment.
+- **github-issue/** -- External API integration (GitHub) with inbound validation, outbound token exchange, and scope-based access control. Available as UI or manual deployment. The largest demo in the tree.
 - **token-exchange-routes/** -- Configuration reference for the `authproxy-routes` ConfigMap. Covers single-target (one route) and multi-target (one agent → many tools) patterns. Pairs with one of the deployment demos for a full stack.
 - **mcp-parser/** -- Configuration reference for enabling the outbound `mcp-parser` plugin.
+- **ibac/** -- Intent-based access control: the `ibac` guardrail judging tool calls against the pinned inbound A2A user intent. Self-contained Go module.
+- **hr-cpex/** -- CPEX policy enforcement (APL DSL + Cedar PDP) via the `authbridge-cpex` build.
+- **finance-sparc/** -- The `sparc` plugin against the `sparc-service` reflection backend. Self-contained Go module.
+- **echo/** -- Minimal echo agent/tool pair for wire-level inspection. Self-contained Go module.
+- **mtls/** -- Transport-level mTLS between sidecars, in both proxy-sidecar and envoy-sidecar shapes (`make demo-mtls-envoy*`).
+- **lineage/** -- Lineage propagation via the `lineage` plugin plus the `lineage-attach/` OTel shim.
+- **session-budget/** -- Redis-backed spend caps through the opt-in `session-budget` plugin.
+- **context-guru/** -- The opt-in `context-guru` plugin (not compiled by default; needs `-tags include_plugin_contextguru`).
+
+The `webhook/` demo no longer exists — webhook injection moved to
+[operator](https://github.com/rossoctl/operator). Start from `weather-agent/`
+for a webhook-injected deployment.
 
 ## Keycloak Setup Scripts
 
@@ -604,10 +640,10 @@ See [`docs/framework-architecture.md`](docs/framework-architecture.md#9-config-h
 - Rebuild: `make docker-build-init && make load-images`
 
 ### Modifying Client Registration
-- Edit `client-registration/client_registration.py`
-- The `register_client()` function is idempotent
-- Keycloak client payload is the main configuration point
-- Test: `kubectl delete pod <pod> -n <ns>` to trigger re-registration
+Registration no longer lives here — it is the operator's
+`ClientRegistrationReconciler` (see the [operator
+repo](https://github.com/rossoctl/operator)). This repo only *consumes* the
+resulting `/shared/client-id.txt` and `/shared/client-secret.txt`.
 
 ### Adding New Keycloak Resources to Setup
 - Edit the appropriate `setup_keycloak*.py` script

@@ -1,6 +1,18 @@
+---
+name: demo
+description: Use when building, debugging, or running an AuthBridge demo end-to-end on a Kind cluster with SPIFFE/SPIRE, Keycloak, and Istio ambient mesh — covers the demo directory layout, the Keycloak setup scripts, and the recurring failure modes (ext_proc header ordering, ambient-mesh inbound path, Keycloak scope assignment).
+---
+
 # Skill: AuthBridge Demo Development
 
 This skill captures knowledge from building, debugging, and running AuthBridge demos end-to-end on Kind clusters with SPIFFE/SPIRE, Keycloak, and Istio ambient mesh.
+
+> **Some entries below are historical.** They describe failures from the
+> pre-cortex#411 multi-sidecar shape, when `spiffe-helper` and
+> `client-registration` were separate containers. Neither exists now — SVIDs are
+> fetched in-process by `authlib/spiffe` and registration runs in the operator —
+> but the diagnoses are kept because the same *symptoms* still appear in older
+> clusters. Such entries are marked HISTORICAL.
 
 ## Repository Context
 
@@ -16,7 +28,8 @@ Each demo lives under `authbridge/demos/<demo-name>/`:
 ```
 demos/<demo-name>/
 ├── k8s/
-│   ├── configmaps.yaml              # All 4 required ConfigMaps (environments, authbridge-config, spiffe-helper-config, envoy-config)
+│   ├── configmaps.yaml              # ConfigMaps (environments, authbridge-config, envoy-config;
+│   │                                #   older demos also carry the now-unused spiffe-helper-config)
 │   ├── <agent>-deployment.yaml      # Agent Deployment + Service
 │   └── <tool>-deployment.yaml       # Tool Deployment + Service (if applicable)
 ├── setup_keycloak.py                # Keycloak realm/client/scope/user setup
@@ -100,13 +113,19 @@ http_filters:
 
 **Key lesson:** Envoy HTTP filter execution order is: Lua → ext_proc → router. Route-level `request_headers_to_add` only takes effect during routing. Always use a filter to inject headers ext_proc needs.
 
-### 3. SPIFFE File Permission Denied
+### 3. SPIFFE File Permission Denied (HISTORICAL)
 
-**Symptom:** `cat: /opt/jwt_svid.token: Permission denied` in client-registration.
+**Symptom:** `cat: /opt/jwt_svid.token: Permission denied` from a second container.
 
-**Root cause:** spiffe-helper ran as root, wrote file with `0600`. client-registration runs as UID 1000.
+**Root cause:** spiffe-helper ran as root and wrote the file `0600`, while the
+reader (client-registration) ran as UID 1000.
 
-**Fix:** Set `RunAsUser: 1000`, `RunAsGroup: 1000` on spiffe-helper's SecurityContext in `container_builder.go`.
+**Fix at the time:** align `RunAsUser` / `RunAsGroup` across both containers.
+
+**Today this cannot happen:** there is no second container. `authlib/spiffe`'s
+Provider fetches SVIDs in-process and writes the `/opt/` mirror as the same UID
+that reads it. If you see this symptom now, you are looking at a pre-#411
+deployment.
 
 ### 4. Istio Ambient Mesh Inbound Path
 
