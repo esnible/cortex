@@ -62,27 +62,21 @@ const (
 	// "(other)" band, so the reservation is the taller of the two plus the two fixed
 	// rows.
 	//
-	// RESERVED UNCONDITIONALLY, even though the child row only renders when a provider
-	// reports a reasoning split. Reserving the maximum costs one row of body height on
-	// traffic that has no split; reserving the actual height would make the drawer's
-	// size depend on the data, so pressing `$` on a session that happens to report
-	// thinking would push the footer off the bottom — exactly the failure this comment
-	// already records.
+	// RESERVED FOR THE CHILD ROW UNCONDITIONALLY, even though it only renders when a
+	// provider reports a split: a height that followed the data would move the footer
+	// when one session happens to report reasoning and another does not.
 	spendDrawerLines = max(tierPanelLines, spendDrawerSeries+1) + 2
 )
 
-// spendDrawerLinesFor is the reservation at a given WIDTH, and the width is why it is
-// a function where spendDrawerLines is a constant.
+// spendDrawerLinesFor is the reservation at a given WIDTH.
 //
-// The tier column only exists in two-column mode, so only there does the panel need
-// room for tierPanelLines. Reserving the two-column height unconditionally cost a
-// narrow terminal a body row to a child row that cannot render at that width — the
-// reasoning child took the panel from 4 left rows to 5, and the one-column drawer,
-// which shows only the series, grew with it for nothing.
+// The tier column only exists in two columns, so only there does the panel need room
+// for tierPanelLines; reserving that height unconditionally costs a narrow terminal a
+// body row for a row it cannot draw.
 //
-// Width is known wherever this is called, unlike the DATA, which is why the same
-// argument does not apply to varying the height by whether a split was reported: see
-// renderTierRows.
+// A function rather than a constant because WIDTH is known wherever this is called.
+// The same argument does not extend to varying the height by whether a split was
+// reported — that is data, and the height must not follow it: see renderTierRows.
 func spendDrawerLinesFor(width int) int {
 	left := spendDrawerSeries + 1 // one column: the ranked series plus "(other)"
 	if width >= spendDrawerTwoColumnMin {
@@ -759,17 +753,12 @@ func renderSpendDrawer(snap *usage.Snapshot, err error, axis usage.Group, window
 	// would emit more body rows than spendDrawerLines reserves and push the footer off
 	// the terminal, which is the failure the block above documents. min keeps both, and
 	// the one-column path takes tierPanelLines because tiers is nil and never indexed.
-	// THE BOUND IS THE RESERVATION, minus the header and the hint line — derived from
-	// spendDrawerLinesFor rather than restated, so the loop and the reservation cannot
-	// disagree about the panel's height. They did: the reservation took
-	// max(tierPanelLines, spendDrawerSeries+1) while this was min(tierPanelLines,
-	// len(tiers)), and the two agreed only because spendDrawerSeries+1 is 4 against
-	// tierPanelLines' 5.
+	// DERIVED FROM THE RESERVATION, minus the header and the hint line, so the loop and
+	// the reservation cannot disagree about the panel's height.
 	//
-	// The min was here to stop tiers[i] reading past the end, and a max wrapper added
-	// later to fix the height put that panic straight back for any len(tiers) < 4. Both
-	// concerns are real and neither belongs in the bound: the height is a layout fact and
-	// the index is a slice fact, so the index is guarded where it is read.
+	// The height is a layout fact and the index is a slice fact: restating the height
+	// here as a bound over len(tiers) conflates them, and tiers[i] is guarded where it
+	// is read instead.
 	bound := spendDrawerLinesFor(width) - 2
 	for i := 0; i < bound; i++ {
 		// NO BRANCH GLYPHS BETWEEN THE COLUMNS' OWN ROWS. "├" and "└" once prefixed every
@@ -797,10 +786,10 @@ func renderSpendDrawer(snap *usage.Snapshot, err error, axis usage.Group, window
 		// row follows it: the fourth tier row is drawn beside an empty series slot on any window
 		// with fewer than four series, and paneView passes these straight to styleMuted.Render,
 		// so the padding becomes styled trailing whitespace on a line nobody can see the end of.
-		// GUARDED, not assumed. renderTierRows returns tierPanelLines rows today, but the
-		// contract is held by a test in another package while this index is what crashes
-		// the render if it ever slips. A short tier column pads with blanks — a missing row
-		// is a cosmetic loss, an out-of-range read is a dead TUI.
+		// GUARDED, not assumed: renderTierRows' row count is a contract held in another
+		// package, and this index is what crashes the render if it slips. A short tier
+		// column pads with blanks — a missing row is cosmetic, an out-of-range read is a
+		// dead TUI.
 		tier := ""
 		if i < len(tiers) {
 			tier = tiers[i]

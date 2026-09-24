@@ -138,9 +138,9 @@ type anthropicUsage struct {
 	CacheCreationInputTokens *int `json:"cache_creation_input_tokens"`
 	CacheReadInputTokens     *int `json:"cache_read_input_tokens"`
 
-	// OutputTokensDetails splits output_tokens by what generated it. Anthropic
-	// reports exactly one sub-field, thinking_tokens: the share of output spent on
-	// internal reasoning. It is a SUBSET of OutputTokens, not a sibling.
+	// OutputTokensDetails splits output_tokens by what generated it. Anthropic reports
+	// one sub-field, thinking_tokens: the share spent on internal reasoning, a SUBSET of
+	// OutputTokens rather than a sibling.
 	OutputTokensDetails *struct {
 		ThinkingTokens *int `json:"thinking_tokens"`
 	} `json:"output_tokens_details"`
@@ -151,11 +151,8 @@ type anthropicUsage struct {
 // details are observed via their pointers so an absent field stays absent in
 // Present.
 //
-// Reasoning comes from output_tokens_details.thinking_tokens. This parser used to
-// carry a comment asserting Anthropic does not expose reasoning; that was true
-// once and is not now, and the stale comment is why the field stayed unread long
-// after the wire carried it. Verified against a live claude-opus-5 turn, and
-// documented at
+// Reasoning comes from output_tokens_details.thinking_tokens, verified against a live
+// claude-opus-5 turn and documented at
 // https://platform.claude.com/docs/en/build-with-claude/thinking-steering-and-cost
 func (u anthropicUsage) toNeutral() parsercommon.TokenUsage {
 	n := parsercommon.TokenUsage{
@@ -171,8 +168,8 @@ func (u anthropicUsage) toNeutral() parsercommon.TokenUsage {
 		n.CacheWrite = *u.CacheCreationInputTokens
 		n.Present |= parsercommon.KindCacheWrite
 	}
-	// Both pointers are checked: a details object present but empty (a gateway that
-	// forwards the key without the count) reports nothing, and must not set the bit.
+	// BOTH POINTERS: a details object forwarded without the count inside it reports
+	// nothing, and must not set the bit.
 	if u.OutputTokensDetails != nil && u.OutputTokensDetails.ThinkingTokens != nil {
 		n.Reasoning = *u.OutputTokensDetails.ThinkingTokens
 		n.Present |= parsercommon.KindReasoning
@@ -412,17 +409,14 @@ func foldAnthropicFrame(frame []byte, state *inferenceStreamState, ext *pipeline
 // max-seen semantics so a later event carrying zero cannot clobber an earlier
 // real count. See foldAnthropicFrame for why both events need this.
 //
-// EVERY SUB-FIELD, which is what the name change records. It merged only the
-// prompt side while Present was unioned here for ALL kinds, so a value and its
-// presence bit travelled on different paths: reasoning's bit was set here from
-// either event, but its value was merged in the message_delta branch alone. A
-// gateway putting output_tokens_details on message_start would therefore set
-// KindReasoning with a value of 0, and `abctl cost` would print
-// "reasoning (of output) 0" — the exact claim
-// TestInferenceParser_AnthropicMessages_ThinkingTokensAbsent exists to forbid.
+// EVERY SUB-FIELD IT OWNS, which is what the name says: Present is unioned here for
+// ALL kinds, so any kind whose bit this sets must have its value merged here too.
+// Split across two places, a gateway putting output_tokens_details on message_start
+// set KindReasoning with a value of 0 — and `abctl cost` prints
+// "reasoning (of output) 0", the claim ThinkingTokensAbsent forbids.
 //
-// Output is deliberately NOT here: it is cumulative on the wire rather than
-// max-seen, and foldAnthropicFrame assigns it directly.
+// Output is deliberately NOT here: it is cumulative on the wire rather than max-seen,
+// and foldAnthropicFrame assigns it directly.
 func mergeAnthropicUsageMaxSeen(state *inferenceStreamState, incoming parsercommon.TokenUsage) {
 	// Presence is a union across events: once a sub-field is observed on
 	// the wire, later events that omit it must not clear the bit. Kept beside the

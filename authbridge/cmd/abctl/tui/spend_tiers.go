@@ -20,11 +20,10 @@ import (
 // constant and every state returns exactly this many rows — enforced by the return type
 // rather than by a guard, see renderTierRows.
 //
-// Four and not five: reasoning is a subset of output, not a sibling tier, so counting it
-// here would double-count the same money at the most expensive rate there is. It IS shown
-// — as an indented child of output, see childTierLabel — but it is not a tier, which is
-// why this constant stays pinned to the rate count and tierPanelLines carries the
-// rendered height.
+// Four and not five: reasoning is a subset of output, so counting it here would
+// double-count the same money at the most expensive rate there is. It IS shown, as an
+// indented child (see childTierLabel), which is why this constant stays pinned to the
+// RATE count while tierPanelLines carries the rendered height.
 const numTierRows = pricing.NumTiers
 
 // tierBarWidth is the widest a bar may be. Bars are decoration over a figure that is
@@ -70,19 +69,15 @@ var tierLabels = map[pricing.Tier]string{
 	pricing.TierOutput:     "output",
 }
 
-// childTierLabel is the reasoning row's label, EXACTLY tierLabelWidth runes so the
-// bars still start at one column whatever the mix.
+// childTierLabel is the reasoning row's label, EXACTLY tierLabelWidth runes so the bars
+// still start at one column whatever the mix.
 //
-// "reasoning", not "thinking", because that is the word every other surface in this
-// repo uses for it — usage.Counts.ReasoningTokens, parsercommon KindReasoning, and
-// `abctl cost`'s own "reasoning (of output)" line. Anthropic's wire field is
-// thinking_tokens, and that name stays where it belongs: on the JSON tag that reads
-// it.
+// Indented off a box-drawing stem rather than flush left, because it carries a fact the
+// money column cannot: this row's dollars are already inside the row above. Flush left
+// it reads as a fifth tier and the column stops adding up to the bill.
 //
-// Indented and hung off a box-drawing stem rather than flush left, because the label
-// has to carry a fact the money column cannot: this row's dollars are already inside
-// the row above it. Flush left it reads as a fifth tier and the column stops adding
-// up to the bill.
+// "reasoning", not "thinking" — the word every other surface here uses. Anthropic's
+// wire field is thinking_tokens, and that name stays on the JSON tag that reads it.
 const childTierLabel = " └ reasoning"
 
 // tierPanelLines is the panel's MAXIMUM height: the four tiers plus the optional
@@ -212,11 +207,9 @@ func reasoningChildRow(c usage.Counts, tiers [pricing.NumTiers]int64, ok bool,
 	peak int64, budget, width int) string {
 	notKnown := clipRow(fmt.Sprintf("%-*s %s", tierLabelWidth, childTierLabel, emptyCell), width)
 
-	// THE ARITHMETIC IS usage.ApportionReasoning'S, not this file's. It lives beside
-	// ApportionTiers for the reason that function states about itself — one place, so the
-	// drawer, `abctl cost` and the JSON cannot disagree about a figure derived three
-	// times. It was written here first, which left --json unable to publish the number
-	// this panel draws.
+	// THE ARITHMETIC IS usage.ApportionReasoning'S, not this file's — it sits beside
+	// ApportionTiers so the drawer, `abctl cost` and the JSON cannot disagree about a
+	// figure derived three times.
 	//
 	// ok from ApportionTiers gates first: with no mix to apportion by there is no output
 	// figure to take a share of.
@@ -228,13 +221,12 @@ func reasoningChildRow(c usage.Counts, tiers [pricing.NumTiers]int64, ok bool,
 	// the column. Deliberately NOT tierShares, which must keep summing to 100 across
 	// exactly the four tiers.
 	//
-	// NO CLAMP ON THE SHARE, because it is already bounded by the parent's: it derives
-	// from micros AFTER ApportionReasoning's clamp, and
+	// NO CLAMP ON THE SHARE: it derives from micros AFTER ApportionReasoning's clamp, so
 	//
 	//	floor(micros*100/total) <= floor(tiers[output]*100/total) <= shares[output]
 	//
 	// the right-hand step holding because tierShares only ever ADDS its rounding
-	// remainder to the largest share, never subtracts.
+	// remainder to the largest share.
 	pct := 0
 	if c.CostMicros > 0 {
 		pct = int(micros * 100 / c.CostMicros)

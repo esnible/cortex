@@ -739,8 +739,18 @@ type inferenceUsage struct {
 	PromptTokensDetails *struct {
 		CachedTokens int `json:"cached_tokens"`
 	} `json:"prompt_tokens_details"`
+	// ReasoningTokens is *int so a details object carrying no count leaves
+	// KindReasoning CLEAR rather than asserting a reported zero — the same reason
+	// anthropicUsage checks both of its pointers. A gateway relaying
+	// completion_tokens_details without the field inside it has reported nothing, and
+	// a set bit with a zero value makes `abctl cost` print "reasoning (of output) 0",
+	// claiming the model did no reasoning.
+	//
+	// PromptTokensDetails.CachedTokens has the identical shape and the identical
+	// exposure; it is left alone here because changing cache-read's presence rule
+	// moves a figure this change is not about.
 	CompletionTokensDetails *struct {
-		ReasoningTokens int `json:"reasoning_tokens"`
+		ReasoningTokens *int `json:"reasoning_tokens"`
 	} `json:"completion_tokens_details"`
 }
 
@@ -780,8 +790,9 @@ func (u inferenceUsage) toNeutral() parsercommon.TokenUsage {
 		usage.CacheRead = cached
 		usage.Present |= parsercommon.KindCacheRead
 	}
-	if u.CompletionTokensDetails != nil {
-		usage.Reasoning = u.CompletionTokensDetails.ReasoningTokens
+	// BOTH POINTERS, so "details present, count absent" reports nothing.
+	if u.CompletionTokensDetails != nil && u.CompletionTokensDetails.ReasoningTokens != nil {
+		usage.Reasoning = *u.CompletionTokensDetails.ReasoningTokens
 		usage.Present |= parsercommon.KindReasoning
 	}
 	return usage

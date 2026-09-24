@@ -344,15 +344,13 @@ type costTiersJSON struct {
 	CacheWrite int64 `json:"cacheWrite"`
 	CacheRead  int64 `json:"cacheRead"`
 	Output     int64 `json:"output"`
-	// Reasoning is the share of Output spent on internal reasoning, apportioned by
-	// usage.ApportionReasoning — the same call the TUI's drawer draws from, so a
-	// consumer never has to reimplement the rule.
+	// Reasoning is the share of Output spent on internal reasoning, from
+	// usage.ApportionReasoning — the same call the drawer draws from, so a consumer never
+	// reimplements the rule.
 	//
-	// A POINTER, and INSIDE Output rather than beside it. Absent means no defensible
-	// figure — nothing reported a split, or the share truncated below one micro — which
-	// is not the same as zero, and summing it with the four tiers above double-counts
-	// every reasoning token at the most expensive rate there is. The four fields still
-	// add up to CostMicros without it.
+	// A POINTER, and INSIDE Output. Absent means no defensible figure, which is not zero;
+	// and summing it with the four tiers double-counts, which still add to CostMicros
+	// without it.
 	Reasoning *int64 `json:"reasoningOfOutput,omitempty"`
 }
 

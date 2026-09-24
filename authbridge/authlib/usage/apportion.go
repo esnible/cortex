@@ -73,50 +73,35 @@ func (c Counts) ApportionTiers() (tiers [pricing.NumTiers]int64, ok bool) {
 // ApportionReasoning is the reasoning share of an already-apportioned output figure,
 // in micros.
 //
-// HERE RATHER THAN IN A RENDERER, for the reason ApportionTiers gives for itself: it
-// is the one place this arithmetic lives, so the surfaces cannot disagree about a
-// figure derived more than once. It was written inside abctl's spend drawer first,
-// which left `abctl cost --json` unable to publish the number the TUI drew — a
-// consumer could only get it by reimplementing this, which is what costJSON.Tiers
-// refuses for the tier split.
+// HERE RATHER THAN IN A RENDERER, for the reason ApportionTiers gives for itself: one
+// place, so the surfaces cannot disagree about a figure derived more than once. Kept
+// in this package is also what lets `abctl cost --json` publish it, instead of leaving
+// a consumer to reimplement the rule — which is what costJSON.Tiers refuses for the
+// tier split.
 //
 // outputMicros is the DISPLAYED output figure, not c.OutputCostMicros: the displayed
 // one is already scaled to the gateway's authoritative total, so deriving from the raw
 // mix would produce a child that does not divide into the parent beside it.
 //
 // ok is false when there is no defensible figure, and the caller renders "not known
-// here" — never $0.00, which would assert the reasoning was free. Three ways to get
-// there:
+// here" — never $0.00, which would assert the reasoning was free: a count that is zero
+// or negative, a missing denominator, or a share that truncates below one micro.
 //
-//   - no reasoning to apportion: the count is zero (nothing reported it, or it was
-//     reported as nothing) or negative
-//   - no denominator, or no output money to take a share of
-//   - a share that truncates below one micro, reachable on a small window
+// THE PRESENT BIT IS NOT CONSULTED. It separates "nothing reported" from "reported
+// zero", which matters to a renderer choosing between the not-known cell and "$0.00",
+// but neither has a figure to apportion. A positive count with the bit CLEAR does
+// apportion: that is a producer predating PresentKinds, where the value is the only
+// evidence there is.
 //
-// A positive count with the present bit CLEAR does apportion: that is an event from a
-// producer predating PresentKinds, where the value is the only evidence there is.
-//
-// The result is clamped to outputMicros. Reasoning cannot exceed output on the wire,
-// but a provider reporting otherwise must not produce a child figure above its parent;
-// the counts themselves are left as reported — see Counts.ReasoningTokens.
+// The result is clamped to outputMicros: a provider reporting reasoning above output
+// must not yield a child figure above its parent, though the counts themselves are left
+// as reported — see Counts.ReasoningTokens.
 func (c Counts) ApportionReasoning(outputMicros int64) (micros int64, ok bool) {
-	// NEGATIVE OR ZERO IS REFUSED, not merely zero, and refused HERE rather than left to
-	// plausibleTokenReport. A negative count makes the ratio negative, the upper clamp
-	// below does not fire and the `micros == 0` escape does not either — so a caller got
-	// (-595103, true) and would publish negative money or hand it to tierBar.
-	//
-	// The ingest screen does catch negatives today. That is precisely the defence addSat
-	// refuses for itself in this package, in words that transfer: "unreachable today" is
-	// how the wrap arrived in the first place, and a half-guarded figure invites a reader
-	// to conclude the other half was considered and ruled out. This function is exported
-	// and was clamped on the upper side only.
-	//
-	// THE PRESENT BIT IS NOT CONSULTED, because this test subsumes it. A `bit == 0 &&
-	// value == 0` branch stood above and became dead the moment `<= 0` was added: every
-	// input reaching one fails the other. The bit distinguishes "nothing reported" from
-	// "reported zero", which matters to a RENDERER deciding between the not-known cell
-	// and "$0.00" — but not here, because neither has a figure to apportion. Callers that
-	// need the distinction read PresentKinds themselves.
+	// Guarded HERE and not left to plausibleTokenReport's ingest screen, which is the
+	// defence addSat refuses for itself in this package: "unreachable today" is how the
+	// wrap arrived, and a figure guarded on one side invites a reader to conclude the
+	// other was ruled out. Nothing below catches a negative — the clamp is upper-only and
+	// the truncation escape tests for zero.
 	if c.ReasoningTokens <= 0 {
 		return 0, false
 	}

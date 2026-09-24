@@ -313,3 +313,42 @@ func TestFoldOpenAIFrame_UsageIsCumulative(t *testing.T) {
 		t.Errorf("OutputTokens = %d, want 150 (last chunk wins)", ext.OutputTokens)
 	}
 }
+
+// A details object with NO count inside it reports nothing, on the OpenAI path as on
+// the Anthropic one.
+//
+// It used to set KindReasoning with a value of zero, because ReasoningTokens was a
+// plain int and presence of the OBJECT was the only test — the false reported-zero
+// that ..._ThinkingTokensPartiallyAbsent forbids for Anthropic. The two parsers held
+// different invariants for the same wire shape until the pointer was mirrored.
+//
+// The reported-zero case above (TestPresentKinds_OpenAI_WithDetailsBlocks) still sets
+// the bit: a count present and zero is a measurement.
+func TestPresentKinds_OpenAI_DetailsWithoutTheCount(t *testing.T) {
+	for _, tc := range []struct{ name, details string }{
+		{"empty details object", `"completion_tokens_details":{}`},
+		{"explicit null count", `"completion_tokens_details":{"reasoning_tokens":null}`},
+		{"unrelated sub-field only", `"completion_tokens_details":{"accepted_prediction_tokens":4}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ext := &pipeline.InferenceExtension{Model: "gpt-4o"}
+			parseInferenceJSON([]byte(`{
+				"choices":[{"message":{"content":"ok"},"finish_reason":"stop"}],
+				"usage":{"prompt_tokens":12,"completion_tokens":3,"total_tokens":15,
+					`+tc.details+`}
+			}`), ext)
+
+			if ext.ReasoningTokens != 0 {
+				t.Errorf("ReasoningTokens = %d, want 0", ext.ReasoningTokens)
+			}
+			if ext.PresentKinds&uint8(parsercommon.KindReasoning) != 0 {
+				t.Errorf("PresentKinds = %b, want KindReasoning CLEAR for a count-free details "+
+					"object", ext.PresentKinds)
+			}
+			// The kinds that WERE reported must survive.
+			if ext.PresentKinds&uint8(parsercommon.KindOutput) == 0 {
+				t.Errorf("PresentKinds = %b, lost KindOutput", ext.PresentKinds)
+			}
+		})
+	}
+}

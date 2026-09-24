@@ -93,9 +93,9 @@ type Counts struct {
 	// provider bug. Clamping at ingest would make every surface agree on a number
 	// nobody measured.
 	//
-	// The spend drawer DOES clamp it, because a bar drawn longer than its parent's is
-	// a containment claim the layout makes rather than one it relays — see
-	// reasoningChildRow. Numbers stay faithful; geometry is not allowed to lie.
+	// ApportionReasoning DOES clamp what it derives, because a bar drawn longer than
+	// its parent's is a containment claim the layout makes rather than one it relays.
+	// Numbers stay faithful; geometry is not allowed to lie.
 	ReasoningTokens int64 `json:"reasoningTokens,omitempty"`
 	// RefusedTokenRequests counts the requests whose token report was REJECTED as
 	// implausible and contributed nothing to any figure above. See plausibleTokenReport for
