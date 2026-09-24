@@ -256,6 +256,28 @@ func candidateOf(e *SessionEvent) candidate {
 // largest-context-wins pins a pre-compaction figure — the exact stale-figure failure this column
 // exists to avoid.
 //
+// THE STATED ARM RESTS ON AN INVARIANT — EVERY EVENT CARRIES ITS ARRIVAL TIME — and the invariant is
+// written down here because nothing enforces it. at LEADS that arm, so with At unset on every stated
+// turn the arm collapses to its filler and becomes largest-wins: measured, a pre-compaction
+// mainAgent(1491, 830_000) followed by a post-compaction mainAgent(12, 12_000) with At zeroed reports
+// 830,000 where latest-wins reports 12,000 — the exact stale figure this column exists to remove, and
+// for the rest of the session, since nothing will outgrow it.
+//
+// STATED RATHER THAN GUARDED, deliberately, and this is the one place the file prefers a documented
+// invariant to a branch. It guards two provably-dead IDENTITY cases (see Add and nothingKnown) because
+// the identity is a property of the monoid that a future reordering of these comparators must not be
+// able to break quietly. This is not that: there is no answer a guard could give that is better than
+// the rule's. Dropping a timeless candidate would blank the gauge for a session that has a figure, and
+// demoting it to the unstated arm would rank a role-STATING turn by the rule that exists precisely
+// because no role was stated. What is left is to say so, and to pin the consequence:
+// TestSessionContext_WithNoArrivalTimeTheStatedArmIsLargestWins reports both halves, so anyone who
+// adds a producer can see what omitting At costs.
+//
+// It costs nothing today. All four listeners — extproc, forwardproxy, transparent, reverseproxy —
+// stamp At: time.Now() at every SessionEvent they construct, and the store does NOT re-stamp it on
+// Append, so the invariant is the producer's to keep and belongs in a comment a producer's author
+// will meet.
+//
 // FULLY-TIED CANDIDATES KEEP THE INCUMBENT, which is not a bug: better returns false both ways for
 // two candidates equal on every field it compares, so Add does not replace, and two such candidates
 // are interchangeable for every purpose this package has.

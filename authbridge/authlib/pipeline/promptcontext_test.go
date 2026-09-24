@@ -249,6 +249,37 @@ func TestSessionContext_AStatedSessionIgnoresUnstatedRows(t *testing.T) {
 	}
 }
 
+// WITH NO ARRIVAL TIME THE STATED ARM IS LARGEST-WINS, which is the cost of the invariant better()
+// states rather than guards: at leads that arm, so unset timestamps leave only its determinism
+// filler to decide, and the filler is tokens.
+//
+// PINNED SO IT IS KNOWN, NOT BECAUSE IT IS WANTED. The figure it produces is the stale
+// pre-compaction one this whole column exists to remove, and no producer reaches it — all four
+// listeners stamp At at every construction. What the test buys is that a future producer which
+// forgets can see the price, and that anyone who decides a guard is worth having has to come here
+// and change an expectation rather than discover this by measuring a live gauge.
+//
+// THE SECOND HALF IS THE CONTROL, and it is what makes this a test of the invariant rather than of
+// the degenerate input: the same two turns WITH their timestamps give the answer the rule promises.
+func TestSessionContext_WithNoArrivalTimeTheStatedArmIsLargestWins(t *testing.T) {
+	base := time.Now()
+
+	timeless := append(atUnset(mainAgent("pre-compaction", base, 1491, 830_000)),
+		atUnset(mainAgent("post-compaction", base.Add(time.Hour), 12, 12_000))...)
+	if got, want := PromptContextOf(timeless), 830_000; got != want {
+		t.Errorf("PromptContextOf = %d, want %d — with At unset the stated arm has only tokens left "+
+			"to rank by; if a guard was added, read better()'s invariant paragraph before changing "+
+			"this expectation", got, want)
+	}
+
+	stamped := append(mainAgent("pre-compaction", base, 1491, 830_000),
+		mainAgent("post-compaction", base.Add(time.Hour), 12, 12_000)...)
+	if got, want := PromptContextOf(stamped), 12_000; got != want {
+		t.Errorf("PromptContextOf = %d, want %d — with At set the rule is the main agent's LATEST "+
+			"turn, which is the whole difference the invariant makes", got, want)
+	}
+}
+
 // EXACT-TIMESTAMP TIES NOW RESOLVE DETERMINISTICALLY, by the larger context.
 //
 // The sequential form fell through to arrival order here: two unstated turns with equal message

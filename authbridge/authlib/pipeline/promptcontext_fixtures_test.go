@@ -89,6 +89,21 @@ func subagent(id string, at time.Time, msgs, context int) []SessionEvent {
 	return roled(conversation(id, at, msgs, context), AgentRoleSubagent)
 }
 
+// atUnset strips the arrival time from every event of a turn, modelling a producer that never set
+// SessionEvent.At. NO PRODUCER IN TREE DOES — all four listeners stamp it at every construction — so
+// this exists for one test, which pins what better()'s stated arm degenerates to without it.
+//
+// COPIES, like roled: a caller that stamped a turn and then wanted the same turn timeless would
+// otherwise silently lose the original.
+func atUnset(evs []SessionEvent) []SessionEvent {
+	out := make([]SessionEvent, len(evs))
+	for i := range evs {
+		out[i] = evs[i]
+		out[i].At = time.Time{}
+	}
+	return out
+}
+
 // projected is the shape the TIMELINE delivers, which no other fixture in this file produces: the
 // two SLICES nilled and their LENGTHS recorded in ToolCount and MessageCount first.
 //
