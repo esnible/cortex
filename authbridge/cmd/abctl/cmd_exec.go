@@ -17,12 +17,14 @@ import (
 // exec runs one command with Cortex's proxy and CA already in its environment,
 // for the many tools that read the environment and nothing else.
 //
-// `claude-code enable` exists because Claude Code has a settings file, so the
-// variables can be written once and reach every session including background
-// agents. Nothing else has that: curl, python, node, gh, a test suite all read
-// the process environment, and the alternative is a shell export that leaks into
-// every unrelated command in that terminal until it is unset. `abctl exec`
-// scopes the routing to a single child.
+// `configure` can persist the routing only where the agent reads something
+// durable at startup: Claude Code has a settings file, so the variables are
+// written once and reach every session including background agents, and Bob
+// Shell, being a shell command, has the shell's own startup file. curl, python,
+// node, gh and a test suite have neither — they read the process environment,
+// and the alternative is a shell export that leaks into every unrelated command
+// in that terminal until it is unset. `abctl exec` scopes the routing to a
+// single child.
 //
 // The values come from the same wanted() the enable path uses, so the two cannot
 // drift: exec and enable point at the same proxy on the same port with the same

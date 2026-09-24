@@ -11,13 +11,18 @@ Usage:
   abctl configure claude-code enable  [--yes] [--settings PATH] [--config PATH]
   abctl configure claude-code disable [--yes] [--settings PATH]
   abctl configure claude-code status  [--settings PATH]
-  abctl configure bob | codex | opencode
+  abctl configure bobshell enable     [--yes] [--rc PATH]
+  abctl configure bobshell disable    [--yes] [--rc PATH]
+  abctl configure bobshell status     [--rc PATH]
+  abctl configure codex | opencode
 
 Agents:
   claude-code    writes the proxy and CA variables into ~/.claude/settings.json, so
                  every session on the machine goes through Cortex. Run
                  "abctl configure claude-code --help" for the detail.
-  bob            not yet persistent — use "abctl exec -- bob"
+  bobshell       adds an alias to your shell startup file, so plain "bob" in a new
+                 shell goes through Cortex. Run "abctl configure bobshell --help"
+                 for the detail.
   codex          not yet persistent — use "abctl exec -- codex"
   opencode       not yet persistent — use "abctl exec -- opencode"
 
@@ -28,9 +33,11 @@ the ones without. The agents that cannot yet be configured persistently say so a
 name the command that works today, rather than being absent and leaving the reader
 to conclude Cortex cannot drive them.
 
-Only Claude Code persists because only Claude Code reads a settings file. Everything
-else reads the process environment and nothing else, so its routing lasts exactly as
-long as the process — which is what "abctl exec" is for.
+Persisting needs somewhere durable the agent reads at startup, and that surface is
+not the same for every agent: Claude Code has a settings file, and Bob Shell, being
+a shell command, has your shell's own startup file. Codex and OpenCode have neither
+— they read the process environment and nothing else, so their routing lasts exactly
+as long as the process, which is what "abctl exec" is for.
 
 "abctl claude-code" is the old spelling of "abctl configure claude-code". It still
 works, and prints a notice pointing here.
@@ -53,11 +60,9 @@ for a usage error.
 // quotes `abctl exec -- <agent>` in backticks, and a backtick is what would end a raw
 // literal. Printed commands are quoted this way elsewhere too (cmd_exec.go:152,
 // main.go's deprecation notices).
-// product is the name in the closing clause, which is not always the configuration
-// name: Bob configures as "Bob" but runs as "IBM Bob".
-func comingSoon(display, binary, product string) string {
+func comingSoon(display, binary string) string {
 	return "Persistent " + display + " configuration coming soon.  Until then, use " +
-		"`abctl exec -- " + binary + "` to run " + product + " under Cortex.\n"
+		"`abctl exec -- " + binary + "` to run " + display + " under Cortex.\n"
 }
 
 // runConfigure dispatches on the agent name. Returns the process exit code.
@@ -91,20 +96,21 @@ func runConfigure(args []string, stdout, stderr io.Writer) int {
 		// fire here. A user who already typed the current spelling must not be told to
 		// type something else.
 		return runClaudeCode(args[1:], stdout, stderr)
-	case "bob":
-		fmt.Fprint(stdout, comingSoon("Bob", "bob", "IBM Bob"))
-		return 0
+	case "bobshell":
+		// Same relationship as claude-code above: configure's arm IS bob's
+		// implementation, called with the action and flags untouched.
+		return runBobShell(args[1:], stdout, stderr)
 	case "codex":
-		fmt.Fprint(stdout, comingSoon("Codex", "codex", "Codex"))
+		fmt.Fprint(stdout, comingSoon("Codex", "codex"))
 		return 0
 	case "opencode":
-		fmt.Fprint(stdout, comingSoon("OpenCode", "opencode", "OpenCode"))
+		fmt.Fprint(stdout, comingSoon("OpenCode", "opencode"))
 		return 0
 	default:
 		// The named list is the answer to a typo; the usage block after it is the
 		// answer to "what else can this do", which is what someone who guessed an
 		// agent name wrong most likely wanted. Same pairing as the no-argument case.
-		fmt.Fprintf(stderr, "abctl: unknown agent %q (claude-code, bob, codex, opencode)\n", agent)
+		fmt.Fprintf(stderr, "abctl: unknown agent %q (claude-code, bobshell, codex, opencode)\n", agent)
 		fmt.Fprint(stderr, configureUsage)
 		return 2
 	}

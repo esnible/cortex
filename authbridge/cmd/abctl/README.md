@@ -182,20 +182,25 @@ subcommand if a title looks wrong.
 
 ## Running one command through Cortex (`abctl exec`)
 
-`abctl configure claude-code enable` works because Claude Code has a settings
-file: the variables can be written once and reach every session on the machine,
-background agents included. Nothing else has that. `curl`, `python`,
-`node`, `gh` and your test suite read the process environment and nothing
-else, and the usual workaround — exporting `HTTPS_PROXY` in your shell —
-leaks into every unrelated command in that terminal until you remember to
-unset it.
+`abctl configure` can make routing persistent only where the agent reads
+something durable at startup. Claude Code has a settings file, so the variables
+are written once and reach every session on the machine, background agents
+included. Bob Shell is a command rather than an application, so `abctl
+configure bobshell enable` writes an alias into your shell's startup file
+instead — persistent for interactive shells, though not for scripts that
+invoke `bob` directly.
+
+`curl`, `python`, `node`, `gh` and your test suite have neither surface: they
+read the process environment and nothing else, and the usual workaround —
+exporting `HTTPS_PROXY` in your shell — leaks into every unrelated command in
+that terminal until you remember to unset it.
 
 `abctl exec` scopes the routing to a single child process:
 
 ```sh
 abctl exec -- curl -sv https://api.anthropic.com/v1/messages
 abctl exec -- claude --dangerously-skip-permissions
-abctl exec -- bob
+abctl exec -- bob    # one-off; `configure bobshell enable` makes it the default
 ```
 
 Everything after `--` is passed through exactly as typed. abctl never

@@ -47,18 +47,21 @@ func TestClaudeCodeUnknownAction_StillErrors(t *testing.T) {
 	}
 }
 
-// The three agents Cortex can run but cannot yet configure persistently.
+// The agents Cortex can run but cannot yet configure persistently.
 //
 // Each case asserts the message names ITS OWN agent, in both the opening clause and
 // the exec command. That is the point of the table: the change request this
 // implements carried a copy-paste slip in two of its three messages ("Persistent Bob
 // configuration" under codex, "run Codex" under opencode), and a per-agent assertion
 // is what catches that class of error.
+//
+// bob has left this set — it configures persistently now, via the shell startup file
+// (TestBob* in cmd_bob_test.go). Codex and OpenCode read only the process
+// environment, so they have no durable surface to write and keep the guidance.
 func TestConfigure_ComingSoonAgents(t *testing.T) {
-	for _, tc := range []struct{ agent, display, product string }{
-		{"bob", "Bob", "IBM Bob"},
-		{"codex", "Codex", "Codex"},
-		{"opencode", "OpenCode", "OpenCode"},
+	for _, tc := range []struct{ agent, display string }{
+		{"codex", "Codex"},
+		{"opencode", "OpenCode"},
 	} {
 		t.Run(tc.agent, func(t *testing.T) {
 			var out, errb bytes.Buffer
@@ -75,7 +78,7 @@ func TestConfigure_ComingSoonAgents(t *testing.T) {
 			if want := "`abctl exec -- " + tc.agent + "`"; !strings.Contains(got, want) {
 				t.Errorf("missing %q:\n%s", want, got)
 			}
-			if want := "to run " + tc.product + " under Cortex."; !strings.Contains(got, want) {
+			if want := "to run " + tc.display + " under Cortex."; !strings.Contains(got, want) {
 				t.Errorf("missing %q:\n%s", want, got)
 			}
 			// An answer on stderr cannot be piped.
@@ -161,10 +164,18 @@ func TestConfigure_UsageErrors(t *testing.T) {
 			t.Errorf("stderr does not quote the input: %q", got)
 		}
 		// Naming the valid set is the difference between a refusal and a dead end.
-		for _, agent := range []string{"claude-code", "bob", "codex", "opencode"} {
-			if !strings.Contains(got, agent) {
-				t.Errorf("stderr omits %q: %q", agent, got)
+		// Asserted against the error line alone: stderr also carries the usage block,
+		// whose agent table names every agent, so a whole-stderr check passes even
+		// when this list is stale — which is how a pre-rename name survived here once.
+		errLine := strings.SplitN(got, "\n", 2)[0]
+		for _, agent := range []string{"claude-code", "bobshell", "codex", "opencode"} {
+			if !strings.Contains(errLine, agent) {
+				t.Errorf("the error line omits %q: %q", agent, errLine)
 			}
+		}
+		// And the pre-rename spelling must not linger in it.
+		if strings.Contains(errLine, "bob,") || strings.Contains(errLine, "bob)") {
+			t.Errorf("the error line still offers the old \"bob\" spelling: %q", errLine)
 		}
 	})
 }
