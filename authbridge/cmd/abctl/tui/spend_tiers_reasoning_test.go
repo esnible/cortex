@@ -161,10 +161,6 @@ func TestRenderTierRows_ReasoningNeverExceedsOutput(t *testing.T) {
 			// onto the same percentage, and on this fixture an unclamped child rendered
 			// ~2.5x output while the share check stayed green.
 			//
-			// (An earlier version of this comment blamed a second clamp on the share.
-			// That clamp was removed as unreachable — see reasoningChildRow — so the
-			// reason is the floor division, not a second guard.)
-			//
 			// rOK/oOK are asserted rather than used as a filter: a `&&` over them would
 			// let this assertion skip itself the moment the child renders not-known,
 			// which is exactly how a guard goes quiet without failing.
@@ -180,9 +176,7 @@ func TestRenderTierRows_ReasoningNeverExceedsOutput(t *testing.T) {
 			}
 			// BOTH OPERANDS MUST COUNT, asserted before either is trusted. A `>`
 			// comparison is blind on both sides: a counter returning 0 for every row makes
-			// it 0 > 0, and a CHILD that drew no bar makes it 0 > 12 — both pass. The
-			// first hole was closed by guarding the parent alone, which left the second
-			// open, and a child rendered with no bar at all still passed.
+			// it 0 > 0, and a CHILD that drew no bar makes it 0 > 12 — both pass..
 			childBar, parentBar := drawnBarGlyphs(reasoningRow), drawnBarGlyphs(outputRow)
 			if parentBar == 0 || childBar == 0 {
 				t.Fatalf("bar glyphs: child %d, parent %d — a zero on either side makes the "+
@@ -432,10 +426,8 @@ func TestRenderTierRows_ChildMoneyColumnAlignsWithTheTiers(t *testing.T) {
 // comment and nothing checked.
 //
 // A CEILING, NOT AN EQUALITY, because only one direction is a hazard: fmt's %-*s pads a
-// short label and never truncates a long one. An earlier version of this test asserted
-// equality and justified it as "shorter and the bars start at two columns", which is
-// false — shortening the label to " └ reason" leaves the alignment test passing and
-// fails only the tests matching the literal.
+// short label and never truncates a long one, so a shorter label still aligns and only a
+// longer one pushes the share, bar and figure right.
 func TestChildTierLabel_FitsTheLabelWidth(t *testing.T) {
 	if n := len([]rune(childTierLabel)); n > tierLabelWidth {
 		t.Errorf("childTierLabel %q is %d runes, above tierLabelWidth %d — fmt will not "+
@@ -508,5 +500,48 @@ func TestRenderTierRows_ChildBarYieldsBeforeItsFigures(t *testing.T) {
 				lipgloss.Width(atNarrow[0]), lipgloss.Width(l), atNarrow[0], l)
 		}
 		break
+	}
+}
+
+// THE CHILD FOLLOWS OUTPUT'S RANK, not a fixed line.
+//
+// insertAfterOutput searches tierOrder for TierOutput, and that search was unasserted:
+// replacing it with `at := 1` left the whole package green, because every adjacency
+// fixture happened to rank output FIRST. The committed demo SVG does exercise the
+// non-zero case — cache-read outranks output there and the child lands at index 2 — so
+// the behaviour was live with only a picture to prove it.
+//
+// The fixture below ranks output LAST (cache-read, then input, then output), which is
+// also the shape a cache-heavy agent turn actually produces.
+func TestRenderTierRows_ChildFollowsOutputWhereverItRanks(t *testing.T) {
+	c := usage.Counts{
+		Requests: 3, CostMicros: 4_000,
+		InputCostMicros: 900, CacheReadCostMicros: 2_800, OutputCostMicros: 300,
+		OutputTokens: 900, ReasoningTokens: 400,
+		PresentKinds: uint8(usage.KindInput | usage.KindCacheRead | usage.KindOutput | usage.KindReasoning),
+	}
+	lines := renderTierRows(c, tierColumnWidth)
+
+	outputAt, childAt := -1, -1
+	for i, l := range lines {
+		switch {
+		case strings.HasPrefix(l, childTierLabel):
+			childAt = i
+		case strings.HasPrefix(strings.TrimSpace(l), "output"):
+			outputAt = i
+		}
+	}
+	if outputAt < 0 || childAt < 0 {
+		t.Fatalf("output at %d, child at %d:\n%s", outputAt, childAt, strings.Join(lines, "\n"))
+	}
+	// The fixture has to actually put output off the top, or this asserts what the other
+	// adjacency tests already do.
+	if outputAt == 0 {
+		t.Fatalf("output ranked first, so this fixture cannot distinguish a rank search "+
+			"from a fixed index:\n%s", strings.Join(lines, "\n"))
+	}
+	if childAt != outputAt+1 {
+		t.Errorf("output is at %d and the child at %d; the child must follow its parent's "+
+			"RANK, not a fixed line:\n%s", outputAt, childAt, strings.Join(lines, "\n"))
 	}
 }

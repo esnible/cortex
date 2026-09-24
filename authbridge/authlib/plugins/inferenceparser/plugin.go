@@ -746,9 +746,17 @@ type inferenceUsage struct {
 	// a set bit with a zero value makes `abctl cost` print "reasoning (of output) 0",
 	// claiming the model did no reasoning.
 	//
-	// PromptTokensDetails.CachedTokens has the identical shape and the identical
-	// exposure; it is left alone here because changing cache-read's presence rule
-	// moves a figure this change is not about.
+	// PromptTokensDetails.CachedTokens ABOVE IS STILL A PLAIN int, with the identical
+	// shape and the identical exposure: `prompt_tokens_details: {}` sets KindCacheRead
+	// with a value of zero, so a gateway forwarding an empty details object is recorded
+	// as having reported a cache read of nothing. TestPresentKinds_OpenAI_WithDetailsBlocks
+	// pins the reported-zero behaviour for both fields, so the fix is the same three
+	// lines this field took.
+	//
+	// KNOWINGLY LEFT, not overlooked: cache-read is a priced figure on every
+	// OpenAI-format endpoint and moving its presence rule is a wider change than the one
+	// this comment sits in. Stated here because that is the only place a reader who
+	// touches this struct will see it.
 	CompletionTokensDetails *struct {
 		ReasoningTokens *int `json:"reasoning_tokens"`
 	} `json:"completion_tokens_details"`

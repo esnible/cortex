@@ -409,11 +409,10 @@ func foldAnthropicFrame(frame []byte, state *inferenceStreamState, ext *pipeline
 // max-seen semantics so a later event carrying zero cannot clobber an earlier
 // real count. See foldAnthropicFrame for why both events need this.
 //
-// EVERY SUB-FIELD IT OWNS, which is what the name says: Present is unioned here for
-// ALL kinds, so any kind whose bit this sets must have its value merged here too.
-// Split across two places, a gateway putting output_tokens_details on message_start
-// set KindReasoning with a value of 0 — and `abctl cost` prints
-// "reasoning (of output) 0", the claim ThinkingTokensAbsent forbids.
+// EVERY SUB-FIELD IT OWNS: Present is unioned here for ALL kinds, so any kind whose bit
+// this sets must have its value merged here too. Split across two places, a bit arrives
+// set with a value of nothing — and `abctl cost` then prints "reasoning (of output) 0",
+// the claim ThinkingTokensAbsent forbids.
 //
 // Output is deliberately NOT here: it is cumulative on the wire rather than max-seen,
 // and foldAnthropicFrame assigns it directly.

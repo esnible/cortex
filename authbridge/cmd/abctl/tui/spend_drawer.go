@@ -46,14 +46,12 @@ const (
 	// to be read ALONGSIDE the data, and one that squeezes the data out has defeated its
 	// reason for not being a pane.
 	//
-	// DERIVED, for the reason spendDrawerLines states about itself — written as a literal
-	// it does not follow the drawer's height. It was 27 against a six-row drawer, and the
-	// reasoning child made the drawer seven: the floor stayed, so at a 27-row terminal the
-	// table lost a body row while the flash still said the breakdown needs 27.
+	// DERIVED, for the reason spendDrawerLines states about itself: written as a literal it
+	// does not follow the drawer's height, and a floor that lags costs the table a row at
+	// the very size it exists to protect.
 	//
-	// spendDrawerLines, not spendDrawerLinesFor: a floor has to admit the TALLEST form,
-	// and a height rule that varied with width would let the drawer open at a size where
-	// widening the terminal squeezes the table.
+	// spendDrawerLines, not spendDrawerLinesFor: a floor has to admit the TALLEST form, or
+	// widening the terminal would squeeze the table.
 	spendDrawerMinHeight = spendStripMinHeight + spendDrawerLines + dividerLines
 
 	// spendDrawerLines is how many rows the drawer adds to the view, and therefore how many
@@ -64,15 +62,13 @@ const (
 	// full height, and layout() reserving fewer is not a cosmetic slip — the view comes out
 	// taller than the terminal and the footer goes off the bottom, which is the failure
 	// spendStripReservesRow's own doc describes for one row.
-	// Now: one HEADER row, the taller of the two columns, and the hint line. The left
-	// column is tierPanelLines — numTierRows plus the optional reasoning child that
-	// hangs under output — and the right is spendDrawerSeries ranked series plus the
-	// "(other)" band, so the reservation is the taller of the two plus the two fixed
-	// rows.
 	//
-	// RESERVED FOR THE CHILD ROW UNCONDITIONALLY, even though it only renders when a
-	// provider reports a split: a height that followed the data would move the footer
-	// when one session happens to report reasoning and another does not.
+	// A HEADER row, the taller of the two columns, and the hint line. The left column is
+	// tierPanelLines and the right is spendDrawerSeries plus the "(other)" band.
+	//
+	// The child row is reserved UNCONDITIONALLY, even though it renders only when a
+	// provider reports a split: a height that followed the data would move the footer when
+	// one session reports reasoning and the next does not.
 	spendDrawerLines = max(tierPanelLines, spendDrawerSeries+1) + 2
 )
 
@@ -743,10 +739,6 @@ func renderSpendDrawer(snap *usage.Snapshot, err error, axis usage.Group, window
 
 	out := make([]string, 0, spendDrawerLines)
 	out = append(out, drawerHeaders(axis, twoCol, width))
-	// tierPanelLines, NOT numTierRows: the left column is the four rate tiers PLUS the
-	// reasoning row that hangs under output. Bounded by numTierRows this loop dropped
-	// the last tier to make room for the child — cheapest tier first, so `input` simply
-	// vanished from a panel that still claimed to break down the whole bill.
 	//
 	// The right column's slots are filled by the `i < len(rows)` guard below, so a
 	// column shorter than the bound pads itself rather than ending the loop early.
