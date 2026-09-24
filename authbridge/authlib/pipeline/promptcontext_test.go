@@ -612,12 +612,92 @@ func TestMergePromptContext_NeitherStatedRanksMsgsAheadOfAt(t *testing.T) {
 	}
 }
 
+// THE ORDER ITSELF, WRITTEN DOWN — which is the one thing the cross-product test below cannot state,
+// because there the expectation is a call to better() and so it agrees with any better() at all.
+//
+// A SINGLE DESCENDING SEQUENCE, then every pair of it. better() is claimed to be a TOTAL order, so
+// the whole rule can be written out as one ranking and asserted pairwise: for i before j, better must
+// be true one way and false the other. That form is what makes a literal expectation possible — there
+// is nothing here computed from the function under test — and it is stronger than sorting the list,
+// which a comparator returning false for everything would pass by leaving an already-ordered fixture
+// alone.
+//
+// THE NEIGHBOURS ARE THE ASSERTION. Each entry names why it sits below the one before it, and no two
+// differ in more than the comparator being pinned, so a comparator that is inverted, promoted or
+// demoted changes which pair fails and says which one it was.
+//
+// WALL-CLOCK-ONLY TIMESTAMPS, as candidateOf and PromptContext.candidate both produce: Round(0)
+// strips the monotonic reading, so these literals compare the way a candidate off the wire does.
+//
+// MUTATION-CHECKED against the three the second review named — `return a.stated` -> `!a.stated`, the
+// stated arm reordered to (tokens, at, msgs), and `a.msgs > b.msgs` -> `<` in the unstated arm. Each
+// one fails here.
+func TestBetter_RanksTheDocumentedOrderOnLiterals(t *testing.T) {
+	at := time.Now().Round(0)
+	// Descending rank: the most preferred candidate first. Hand-written, and deliberately NOT
+	// derived from better() in any way.
+	ranked := []struct {
+		name string
+		c    candidate
+	}{
+		// STATED FIRST, ALL OF THEM, however small — dominance, and the unstated entries below
+		// include one that is later and 5x larger than anything here.
+		//
+		// Within the stated arm: (at, tokens, msgs).
+		{"stated, latest", candidate{stated: true, at: at, tokens: 200_000}},
+		{"stated, a minute earlier though 4.5x larger: at leads",
+			candidate{stated: true, at: at.Add(-time.Minute), tokens: 900_000}},
+		{"stated, earlier still",
+			candidate{stated: true, at: at.Add(-2 * time.Minute), tokens: 500_000, msgs: 952}},
+		{"stated, tied on at and tokens, fewer messages: msgs is the last word",
+			candidate{stated: true, at: at.Add(-2 * time.Minute), tokens: 500_000, msgs: 40}},
+		{"stated, tied on at, smaller: tokens ranks ahead of msgs, which is 9,999 here",
+			candidate{stated: true, at: at.Add(-2 * time.Minute), tokens: 300_000, msgs: 9_999}},
+		// UNSTATED, and every one of them below every stated one above.
+		//
+		// Within the unstated arm: (msgs, at, tokens) — a different order, which is the whole
+		// reason Msgs is on the wire.
+		{"unstated, the most messages", candidate{msgs: 2468, at: at.Add(-time.Hour), tokens: 100_000}},
+		{"unstated, fewer messages though latest AND largest: msgs leads",
+			candidate{msgs: 952, at: at, tokens: 999_999}},
+		{"unstated, tied on msgs, an hour earlier: at is second",
+			candidate{msgs: 952, at: at.Add(-time.Hour), tokens: 700_000}},
+		{"unstated, tied on msgs and at, smaller: tokens is the last word",
+			candidate{msgs: 952, at: at.Add(-time.Hour), tokens: 1}},
+	}
+
+	for i := range ranked {
+		for j := i + 1; j < len(ranked); j++ {
+			hi, lo := ranked[i], ranked[j]
+			if !better(hi.c, lo.c) {
+				t.Errorf("better(%s, %s) = false, want true — %+v must outrank %+v",
+					hi.name, lo.name, hi.c, lo.c)
+			}
+			// Antisymmetry, which is not a separate law here but the same claim read backwards:
+			// two candidates that compare equal both ways are interchangeable, and no pair in
+			// this ranking is.
+			if better(lo.c, hi.c) {
+				t.Errorf("better(%s, %s) = true, want false — the ranking is not antisymmetric "+
+					"for %+v against %+v", lo.name, hi.name, lo.c, hi.c)
+			}
+		}
+	}
+}
+
 // THE PROJECTION IS ORDER-EQUIVALENT TO THE FOLD, which is the invariant publishing Msgs bought and
 // the one a future hand-written second copy of the order would break.
 //
 // Two claims, both over an exhaustive cross-product: Publish loses nothing better() reads, and
-// MergePromptContext picks whatever better() picks. Deferring to better() makes both true by
-// construction today — this pins them so that stops being a matter of trust.
+// MergePromptContext picks whatever better() DOES pick — the delegation, not the order.
+//
+// WHAT THIS CANNOT DETECT, stated plainly because an earlier failure message here claimed otherwise
+// ("the wire order has drifted from the fold's"): the expectation below IS MergePromptContext's body,
+// so the cross-product is tautological with respect to the ORDERING. It passes unchanged under
+// flipping stated dominance, under swapping the stated arm to tokens-before-At, and under inverting
+// the unstated msgs comparator — every mutation whose drift that message named. The order itself is
+// pinned on LITERALS by TestBetter_RanksTheDocumentedOrderOnLiterals, and by the Merge tests above;
+// what is pinned HERE is that this function keeps deferring to better() rather than growing a second
+// copy of it, which is a claim about the code's shape and is worth having for exactly that.
 //
 // AND THIS IS WHERE THE FULLY-TIED RULE IS PINNED. The last two members are distinct pointers equal
 // on every compared field, which makes the cross-product assert that such a pair keeps a — better()
@@ -671,8 +751,9 @@ func TestMergePromptContext_IsTheSameOrderAsTheFold(t *testing.T) {
 				want = b
 			}
 			if got := MergePromptContext(a, b); got != want {
-				t.Errorf("MergePromptContext(%+v, %+v) = %+v, but better() ranks %+v first — the "+
-					"wire order has drifted from the fold's", a, b, got, want)
+				t.Errorf("MergePromptContext(%+v, %+v) = %+v, but better() ranks %+v first — this "+
+					"function has stopped DEFERRING to better(); the ordering itself is pinned on "+
+					"literals by TestBetter_RanksTheDocumentedOrderOnLiterals, not here", a, b, got, want)
 			}
 		}
 	}
