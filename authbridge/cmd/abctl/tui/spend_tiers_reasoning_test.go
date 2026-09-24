@@ -338,13 +338,14 @@ func TestSpendDrawerLines_AccountsForTheChildRow(t *testing.T) {
 	if want := len(renderTierRows(reasoningCounts(), tierColumnWidth)); want != tierPanelLines {
 		t.Errorf("the panel renders %d lines but tierPanelLines is %d", want, tierPanelLines)
 	}
-	// And the drawer emits exactly its reservation FOR THAT WIDTH — not the constant,
-	// which is the two-column value and would let a narrow render pass short.
-	const w = 100
-	if got, want := len(renderSpendDrawer(reasoningSnap(), nil, usage.GroupModel, "1h", w)),
-		spendDrawerLinesFor(w); got != want {
-		t.Errorf("the drawer emitted %d lines and reserves %d; either way the footer moves",
-			got, want)
+	// A LITERAL, not spendDrawerLinesFor(w): the renderer pads to exactly what that
+	// function returns, so comparing the two compares the renderer with its own padding
+	// rule and cannot fail. 7 is the two-column height — 100 clears
+	// spendDrawerTwoColumnMin — and it is an independent witness.
+	const w, wantLines = 100, 7
+	if got := len(renderSpendDrawer(reasoningSnap(), nil, usage.GroupModel, "1h", w)); got != wantLines {
+		t.Errorf("the drawer emitted %d lines at width %d, want %d; either way the footer moves",
+			got, w, wantLines)
 	}
 }
 
@@ -435,14 +436,27 @@ func TestChildTierLabel_FitsTheLabelWidth(t *testing.T) {
 			childTierLabel, n, tierLabelWidth)
 	}
 	// And the alignment it exists to protect, measured rather than inferred from the width.
+	//
+	// GUARDED, NOT FILTERED. This had two silent escapes — `continue` when no row carried
+	// the prefix, then `i >= 0 &&` when no "%" was found — so a child that stopped
+	// rendering skipped the body entirely and the test went green. That is the shape this
+	// file rejects by name a few tests down: asserted rather than used as a filter.
+	found := false
 	for _, l := range renderTierRows(reasoningCounts(), tierColumnWidth) {
 		if !strings.HasPrefix(l, childTierLabel) {
 			continue
 		}
-		if i := strings.Index(l, "%"); i >= 0 && lipgloss.Width(l[:i]) != tierLabelWidth+1+tierPctWidth-1 {
-			t.Errorf("the child's share cell starts at column %d, not %d:\n  %q",
-				lipgloss.Width(l[:i]), tierLabelWidth+tierPctWidth, l)
+		found = true
+		i := strings.Index(l, "%")
+		if i < 0 {
+			t.Fatalf("the child row states no share, so its column cannot be measured:\n  %q", l)
 		}
+		if got, want := lipgloss.Width(l[:i]), tierLabelWidth+tierPctWidth; got != want {
+			t.Errorf("the child's share cell ends at column %d, not %d:\n  %q", got, want, l)
+		}
+	}
+	if !found {
+		t.Fatal("no child row rendered, so the alignment check above asserted nothing")
 	}
 }
 
@@ -543,5 +557,68 @@ func TestRenderTierRows_ChildFollowsOutputWhereverItRanks(t *testing.T) {
 	if childAt != outputAt+1 {
 		t.Errorf("output is at %d and the child at %d; the child must follow its parent's "+
 			"RANK, not a fixed line:\n%s", outputAt, childAt, strings.Join(lines, "\n"))
+	}
+}
+
+// THE CHILD WEARS inexactMarker AND THE TIERS DO NOT.
+//
+// The panel dropped the marker from every row because a glyph on all of them
+// distinguished nothing. The child re-earns one: it is modelled twice — ApportionTiers'
+// mix, then a token ratio applied to a cost figure — so it is genuinely less certain
+// than its siblings, and without the glyph it renders identically to rows modelled once
+// while the extra approximation lives only in prose a TUI reader never sees.
+func TestRenderTierRows_OnlyTheChildWearsTheInexactMarker(t *testing.T) {
+	lines := renderTierRows(reasoningCounts(), tierColumnWidth)
+
+	child := childRows(lines)
+	if len(child) != 1 {
+		t.Fatalf("want one child row, got %d", len(child))
+	}
+	if !strings.Contains(child[0], inexactMarker) {
+		t.Errorf("child row = %q carries no %q; its second approximation is invisible",
+			child[0], inexactMarker)
+	}
+	// Prefixed, per spend_strip.go's convention for this glyph.
+	if !strings.Contains(child[0], inexactMarker+"$") {
+		t.Errorf("child row = %q does not prefix the figure with %q", child[0], inexactMarker)
+	}
+
+	// And no tier row wears one, or the glyph distinguishes nothing again.
+	marked := 0
+	for _, l := range tierRowsOnly(lines) {
+		if strings.Contains(l, inexactMarker) {
+			marked++
+			t.Errorf("tier row %q wears %q; then it cannot single out the child", l, inexactMarker)
+		}
+	}
+	if marked == 0 && len(tierRowsOnly(lines)) == 0 {
+		t.Fatal("no tier rows to compare against")
+	}
+
+	// The decimal points still line up, which is why the marker is prefixed and the
+	// column is one wider rather than the glyph trailing.
+	endOf := func(row string) int {
+		i := strings.LastIndex(row, "$")
+		if i < 0 {
+			return -1
+		}
+		return lipgloss.Width(row[:i]) + lipgloss.Width(strings.TrimSpace(row[i:]))
+	}
+	if got, want := endOf(child[0]), endOf(tierRowsOnly(lines)[0]); got != want {
+		t.Errorf("the child's figure ends at column %d and a tier's at %d; the marker pushed "+
+			"the column out of line:\n%s", got, want, strings.Join(lines, "\n"))
+	}
+}
+
+// The not-known cell wears NO marker: inexactMarker qualifies a figure, and there is none
+// to qualify. A glyph there would claim an inexact number where the claim is that there
+// is no number.
+func TestRenderTierRows_NotKnownChildWearsNoMarker(t *testing.T) {
+	child := childRows(renderTierRows(tierCounts(), tierColumnWidth))
+	if len(child) != 1 {
+		t.Fatalf("want one child row, got %d", len(child))
+	}
+	if strings.Contains(child[0], inexactMarker) {
+		t.Errorf("child row = %q wears %q with no figure to qualify", child[0], inexactMarker)
 	}
 }

@@ -48,14 +48,15 @@ const tierPctWidth = 4
 
 // tierMoneyWidth is the money column, right-aligned so the decimal points line up.
 //
-// Nine columns: "$16740.85" is a month of this proxy's traffic at the top tier and is the widest
-// figure the panel can be asked to draw. These figures wear no disclosure markers (see
-// renderTierRows), so nothing widens them beyond their digits.
+// Ten columns: nine for "$16740.85" — a month of this proxy's traffic at the top tier, and the
+// widest figure the panel can be asked to draw — plus one for the reasoning child's
+// inexactMarker. Only that row wears a marker (see renderTierRows); the tier rows pad into the
+// extra column so their decimal points stay aligned with it.
 //
 // FIXED, NOT FITTED TO THE DATA. A column sized to the widest current figure would move whenever a
 // total crossed a digit boundary, and this panel is polled — the same flicker the cost-descending
 // sort breaks ties to avoid, arriving through the layout instead of the order.
-const tierMoneyWidth = 9
+const tierMoneyWidth = 10
 
 // tierLabels names the rate tiers for a reader.
 //
@@ -104,11 +105,20 @@ var tierOrder = [numTierRows]pricing.Tier{
 // from and a block is both unambiguous and legible. Colour stays decoration — the label
 // carries the identity, so this survives a monochrome terminal and a screenshot.
 //
-// NO FIGURE WEARS inexactMarker, and it is worth saying what was given up. Every figure here IS
-// inexact — the mix is the rate table's while the total may be the gateway's — and each one used
-// to carry the glyph saying so. It was dropped deliberately: unlike the sessions table and the
-// band, this panel has no money column HEADER to move the caveat onto ("WHERE IT WENT" names the
-// column, not the figures), so the choice was a glyph on every row or nothing, and nothing won.
+// ONE FIGURE WEARS inexactMarker: the reasoning child, and only it.
+//
+// Every TIER figure here is inexact — the mix is the rate table's while the total may be the
+// gateway's — and each used to carry the glyph saying so. That was dropped deliberately: this
+// panel has no money column HEADER to move the caveat onto ("WHERE IT WENT" names the column,
+// not the figures), so the choice was a glyph on every row or none, and a glyph on EVERY row
+// carries no information — it cannot distinguish rows, which is all a reader needs it for.
+//
+// The child is the exception because it is modelled TWICE: ApportionTiers' mix, and then a token
+// ratio applied to a cost figure, which is the share of output SPEND only where every model in
+// the window bills output at one rate. It is less certain than the rows around it, so a marker
+// there does distinguish something. Without it the child renders identically to siblings
+// modelled once, and the extra approximation lives only in the Go doc, the README and the PR —
+// none of which a reader of the TUI sees.
 //
 // What is left to carry it is this comment and the README. If a reader needs to know these are
 // apportioned rather than measured, a header for the money column is the thing to add — not the
@@ -210,6 +220,7 @@ func renderTierRows(c usage.Counts, width int) []string {
 // containment reads from the indent anyway: 15% under 27% is visibly a part of it.
 func reasoningChildRow(c usage.Counts, tiers [pricing.NumTiers]int64, ok bool,
 	peak int64, budget, width int) string {
+	// No marker on the not-known cell: inexactMarker qualifies a FIGURE, and there is none.
 	notKnown := clipRow(fmt.Sprintf("%-*s %s", tierLabelWidth, childTierLabel, emptyCell), width)
 
 	// THE ARITHMETIC IS usage.ApportionReasoning'S, not this file's — it sits beside
@@ -237,15 +248,18 @@ func reasoningChildRow(c usage.Counts, tiers [pricing.NumTiers]int64, ok bool,
 		pct = int(micros * 100 / c.CostMicros)
 	}
 	label := childTierLabel
+	// PREFIXED, the convention spend_strip.go states for this glyph: the marker precedes a
+	// figure that is not exact. Prefixing also keeps the decimal points aligned with the tier
+	// rows, which a trailing glyph would push out of line.
+	money := padLeft(inexactMarker+formatUSDTotalMicros(micros), tierMoneyWidth)
 	var row string
 	switch {
 	case budget > 0:
 		row = fmt.Sprintf("%-*s %s %-*s %s", tierLabelWidth, label,
-			tierShareCell(pct, micros), budget, tierBar(micros, peak, budget),
-			tierMoneyCell(micros))
+			tierShareCell(pct, micros), budget, tierBar(micros, peak, budget), money)
 	default:
 		row = fmt.Sprintf("%-*s %s %s", tierLabelWidth, label,
-			tierShareCell(pct, micros), tierMoneyCell(micros))
+			tierShareCell(pct, micros), money)
 	}
 	return clipRow(row, width)
 }

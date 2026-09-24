@@ -501,12 +501,12 @@ abctl is for, and the other three are surfaces you visit and leave.
   and who spent it, by model, endpoint or agent:
 
   ```
-    WHERE IT WENT                              BY MODEL
-  output        54% ████████████     $5.85   claude-opus-5         $11.12      17 req
-   └ reasoning  31% ███████▏         $3.48   claude-sonnet-5       <$0.01       2 req
-  cache-read    35% ███████▉         $3.90   claude-haiku-4-5      <$0.01     120 req
-  cache-write    8% █▉               $0.98   (other)              <$0.01+       9 req
-  input          3% ▊                $0.39
+    WHERE IT WENT                               BY MODEL
+  output        54% ████████████      $5.85   claude-opus-5         $11.12      17 req
+   └ reasoning  31% ███████▏         ~$3.48   claude-sonnet-5       <$0.01       2 req
+  cache-read    35% ███████▉          $3.90   claude-haiku-4-5      <$0.01     120 req
+  cache-write    8% █▉                $0.98   (other)              <$0.01+       9 req
+  input          3% ▊                 $0.39
    [a] [model] · endpoint · agent   [w] 1h   esc closes
   ```
 
@@ -515,11 +515,12 @@ abctl is for, and the other three are surfaces you visit and leave.
   because a gateway reports one number per call and never breaks it down. They
   are apportioned so the column sums to the window total exactly, and a tier the
   rate table says nothing about shows `—` rather than `$0.00`, which would claim
-  the tier was free. Below 85 columns the tier column drops and the panel
+  the tier was free. Below 86 columns the tier column drops and the panel
   degrades to the by-model breakdown alone.
 
-  `└ reasoning` is **modelled twice over**: its share of output comes from the token
-  counts, not from a cost the provider reported, so it is only the share of output
+  `└ reasoning` wears a `~` that no other row does, because it is **modelled twice
+  over**: its share of output comes from the token counts, not from a cost the provider
+  reported, so it is only the share of output
   *spend* where every model in the window bills output at one rate. A mixed window can
   be off by the spread between those rates. Nothing reports a reasoning cost, so this
   is the best available figure rather than a measured one.

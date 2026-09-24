@@ -17,6 +17,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/rossoctl/cortex/authbridge/authlib/pricing"
 	"github.com/rossoctl/cortex/authbridge/authlib/usage"
 	"github.com/rossoctl/cortex/authbridge/cmd/abctl/apiclient"
 )
@@ -1928,15 +1929,25 @@ func TestRenderSpendDrawer_ChildCarriesItsFigure(t *testing.T) {
 	if strings.Contains(child, emptyCell) {
 		t.Errorf("child row = %q shows the not-known cell despite a reported split", child)
 	}
-	// THE FIGURE, not merely "a $". `Contains(child, "$")` passes on any amount —
-	// including one apportioned from OutputCostMicros instead of output's DISPLAYED
-	// figure, which is the distinction ApportionReasoning exists to make and the drawer
-	// was the one surface with no value pinned.
+	// THE MICROS, not the rendered cents. `Contains(child, "$3.48")` passes on any figure
+	// within ~5,000 micros of the right one — including one apportioned from
+	// OutputCostMicros instead of output's DISPLAYED figure, which is the distinction
+	// ApportionReasoning exists to make.
 	//
-	//	tiers[output]     = 5_852_431 at this snapshot's mix and total
-	//	reasoningOfOutput = floor(5852431 * 948/1593) = 3_483_063  ->  "$3.48"
-	if !strings.Contains(child, "$3.48") {
-		t.Errorf("child row = %q, want the apportioned $3.48", child)
+	// 3_483_542 is read off the code, not derived here: two hand-derived versions of this
+	// number were wrong by 479 and 740 micros, both invisible behind the rounded string.
+	// Regenerate with ApportionReasoning(tiers[TierOutput]) on drawerTotals(reasoningSnap()).
+	const wantMicros = 3_483_542
+	tiers, ok := drawerTotals(reasoningSnap()).ApportionTiers()
+	if !ok {
+		t.Fatal("the fixture apportions to nothing")
+	}
+	got, has := drawerTotals(reasoningSnap()).ApportionReasoning(tiers[pricing.TierOutput])
+	if !has || got != wantMicros {
+		t.Errorf("ApportionReasoning = %d (has=%v), want %d", got, has, wantMicros)
+	}
+	if want := formatUSDTotalMicros(wantMicros); !strings.Contains(child, want) {
+		t.Errorf("child row = %q, want the apportioned %s", child, want)
 	}
 }
 
@@ -1959,10 +1970,10 @@ func TestRenderSpendDrawer_NarrowHeightIsUnchangedByTheChildRow(t *testing.T) {
 			t.Errorf("one-column drawer is %d lines, want %d:\n%s",
 				len(got), want, strings.Join(got, "\n"))
 		}
-		if len(got) != spendDrawerLinesFor(narrow) {
-			t.Errorf("drawer emitted %d lines but the reservation for width %d is %d",
-				len(got), narrow, spendDrawerLinesFor(narrow))
-		}
+		// NO SECOND CHECK AGAINST spendDrawerLinesFor(narrow). The renderer pads to
+		// exactly that, so it compares the renderer with its own padding rule and cannot
+		// fail — the pattern the sanitize test rejects by name. `want` above is the
+		// independent witness.
 		// And no tier or child content leaked into the one-column form.
 		if joined := strings.Join(got, "\n"); strings.Contains(joined, "reasoning") {
 			t.Errorf("the one-column drawer draws the reasoning child:\n%s", joined)

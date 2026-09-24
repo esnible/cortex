@@ -761,3 +761,41 @@ func TestInferenceParser_AnthropicMessages_ThinkingTokensReportedZero(t *testing
 			"measurement, not an absence", ext.PresentKinds)
 	}
 }
+
+// TestInferenceParser_AnthropicMessages_ThinkingTokensStreamedZero is the STREAMING
+// reported-zero shape, which the non-streaming case above cannot stand in for.
+//
+// It is the shape mergeAnthropicUsageMaxSeen's own doc is built around: a bit set while
+// the value is nothing. Max-seen means a zero never raises the running total, so the
+// only thing carrying the observation across frames is the Present union — and a fold
+// that took presence from the value would drop it here while passing every other
+// streaming fixture, all of which report a non-zero count.
+func TestInferenceParser_AnthropicMessages_ThinkingTokensStreamedZero(t *testing.T) {
+	p := NewInferenceParser()
+	pctx := &pipeline.Context{Path: "/v1/messages"}
+	pctx.Extensions.Inference = &pipeline.InferenceExtension{Model: "claude-opus-5", Stream: true, IsAction: true}
+
+	frames := [][]byte{
+		[]byte(`{"type":"message_start","message":{"id":"msg_bdrk_7","type":"message","role":"assistant","usage":{"input_tokens":22,"output_tokens":6}}}`),
+		[]byte(`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}`),
+		[]byte(`{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":22,"output_tokens":400,"output_tokens_details":{"thinking_tokens":0}}}`),
+		// A trailing details-free block, which must not clear what was reported.
+		[]byte(`{"type":"message_stop","usage":{"input_tokens":22,"output_tokens":400}}`),
+	}
+	for _, f := range frames {
+		p.OnResponseFrame(context.Background(), pctx, f, false)
+	}
+	p.OnResponseFrame(context.Background(), pctx, nil, true)
+
+	ext := pctx.Extensions.Inference
+	if ext.ReasoningTokens != 0 {
+		t.Errorf("ReasoningTokens = %d, want 0", ext.ReasoningTokens)
+	}
+	if ext.PresentKinds&uint8(parsercommon.KindReasoning) == 0 {
+		t.Errorf("PresentKinds = %#b, want KindReasoning SET — the count was on the wire and "+
+			"it was zero, which is a measurement", ext.PresentKinds)
+	}
+	if ext.OutputTokens != 400 {
+		t.Errorf("OutputTokens = %d, want 400", ext.OutputTokens)
+	}
+}
