@@ -1,9 +1,10 @@
 # AuthBridge Binaries
 
-Four mode-specific authbridge binaries (proxy, envoy, cpex, praxis) plus the
+Four authbridge binaries (proxy, envoy, cpex, praxis) plus the
 `abctl` TUI — see the table below for which are published and which are paused.
-Each binary is hardcoded to a single deployment shape; the YAML `mode:`
-field must match the binary or boot fails. Mode is selected at build time
+Proxy, envoy and cpex are each hardcoded to a single deployment shape and check
+the YAML `mode:` at boot, so it must match the binary or boot fails; praxis
+performs no mode check. Mode is selected at build time
 by which binary you run, not at runtime via a flag. The `authbridge-lite`
 image is a build variant of the proxy binary (proxy Dockerfile +
 the `lite` profile's tags), not a separate binary.

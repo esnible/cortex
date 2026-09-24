@@ -66,8 +66,8 @@ docker build -f Dockerfile.init -t ghcr.io/rossoctl/cortex/proxy-init:latest .
 kind load docker-image <image> --name rossoctl
 ```
 
-`local-build-and-test.sh` at the repo root does all of the above (plus
-`authbridge-lite`) and loads them into Kind — prefer it over building by hand.
+`local-build-and-test.sh` at the repo root builds the four AuthBridge images and
+loads them into Kind — prefer it over building by hand.
 
 Use fully qualified image names in Dockerfiles (e.g., `docker.io/library/golang:1.26-alpine`) to avoid Podman/Buildah "short-name resolution enforced" errors in Shipwright builds.
 

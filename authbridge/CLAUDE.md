@@ -611,7 +611,7 @@ See [`docs/framework-architecture.md`](docs/framework-architecture.md#9-config-h
   `demos/*` modules are deliberately outside the workspace.
 - **Neither `gofmt` nor `go vet` is fully gated.** pre-commit has no Go hooks;
   `ci.yaml` runs `go fmt ./...` (which rewrites and exits 0, so it cannot fail)
-  and `go vet ./...` on only 7 of the 12 modules. Run `gofmt -l` yourself before
+  and `go vet ./...` on some but not all modules. Run `gofmt -l` yourself before
   pushing, and `go mod tidy -diff` if you dropped a package or its last import.
   See the root [`CLAUDE.md`](../CLAUDE.md) Pre-commit Hooks section for the
   per-module breakdown — it is kept in one place on purpose.

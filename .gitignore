@@ -78,8 +78,7 @@ __pycache__/
 # `authbridge/cmd/*/*` would ignore the source. One line per binary is the only
 # pattern that is safe, so the list below is exhaustive for `cmd/` and for the
 # two `scripts/` helpers further down. The `demos/*` mains are deliberately not
-# listed: they are built from their own Dockerfiles, not by hand in this tree
-# (no workflow builds them either). Keep adding to it.
+# listed. Keep adding to it.
 authbridge/cmd/abctl/abctl
 authbridge/cmd/authbridge-proxy/authbridge-proxy
 authbridge/cmd/authbridge-envoy/authbridge-envoy
