@@ -67,10 +67,16 @@ import "time"
 //
 // A SESSION IS EITHER STATED OR IT IS NOT, and any stated turn outranks every unstated one,
 // however much longer the unstated one was: a figure chosen by a rule that cannot see subagents is
-// not evidence about the conversation. So an upgraded proxy's first stated turn takes the column on
-// the event it arrives on, and an unstated row after it never takes it back — a session whose proxy
-// states roles has no reason to produce one, and trusting it would hand the column to whatever sent
-// it. Expressed as the top rank of a total order rather than as a one-way latch, so that which of
+// not evidence about the conversation. So the first stated turn takes the column on the event it
+// arrives on, and an unstated row after it never takes it back — a session already producing stated
+// turns has no reason to produce an unstated one, and trusting it would hand the column to whatever
+// sent it.
+//
+// A PROPERTY OF THE SESSION, NOT OF ITS PROXY, which is this clause's own correction to make: an
+// earlier version read "a session whose proxy states roles", the framing the paragraph above
+// dismantles. A proxy only PUBLISHES the field; what fills it is the client's billing-header line, so
+// no proxy version makes a session stated, and both an upgrade and a client change can be the reason
+// the first stated turn arrives mid-session. Expressed as the top rank of a total order rather than as a one-way latch, so that which of
 // the two arrived first cannot matter (see better).
 //
 // THE PROMPT SIDE ONLY. PromptTokens is input + cache-read + cache-write; output is left out.
@@ -286,11 +292,29 @@ func candidateOf(e *SessionEvent) candidate {
 // is evicted and re-created under the same id (authlib/session/store.go), so Seq cannot order across
 // that boundary and wall-clock time can. Same reason a paging client sorts pages by At.
 //
-// THE PREDECESSOR'S ONE DISAGREEMENT, for the record: it compared with `!Before`, so a later
-// ARRIVAL took a tie among unstated turns that agreed on both message count and timestamp — 100k or
-// 200k for the same session depending only on fold order. tokens now settles that pair, AFTER at
-// rather than before it, so `at` keeps the role it had and the delta is confined to genuinely
-// identical (msgs, at) pairs. TestPromptContextFold_ExactTimestampTiesAreDeterministic pins it.
+// THE PREDECESSOR'S DISAGREEMENTS, for the record — PLURAL, which an earlier version of this
+// paragraph denied by naming only the unstated one. The sequential form compared with `!Before` in
+// BOTH arms, so an exact-timestamp tie went to the later ARRIVAL in both of them:
+//
+//	unstated  two turns agreeing on message count and timestamp gave 100k or 200k for the same
+//	          session depending only on fold order
+//	          (TestPromptContextFold_ExactTimestampTiesAreDeterministic)
+//	stated    two mainAgent turns at one instant, 4,000 then 3,000, gave 3,000 where this gives
+//	          4,000 (the monoid fixture's m2/m3 pair, which ties on at and parts on tokens)
+//
+// tokens now settles both pairs, AFTER at rather than before it, so `at` keeps the role it had and
+// the delta is confined to genuinely identical timestamps. Both changes are improvements — fold
+// order is not information about a session — but "the only input on which this disagrees" was wrong.
+//
+// ZERO MESSAGES AND AN ABSENT COUNT ARE ONE VALUE by the time a candidate reaches here, which the
+// unstated arm compares as a count of none. That is the opposite of what
+// InferenceExtension.MessageCount's own doc says its zero means, and messageCount() does honour that
+// doc — it reads len(Messages) first — but neither can recover the distinction once both are 0. It
+// costs nothing where it arises: a projection that states no counts leaves EVERY candidate at zero,
+// so the arm ties through to at, which is
+// TestSessionContext_UnstatedWithNoCountsFollowsTheLatestTurn's case. A mix of a real zero-message
+// turn and an unstated count would rank them as equals, and no producer makes one — a request with
+// no messages carries no conversation to measure.
 func better(a, b candidate) bool {
 	if a.stated != b.stated {
 		return a.stated

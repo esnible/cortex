@@ -283,10 +283,15 @@ func TestSessionContext_WithNoArrivalTimeTheStatedArmIsLargestWins(t *testing.T)
 // EXACT-TIMESTAMP TIES NOW RESOLVE DETERMINISTICALLY, by the larger context.
 //
 // The sequential form fell through to arrival order here: two unstated turns with equal message
-// counts and the same timestamp gave 100k or 200k depending purely on which was folded first.
-// That is the only input on which this reformulation disagrees with its predecessor, and a
+// counts and the same timestamp gave 100k or 200k depending purely on which was folded first. A
 // restore that folded a session's events in any other order would have inherited the
 // non-determinism.
+//
+// NOT THE ONLY INPUT THAT CHANGED, which this comment used to claim. The predecessor compared with
+// `!Before` in the STATED arm too, so an exact-timestamp tie there went to the later arrival as
+// well: two mainAgent turns at one instant, 4,000 then 3,000, gave 3,000 where the total order gives
+// 4,000. That pair is pinned by the monoid fixture's m2/m3 members rather than here; see better()'s
+// own note on the disagreements.
 func TestPromptContextFold_ExactTimestampTiesAreDeterministic(t *testing.T) {
 	at := time.Now()
 	small := conversation("s", at, 600, 100_000)

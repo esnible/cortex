@@ -4,10 +4,17 @@ package pipeline
 // cmd/abctl/tui/sessions_context_test.go, not a shared helper package.
 //
 // authbridge has no exported test-helper package anywhere, and introducing the first one to
-// avoid copying ~94 lines would cost ~450 lines of churn across 80 call sites. Drift between
-// the copies is loud or harmless, never silently wrong: a manifest that goes missing makes the
+// avoid copying ~94 lines would cost ~450 lines of churn across 80 call sites. Drift in what the
+// fixtures SAY is loud or harmless, never silently wrong: a manifest that goes missing makes the
 // fold return 0 and fails every test that reads it, while 27-tools-versus-1 changes nothing
 // because the rule only asks whether a manifest is non-empty.
+//
+// ONE DIVERGENCE IS SILENT, AND IT IS IN WHAT THEY DO RATHER THAN WHAT THEY SAY, so the claim above
+// is scoped rather than left to be contradicted nine lines down: roled below COPIES its argument
+// where the tui original MUTATES it and hands the same slice back. A test moved between the two
+// packages therefore changes meaning without failing — `base := conversation(...)` followed by
+// `subagent(base)` restamps base over there and leaves it alone here. Nothing catches that but
+// reading this paragraph, which is why it is here.
 //
 // The tui copy also has a job this one does not: it states NO role, so the tests over there
 // keep exercising the unstated fallback rule on purpose.
