@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -904,5 +905,248 @@ func TestWriteRC_CleansUpItsTempFileOnFailure(t *testing.T) {
 	}
 	if _, err := os.Stat(dest + ".tmp"); !os.IsNotExist(err) {
 		t.Errorf("the temp file outlived the failed write: %v", err)
+	}
+}
+
+// TestBobShellEnable_FollowsASymlinkChain covers head -> mid -> tail with tail absent,
+// which is what stow and chezmoi produce mid-setup — a link to a link. A single
+// Readlink hop stopped at mid, so the write landed there: mid lost its symlink bit to
+// a regular file and the real target was never created. Asserting on mid's mode is the
+// point; asserting only that tail exists would pass for a version that clobbers mid
+// and then also happens to write tail.
+func TestBobShellEnable_FollowsASymlinkChain(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "chain"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mid := filepath.Join(dir, "chain", "mid")
+	head := filepath.Join(dir, "head")
+	if err := os.Symlink("tail", mid); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if err := os.Symlink(filepath.Join("chain", "mid"), head); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	var out, errb bytes.Buffer
+	if code := bobShellEnable(head, testAbctl, true, &out, &errb); code != 0 {
+		t.Fatalf("exit = %d, want 0 (stderr: %s)", code, errb.String())
+	}
+	for _, link := range []string{head, mid} {
+		fi, err := os.Lstat(link)
+		if err != nil {
+			t.Fatalf("%s: %v", link, err)
+		}
+		if fi.Mode()&os.ModeSymlink == 0 {
+			t.Errorf("%s: an intermediate symlink was replaced by a regular file", link)
+		}
+	}
+	tail := filepath.Join(dir, "chain", "tail")
+	if got := readFile(t, tail); !strings.Contains(got, bobShellAliasLine(testAbctl)) {
+		t.Errorf("the alias did not reach the end of the chain:\n%s", got)
+	}
+	// The message must name the file actually written, not the first hop.
+	if !strings.Contains(out.String(), tail) {
+		t.Errorf("stdout never names the real target %s:\n%s", tail, out.String())
+	}
+}
+
+// TestBobShellEnable_RefusesASymlinkCycle — a cycle has no resolution, so following it
+// is not an option and neither is guessing. Every hop is a live symlink; handing any of
+// them to the writer would clobber it. Refusing leaves both intact.
+func TestBobShellEnable_RefusesASymlinkCycle(t *testing.T) {
+	dir := t.TempDir()
+	a, b := filepath.Join(dir, "a"), filepath.Join(dir, "b")
+	if err := os.Symlink(b, a); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if err := os.Symlink(a, b); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	var out, errb bytes.Buffer
+	if code := bobShellEnable(a, testAbctl, true, &out, &errb); code == 0 {
+		t.Errorf("exit = 0, want non-zero on a symlink cycle (stdout: %s)", out.String())
+	}
+	for _, link := range []string{a, b} {
+		fi, err := os.Lstat(link)
+		if err != nil {
+			t.Fatalf("%s: %v", link, err)
+		}
+		if fi.Mode()&os.ModeSymlink == 0 {
+			t.Errorf("%s: a symlink in a cycle was replaced by a regular file", link)
+		}
+	}
+}
+
+// TestBobShellBlock_KeepsAUserAliasUnderADamagedMarker is the regression test the
+// earlier one could not be. TestBobShellDisable_LeavesAUserOwnedAliasAlone has no START
+// marker in its fixture, so the lone-START recovery branch never runs and the bug lived
+// there untouched: the walk matched the bare prefix "alias bob=", claimed the user's own
+// alias on the adjacent line, and disable deleted it.
+func TestBobShellBlock_KeepsAUserAliasUnderADamagedMarker(t *testing.T) {
+	theirs := "alias bob='/usr/local/bin/bob --fast'"
+	for _, tc := range []struct{ name, damaged string }{
+		{"end marker deleted", ""},
+		{"end marker mangled", "# <<< cortex abctl MANGLED"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			lines := []string{"# mine", bobShellMarkerStart, bobShellAliasLine(testAbctl)}
+			if tc.damaged != "" {
+				lines = append(lines, tc.damaged)
+			}
+			lines = append(lines, theirs)
+
+			start, end, found := findBobShellBlock(lines)
+			if !found {
+				t.Fatal("no block found; the lone-START recovery did not run")
+			}
+			for _, l := range lines[start:end] {
+				if strings.TrimSpace(l) == theirs {
+					t.Fatalf("the block claimed the user's own alias:\n%v", lines[start:end])
+				}
+			}
+			updated, removed := removeBobShellBlock(lines)
+			if !removed {
+				t.Fatal("removeBobShellBlock found nothing to remove")
+			}
+			if !slices.Contains(updated, theirs) {
+				t.Errorf("disable deleted the user's own alias:\n%v", updated)
+			}
+			if slices.Contains(updated, bobShellAliasLine(testAbctl)) {
+				t.Error("our own alias line survived removal")
+			}
+		})
+	}
+}
+
+// TestBobShellEnable_DoesNotPromiseABackupItWillNotWrite — writeRC backs up only what it
+// could read, so on a file that does not exist there is no copy to keep. Promising one
+// in the consent prompt offers a rollback artifact that will not be there, and the
+// from-scratch path is the COMMON first run: bobShellRCPath returns ~/.zshrc for zsh
+// whether or not the file exists.
+func TestBobShellEnable_DoesNotPromiseABackupItWillNotWrite(t *testing.T) {
+	t.Run("file does not exist", func(t *testing.T) {
+		rc := filepath.Join(t.TempDir(), ".zshrc")
+		var out, errb bytes.Buffer
+		if code := bobShellEnable(rc, testAbctl, true, &out, &errb); code != 0 {
+			t.Fatalf("exit = %d, want 0 (stderr: %s)", code, errb.String())
+		}
+		if strings.Contains(out.String(), ".bak") {
+			t.Errorf("promised a .bak for a file that did not exist:\n%s", out.String())
+		}
+		if _, err := os.Stat(rc + ".bak"); err == nil {
+			t.Error("a .bak was written for a file that did not exist")
+		}
+	})
+
+	t.Run("file exists", func(t *testing.T) {
+		rc := filepath.Join(t.TempDir(), ".zshrc")
+		if err := os.WriteFile(rc, []byte("# mine\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		var out, errb bytes.Buffer
+		if code := bobShellEnable(rc, testAbctl, true, &out, &errb); code != 0 {
+			t.Fatalf("exit = %d, want 0 (stderr: %s)", code, errb.String())
+		}
+		// The promise and the artifact have to agree in this direction too, or the
+		// test above would pass for a version that never mentions a backup at all.
+		if !strings.Contains(out.String(), rc+".bak") {
+			t.Errorf("stdout does not name the backup it wrote:\n%s", out.String())
+		}
+		if _, err := os.Stat(rc + ".bak"); err != nil {
+			t.Errorf("promised %s.bak but: %v", rc, err)
+		}
+	})
+}
+
+// TestWriteRC_DoesNotConjureParentDirectories — MkdirAll built a whole tree for a
+// dangling link whose target lived in a not-yet-cloned dotfiles repo, at a location no
+// message named. An rc file's directory existing is the normal case.
+func TestWriteRC_DoesNotConjureParentDirectories(t *testing.T) {
+	dir := t.TempDir()
+	missing := filepath.Join(dir, "never", "asked", "for")
+	err := writeRC(filepath.Join(missing, "zshrc"), []string{"# x"}, true)
+	if err == nil {
+		t.Fatal("writeRC = nil, want an error for a missing parent directory")
+	}
+	if !strings.Contains(err.Error(), missing) {
+		t.Errorf("error does not name the missing directory %s: %v", missing, err)
+	}
+	if _, serr := os.Stat(filepath.Join(dir, "never")); serr == nil {
+		t.Error("writeRC created a directory tree the user did not ask for")
+	}
+}
+
+// TestIsOurAliasLine pins the provenance test directly, since it is the thing standing
+// between a recovered block and a user's own alias.
+func TestIsOurAliasLine(t *testing.T) {
+	for _, tc := range []struct {
+		line string
+		want bool
+	}{
+		{bobShellAliasLine(testAbctl), true},
+		{bobShellAliasLine("/usr/local/bin/abctl"), true},
+		{"  " + bobShellAliasLine(testAbctl) + "  ", true},
+		{"alias bob='/usr/local/bin/bob --fast'", false},
+		{"alias bob='bob'", false},
+		{"alias bob=", false},
+		{"alias bobcat='/opt/abctl/abctl exec -- \\bob'", false},
+		{"alias bob='/opt/abctl/abctl exec -- \\bob' # mine", false},
+		{"", false},
+	} {
+		if got := isOurAliasLine(tc.line); got != tc.want {
+			t.Errorf("isOurAliasLine(%q) = %v, want %v", tc.line, got, tc.want)
+		}
+	}
+}
+
+// TestBobShellEnable_WritesTheFileItNamed drives the TOCTOU window the round-4 review
+// names: enable used to call resolveRC once for the message and again for the write,
+// straddling the prompt. Repointing the link from inside the confirm callback is exactly
+// the interleaving that made the two disagree — the message named one file and the write
+// landed on another. Resolving once makes them the same value, so they cannot.
+func TestBobShellEnable_WritesTheFileItNamed(t *testing.T) {
+	dir := t.TempDir()
+	first := filepath.Join(dir, "first")
+	second := filepath.Join(dir, "second")
+	for _, f := range []string{first, second} {
+		if err := os.WriteFile(f, []byte("# "+filepath.Base(f)+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	link := filepath.Join(dir, ".zshrc")
+	if err := os.Symlink(first, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	restore := confirmFn
+	t.Cleanup(func() { confirmFn = restore })
+	confirmFn = func(io.Writer) bool {
+		// The user is reading the prompt; stow/chezmoi/a git checkout moves the link.
+		if err := os.Remove(link); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(second, link); err != nil {
+			t.Fatal(err)
+		}
+		return true
+	}
+
+	var out, errb bytes.Buffer
+	if code := bobShellEnable(link, testAbctl, false, &out, &errb); code != 0 {
+		t.Fatalf("exit = %d, want 0 (stderr: %s)", code, errb.String())
+	}
+	// Whichever file the message named must be the one that changed, and the other must
+	// be untouched. Asserting "first" specifically is the stronger claim: it is what
+	// resolving before the prompt commits to.
+	if !strings.Contains(out.String(), first) {
+		t.Fatalf("stdout does not name %s:\n%s", first, out.String())
+	}
+	if got := readFile(t, first); !strings.Contains(got, bobShellAliasLine(testAbctl)) {
+		t.Errorf("the named file %s was not the one written:\n%s", first, got)
+	}
+	if got := readFile(t, second); strings.Contains(got, bobShellAliasLine(testAbctl)) {
+		t.Errorf("the write landed on %s, which no message mentioned:\n%s", second, got)
 	}
 }

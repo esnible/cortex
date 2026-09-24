@@ -254,6 +254,32 @@ func bobShellAliasLine(abctlPath string) string {
 	return "alias bob='" + abctlPath + " exec -- \\bob'"
 }
 
+// isOurAliasLine reports whether line is one THIS command could have written — the
+// full rendered shape, for some abctl path, not merely a line that starts with
+// `alias bob=`.
+//
+// The distinction is the file header's promise, and a bare-prefix test broke it
+// twice. Inside a recovered lone-START block (see findBobShellBlock) the run of
+// claimed lines is bounded by adjacency, so a user's own `alias bob='/usr/local/bin/bob
+// --fast'` sitting directly under a damaged marker matched the prefix, got swallowed
+// into the block, and was DELETED by disable. Reconstructing the line from the path
+// it names and requiring equality means the only lines we claim are ones we can show
+// we would have produced — which is also why this cannot just compare against the
+// current binary's path: a block written by a moved or reinstalled abctl is still
+// ours, and status exists to say so.
+func isOurAliasLine(line string) bool {
+	const pre = "alias bob='"
+	const suf = " exec -- \\bob'"
+	t := strings.TrimSpace(line)
+	if !strings.HasPrefix(t, pre) || !strings.HasSuffix(t, suf) {
+		return false
+	}
+	path := t[len(pre) : len(t)-len(suf)]
+	// An absolute path with no quote in it: what enable emits (it refuses any other),
+	// so anything else was not written here.
+	return path != "" && strings.HasPrefix(path, "/") && !strings.Contains(path, "'")
+}
+
 // bobShellBlock renders the managed block, newline-terminated.
 //
 // The alias body is single-quoted so nothing in it is expanded when the rc file is
@@ -292,13 +318,15 @@ func findBobShellBlock(lines []string) (start, end int, found bool) {
 		// alias, and disable removed the comment and exited 0 leaving that alias. Take
 		// the contiguous run of lines that this command could itself have written —
 		// the alias and a mangled end marker — and stop at anything else. Bounding it
-		// to lines adjacent to a marker we DID write is what keeps a user's own
-		// `alias bob=...` elsewhere in the file theirs: outside a block, we never
-		// claim a line just because it mentions bob.
+		// to lines adjacent to a marker we DID write is necessary but NOT sufficient:
+		// the first version of this walk matched the bare prefix `alias bob=`, so a
+		// user's own alias on the line below a damaged marker was claimed and deleted.
+		// isOurAliasLine requires the whole shape this command emits, so what we take
+		// is bounded by adjacency AND by provenance.
 		end = start + 1
 		for end < len(lines) {
 			t := strings.TrimSpace(lines[end])
-			if strings.HasPrefix(t, "alias bob=") || strings.HasPrefix(t, "# <<< cortex abctl") {
+			if isOurAliasLine(t) || strings.HasPrefix(t, "# <<< cortex abctl") {
 				end++
 				continue
 			}
@@ -407,14 +435,33 @@ func resolveRC(path string) string {
 	if resolved, err := filepath.EvalSymlinks(path); err == nil {
 		return resolved
 	}
-	target, err := os.Readlink(path)
-	if err != nil {
-		return path // not a symlink at all, or unreadable: nothing to resolve.
+	// The fallback LOOPS, because a link to a link is exactly what stow and chezmoi
+	// produce mid-setup — the state named above as this function's motivation. A
+	// single Readlink stopped at the first hop, so on head -> mid -> (absent) tail the
+	// write landed on `mid`, which lost its symlink bit to a regular file while the
+	// real target was never created. The cap is what a kernel does for the same
+	// reason: a link cycle has no resolution, and the honest answer is to stop rather
+	// than spin. Exhausting the cap returns the ORIGINAL path rather than whichever
+	// hop we stopped on: a cycle's every hop is a live symlink, and handing one of
+	// them back would clobber it — the precise harm this function exists to prevent.
+	// Returning the original leaves it to readRC, whose ELOOP is a better report than
+	// anything guessed here.
+	const maxHops = 32
+	orig := path
+	for i := 0; i < maxHops; i++ {
+		target, err := os.Readlink(path)
+		if err != nil {
+			// Not a symlink, or unreadable: this is the end of the chain and the file
+			// the shell would open. Resolving zero hops returns the original path,
+			// which is what a plain file should get.
+			return path
+		}
+		if !filepath.IsAbs(target) {
+			target = filepath.Join(filepath.Dir(path), target)
+		}
+		path = filepath.Clean(target)
 	}
-	if !filepath.IsAbs(target) {
-		target = filepath.Join(filepath.Dir(path), target)
-	}
-	return filepath.Clean(target)
+	return orig
 }
 
 // writeRC backs the file up once, then replaces it atomically.
@@ -425,6 +472,7 @@ func resolveRC(path string) string {
 // already edited. (install.sh's cp does overwrite, which is the bug this avoids.)
 // The file's existing mode is preserved — an rc file is commonly 0644 and silently
 // tightening it to 0600 is a change the user did not ask for.
+// path must already be resolved by the caller via resolveRC.
 func writeRC(path string, lines []string, trailingNewline bool) error {
 	body := strings.Join(lines, "\n")
 	// len(lines), not body != "": a file holding exactly one newline is one empty
@@ -442,7 +490,12 @@ func writeRC(path string, lines []string, trailingNewline bool) error {
 		// violation: disable removes our lines and restores the original tail.
 		body += "\n"
 	}
-	path = resolveRC(path)
+	// No resolveRC here: the caller resolves once and passes the result. Resolving
+	// again would reopen the window suggestion 1 of the round-4 review names — the
+	// message said which file it was about to write, then this function asked the
+	// filesystem a second time and could get a different answer if the link moved in
+	// between. Now the path the user was shown and the path written are the same
+	// value, which is a property no test has to defend.
 	// 0644 for a file we are creating, not 0600: the comment above about not
 	// tightening an existing rc file's mode applies just as much to the one we make,
 	// and every shell's own rc file is world-readable. An existing file's mode wins
@@ -459,8 +512,16 @@ func writeRC(path string, lines []string, trailingNewline bool) error {
 			}
 		}
 	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
+	// Only the immediate parent, and only if it is already there. MkdirAll would
+	// happily build a whole tree for a dangling link — `ln -s ~/dotfiles/zshrc
+	// ~/.zshrc` with the repo not yet cloned silently created three directories at a
+	// location the "Adds to ~/.zshrc" message never mentions. An rc file's directory
+	// existing is the normal case; conjuring one is a side effect nobody consented to,
+	// and the error names the directory so the fix is obvious.
+	if dir := filepath.Dir(path); dir != "" {
+		if _, err := os.Stat(dir); err != nil {
+			return fmt.Errorf("directory %s does not exist: create it first, or point --rc somewhere else", dir)
+		}
 	}
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, []byte(body), mode); err != nil {
@@ -492,29 +553,40 @@ func bobShellEnable(rcPath, abctlPath string, yes bool, stdout, stderr io.Writer
 	}
 
 	fmt.Fprintf(stdout, "Adds to %s:\n%s\n", rcPath, indentBlock(block))
-	// resolveRC, not rcPath: writeRC follows a symlink, so on a linked rc file the
-	// backup lands beside the TARGET. Naming the link would send someone looking for
-	// the only pristine copy of a file they accreted by hand to a path that does not
-	// exist. Mentioning the target when it differs also makes the indirection visible
-	// before the write, which is the moment it matters.
-	// The path the user typed, unless the rc file is itself a link — in which case the
-	// backup really does land beside the TARGET, and naming the link would send
-	// someone looking for the only pristine copy of a hand-accreted file to a path
-	// that does not exist. resolveRC alone is not the right answer here: it also
-	// resolves parent directories, so a plain /tmp/rc would be announced as
-	// /private/tmp/rc.bak, which is true and unhelpful.
+	// Resolved ONCE, here, and handed to writeRC — so the file this message describes
+	// and the file that gets written cannot be two different files. They could before:
+	// each called resolveRC separately, straddling the prompt, the mode read, the
+	// backup and the rename.
+	target := resolveRC(rcPath)
+	// The name to print is the path the USER typed, unless the rc file is itself a
+	// link — then the backup really does land beside the target, and naming the link
+	// would send someone looking for the only pristine copy of a hand-accreted file to
+	// a path that does not exist. Gating on rcIsSymlink rather than on target != rcPath
+	// is deliberate: resolveRC also resolves parent directories, so a plain /tmp/rc
+	// comes back /private/tmp/rc and announcing that would be noise about a file the
+	// user did not link.
 	written := rcPath
 	if rcIsSymlink(rcPath) {
-		written = resolveRC(rcPath)
+		written = target
 		fmt.Fprintf(stdout, "%s is a link to %s, which is what gets written.\n", rcPath, written)
 	}
-	fmt.Fprintf(stdout, "Nothing else in the file changes; a copy is kept as %s.bak\n\n", written)
+	// One Stat, shared: whether the file exists decides both halves of this sentence.
+	// Unconditionally promising a .bak was a consent prompt offering a rollback
+	// artifact that would not exist — on the FIRST run of the common case, since
+	// bobShellRCPath hands back ~/.zshrc whether or not it is there, and on a dangling
+	// link too. writeRC only backs up what it could read, so there is nothing to keep
+	// a copy of, and nothing else in the file to leave alone either.
+	if _, serr := os.Stat(target); serr == nil {
+		fmt.Fprintf(stdout, "Nothing else in the file changes; a copy is kept as %s.bak\n\n", written)
+	} else {
+		fmt.Fprintf(stdout, "%s does not exist yet; it will be created with just this block.\n\n", written)
+	}
 	if !yes && !confirmFn(stdout) {
 		fmt.Fprintln(stdout, "Not changed.")
 		return exitDeclined
 	}
 
-	if err := writeRC(rcPath, updated, trailingNewline); err != nil {
+	if err := writeRC(target, updated, trailingNewline); err != nil {
 		fmt.Fprintf(stderr, "abctl: %v\n", err)
 		return 1
 	}
@@ -542,15 +614,17 @@ func bobShellDisable(rcPath string, yes bool, stdout, stderr io.Writer) int {
 	// confirmation prompt showed nothing while the write removed real lines.
 	start, end, _ := findBobShellBlock(lines)
 	fmt.Fprintf(stdout, "Removes from %s:\n%s\n", rcPath, indentBlock(strings.Join(lines[start:end], "\n")+"\n"))
+	// Resolved once and passed to writeRC, for the reason enable states: the path
+	// described and the path written are then the same value.
+	target := resolveRC(rcPath)
 	if rcIsSymlink(rcPath) {
-		written := resolveRC(rcPath)
-		fmt.Fprintf(stdout, "%s is a link to %s, which is what gets written.\n", rcPath, written)
+		fmt.Fprintf(stdout, "%s is a link to %s, which is what gets written.\n", rcPath, target)
 	}
 	if !yes && !confirmFn(stdout) {
 		fmt.Fprintln(stdout, "Not changed.")
 		return exitDeclined
 	}
-	if err := writeRC(rcPath, updated, trailingNewline); err != nil {
+	if err := writeRC(target, updated, trailingNewline); err != nil {
 		fmt.Fprintf(stderr, "abctl: %v\n", err)
 		return 1
 	}
