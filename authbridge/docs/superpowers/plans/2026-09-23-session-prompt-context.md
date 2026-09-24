@@ -17,14 +17,14 @@ mergeable projection on `SessionSummary`, and have abctl merge it with its own f
 
 ## Global Constraints
 
-- **Worktree:** `/Users/haihuang/works/go/src/github.com/kagenti/kagenti-extensions/.worktrees/promptctx`, branch `feat/session-prompt-context`. All paths below are relative to `authbridge/`.
+- **Worktree:** `<repo>/.worktrees/promptctx` — a worktree of `rossoctl/cortex`, branch `feat/session-prompt-context`. All paths below are relative to `authbridge/`.
 - **`authbridge/` is a `go.work` WORKSPACE with no root `go.mod`**, so `go build ./...` and `go test ./...` there **fail** with "directory prefix . does not contain modules listed in go.work". Verified: `./...` exits 1, `./authlib/... ./cmd/abctl/...` exits 0. Always use the module-scoped form. (Found during Task 1; the first draft of this plan asserted the failing command.)
 - **One PR, 8 commits in 4 phases.** Phase A = tasks 1-3 (move), B = 4-5 (monoid), C = 6-7 (server), D = 8 (client).
 - **DCO is mandatory:** every commit uses `git commit -s`.
 - **Attribution:** end every commit message with `Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>`. NEVER `Co-Authored-By`, `Generated with`, or `Made-with`.
 - **Commit by pathspec:** `git commit -s -F <msgfile> -- <paths>`. A bare `git add` + `commit` can sweep another session's staged files.
 - **Network commands need proxies cleared:** prefix `git fetch`/`git push`/`go mod` with `HTTPS_PROXY= HTTP_PROXY= ALL_PROXY=`. A TLS bridge on `:47600` otherwise fails certificate verification.
-- **Output discipline:** any command producing >5 lines redirects to `$LOG_DIR` (`export LOG_DIR=/Users/haihuang/.claude/jobs/ecb7387f/tmp/promptctx`), returning only an exit code.
+- **Output discipline:** any command producing >5 lines redirects to `$LOG_DIR` (`export LOG_DIR=<scratch>/promptctx`, outside the repo), returning only an exit code.
 - **gofmt is scoped to changed files only.** Never `gofmt -w .` at a module root — it sweeps pre-existing dirty files into the diff.
 - **Lint:** `golangci-lint run --new-from-rev=upstream/main ./<changed>/...`. Do NOT run cortex's `make lint` — it fails on pre-existing ruff errors elsewhere and rewrites ~10 unrelated files.
 - **Comment density must match the surrounding file.** `SessionSummary.CostMicros` carries a 19-line doc comment for one field; new exported fields and the moved rule need comparable treatment. Terse code will read as out of place here.
@@ -120,7 +120,7 @@ Each touched file needs `"github.com/rossoctl/cortex/authbridge/authlib/pipeline
 - [ ] **Step 3: Verify the tree builds and every existing test still passes**
 
 ```bash
-export LOG_DIR=/Users/haihuang/.claude/jobs/ecb7387f/tmp/promptctx
+export LOG_DIR=<scratch>/promptctx   # any path outside the repo
 HTTPS_PROXY= HTTP_PROXY= ALL_PROXY= go build ./authlib/... ./cmd/abctl/... > $LOG_DIR/t1-build.log 2>&1; echo "BUILD:$?"
 HTTPS_PROXY= HTTP_PROXY= ALL_PROXY= go test ./cmd/abctl/tui/ ./authlib/pipeline/ > $LOG_DIR/t1-test.log 2>&1; echo "TEST:$?"
 ```
