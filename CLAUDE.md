@@ -385,6 +385,8 @@ cd authbridge && podman build -f cmd/authbridge-proxy/Dockerfile \
   no Go hooks, and `ci.yaml`'s `go fmt ./...` is `gofmt -l -w`, which rewrites and
   exits 0. `go vet` *is* gated, but only on 7 of the 12 modules — see the
   Pre-commit Hooks section for which five are uncovered.
+  See [CONTRIBUTING.md](CONTRIBUTING.md#code-style) for the contributor-facing
+  version of this.
 - Run per-module with `GOWORK=off`, as every CI Go job except the `authlib` one
   does, so each module resolves its own `replace` directives instead of pulling in
   workspace siblings.

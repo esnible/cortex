@@ -11,19 +11,21 @@
 #     6. The SPIFFE IdP setup job that registers the "spire-spiffe" identity
 #        provider in Keycloak                        (ns: rossoctl-system)
 #
-# Run it after `deployments/ansible/run-install.sh` and before debugging
-# anything workload-level: most "token exchange is broken" reports are one of
-# these six, and each failure here has a much clearer cause than the 503 it
-# eventually produces in a sidecar.
+# Run it once the rossoctl installer has finished, before debugging anything
+# workload-level: most "token exchange is broken" reports are one of these six,
+# and each failure here has a much clearer cause than the 503 it eventually
+# produces in a sidecar.
 #
 # This checks the PLATFORM only — nothing about sidecar injection, plugin
 # pipelines, or a specific agent. For those, run a demo
 # (see authbridge/demos/README.md).
 #
 # Usage:  ./verify-spire-keycloak.sh        (needs kubectl and jq, pointed at the cluster)
-# Exit:   0 only if every check passes. Missing SPIRE/Keycloak pods exit
-#         immediately; JWKS-shape problems finish the run first so you see
-#         every fault at once, then exit 1.
+# Exit:   Checks 1, 2, 4 and 5 abort with 1 the moment they fail. Check 3 exits 1
+#         only when the JWKS is missing "use" AND the ConfigMap is unpatched, and
+#         it finishes the run first so you see every fault at once. Everything
+#         else warns and still exits 0 — including check 6 finding the IdP job
+#         absent or incomplete. Read the output; do not gate on $?.
 #
 # Invoked by no CI job by design: it asserts on a locally installed cluster.
 # Referenced from CONTRIBUTING.md ("Testing against a local cluster").

@@ -16,7 +16,7 @@ Comment `/claim` on an issue to have it automatically assigned to you. Issues la
 
 ## Prerequisites
 
-- **Go 1.26.5+** (the version every `go.mod` and `go.work` declares)
+- **Go 1.26.5+** (matches `authbridge/go.work`)
 - **Python 3.12+** (for `keycloak_sync.py` and the demo setup scripts)
 - **Docker or Podman** (for building container images)
 - **pre-commit** (for local hooks)
@@ -49,60 +49,45 @@ operator's sidecar injection, token exchange against Keycloak), the loop is a
 Kind cluster plus the Rossoctl installer. You need both the
 [`rossoctl`](https://github.com/rossoctl/rossoctl) and `cortex` repos cloned.
 
-**1. Create the cluster.** The Ansible installer can create one itself, but for
-local-image testing it is easier to create it first:
+Only the build and verify steps below live in this repo. Creating the cluster and
+installing the platform belong to `rossoctl` and are documented there. Link to
+its guide rather than reproducing its command lines here — a copied install
+command is what went stale last time.
 
-```bash
-kind create cluster --name rossoctl-dev --config - <<EOF
-kind: Cluster
-apiVersion: kind.x-k8s.io/v1alpha4
-nodes:
-- role: control-plane
-  extraPortMappings:
-  - containerPort: 30080
-    hostPort: 8080
-    protocol: TCP
-  - containerPort: 30443
-    hostPort: 8443
-    protocol: TCP
-EOF
-```
+**1. Install the platform.** Follow rossoctl's
+[install guide](https://github.com/rossoctl/rossoctl/blob/main/docs/operate/install-kubernetes.md).
+Its `scripts/kind/setup-rossoctl.sh` creates the Kind cluster itself (default
+name `rossoctl`), or reuses an existing one with `--skip-cluster`. For JWT-SVID
+auth rather than client secrets, that repo's
+`deployments/envs/dev_values_federated-jwt.yaml` sets
+`authBridge.clientAuthType: federated-jwt`.
 
-**2. Build and load the images.** `local-build-and-test.sh` is the supported
-path — it builds from both repos and loads everything into Kind:
+**2. Build and load your local images.** `local-build-and-test.sh` is the
+supported path — it builds from both repos and loads everything into Kind. It
+requires the cluster to exist already, which is why it comes second:
 
 ```bash
 cd cortex
 export KIND_EXPERIMENTAL_PROVIDER=podman   # Podman only
-ROSSOCTL_DIR=../rossoctl ./local-build-and-test.sh
-# A different cluster: CLUSTER_NAME=my-cluster ./local-build-and-test.sh
+CLUSTER_NAME=rossoctl ROSSOCTL_DIR=../rossoctl ./local-build-and-test.sh
 ```
+
+Pass `CLUSTER_NAME` explicitly: this script defaults to `rossoctl-dev` while
+rossoctl's installer defaults to `rossoctl`, and a mismatch loads your images
+into a cluster nothing is running in.
 
 It builds `spiffe-idp-setup` (from the rossoctl repo — easy to miss) plus
 `authbridge`, `authbridge-envoy`, `authbridge-lite` and `proxy-init` from this
 one, all tagged `:local`. Confirm with
-`kind get images --name rossoctl-dev | grep :local`. On Podman the script loads
-via tar archives, because `kind load docker-image` does not work with Podman's
-image store.
+`docker exec rossoctl-control-plane crictl images | grep local` (`podman exec`
+under Podman). On Podman the script also loads via tar archives, because
+`kind load docker-image` does not work with Podman's image store.
 
-**3. Install the platform.** From the `rossoctl` repo, with the dev base values
-plus the local-images and federated-JWT overlays:
+> Getting the platform to *run* those `:local` tags needs an image-override
+> values file. The overlay that used to do this was removed from `rossoctl`, so
+> check that repo's current guide for the supported way.
 
-```bash
-cd rossoctl
-deployments/ansible/run-install.sh --env dev \
-  --env-file deployments/envs/dev_values_local_images.yaml \
-  --env-file deployments/envs/dev_values_federated-jwt.yaml
-```
-
-The overlays merge in order: `dev_values.yaml` is the Kind baseline,
-`dev_values_local_images.yaml` switches image tags to `:local` with
-`imagePullPolicy: Never` and assumes the cluster already exists, and
-`dev_values_federated-jwt.yaml` turns on JWT-SVID auth
-(`authBridge.clientAuthType: federated-jwt`). Installation usually takes 6–8
-minutes; the SPIFFE IdP job should succeed first try.
-
-**4. Verify the platform came up.**
+**3. Verify the platform came up.**
 
 ```bash
 cd cortex
@@ -114,7 +99,7 @@ Keycloak, the Keycloak admin secret, and the SPIFFE IdP setup job. Run it before
 debugging anything workload-level — most "token exchange is broken" reports turn
 out to be one of these six.
 
-**5. Deploy a workload.** Use a demo rather than hand-written manifests; they
+**4. Deploy a workload.** Use a demo rather than hand-written manifests; they
 are kept current, and the manual path is not. Start from
 [`authbridge/demos/README.md`](authbridge/demos/README.md).
 
@@ -232,10 +217,12 @@ Smaller pull requests are typically easier to review and merge. If your pull req
 ## Code Style
 
 ### Go Code
-- Run `gofmt -l` and `go vet ./...` before pushing. Neither is enforced — there
-  are no Go hooks in pre-commit, and the authlib CI job runs only `go build` and
-  `go test -race`.
-- Run per-module with `GOWORK=off`, as CI does.
+- Run `gofmt -l` and `go vet ./...` before pushing. `go vet` is gated: all four
+  `Go CI (…)` jobs run it, and a finding fails the job. `gofmt` is not — CI's lint step runs
+  `go fmt`, which rewrites files and exits 0, so unformatted code still goes
+  green. There are no Go hooks in pre-commit either.
+- Run per-module with `GOWORK=off` — how the root Makefile builds, and how every
+  CI job but authlib runs.
 - If your change deletes a package or its last import of a dependency, also run
   `go mod tidy -diff` in every module — CI gates on it, and `build`/`vet`/`test`
   all pass while it fails.
@@ -243,7 +230,8 @@ Smaller pull requests are typically easier to review and merge. If your pull req
 
 ### Python Code (keycloak_sync.py, sparc-service, demo scripts)
 - Python 3.12+ syntax (type hints with `str | None`)
-- Dependencies version-pinned in `authbridge/requirements.txt`
+- Dependencies declared in `authbridge/requirements.txt` — exact pins for the
+  langchain/pydantic stack, bounded ranges elsewhere
 
 ## Licensing
 
