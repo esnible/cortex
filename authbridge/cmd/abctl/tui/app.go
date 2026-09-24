@@ -355,9 +355,10 @@ type model struct {
 	// contextRun is the CONTEXT(1M) gauge's answer per session, folded forward as events
 	// arrive rather than recomputed from the whole slice — see sessionContextFor. The row
 	// loop asks for every session on every rebuild, and a rebuild happens on every streamed
-	// event, so a full scan there is O(events) per session per event. It is a remembered
-	// maximum rather than a cache of the slice: the events can stop carrying the evidence
-	// (view=summary strips it) while the answer stays true.
+	// event, so a full scan there is O(events) per session per event. It REMEMBERS THE WINNING
+	// TURN under the rule's ordering rather than caching the slice, and that is what lets the
+	// events stop carrying the evidence (view=summary strips it) while the answer stays true.
+	// Which turn wins is not a question of size — see pipeline.PromptContextFold.
 	contextRun map[string]pipeline.PromptContextFold
 	// sessionsData is what an agent knows about its own sessions that the proxy does
 	// not — a title, mostly. Read once at startup from ~/.cortex/session-metadata.json,

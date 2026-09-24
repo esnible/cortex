@@ -33,8 +33,8 @@ func (m *model) sessionContextFor(id string, server *pipeline.PromptContext) int
 }
 
 // localContextFor is the fold abctl maintains itself, unchanged from before the server published
-// anything — see the retention inventory on model.events for why it is a remembered maximum rather
-// than a cache.
+// anything — see the retention inventory on model.events for why it remembers the winning turn
+// rather than caching the slice.
 //
 // FOLDED RATHER THAN RESCANNED. Appending is the only growth path that preserves the prefix, so a
 // longer slice folds just its tail. Every path that does something else to m.events owes this
