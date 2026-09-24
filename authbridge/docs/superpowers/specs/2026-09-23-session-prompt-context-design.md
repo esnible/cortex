@@ -122,9 +122,9 @@ and the figure is specifically prompt tokens.
 ## §2 `entry.context` and the `Append` hook
 
 ```go
-// context is the CONTEXT gauge's answer for this session: the largest main-agent prompt
-// total seen, maintained by Append and read by ListSessions. See
-// pipeline.PromptContextFold for the rule, and why a REMEMBERED MAXIMUM rather than a sum
+// context is the CONTEXT gauge's answer for this session: the main-agent turn that RANKS
+// HIGHEST under the rule's total order, maintained by Append and read by ListSessions. See
+// pipeline.PromptContextFold for the rule, and why a REMEMBERED EXTREMUM rather than a sum
 // over Events.
 context pipeline.PromptContextFold
 ```
@@ -154,12 +154,15 @@ This needs a comment saying so. The `moneyOf` comment is categorical — "it tou
 state, so it has no business inside a critical section" — and invites the reader to assume the
 pattern was forgotten here.
 
-### Placement is load-bearing
+### The property, and what actually secures it
 
-The hook **must precede the trim block** (line 315). An event appended and immediately trimmed
-still has to contribute, because the figure is a remembered maximum that outlives the events it
-was read from. Line 300 gets that for free, but by placement rather than by accident, so it
-gets a comment.
+An event appended and immediately trimmed **still has to contribute**, because the figure
+outlives the events it was read from. What secures that is `Add(&event)` reading the **local
+parameter** rather than the tail of `sess.Events`; the trim reshapes `sess.Events` and
+`sess.money` only, and there is no early return between them, so the hook's position relative to
+the trim block is free. An earlier draft of this section called the placement load-bearing — it
+is not, and the comment says so, because a reader who guards the position is guarding the wrong
+thing.
 
 ### Ordering against the interner is safe
 
@@ -179,11 +182,12 @@ need its own `map[string]fold` plus its own locking, duplicating what `entry` gi
 **A trim does nothing to `sess.context`.** Zero lines added to the trim block at
 `store.go:315-332`. No subtraction, no parallel slice, no `applyTrim` participation.
 
-This is principled, and the reason is **max versus sum**. `cost` is a sum, and a sum over a
-trimmed slice understates by a known amount — honestly describable as "the cost of the events
-in this session". Context is a maximum, and a maximum over a trimmed slice does not
-understate, it **lies about the thing it names**: it reports a small conversation when the
-conversation is large and merely aged out.
+This is principled, and the reason is **extremum versus sum**. `cost` is a sum, and a sum over a
+trimmed slice sheds exactly what left the slice — honestly describable as "the cost of the events
+in this session". Context is an extremum under a total order, so nothing about it is accumulated
+and a trim has nothing to subtract. Recomputing it over the survivors would not understate by a
+known amount, it would **lie about the thing it names**: it would report a small conversation when
+the conversation is large and merely aged out.
 
 ### What that saves
 
@@ -240,11 +244,15 @@ On `SessionSummary`:
 ```go
 // PromptContext is how full this session's conversation got. Nil when nothing can be said.
 //
-// LIFETIME-MAX, NOT SCOPED TO WHAT THE STORE HOLDS — unlike TotalTokens and CostMicros above,
-// and deliberately. Those are sums; a sum over a trimmed slice understates by a known amount.
-// This is a maximum; a maximum over a trimmed slice reports a small conversation when the
-// conversation is large and merely aged out. A client showing them on one row must not present
-// any of the three as a check on another.
+// NO MONOTONICITY IS PROMISED: the figure can DECREASE, because the stated arm ranks by
+// arrival time. A compaction takes a session from 830,000 to 12,000 on one turn.
+//
+// RETENTION-INDEPENDENT ALL THE SAME — unlike TotalTokens and CostMicros above, and
+// deliberately. Those are sums; a sum over a trimmed slice sheds what left the slice. This is
+// an extremum under a total order, so a trim has nothing to subtract and it outlives the events
+// it was read from; recomputing it over the survivors would report a small conversation when
+// the conversation is large and merely aged out. A client showing them on one row must not
+// present any of the three as a check on another.
 //
 // A POINTER, so absent and zero stay distinguishable: a session with only one-shot calls has
 // no conversation to measure and must render as "—" rather than as a real figure. Same
@@ -516,7 +524,7 @@ proxy version, so the fallback never retires and this rule is not scheduled to c
 
 The general problem survives the specific one. Any future change to the ordering leaves persisted
 figures computed under the old one, and **a figure cannot be recomputed once its events are gone**
-— that is the price of a remembered maximum. It is the class of problem
+— that is the price of a remembered extremum. It is the class of problem
 `costledger/reprice.go` already solves after the fact (rate-card changes applied to historical
 rows), so there is precedent to follow, but it would be a new instance of it.
 
@@ -532,7 +540,7 @@ change as before.
 
 | field | survives without events? |
 |---|---|
-| `PromptContext` | **yes, by design** — lifetime max |
+| `PromptContext` | **yes, by design** — an extremum, not a sum over retained events |
 | `CostMicros` / `AvoidedMicros` | restorable as numbers, but their contract says "scoped to what the store holds" — silently violated |
 | `TotalTokens`, `EventCount` | **no** — computed from `Events` on demand |
 

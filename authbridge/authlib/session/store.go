@@ -88,14 +88,21 @@ type entry struct {
 	// the pin rule. applyTrim reshapes this and Events together for that second reason.
 	money []eventMoney
 
-	// context is the CONTEXT gauge's answer for this session: the largest main-agent prompt
-	// total seen, maintained by Append and read by ListSessions.
+	// context is the CONTEXT gauge's answer for this session: the main-agent turn that RANKS
+	// HIGHEST under the rule's total order, in prompt tokens — the LATEST such turn where the
+	// client states its role, the one with the MOST MESSAGES where it does not. Maintained by
+	// Append and read by ListSessions; see pipeline.PromptContextFold for the order itself.
 	//
-	// A REMEMBERED MAXIMUM, NOT A SUM, and that is the whole difference from cost above. It is
-	// deliberately NOT maintained in lockstep with Events: a trim does nothing to it, because a
-	// maximum over a trimmed slice does not understate the way a partial sum does — it reports a
-	// small conversation when the conversation is large and merely aged out. See
-	// TestAppend_PromptContextSurvivesATrim, and pipeline.PromptContextFold for the rule.
+	// NOT A MAXIMUM OVER TOKENS, so this can DECREASE: the stated arm leads with the timestamp,
+	// which is the point of the column. A compaction is the ordinary case — 830,000 before it and
+	// 12,000 on the turn after — and nothing here or on the wire may be read as a high-water mark.
+	//
+	// AN EXTREMUM, NOT A SUM, and that is the whole difference from cost above. It is deliberately
+	// NOT maintained in lockstep with Events: nothing about it is accumulated, so a trim has
+	// nothing to subtract from it, where a partial sum over a trimmed slice sheds exactly what left
+	// the slice. Recomputing it over the survivors would not understate by a known amount the way
+	// that sum does — it would report a small conversation for a session whose conversation is
+	// large and merely aged out. See TestAppend_PromptContextSurvivesATrim.
 	//
 	// So this needs none of the machinery cost needs: no subtraction on trim, and no parallel
 	// per-event slice to make that subtraction decode-free. Fixed size per SESSION.
@@ -313,9 +320,14 @@ func (s *Store) Append(sessionID string, event pipeline.SessionEvent) {
 	sess.avoided.Add(money.avoided)
 	// AND THE PROMPT-CONTEXT FIGURE, which unlike the two above sheds nothing on trim.
 	//
-	// BEFORE THE TRIM BLOCK BELOW, load-bearing rather than incidental: an event appended and
-	// immediately evicted still has to contribute, because the figure outlives the events it was
-	// read from.
+	// THE PROPERTY IS THAT AN EVENT APPENDED AND IMMEDIATELY EVICTED STILL CONTRIBUTES, because
+	// the figure outlives the events it was read from — TestAppend_PromptContextSurvivesATrim pins
+	// it. WHAT SECURES IT IS THE ARGUMENT, not the position: Add reads &event, the local parameter,
+	// rather than the tail of sess.Events, and the trim below reshapes only sess.Events and
+	// sess.money with no early return in between. So this call could move below the trim and
+	// nothing would change. An earlier version of this comment called the placement "load-bearing
+	// rather than incidental", which is false as stated and would have sent a reader guarding the
+	// wrong thing; what would break the property is sourcing the candidate from the stored slice.
 	//
 	// NOT HOISTED ABOVE THE LOCK like moneyOf, and that is not an oversight. moneyOf is a
 	// json.Unmarshal and was hoisted because of a measured regression; this is a phase check, a
@@ -637,15 +649,26 @@ type SessionSummary struct {
 	Saturated bool `json:"saturated,omitempty"`
 	Active    bool `json:"active"` // true if this is the most recently updated session
 	// PromptContext is how full this session's conversation got, by the rule in
-	// pipeline.PromptContextFold: the largest main-agent request seen, in prompt tokens.
+	// pipeline.PromptContextFold: the main-agent turn that RANKS HIGHEST under that rule's total
+	// order, in prompt tokens. Where the client states its role that is the LATEST such turn;
+	// where it does not it is the one with the MOST MESSAGES. See pipeline.PromptContext, which is
+	// this field's type and carries the order.
 	//
-	// LIFETIME-MAX, NOT SCOPED TO WHAT THE STORE HOLDS — unlike TotalTokens and CostMicros
-	// above, and the asymmetry is deliberate rather than an inconsistency. Those are sums, and a
-	// sum over a trimmed slice understates by a known amount, which is why CostMicros can
-	// honestly call itself the cost of the events in this session. This is a maximum, and a
-	// maximum over a trimmed slice does not understate — it reports a small conversation when the
-	// conversation is large and merely aged out of the store. A client showing the three on one
-	// row must not present any of them as a check on another.
+	// NO MONOTONICITY IS PROMISED, and a client must not build on one: this figure can DECREASE
+	// between two polls. A compaction is the ordinary case, not a corner — the stated arm leads
+	// with arrival time, so a session reporting 830,000 before one reports 12,000 on the turn
+	// after it. That is what the column is FOR, since an operator needs how full the conversation
+	// is now rather than how full it has ever been.
+	//
+	// RETENTION-INDEPENDENT ALL THE SAME — unlike TotalTokens and CostMicros above, and the
+	// asymmetry is deliberate rather than an inconsistency. Those are sums over the events the
+	// store still holds, so a trim sheds exactly what left the slice, which is why CostMicros can
+	// honestly call itself the cost of the events in this session. This is an extremum under a
+	// total order: nothing about it is accumulated, so a trim has nothing to subtract from it and
+	// it outlives the events it was read from. Recomputing it over the survivors would not
+	// understate by a known amount the way that sum does — it would report a small conversation
+	// for a session whose conversation is large and merely aged out of the store. A client showing
+	// the three on one row must not present any of them as a check on another.
 	//
 	// A POINTER SO ABSENT AND ZERO STAY APART, which is the same standing rule CostMicros states
 	// for its omitempty: an unknown figure must never render as a real one. A session with only

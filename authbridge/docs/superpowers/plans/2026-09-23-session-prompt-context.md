@@ -883,9 +883,9 @@ This is the **inverse** of `TestAppend_RunningTotalsMatchAFullRecomputation` at
 // TestAppend_RunningTotalsMatchAFullRecomputation holds for cost.
 //
 // cost is a SUM and stays equal to sumCost(Events), shedding whatever a trim evicts — that is
-// what scopes the COST column exactly like the TOKENS column beside it. This is a MAXIMUM, and
-// a maximum over a trimmed slice does not understate, it reports a small conversation when the
-// conversation is large and merely aged out.
+// what scopes the COST column exactly like the TOKENS column beside it. This is an EXTREMUM
+// under a total order, so a trim has nothing to subtract from it; recomputing it over the
+// survivors would report a small conversation when the conversation is large and merely aged out.
 //
 // THE SECOND ASSERTION FORBIDS A FUTURE "FIX". Making this recomputable from Events — the
 // instinct, by analogy to cost — reintroduces exactly the bug this field exists to remove: the
@@ -978,13 +978,14 @@ Expected: non-zero, `sum.PromptContext undefined`.
 In the `entry` struct, after `cost`/`avoided`/`money`:
 
 ```go
-	// context is the CONTEXT gauge's answer for this session: the largest main-agent prompt
-	// total seen, maintained by Append and read by ListSessions.
+	// context is the CONTEXT gauge's answer for this session: the main-agent turn that RANKS
+	// HIGHEST under the rule's total order — the LATEST such turn where the client states its
+	// role, the one with the MOST MESSAGES where it does not. Maintained by Append and read by
+	// ListSessions; NOT a maximum over tokens, so it can DECREASE on a compaction.
 	//
-	// A REMEMBERED MAXIMUM, NOT A SUM, and that is the whole difference from cost above. It is
-	// deliberately NOT maintained in lockstep with Events: a trim does nothing to it, because a
-	// maximum over a trimmed slice does not understate the way a partial sum does — it reports a
-	// small conversation when the conversation is large and merely aged out. See
+	// AN EXTREMUM, NOT A SUM, and that is the whole difference from cost above. It is
+	// deliberately NOT maintained in lockstep with Events: a trim does nothing to it, because
+	// nothing about it is accumulated, so there is nothing to subtract. See
 	// TestAppend_PromptContextSurvivesATrim, and pipeline.PromptContextFold for the rule.
 	//
 	// So this needs none of the machinery cost needs: no subtraction on trim, and no parallel
@@ -997,9 +998,10 @@ In `Append`, in the lockstep block right after `sess.avoided.Add(money.avoided)`
 ```go
 	// AND THE PROMPT-CONTEXT FIGURE, which unlike the two above sheds nothing on trim.
 	//
-	// BEFORE THE TRIM BLOCK BELOW, load-bearing rather than incidental: an event appended and
-	// immediately evicted still has to contribute, because the figure outlives the events it was
-	// read from.
+	// AN EVENT APPENDED AND IMMEDIATELY EVICTED STILL CONTRIBUTES, because the figure outlives
+	// the events it was read from. What secures that is Add reading &event, the local parameter,
+	// rather than the tail of sess.Events — not this call's position, which the trim below cannot
+	// affect either way.
 	//
 	// NOT HOISTED ABOVE THE LOCK like moneyOf, and that is not an oversight. moneyOf is a
 	// json.Unmarshal and was hoisted because of a measured regression; this is a phase check, a
@@ -1134,15 +1136,20 @@ func TestSessionSummary_PromptContextOmittedWhenNil(t *testing.T) {
 
 ```go
 	// PromptContext is how full this session's conversation got, by the rule in
-	// pipeline.PromptContextFold: the largest main-agent request seen, in prompt tokens.
+	// pipeline.PromptContextFold: the main-agent turn that RANKS HIGHEST under that rule's total
+	// order, in prompt tokens — the LATEST such turn where the client states its role, the one
+	// with the MOST MESSAGES where it does not.
 	//
-	// LIFETIME-MAX, NOT SCOPED TO WHAT THE STORE HOLDS — unlike TotalTokens and CostMicros
-	// above, and the asymmetry is deliberate rather than an inconsistency. Those are sums, and a
-	// sum over a trimmed slice understates by a known amount, which is why CostMicros can
-	// honestly call itself the cost of the events in this session. This is a maximum, and a
-	// maximum over a trimmed slice does not understate — it reports a small conversation when the
-	// conversation is large and merely aged out of the store. A client showing the three on one
-	// row must not present any of them as a check on another.
+	// NO MONOTONICITY IS PROMISED: the figure can DECREASE, because the stated arm ranks by
+	// arrival time. A compaction takes a session from 830,000 to 12,000 on one turn.
+	//
+	// RETENTION-INDEPENDENT ALL THE SAME — unlike TotalTokens and CostMicros above, and the
+	// asymmetry is deliberate rather than an inconsistency. Those are sums, and a sum over a
+	// trimmed slice sheds what left the slice, which is why CostMicros can honestly call itself
+	// the cost of the events in this session. This is an extremum under a total order, so a trim
+	// has nothing to subtract from it — recomputing it over the survivors would report a small
+	// conversation when the conversation is large and merely aged out of the store. A client
+	// showing the three on one row must not present any of them as a check on another.
 	//
 	// A POINTER SO ABSENT AND ZERO STAY APART, which is the same standing rule CostMicros states
 	// for its omitempty: an unknown figure must never render as a real one. A session with only
@@ -1281,7 +1288,7 @@ func (m *model) sessionContextFor(id string, server *pipeline.PromptContext) int
 }
 
 // localContextFor is the fold abctl maintains itself, unchanged from before the server published
-// anything — see the retention inventory on model.events for why it is a remembered maximum.
+// anything — see the retention inventory on model.events for why it is a remembered extremum.
 func (m *model) localContextFor(id string) *pipeline.PromptContext {
 	events := m.events[id]
 	run, ok := m.contextRun[id]
