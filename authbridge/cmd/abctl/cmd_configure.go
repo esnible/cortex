@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"io"
+	"strings"
 )
 
 const configureUsage = `abctl configure — point a coding agent at Cortex
@@ -106,6 +107,17 @@ func runConfigure(args []string, stdout, stderr io.Writer) int {
 	case "opencode":
 		fmt.Fprint(stdout, comingSoon("OpenCode", "opencode"))
 		return 0
+	case "bob":
+		// Named specifically rather than falling through to the generic error, because
+		// "bob" is a near miss with a right answer rather than a guess: it is what the
+		// coming-soon notice this replaced was reached by, and what a note or a shell
+		// history from before the rename would hold. Not accepted as an alias the way
+		// `abctl claude-code` is — that spelling names a command that really worked and
+		// may sit in someone's script, whereas this one only ever printed a notice, so
+		// keeping it alive would be preserving a name nothing depended on.
+		fmt.Fprintf(stderr, "abctl: %q is now \"bobshell\"; run `abctl configure bobshell %s`\n",
+			agent, strings.Join(args[1:], " "))
+		return 2
 	default:
 		// The named list is the answer to a typo; the usage block after it is the
 		// answer to "what else can this do", which is what someone who guessed an

@@ -67,11 +67,12 @@ line cannot reach a shell that has already read it.
 Cortex need not be running for any of this: the alias resolves the proxy address
 when you run bob, not now.
 
-Exit status: 0 applied or already correct, 3 declined (or no terminal to ask
-on), 1 something went wrong.
+Exit status: 0 applied or already correct, 2 a usage error, 3 declined (or no
+terminal to ask on), 1 something went wrong.
 
 Flags:
-  --yes           do not prompt for confirmation
+  --yes           do not prompt for confirmation (enable and disable; status
+                  changes nothing and never prompts)
   --rc PATH       shell startup file to edit (default: from $SHELL)
 `
 
@@ -133,6 +134,15 @@ func runBobShell(args []string, stdout, stderr io.Writer) int {
 	}
 }
 
+// confirmFn is confirm, indirected so tests can drive the decline path.
+//
+// The direct call could not be tested: confirm opens /dev/tty, which resolves to
+// the developer's terminal whenever `go test` runs from an interactive shell, so a
+// test reaching it blocks on a read — and passed only in a sandbox with no tty,
+// where the open fails and it declines by itself. A test that passes for the
+// absence of a terminal is asserting the environment, not the code.
+var confirmFn = confirm
+
 // bobShellRCPath picks the startup file to edit, given $SHELL, the home directory and
 // the platform. Ported from install.sh's offer_path_setup, which faces the same
 // question for its PATH line; the reasoning there applies unchanged.
@@ -179,7 +189,11 @@ func bobShellRCPath(shell, home, goos string) (string, error) {
 func abctlPath() (string, error) {
 	self, err := os.Executable()
 	if err != nil {
-		// A platform where os.Executable fails; PATH is all that is left.
+		// A platform where os.Executable fails; PATH is all that is left. This can
+		// resolve a DIFFERENT abctl than the one running, which is the outcome the
+		// comment above says must not happen — accepted only because the alternative
+		// on such a platform is refusing to work at all, and os.Executable failing
+		// is not reachable on the platforms this ships to.
 		found, lerr := exec.LookPath("abctl")
 		if lerr != nil {
 			return "", fmt.Errorf("cannot determine the path of this abctl (%v) and it is not on PATH (%v)", err, lerr)
@@ -190,14 +204,34 @@ func abctlPath() (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("cannot make %s absolute: %w", self, err)
 	}
-	// The alias body is single-quoted, so a path containing a single quote would end
-	// the quoting mid-word. Escaping it is possible ('\'') but the result is a path
-	// no one should have and a line no one can read; refuse and let --rc-style
-	// manual setup handle the exotic case.
-	if strings.Contains(abs, "'") {
-		return "", fmt.Errorf("the path of this abctl contains a single quote (%s), which cannot be written into a shell alias; move or symlink it somewhere without one", abs)
+	if err := validateAliasPath(abs); err != nil {
+		return "", err
 	}
 	return abs, nil
+}
+
+// validateAliasPath rejects a path that cannot be written into the alias body.
+//
+// Split from abctlPath so it is testable without a binary at an exotic path: the
+// failure it prevents is a malformed line in the user's rc file rather than an
+// error they would see.
+//
+// The body is single-quoted, so a path containing a single quote would end the
+// quoting mid-word. The shell's escape for it (close-quote, backslash-quote,
+// reopen) is possible, but the result is a path no one should have and a line no
+// one can read; refuse and let --rc-style manual setup handle the exotic case.
+func validateAliasPath(abs string) error {
+	if strings.Contains(abs, "'") {
+		return fmt.Errorf("the path of this abctl contains a single quote (%s), which cannot be written into a shell alias; move or symlink it somewhere without one", abs)
+	}
+	return nil
+}
+
+// bobShellAliasLine renders the alias itself — the one line of the block that does
+// the work, split out so status can compare against it by equality instead of asking
+// whether the whole rendered block contains what it found.
+func bobShellAliasLine(abctlPath string) string {
+	return "alias bob='" + abctlPath + " exec -- \\bob'"
 }
 
 // bobShellBlock renders the managed block, newline-terminated.
@@ -207,7 +241,7 @@ func abctlPath() (string, error) {
 // recursing into itself.
 func bobShellBlock(abctlPath string) string {
 	return bobShellMarkerStart + "\n" +
-		"alias bob='" + abctlPath + " exec -- \\bob'\n" +
+		bobShellAliasLine(abctlPath) + "\n" +
 		bobShellMarkerEnd + "\n"
 }
 
@@ -254,11 +288,12 @@ func bobShellAliasIn(lines []string) string {
 
 // replaceBobShellBlock puts block where the managed block is, or appends it.
 //
-// Appending separates the block from whatever precedes it with one blank line, but
-// only when there is something to separate it from and it is not already blank —
-// an rc file that ends mid-content should not gain the block on the same visual
-// run, and a file that already ends blank should not gain a second empty line on
-// every rewrite.
+// Appending adds no separator line. A cosmetic blank ahead of the block would have
+// to be removed again on disable to keep the round trip byte-identical, and "remove
+// the blank before the block" cannot distinguish the one enable added from one the
+// user already had — so a file ending blank lost the user's line. Adding nothing
+// makes the round trip an unconditional identity, which is the invariant this file
+// states at the top; the block simply sits against the preceding line.
 func replaceBobShellBlock(lines []string, block string) []string {
 	blockLines := strings.Split(strings.TrimSuffix(block, "\n"), "\n")
 	if start, end, found := findBobShellBlock(lines); found {
@@ -269,24 +304,17 @@ func replaceBobShellBlock(lines []string, block string) []string {
 		return out
 	}
 	out := append([]string(nil), lines...)
-	if len(out) > 0 && strings.TrimSpace(out[len(out)-1]) != "" {
-		out = append(out, "")
-	}
 	return append(out, blockLines...)
 }
 
 // removeBobShellBlock drops the managed block, reporting whether there was one.
 //
-// The blank line enable may have added ahead of the block goes too, so an
-// enable/disable pair leaves the file exactly as it was found rather than
-// accumulating a trailing gap per cycle.
+// Exactly the block, and nothing adjacent to it: enable appends no separator, so
+// there is none to reclaim, and a blank line before the block is the user's.
 func removeBobShellBlock(lines []string) ([]string, bool) {
 	start, end, found := findBobShellBlock(lines)
 	if !found {
 		return lines, false
-	}
-	if start > 0 && strings.TrimSpace(lines[start-1]) == "" {
-		start--
 	}
 	out := make([]string, 0, len(lines)-(end-start))
 	out = append(out, lines[:start]...)
@@ -364,7 +392,7 @@ func bobShellEnable(rcPath, abctlPath string, yes bool, stdout, stderr io.Writer
 
 	fmt.Fprintf(stdout, "Adds to %s:\n%s\n", rcPath, indentBlock(block))
 	fmt.Fprintf(stdout, "Nothing else in the file changes; a copy is kept as %s.bak\n\n", rcPath)
-	if !yes && !confirm(stdout) {
+	if !yes && !confirmFn(stdout) {
 		fmt.Fprintln(stdout, "Not changed.")
 		return exitDeclined
 	}
@@ -393,7 +421,7 @@ func bobShellDisable(rcPath string, yes bool, stdout, stderr io.Writer) int {
 		return 0
 	}
 	fmt.Fprintf(stdout, "Removes from %s:\n%s\n", rcPath, indentBlock(bobShellAliasIn(lines)+"\n"))
-	if !yes && !confirm(stdout) {
+	if !yes && !confirmFn(stdout) {
 		fmt.Fprintln(stdout, "Not changed.")
 		return exitDeclined
 	}
@@ -433,7 +461,10 @@ func bobShellStatus(rcPath string, stdout io.Writer) int {
 	// rewrites it, and saying so here is cheaper than debugging it from the
 	// "command not found" the alias itself would produce.
 	if self, serr := abctlPath(); serr == nil {
-		if want := strings.TrimSpace(strings.TrimSuffix(bobShellBlock(self), "\n")); !strings.Contains(want, alias) {
+		// Equality, not Contains: an alias line truncated by a hand-edit is a
+		// substring of the correct one, and would have reported as matching while
+		// the shell saw a broken alias.
+		if alias != bobShellAliasLine(self) {
 			fmt.Fprintf(stdout, "enabled in %s, but the alias names a different abctl than this one (%s)\n", rcPath, self)
 			fmt.Fprintln(stdout, "  Re-run `abctl configure bobshell enable` to point it here.")
 			return 0

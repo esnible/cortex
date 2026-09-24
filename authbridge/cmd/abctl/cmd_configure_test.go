@@ -56,7 +56,7 @@ func TestClaudeCodeUnknownAction_StillErrors(t *testing.T) {
 // is what catches that class of error.
 //
 // bob has left this set — it configures persistently now, via the shell startup file
-// (TestBob* in cmd_bob_test.go). Codex and OpenCode read only the process
+// (TestBobShell* in cmd_bobshell_test.go). Codex and OpenCode read only the process
 // environment, so they have no durable surface to write and keep the guidance.
 func TestConfigure_ComingSoonAgents(t *testing.T) {
 	for _, tc := range []struct{ agent, display string }{
@@ -150,6 +150,26 @@ func TestConfigure_UsageErrors(t *testing.T) {
 		}
 		if errb.Len() != 0 {
 			t.Errorf("stderr not empty: %q", errb.String())
+		}
+	})
+
+	// The pre-rename spelling gets a redirect, not the generic unknown-agent error: it
+	// is a near miss with a right answer. It is NOT accepted as a working alias, so the
+	// exit code is still 2.
+	t.Run("old bob spelling redirects", func(t *testing.T) {
+		var out, errb bytes.Buffer
+		if code := runConfigure([]string{"bob", "status"}, &out, &errb); code != 2 {
+			t.Errorf("exit = %d, want 2", code)
+		}
+		got := errb.String()
+		if !strings.Contains(got, "bobshell") {
+			t.Errorf("the redirect does not name the new spelling: %q", got)
+		}
+		if !strings.Contains(got, "status") {
+			t.Errorf("the redirect drops the action the user typed: %q", got)
+		}
+		if strings.Contains(got, "unknown agent") {
+			t.Errorf("fell through to the generic error: %q", got)
 		}
 	})
 

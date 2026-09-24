@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -90,12 +91,15 @@ func TestBobShellEnable_CreatesThenIdempotent(t *testing.T) {
 		t.Fatalf("exit = %d, want 0 (stderr: %s)", code, errb.String())
 	}
 	first := readFile(t, rc)
-	if !strings.Contains(first, "alias bob='"+testAbctl+" exec -- \\bob'") {
-		t.Errorf("alias not written:\n%s", first)
-	}
-	// The backslash is load-bearing: without it the alias calls itself.
-	if !strings.Contains(first, `\bob`) {
-		t.Errorf("alias body lost the backslash before bob:\n%s", first)
+	// A LITERAL, not bobShellAliasLine(testAbctl): every other assertion in this file
+	// compares against that function, so a change to the rendered line — dropping the
+	// backslash, say — moves both sides together and nothing notices. This spells the
+	// expected line out independently, which is what makes the backslash covered.
+	//
+	// The backslash is the load-bearing character: without it `bob` inside the alias
+	// body re-expands to the alias and it calls itself.
+	if want := `alias bob='` + testAbctl + ` exec -- \bob'`; !strings.Contains(first, want) {
+		t.Errorf("alias not written as %q:\n%s", want, first)
 	}
 	if !strings.Contains(out.String(), "source "+rc) {
 		t.Errorf("did not say how to apply it to this shell:\n%s", out.String())
@@ -116,35 +120,51 @@ func TestBobShellEnable_CreatesThenIdempotent(t *testing.T) {
 
 // Everything outside the markers is the user's, and must survive verbatim. This is
 // the whole reason the block is marker-delimited rather than found by pattern.
+//
+// A table over the shapes a real rc file's tail takes, because the invariant is
+// unconditional identity and the shape of the last line is what used to break it:
+// while enable appended a separator blank and disable reclaimed one, a file that
+// already ended blank had the user's own blank line eaten on disable. The single
+// fixture ending in a non-blank line could not reach that.
 func TestBobShellEnable_PreservesSurroundingContent(t *testing.T) {
-	rc := filepath.Join(t.TempDir(), ".zshrc")
-	original := "# my rc\nexport EDITOR=vim\n\nalias ll='ls -l'\n"
-	if err := os.WriteFile(rc, []byte(original), 0o644); err != nil {
-		t.Fatal(err)
-	}
+	for _, tc := range []struct{ name, original string }{
+		{"ends with content", "# my rc\nexport EDITOR=vim\n\nalias ll='ls -l'\n"},
+		{"ends with a blank line", "# mine\n\n"},
+		{"no trailing newline", "# mine"},
+		{"empty", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rc := filepath.Join(t.TempDir(), ".zshrc")
+			if tc.original != "" {
+				if err := os.WriteFile(rc, []byte(tc.original), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
 
-	var out, errb bytes.Buffer
-	if code := bobShellEnable(rc, testAbctl, true, &out, &errb); code != 0 {
-		t.Fatalf("exit = %d, want 0 (stderr: %s)", code, errb.String())
-	}
-	got := readFile(t, rc)
-	if !strings.HasPrefix(got, original) {
-		t.Errorf("original content did not survive at the head:\n%s", got)
-	}
+			var out, errb bytes.Buffer
+			if code := bobShellEnable(rc, testAbctl, true, &out, &errb); code != 0 {
+				t.Fatalf("exit = %d, want 0 (stderr: %s)", code, errb.String())
+			}
+			got := readFile(t, rc)
+			if !strings.HasPrefix(got, tc.original) {
+				t.Errorf("original content did not survive at the head:\n%s", got)
+			}
+			if !strings.Contains(got, bobShellAliasLine(testAbctl)) {
+				t.Errorf("the alias is missing:\n%s", got)
+			}
 
-	// And a full round trip returns the file exactly as it was found — no accreted
-	// blank line per cycle.
-	out.Reset()
-	if code := bobShellDisable(rc, true, &out, &errb); code != 0 {
-		t.Fatalf("disable: exit = %d, want 0", code)
-	}
-	if back := readFile(t, rc); back != original {
-		t.Errorf("enable/disable round trip changed the file:\nwant %q\ngot  %q", original, back)
+			// And a full round trip returns the file exactly as it was found.
+			out.Reset()
+			if code := bobShellDisable(rc, true, &out, &errb); code != 0 {
+				t.Fatalf("disable: exit = %d, want 0", code)
+			}
+			if back := readFile(t, rc); back != tc.original {
+				t.Errorf("enable/disable round trip changed the file:\nwant %q\ngot  %q", tc.original, back)
+			}
+		})
 	}
 }
 
-// The file's mode is the user's choice; an rc file is commonly 0644 and silently
-// tightening it to 0600 is a change nobody asked for.
 func TestBobShellEnable_PreservesMode(t *testing.T) {
 	rc := filepath.Join(t.TempDir(), ".zshrc")
 	if err := os.WriteFile(rc, []byte("# my rc\n"), 0o644); err != nil {
@@ -182,11 +202,20 @@ func TestBobShellEnable_BackupWrittenOnce(t *testing.T) {
 		t.Fatalf("backup = %q, want %q", got, original)
 	}
 
-	// A second write: disable, then enable again. The backup must still hold the
-	// pre-Cortex content, not an intermediate state of our own making.
+	// A second write: disable. Asserted HERE, before the third write, because this is
+	// the only moment an unconditional backup would be visibly wrong — the file now
+	// holds the block, so a clobbered backup would hold it too. Deferring the check
+	// to after a re-enable made it unfailable: the round trip restores the original
+	// byte-for-byte, so an unconditional copy would write the original content back
+	// and the assertion would pass over the bug it was named for.
 	if code := bobShellDisable(rc, true, &out, &errb); code != 0 {
 		t.Fatalf("disable: exit = %d, want 0", code)
 	}
+	if got := readFile(t, rc+".bak"); got != original {
+		t.Fatalf("the second write overwrote the backup: got %q, want %q", got, original)
+	}
+
+	// And still intact after a third.
 	if code := bobShellEnable(rc, testAbctl, true, &out, &errb); code != 0 {
 		t.Fatalf("re-enable: exit = %d, want 0", code)
 	}
@@ -249,23 +278,79 @@ func TestBobShellStatus(t *testing.T) {
 		if code := bobShellStatus(filepath.Join(t.TempDir(), "nope"), &out); code != 0 {
 			t.Errorf("exit = %d, want 0", code)
 		}
-		if !strings.Contains(out.String(), "not enabled") {
-			t.Errorf("stdout: %s", out.String())
+		if got := out.String(); !strings.HasPrefix(got, "not enabled") {
+			t.Errorf("stdout = %q, want it to start with %q", got, "not enabled")
 		}
 	})
 
+	// The alias names the RUNNING binary, so this reaches the success branch. With a
+	// literal path it never could: status compares the alias against abctlPath(), which
+	// under `go test` is the test binary, so every run took the "different abctl" branch
+	// and the happy path was asserted by nothing.
 	t.Run("after enable", func(t *testing.T) {
+		self, err := abctlPath()
+		if err != nil {
+			t.Fatalf("abctlPath: %v", err)
+		}
 		rc := filepath.Join(t.TempDir(), ".zshrc")
 		var out, errb bytes.Buffer
-		if code := bobShellEnable(rc, testAbctl, true, &out, &errb); code != 0 {
+		if code := bobShellEnable(rc, self, true, &out, &errb); code != 0 {
 			t.Fatalf("enable: exit = %d", code)
 		}
 		out.Reset()
 		if code := bobShellStatus(rc, &out); code != 0 {
 			t.Errorf("exit = %d, want 0", code)
 		}
-		if !strings.Contains(out.String(), "enabled in "+rc) {
-			t.Errorf("stdout: %s", out.String())
+		// Anchored: "enabled in <rc>" is a substring of "not enabled in <rc>", so
+		// Contains alone cannot tell the two verdicts apart and passed for both.
+		if got := lastLine(out.String()); got != "enabled in "+rc {
+			t.Errorf("last line = %q, want %q\nfull:\n%s", got, "enabled in "+rc, out.String())
+		}
+		if strings.Contains(out.String(), "different abctl") {
+			t.Errorf("status reported a path mismatch against its own binary:\n%s", out.String())
+		}
+	})
+
+	// The mismatch branch, which carries the actionable "Re-run" advice: an alias left
+	// behind by an abctl that has since moved or been reinstalled elsewhere.
+	t.Run("alias names a different abctl", func(t *testing.T) {
+		rc := filepath.Join(t.TempDir(), ".zshrc")
+		var out, errb bytes.Buffer
+		if code := bobShellEnable(rc, "/somewhere/else/abctl", true, &out, &errb); code != 0 {
+			t.Fatalf("enable: exit = %d", code)
+		}
+		out.Reset()
+		if code := bobShellStatus(rc, &out); code != 0 {
+			t.Errorf("exit = %d, want 0", code)
+		}
+		if !strings.Contains(out.String(), "different abctl") {
+			t.Errorf("status did not flag the stale path:\n%s", out.String())
+		}
+		if !strings.Contains(out.String(), "Re-run") {
+			t.Errorf("status did not say how to fix it:\n%s", out.String())
+		}
+	})
+
+	// A truncated alias must NOT read as enabled. This is what the equality check in
+	// bobShellStatus buys over a Contains against the whole rendered block: the broken
+	// line is a substring of the correct one.
+	t.Run("truncated alias is not enabled", func(t *testing.T) {
+		self, err := abctlPath()
+		if err != nil {
+			t.Fatalf("abctlPath: %v", err)
+		}
+		rc := filepath.Join(t.TempDir(), ".zshrc")
+		truncated := strings.TrimSuffix(bobShellAliasLine(self), "b'")
+		body := bobShellMarkerStart + "\n" + truncated + "\n" + bobShellMarkerEnd + "\n"
+		if err := os.WriteFile(rc, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		var out bytes.Buffer
+		if code := bobShellStatus(rc, &out); code != 0 {
+			t.Errorf("exit = %d, want 0", code)
+		}
+		if lastLine(out.String()) == "enabled in "+rc {
+			t.Errorf("a truncated alias reported as fully enabled:\n%s", out.String())
 		}
 	})
 
@@ -307,10 +392,19 @@ func TestBobShellEnable_RepairsUnterminatedBlock(t *testing.T) {
 	}
 }
 
-// Declining is a normal outcome, distinct from a failure: exit 3, nothing written.
-// The prompt is reached only when --yes is absent, and a test process has no
-// controlling terminal for confirm to open, so it declines on its own.
+// Declining writes nothing and exits with the declined code.
+//
+// confirmFn is swapped rather than relying on confirm's own behaviour: confirm opens
+// /dev/tty, which resolves to the developer's terminal whenever `go test` runs from
+// an interactive shell — so the version of this test that called through blocked on
+// a read there, and passed only where no tty exists. Driving the seam asserts the
+// decline path itself, identically in a terminal and in CI.
 func TestBobShellEnable_DeclineWritesNothing(t *testing.T) {
+	restore := confirmFn
+	t.Cleanup(func() { confirmFn = restore })
+	asked := false
+	confirmFn = func(io.Writer) bool { asked = true; return false }
+
 	rc := filepath.Join(t.TempDir(), ".zshrc")
 	original := "# mine\n"
 	if err := os.WriteFile(rc, []byte(original), 0o644); err != nil {
@@ -320,11 +414,30 @@ func TestBobShellEnable_DeclineWritesNothing(t *testing.T) {
 	if code := bobShellEnable(rc, testAbctl, false, &out, &errb); code != exitDeclined {
 		t.Errorf("exit = %d, want %d", code, exitDeclined)
 	}
+	if !asked {
+		t.Error("enable did not ask for confirmation")
+	}
 	if !strings.Contains(out.String(), "Not changed.") {
 		t.Errorf("stdout: %s", out.String())
 	}
 	if got := readFile(t, rc); got != original {
 		t.Errorf("file was written despite declining: %q", got)
+	}
+}
+
+// And --yes must not ask at all: the flag is the consent.
+func TestBobShellEnable_YesDoesNotPrompt(t *testing.T) {
+	restore := confirmFn
+	t.Cleanup(func() { confirmFn = restore })
+	confirmFn = func(io.Writer) bool {
+		t.Error("enable prompted despite --yes")
+		return false
+	}
+
+	rc := filepath.Join(t.TempDir(), ".zshrc")
+	var out, errb bytes.Buffer
+	if code := bobShellEnable(rc, testAbctl, true, &out, &errb); code != 0 {
+		t.Fatalf("exit = %d, want 0 (stderr: %s)", code, errb.String())
 	}
 }
 
@@ -417,5 +530,26 @@ func TestBobShell_UnknownShellWithoutRCIsRefused(t *testing.T) {
 	}
 	if !strings.Contains(errb.String(), "--rc") {
 		t.Errorf("stderr does not name the way through: %q", errb.String())
+	}
+}
+
+// lastLine is the final non-empty line, for anchoring an assertion on a verdict that
+// is a substring of its own negation ("enabled in X" inside "not enabled in X").
+func lastLine(s string) string {
+	fields := strings.Split(strings.TrimRight(s, "\n"), "\n")
+	return fields[len(fields)-1]
+}
+
+// A path containing a single quote would end the alias body's quoting mid-word and
+// leave a malformed line in the user's rc file — a failure they would see only as a
+// broken shell, not as an error. Deleting this guard left the suite green.
+func TestValidateAliasPath(t *testing.T) {
+	if err := validateAliasPath("/opt/abctl/abctl"); err != nil {
+		t.Errorf("ordinary path rejected: %v", err)
+	}
+	if err := validateAliasPath("/home/o'brien/bin/abctl"); err == nil {
+		t.Error("a path containing a single quote was accepted")
+	} else if !strings.Contains(err.Error(), "single quote") {
+		t.Errorf("error does not name the problem: %v", err)
 	}
 }
