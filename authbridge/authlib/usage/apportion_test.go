@@ -105,3 +105,93 @@ func TestApportionTiers_ATierWithNoMixGetsNothing(t *testing.T) {
 		t.Errorf("a tier absent from the mix was given money: %v", tiers)
 	}
 }
+
+// ApportionReasoning's four not-known paths, each of which must refuse rather than
+// return a zero a caller would render as "$0.00" — the claim that the reasoning was
+// free.
+func TestApportionReasoning_RefusesRatherThanReturningZero(t *testing.T) {
+	base := Counts{
+		OutputTokens: 1593, ReasoningTokens: 948,
+		PresentKinds: uint8(KindOutput | KindReasoning),
+	}
+	for _, tc := range []struct {
+		name         string
+		mutate       func(*Counts)
+		outputMicros int64
+	}{
+		{"nothing reported a split", func(c *Counts) {
+			c.ReasoningTokens, c.PresentKinds = 0, uint8(KindOutput)
+		}, 1_000_000},
+		{"no output tokens, so no denominator", func(c *Counts) { c.OutputTokens = 0 }, 1_000_000},
+		{"no output money to take a share of", func(c *Counts) {}, 0},
+		// 100 * 1/1000 = 0.1, which truncates away.
+		{"share truncates below one micro", func(c *Counts) {
+			c.ReasoningTokens, c.OutputTokens = 1, 1000
+		}, 100},
+		// NEGATIVE, which returned (-595103, true) before the guard: the ratio goes
+		// negative, the upper clamp does not fire, and the truncation escape does not
+		// either. plausibleTokenReport screens negatives at ingest, but this is exported
+		// and addSat's argument in this package applies — "unreachable today" is how the
+		// wrap arrived.
+		{"negative reasoning count", func(c *Counts) { c.ReasoningTokens = -948 }, 1_000_000},
+		{"negative output count", func(c *Counts) { c.OutputTokens = -1593 }, 1_000_000},
+		{"negative output money", func(c *Counts) {}, -1_000_000},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			c := base
+			tc.mutate(&c)
+			got, ok := c.ApportionReasoning(tc.outputMicros)
+			if ok {
+				t.Errorf("ok = true with %d micros; the caller would render a figure it cannot defend", got)
+			}
+			if got != 0 {
+				t.Errorf("micros = %d, want 0 alongside ok=false", got)
+			}
+			if got < 0 {
+				t.Errorf("micros = %d is NEGATIVE; a caller would publish negative money "+
+					"or hand it to tierBar", got)
+			}
+		})
+	}
+}
+
+// A REPORTED ZERO is still a measurement, but it apportions to nothing, so it refuses
+// too — the figure is what cannot be stated, not the observation.
+func TestApportionReasoning_ReportedZeroApportionsToNothing(t *testing.T) {
+	c := Counts{
+		OutputTokens: 1593, ReasoningTokens: 0,
+		PresentKinds: uint8(KindOutput | KindReasoning),
+	}
+	if got, ok := c.ApportionReasoning(1_000_000); ok {
+		t.Errorf("ok = true with %d micros for a reported zero", got)
+	}
+}
+
+// A non-zero value with the bit CLEAR still apportions: that is an event from a
+// producer predating PresentKinds, where the value is the only evidence there is.
+func TestApportionReasoning_LegacyProducerStillApportions(t *testing.T) {
+	c := Counts{OutputTokens: 1593, ReasoningTokens: 948} // no PresentKinds
+	got, ok := c.ApportionReasoning(1_000_000)
+	if !ok {
+		t.Fatal("refused a producer predating PresentKinds, dropping the only evidence available")
+	}
+	if want := int64(594_000); got < want-2_000 || got > want+2_000 {
+		t.Errorf("micros = %d, want about %d (948/1593 of the parent)", got, want)
+	}
+}
+
+// CLAMPED TO THE PARENT. A provider reporting reasoning above output must not yield a
+// figure above the one it is a share of; the counts themselves are left as reported.
+func TestApportionReasoning_ClampsToTheParent(t *testing.T) {
+	c := Counts{
+		OutputTokens: 1593, ReasoningTokens: 4_000, // impossible on the wire
+		PresentKinds: uint8(KindOutput | KindReasoning),
+	}
+	got, ok := c.ApportionReasoning(1_000_000)
+	if !ok {
+		t.Fatal("refused a clampable figure")
+	}
+	if got != 1_000_000 {
+		t.Errorf("micros = %d, want it clamped to the parent's 1000000", got)
+	}
+}

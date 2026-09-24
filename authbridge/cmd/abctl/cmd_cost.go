@@ -344,6 +344,14 @@ type costTiersJSON struct {
 	CacheWrite int64 `json:"cacheWrite"`
 	CacheRead  int64 `json:"cacheRead"`
 	Output     int64 `json:"output"`
+	// Reasoning is the share of Output spent on internal reasoning, from
+	// usage.ApportionReasoning — the same call the drawer draws from, so a consumer never
+	// reimplements the rule.
+	//
+	// A POINTER, and INSIDE Output. Absent means no defensible figure, which is not zero;
+	// and summing it with the four tiers double-counts, which still add to CostMicros
+	// without it.
+	Reasoning *int64 `json:"reasoningOfOutput,omitempty"`
 }
 
 // tiersJSONOf apportions the totals, or returns nil when there is no mix to apportion by.
@@ -352,12 +360,16 @@ func tiersJSONOf(t usage.Counts) *costTiersJSON {
 	if !ok {
 		return nil
 	}
-	return &costTiersJSON{
+	out := &costTiersJSON{
 		Input:      tiers[pricing.TierInput],
 		CacheWrite: tiers[pricing.TierCacheWrite],
 		CacheRead:  tiers[pricing.TierCacheRead],
 		Output:     tiers[pricing.TierOutput],
 	}
+	if micros, has := t.ApportionReasoning(tiers[pricing.TierOutput]); has {
+		out.Reasoning = &micros
+	}
+	return out
 }
 
 func writeCostJSON(snap *usage.Snapshot, stdout, stderr io.Writer) int {

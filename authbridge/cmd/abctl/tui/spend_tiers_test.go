@@ -7,6 +7,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/rossoctl/cortex/authbridge/authlib/pricing"
 	"github.com/rossoctl/cortex/authbridge/authlib/usage"
 )
 
@@ -21,6 +22,29 @@ func tierCounts() usage.Counts {
 		InputCostMicros: 3000, CacheWriteCostMicros: 7500,
 		CacheReadCostMicros: 30000, OutputCostMicros: 45000,
 	}
+}
+
+// tierRowsOnly drops the reasoning child row, leaving the four rate-tier rows.
+//
+// The child is always rendered — the panel's height must not follow its data — but it
+// is NOT a tier: it carries no rate, it is excluded from the shares that sum to 100,
+// and its money is already inside output's. Every assertion below about "each tier
+// row" therefore has to be made against the tiers, and a test that iterated raw
+// lines would be asserting tier properties of something that is not one.
+//
+// MATCHED ON childTierLabel, not on "any leading space". A leading-space test says
+// "indented" when the thing meant is "is the child", and the two come apart the
+// moment a tier row gains an indent: the helper would silently drop real tiers and
+// several assertions below would weaken without any of them failing.
+func tierRowsOnly(lines []string) []string {
+	var out []string
+	for _, l := range lines {
+		if strings.HasPrefix(l, childTierLabel) {
+			continue
+		}
+		out = append(out, l)
+	}
+	return out
 }
 
 // THE MONEY COLUMN IS RIGHT-ALIGNED, so the decimal points line up down the panel.
@@ -45,7 +69,7 @@ func TestRenderTierRows_MoneyIsRightAligned(t *testing.T) {
 	if !ok {
 		t.Fatal("the fixture apportions to nothing, so this test asserts nothing")
 	}
-	lines := renderTierRows(tierCounts(), tierColumnWidth)
+	lines := tierRowsOnly(renderTierRows(tierCounts(), tierColumnWidth))
 	type end struct {
 		fig string
 		at  int
@@ -107,7 +131,7 @@ func TestRenderTierRows_MoneyIsRightAligned(t *testing.T) {
 // proportionally smallest and cannot flip a rank — so a panel that reordered its bars to make the
 // arithmetic work would be caught by TestRenderTierRows_RanksByCostNotByDeclarationOrder.
 func TestRenderTierRows_SharesSumTo100(t *testing.T) {
-	lines := renderTierRows(tierCounts(), tierColumnWidth)
+	lines := tierRowsOnly(renderTierRows(tierCounts(), tierColumnWidth))
 	total, found := 0, 0
 	for _, line := range lines {
 		pct, ok := sharePercent(line)
@@ -204,7 +228,7 @@ func TestRenderTierRows_ASubPercentTierIsNotZero(t *testing.T) {
 func TestRenderTierRows_AnAbsentTierStatesNoShare(t *testing.T) {
 	c := tierCounts()
 	c.CacheWriteCostMicros = 0 // never wrote cache
-	lines := renderTierRows(c, tierColumnWidth)
+	lines := tierRowsOnly(renderTierRows(c, tierColumnWidth))
 
 	var cacheWrite string
 	for _, line := range lines {
@@ -236,7 +260,7 @@ func TestRenderTierRows_AnAbsentTierStatesNoShare(t *testing.T) {
 // share column has to inherit: a bar is decoration over a number that is printed anyway, while the
 // share IS a number. So a terminal too narrow for both keeps the share and drops the bar.
 func TestRenderTierRows_TheBarYieldsBeforeTheShare(t *testing.T) {
-	narrow := renderTierRows(tierCounts(), tierLabelWidth+1+tierPctWidth+1+tierMoneyWidth)
+	narrow := tierRowsOnly(renderTierRows(tierCounts(), tierLabelWidth+1+tierPctWidth+1+tierMoneyWidth))
 	for _, line := range narrow {
 		if strings.ContainsAny(line, "█▉▊▋▌▍▎▏") {
 			t.Errorf("row %q drew a bar at a width that only fits the figures", line)
@@ -250,7 +274,7 @@ func TestRenderTierRows_TheBarYieldsBeforeTheShare(t *testing.T) {
 // Ranked by MONEY, descending — not by pricing.Tier's declaration order, which starts with
 // input, and not by token count.
 func TestRenderTierRows_RanksByCostNotByDeclarationOrder(t *testing.T) {
-	lines := renderTierRows(tierCounts(), 60)
+	lines := tierRowsOnly(renderTierRows(tierCounts(), 60))
 	if len(lines) != numTierRows {
 		t.Fatalf("lines = %d, want exactly %d: %q", len(lines), numTierRows, lines)
 	}
@@ -266,7 +290,14 @@ func TestRenderTierRows_RanksByCostNotByDeclarationOrder(t *testing.T) {
 	}
 }
 
-// NO figure wears the inexact marker, which is the reverse of what this test used to assert.
+// NO TIER figure wears the inexact marker, which is the reverse of what this test used to assert.
+//
+// SCOPED TO tierRowsOnly, because "no row in this panel wears the marker" is FALSE: the reasoning
+// child wears one, by the rule spend_tiers.go:108 states ("ONE FIGURE WEARS inexactMarker: the
+// reasoning child, and only it"). This loop passed over that only because tierCounts() reports no
+// split, so the child rendered the not-known cell and never reached the marker branch — the
+// fixture was doing the work, not the panel. Swapping in reasoningCounts() failed it outright.
+// The complement — that the child DOES wear one — is TestRenderTierRows_OnlyTheChildWearsTheInexactMarker.
 //
 // Every figure here still IS modelled — the mix is the rate table's while the total may be the
 // gateway's — so the disclosure was real and was given up rather than made unnecessary. It was
@@ -278,13 +309,13 @@ func TestRenderTierRows_RanksByCostNotByDeclarationOrder(t *testing.T) {
 // make deliberately: it would put a tilde on every row of the panel again.
 func TestRenderTierRows_MarksNoFigureInexact(t *testing.T) {
 	rows := 0
-	for _, line := range renderTierRows(tierCounts(), 60) {
+	for _, line := range tierRowsOnly(renderTierRows(tierCounts(), 60)) {
 		if line == "" {
 			continue
 		}
 		rows++
 		if strings.Contains(line, inexactMarker) {
-			t.Errorf("row %q carries %q; this panel states the caveat nowhere on a row", line,
+			t.Errorf("tier row %q carries %q; the tier rows state the caveat nowhere", line,
 				inexactMarker)
 		}
 	}
@@ -307,7 +338,7 @@ func TestRenderTierRows_FiguresReadInCents(t *testing.T) {
 
 // No mix means the "not known here" cell, never $0.00 and never a guess.
 func TestRenderTierRows_NoMixRendersTheUnknownCell(t *testing.T) {
-	lines := renderTierRows(usage.Counts{Requests: 35, CostMicros: 4_546_200}, 60)
+	lines := tierRowsOnly(renderTierRows(usage.Counts{Requests: 35, CostMicros: 4_546_200}, 60))
 	if len(lines) != numTierRows {
 		t.Fatalf("lines = %d, want %d even with no mix", len(lines), numTierRows)
 	}
@@ -320,23 +351,65 @@ func TestRenderTierRows_NoMixRendersTheUnknownCell(t *testing.T) {
 	}
 }
 
-// Reasoning is never a bar and never a figure here.
+// Reasoning is never a TIER here, which is not the same as never being shown.
 //
-// It is a SUBSET of output — tokenSplit labels it "reasoning (of output)" — so a fifth row
-// would double-count the same money. The fixture reports reasoning tokens precisely so a
-// renderer enumerating token KINDS instead of rate TIERS fails: there are five kinds on
-// Counts and four tiers, and that difference is the point.
+// This test used to assert reasoning was absent entirely. It is now displayed, as an
+// indented child of output, because the panel was the only cost surface that could
+// not answer "what is my effort setting costing me". What has NOT changed is the
+// reason the original assertion existed: reasoning is a SUBSET of output — tokenSplit
+// labels it "reasoning (of output)" — so it must never be counted as a peer. There
+// are five token kinds on Counts and four rate tiers, and that difference is still
+// the point; it is now carried by the indent and by exclusion from tierShares rather
+// than by the row's absence.
+//
+// The fixture reports reasoning tokens precisely so a renderer that enumerated KINDS
+// as TIERS fails here.
 func TestRenderTierRows_ReasoningIsNotATier(t *testing.T) {
 	c := tierCounts()
 	c.ReasoningTokens = 12_000
 	c.OutputTokens = 42_000
+	c.PresentKinds = uint8(usage.KindOutput | usage.KindReasoning)
 	lines := renderTierRows(c, 60)
-	joined := strings.Join(lines, "\n")
-	if strings.Contains(joined, "reasoning") {
-		t.Errorf("reasoning appears as a tier row, double-counting output:\n%s", joined)
+
+	// numTierRows counts RATES, and `numTierRows != pricing.NumTiers` was asserted here
+	// — a tautology, since that is the const's definition. What is worth pinning is that
+	// the SUMMING rows are still exactly the rate tiers, which is a property of the
+	// render and can fail.
+	if got := len(tierRowsOnly(lines)); got != pricing.NumTiers {
+		t.Errorf("%d summing rows against %d rate tiers; reasoning became a tier",
+			got, pricing.NumTiers)
 	}
-	if len(lines) != numTierRows {
-		t.Errorf("lines = %d, want %d — reasoning added a row", len(lines), numTierRows)
+	// The reasoning row must be INDENTED — flush left it reads as a fifth tier.
+	//
+	// ANCHORED ON THE LABEL FIRST. The row is formatted from childTierLabel, so
+	// `HasPrefix(row, childTierLabel)` is always true and flattening the label to plain
+	// "reasoning" would keep such a check green. The indent has to be asserted on the
+	// label itself, which is the thing that can change.
+	if !strings.HasPrefix(childTierLabel, " ") {
+		t.Errorf("childTierLabel %q is flush left, so the row reads as a fifth tier", childTierLabel)
+	}
+	found := false
+	for _, l := range lines {
+		if !strings.Contains(l, "reasoning") {
+			continue
+		}
+		found = true
+		if !strings.HasPrefix(l, " ") {
+			t.Errorf("reasoning row is flush with the tiers, so it reads as a peer: %q", l)
+		}
+	}
+	if !found {
+		t.Fatal("no reasoning row rendered, so the indent check above cannot fail")
+	}
+	// And it must not be in the sum the tier rows own.
+	total := 0
+	for _, l := range tierRowsOnly(lines) {
+		if pct, ok := sharePercent(l); ok {
+			total += pct
+		}
+	}
+	if total != 100 {
+		t.Errorf("tier shares sum to %d%%, want 100%% — reasoning is being double-counted", total)
 	}
 }
 
@@ -347,16 +420,23 @@ func TestRenderTierRows_ReasoningIsNotATier(t *testing.T) {
 // this pane by five rows and under-filled it by six.
 func TestRenderTierRows_HeightIsConstant(t *testing.T) {
 	for name, c := range map[string]usage.Counts{
-		"full mix": tierCounts(),
-		"no mix":   {Requests: 35, CostMicros: 4_546_200},
-		"empty":    {},
-		"one tier": {CostMicros: 4_546_200, OutputCostMicros: 45000},
-		"negative": {CostMicros: -5, OutputCostMicros: 45000},
+		// A REPORTED SPLIT among the fixtures, so the populated child is rendered at every
+		// width in the sweep — including the narrow ones where tierBarBudget returns 0 and
+		// reasoningChildRow takes its bar-less branch, which nothing else renders.
+		"reasoning": reasoningCounts(),
+		"full mix":  tierCounts(),
+		"no mix":    {Requests: 35, CostMicros: 4_546_200},
+		"empty":     {},
+		"one tier":  {CostMicros: 4_546_200, OutputCostMicros: 45000},
+		"negative":  {CostMicros: -5, OutputCostMicros: 45000},
 	} {
 		for _, w := range []int{10, 20, 34, 46, 60, 100, 200} {
 			got := renderTierRows(c, w)
-			if len(got) != numTierRows {
-				t.Errorf("%s at width %d: %d lines, want %d", name, w, len(got), numTierRows)
+			// tierPanelLines: four tiers plus the reasoning child, which renders the
+			// not-known cell rather than vanishing when no split was reported. Constant
+			// is the invariant; the constant itself grew by one.
+			if len(got) != tierPanelLines {
+				t.Errorf("%s at width %d: %d lines, want %d", name, w, len(got), tierPanelLines)
 			}
 			for i, line := range got {
 				if n := len([]rune(line)); n > w {
@@ -392,7 +472,7 @@ func TestRenderTierRows_ATierAbsentFromTheMixIsUnknownNotFree(t *testing.T) {
 		Requests: 35, CostMicros: 4_546_200,
 		InputCostMicros: 3000, OutputCostMicros: 45000, // no cache tiers in the mix
 	}
-	lines := renderTierRows(c, 60)
+	lines := tierRowsOnly(renderTierRows(c, 60))
 	joined := strings.Join(lines, "\n")
 
 	// Both spellings, because the figures read in cents now and "$0.00" is the one this panel

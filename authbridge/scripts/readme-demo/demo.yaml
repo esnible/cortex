@@ -116,17 +116,17 @@ acts:
           title: "fix the retry handler"
           model: claude-opus-5
           turns:
-            - {messages: 4, tools: 15, input: 1800, cache_read: 46000, cache_write: 9000, output: 620, prompt_usd: 0.098, output_usd: 0.047, tool_call: "tools/call", tool_host: "github-tool-mcp"}
-            - {messages: 10, tools: 15, input: 900, cache_read: 93000, cache_write: 2400, output: 810, prompt_usd: 0.121, output_usd: 0.061}
-            - {messages: 16, tools: 15, input: 1100, cache_read: 141000, cache_write: 3100, output: 940, prompt_usd: 0.174, output_usd: 0.071}
+            - {messages: 4, tools: 15, input: 1800, cache_read: 46000, cache_write: 9000, output: 620, reasoning: 341, prompt_usd: 0.098, output_usd: 0.047, tool_call: "tools/call", tool_host: "github-tool-mcp"}
+            - {messages: 10, tools: 15, input: 900, cache_read: 93000, cache_write: 2400, output: 810, reasoning: 446, prompt_usd: 0.121, output_usd: 0.061}
+            - {messages: 16, tools: 15, input: 1100, cache_read: 141000, cache_write: 3100, output: 940, reasoning: 517, prompt_usd: 0.174, output_usd: 0.071}
         - id: web-2a91
           title: "add dark mode toggle"
           model: claude-opus-5
           turns:
-            - {messages: 4, tools: 15, input: 1200, cache_read: 21000, cache_write: 6400, output: 380, prompt_usd: 0.061, output_usd: 0.029}
-            - {messages: 8, tools: 15, input: 700, cache_read: 44000, cache_write: 1800, output: 520, prompt_usd: 0.074, output_usd: 0.039}
+            - {messages: 4, tools: 15, input: 1200, cache_read: 21000, cache_write: 6400, output: 380, reasoning: 209, prompt_usd: 0.061, output_usd: 0.029}
+            - {messages: 8, tools: 15, input: 700, cache_read: 44000, cache_write: 1800, output: 520, reasoning: 286, prompt_usd: 0.074, output_usd: 0.039}
         - id: infra-55de
           title: "debug the helm chart"
           model: claude-sonnet-5
           turns:
-            - {messages: 4, tools: 15, input: 800, cache_read: 12000, cache_write: 3200, output: 240, prompt_usd: 0.012, output_usd: 0.004}
+            - {messages: 4, tools: 15, input: 800, cache_read: 12000, cache_write: 3200, output: 240, reasoning: 132, prompt_usd: 0.012, output_usd: 0.004}

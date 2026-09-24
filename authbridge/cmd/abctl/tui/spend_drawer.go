@@ -39,29 +39,65 @@ const (
 	// be a pane wearing a smaller name.
 	spendDrawerSeries = 3
 
-	// spendDrawerMinHeight is the terminal height at which the drawer may open.
+	// spendDrawerMinHeight is the terminal height at which the drawer may open: the
+	// strip's own floor, the drawer's rows, and the separator between them.
 	//
-	// The strip's own floor is spendStripMinHeight (20) and the drawer adds five rows on
-	// top of it plus a separator, so 26 is the first height where opening it leaves the
-	// table more than a couple of rows. Below that the answer is "no", not "a table with
-	// two visible rows": the drawer exists to be read ALONGSIDE the data, and a drawer that
-	// squeezes the data out has defeated its own reason for not being a pane.
-	spendDrawerMinHeight = 27
+	// Below it the answer is "no", not "a table with two visible rows": the drawer exists
+	// to be read ALONGSIDE the data, and one that squeezes the data out has defeated its
+	// reason for not being a pane.
+	//
+	// DERIVED, for the reason spendDrawerLines states about itself: written as a literal it
+	// does not follow the drawer's height, and a floor that lags costs the table a row at
+	// the very size it exists to protect.
+	//
+	// spendDrawerLines, not spendDrawerLinesFor: a floor has to admit the TALLEST form, or
+	// widening the terminal would squeeze the table.
+	spendDrawerMinHeight = spendStripMinHeight + spendDrawerLines + dividerLines
 
-	// spendDrawerLines is how many rows the drawer adds to the view, and therefore how many
-	// layout() must hold back for it.
+	// spendDrawerLines is the drawer's MAXIMUM height — the two-column form. What layout()
+	// actually holds back is spendDrawerLinesFor(width), which is this at a width that
+	// affords the tier column and one row less below it.
 	//
 	// spendDrawerSeries named rows, plus the "(other)" band, plus the hint line. Derived rather
 	// than written as 5 so the two cannot drift: renderSpendDrawer emits exactly this many at
 	// full height, and layout() reserving fewer is not a cosmetic slip — the view comes out
 	// taller than the terminal and the footer goes off the bottom, which is the failure
 	// spendStripReservesRow's own doc describes for one row.
-	// Now: one HEADER row, the taller of the two columns, and the hint line. Both columns
-	// are four rows — numTierRows on the left, spendDrawerSeries ranked series plus the
-	// "(other)" band on the right — so the arithmetic is numTierRows + 2 and the two
-	// columns are the same height by construction rather than by coincidence.
-	spendDrawerLines = numTierRows + 2
+	//
+	// A HEADER row, the taller of the two columns, and the hint line. The left column is
+	// tierPanelLines and the right is spendDrawerSeries plus the "(other)" band.
+	//
+	// The child row is reserved UNCONDITIONALLY, even though it renders only when a
+	// provider reports a split: a height that followed the data would move the footer when
+	// one session reports reasoning and the next does not.
+	spendDrawerLines = max(tierPanelLines, spendDrawerSeries+1) + 2
 )
+
+// drawerTwoColumn reports whether the panel has room for the tier column beside the
+// series column.
+//
+// ONE PREDICATE, because it decided the reservation and the render independently: the
+// same `width >= spendDrawerTwoColumnMin` test was written in spendDrawerLinesFor and
+// again in renderSpendDrawer, and a height that disagreed with what was drawn is the
+// defect this file's whole comment discipline is about.
+func drawerTwoColumn(width int) bool { return width >= spendDrawerTwoColumnMin }
+
+// spendDrawerLinesFor is the reservation at a given WIDTH.
+//
+// The tier column only exists in two columns, so only there does the panel need room
+// for tierPanelLines; reserving that height unconditionally costs a narrow terminal a
+// body row for a row it cannot draw.
+//
+// A function rather than a constant because WIDTH is known wherever this is called.
+// The same argument does not extend to varying the height by whether a split was
+// reported — that is data, and the height must not follow it: see renderTierRows.
+func spendDrawerLinesFor(width int) int {
+	left := spendDrawerSeries + 1 // one column: the ranked series plus "(other)"
+	if drawerTwoColumn(width) {
+		left = max(tierPanelLines, spendDrawerSeries+1)
+	}
+	return left + 2 // the header and the hint line
+}
 
 // spendDrawerAxes are the breakdown axes `g` cycles through.
 //
@@ -242,7 +278,8 @@ func spendDrawerHostPane(pane paneID) (bool, string) {
 	return true, ""
 }
 
-// spendDrawerReservesRows reports whether layout() must hold spendDrawerLines back.
+// spendDrawerReservesRows reports whether layout() must hold spendDrawerLinesFor(width)
+// back.
 //
 // THE FLAG AND THE HEIGHT, deliberately blind to the pane — the same asymmetry
 // spendStripReservesRow has, for the same reason: layout() is called from the WindowSizeMsg
@@ -252,7 +289,7 @@ func spendDrawerHostPane(pane paneID) (bool, string) {
 // unreserved body overflows the terminal.
 //
 // The cost is larger than the strip's: while the drawer is open, a pane that cannot host it
-// renders spendDrawerLines shorter than it could. That is a visible loss where the strip's was
+// renders its reservation shorter than it could. That is a visible loss where the strip's was
 // one invisible row, and it is still the right trade — the alternative is a footer pushed off
 // the bottom, and the state is transient and user-initiated.
 func (m *model) spendDrawerReservesRows() bool {
@@ -683,13 +720,13 @@ func drawerHeaders(axis usage.Group, twoCol bool, width int) string {
 // failure, so without this a broken endpoint rendered as headers over blank rows forever.
 func renderSpendDrawer(snap *usage.Snapshot, err error, axis usage.Group, windowLabel string, width int) []string {
 	if err != nil {
-		// The reservation still has to be filled, so this is spendDrawerLines rows with the
+		// The reservation still has to be filled, so this is spendDrawerLinesFor(width) rows with the
 		// diagnostic on the first and the hint line last — the hints stay because `w` and `esc`
 		// still work, and a failed span is the moment an operator most wants to try another.
 		out := make([]string, 0, spendDrawerLines)
 		out = append(out, clipRow("  breakdown unavailable for "+windowLabel+": "+
 			sanitizeLabel(err.Error()), width))
-		for len(out) < spendDrawerLines-1 {
+		for len(out) < spendDrawerLinesFor(width)-1 {
 			out = append(out, "")
 		}
 		return append(out, fitStripFigures(" ", plainFigures(
@@ -703,7 +740,7 @@ func renderSpendDrawer(snap *usage.Snapshot, err error, axis usage.Group, window
 	// questions, and with a single model in the window the series column alone restated the
 	// band's own window total and saving verbatim — a breakdown of one thing is not a
 	// breakdown. The tier column says something in that case, which is the common one.
-	twoCol := width >= spendDrawerTwoColumnMin
+	twoCol := drawerTwoColumn(width)
 	seriesWidth := width
 	var tiers []string
 	if twoCol {
@@ -713,10 +750,23 @@ func renderSpendDrawer(snap *usage.Snapshot, err error, axis usage.Group, window
 
 	out := make([]string, 0, spendDrawerLines)
 	out = append(out, drawerHeaders(axis, twoCol, width))
-	for i := 0; i < numTierRows; i++ {
-		// NO BRANCH GLYPHS. "├" and "└" implied a parent row that does not exist — there is no
-		// node above these — and the column header now names the grouping the glyphs were
-		// gesturing at.
+	// THE LEFT COLUMN IS tierPanelLines, NOT numTierRows: the four rate tiers PLUS the
+	// reasoning row that hangs under output. The right column's slots are filled by the
+	// `i < len(rows)` guard below, so whichever column is shorter pads itself rather than
+	// ending the loop early.
+	//
+	// DERIVED FROM THE RESERVATION, minus the header and the hint line, so the loop and
+	// the reservation cannot disagree about the panel's height.
+	//
+	// The height is a layout fact and the index is a slice fact: restating the height
+	// here as a bound over len(tiers) conflates them, and tiers[i] is guarded where it
+	// is read instead.
+	bound := spendDrawerLinesFor(width) - 2
+	for i := 0; i < bound; i++ {
+		// NO BRANCH GLYPHS BETWEEN THE COLUMNS' OWN ROWS. "├" and "└" once prefixed every
+		// row here and implied a parent none of them had; the column headers name the
+		// grouping instead. The one "└" now in the panel is the reasoning row's, which does
+		// have a parent directly above it — that is the distinction, not the glyph.
 		series := ""
 		if i < len(rows) {
 			series = fitStripFigures(" ", drawerFigures(rows[i]), seriesWidth)
@@ -738,8 +788,18 @@ func renderSpendDrawer(snap *usage.Snapshot, err error, axis usage.Group, window
 		// row follows it: the fourth tier row is drawn beside an empty series slot on any window
 		// with fewer than four series, and paneView passes these straight to styleMuted.Render,
 		// so the padding becomes styled trailing whitespace on a line nobody can see the end of.
+		// GUARDED, not assumed. UNREACHABLE TODAY — bound is len(tiers) in two columns and
+		// the one-column path continues above — so no test covers it, and saying so is the
+		// point: renderTierRows' row count is a contract held in another package, and this
+		// is the index that would crash the render if it slipped. A short tier column pads
+		// with blanks; a missing row is cosmetic where an out-of-range read is a dead TUI.
+		// Same standing as addSat's overflow guard in authlib/usage.
+		tier := ""
+		if i < len(tiers) {
+			tier = tiers[i]
+		}
 		out = append(out, strings.TrimRight(fmt.Sprintf("  %-*s%s",
-			tierColumnWidth+drawerColumnGutter, tiers[i], strings.TrimLeft(series, " ")), " "))
+			tierColumnWidth+drawerColumnGutter, tier, strings.TrimLeft(series, " ")), " "))
 	}
 	// The hint line is LAST and always present: it is the only place the two keys and the
 	// current axis are written down, and a drawer whose controls are undiscoverable is a
@@ -750,7 +810,7 @@ func renderSpendDrawer(snap *usage.Snapshot, err error, axis usage.Group, window
 		"esc closes",
 	), width))
 
-	// PADDED OUT TO THE RESERVATION. layout() holds back spendDrawerLines unconditionally, and it
+	// PADDED OUT TO THE RESERVATION. layout() holds back spendDrawerLinesFor(width), and it
 	// has to: a poll can land between the layout and the render, so sizing the body to the rows
 	// that happen to exist right now is a race against the next snapshot. Emitting fewer lines
 	// than were reserved leaves the footer floating above the bottom of the terminal — three rows
@@ -760,7 +820,7 @@ func renderSpendDrawer(snap *usage.Snapshot, err error, axis usage.Group, window
 	// Blank lines rather than a taller body, because the body is already sized: the drawer occupies
 	// the space that was set aside for it, so the table's position does not jump when a second
 	// model appears.
-	for len(out) < spendDrawerLines {
+	for len(out) < spendDrawerLinesFor(width) {
 		out = append(out, "")
 	}
 	return out

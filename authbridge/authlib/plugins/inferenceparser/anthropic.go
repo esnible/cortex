@@ -129,18 +129,31 @@ func parseAnthropicRequest(body []byte) *pipeline.InferenceExtension {
 //
 // Cache fields are *int so an omitted field on the wire (e.g. message_start
 // on the ?beta=true path) stays absent in Present rather than being asserted
-// as a reported zero.
+// as a reported zero. OutputTokensDetails is a pointer for the same reason, and
+// it needs it more: it is absent on message_start and on message_stop, and
+// present only on message_delta.
 type anthropicUsage struct {
 	InputTokens              int  `json:"input_tokens"`
 	OutputTokens             int  `json:"output_tokens"`
 	CacheCreationInputTokens *int `json:"cache_creation_input_tokens"`
 	CacheReadInputTokens     *int `json:"cache_read_input_tokens"`
+
+	// OutputTokensDetails splits output_tokens by what generated it. Anthropic reports
+	// one sub-field, thinking_tokens: the share spent on internal reasoning, a SUBSET of
+	// OutputTokens rather than a sibling.
+	OutputTokensDetails *struct {
+		ThinkingTokens *int `json:"thinking_tokens"`
+	} `json:"output_tokens_details"`
 }
 
 // toNeutral maps Anthropic's usage onto TokenUsage. Input and Output are
-// always emitted by the Messages API; cache sub-fields are observed via
-// their pointers so an absent field stays absent in Present. Reasoning is
-// not exposed by Anthropic.
+// always emitted by the Messages API; cache sub-fields and the output-token
+// details are observed via their pointers so an absent field stays absent in
+// Present.
+//
+// Reasoning comes from output_tokens_details.thinking_tokens, verified against a live
+// claude-opus-5 turn and documented at
+// https://platform.claude.com/docs/en/build-with-claude/thinking-steering-and-cost
 func (u anthropicUsage) toNeutral() parsercommon.TokenUsage {
 	n := parsercommon.TokenUsage{
 		Input:   u.InputTokens,
@@ -154,6 +167,12 @@ func (u anthropicUsage) toNeutral() parsercommon.TokenUsage {
 	if u.CacheCreationInputTokens != nil {
 		n.CacheWrite = *u.CacheCreationInputTokens
 		n.Present |= parsercommon.KindCacheWrite
+	}
+	// BOTH POINTERS: a details object forwarded without the count inside it reports
+	// nothing, and must not set the bit.
+	if u.OutputTokensDetails != nil && u.OutputTokensDetails.ThinkingTokens != nil {
+		n.Reasoning = *u.OutputTokensDetails.ThinkingTokens
+		n.Present |= parsercommon.KindReasoning
 	}
 	return n
 }
@@ -333,7 +352,7 @@ func foldAnthropicFrame(frame []byte, state *inferenceStreamState, ext *pipeline
 	switch ev.Type {
 	case "message_start":
 		if ev.Message != nil {
-			mergeAnthropicPromptMaxSeen(state, ev.Message.Usage.toNeutral())
+			mergeAnthropicUsageMaxSeen(state, ev.Message.Usage.toNeutral())
 			state.hasUsage = true
 		}
 	case "content_block_start":
@@ -377,7 +396,7 @@ func foldAnthropicFrame(frame []byte, state *inferenceStreamState, ext *pipeline
 			// message_delta; non-beta path carries no input counts here.
 			// Max-seen per sub-field handles both without clobbering.
 			neutral := ev.Usage.toNeutral()
-			mergeAnthropicPromptMaxSeen(state, neutral)
+			mergeAnthropicUsageMaxSeen(state, neutral)
 			if neutral.Output > 0 {
 				state.usage.Output = neutral.Output // cumulative
 			}
@@ -386,14 +405,34 @@ func foldAnthropicFrame(frame []byte, state *inferenceStreamState, ext *pipeline
 	}
 }
 
-// mergeAnthropicPromptMaxSeen updates prompt-side sub-fields with
-// max-seen semantics so a later event carrying zero cannot clobber an
-// earlier real count. See foldAnthropicFrame for why both events need
-// this.
-func mergeAnthropicPromptMaxSeen(state *inferenceStreamState, incoming parsercommon.TokenUsage) {
+// mergeAnthropicUsageMaxSeen updates every sub-field this function owns with
+// max-seen semantics so a later event carrying zero cannot clobber an earlier
+// real count. See foldAnthropicFrame for why both events need this.
+//
+// EVERY SUB-FIELD IT OWNS: Present is unioned here for ALL kinds, so any kind whose bit
+// this sets must have its value merged here too. Split across two places, a bit arrives
+// set with a value of nothing — and `abctl cost` then prints "reasoning (of output) 0",
+// the claim ThinkingTokensAbsent forbids.
+//
+// Output is deliberately NOT here: it is cumulative on the wire rather than max-seen,
+// and foldAnthropicFrame assigns it directly.
+func mergeAnthropicUsageMaxSeen(state *inferenceStreamState, incoming parsercommon.TokenUsage) {
 	// Presence is a union across events: once a sub-field is observed on
-	// the wire, later events that omit it must not clear the bit.
+	// the wire, later events that omit it must not clear the bit. Kept beside the
+	// value merges below so that every kind merged HERE has its bit and its value set
+	// in one place.
+	//
+	// KindOutput is the one exception, and naming it is the point: toNeutral asserts
+	// that bit unconditionally, so this union sets it while Output is filled in
+	// foldAnthropicFrame instead — it is cumulative on the wire, not max-seen. That
+	// split predates this function and pricing.outputUncounted depends on it. The
+	// exception is written down because the reasoning bug this signature was changed
+	// to fix was a bit set here and a value filled elsewhere; an unqualified claim
+	// that it cannot happen would hide the one place it still does.
 	state.usage.Present |= incoming.Present
+	if incoming.Reasoning > state.usage.Reasoning {
+		state.usage.Reasoning = incoming.Reasoning
+	}
 	if incoming.Input > state.usage.Input {
 		state.usage.Input = incoming.Input
 	}

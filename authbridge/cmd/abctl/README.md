@@ -503,12 +503,13 @@ abctl is for, and the other three are surfaces you visit and leave.
   and who spent it, by model, endpoint or agent:
 
   ```
-    WHERE IT WENT                    BY MODEL
-  output      ██████ $2.70           claude-opus-5   $4.55   35 req   5.6M tokens
-  cache-read  ███▌   $1.62
-  input       ▍      $0.22
-  cache-write —
-     [a] [model] · endpoint · agent   [w] 1h   esc closes
+    WHERE IT WENT                               BY MODEL
+  output        54% ████████████      $5.85   claude-opus-5         $11.12      17 req
+   └ reasoning  31% ███████▏         ~$3.48   claude-sonnet-5       <$0.01       2 req
+  cache-read    35% ███████▉          $3.90   claude-haiku-4-5      <$0.01     120 req
+  cache-write    8% █▉                $0.98   (other)              <$0.01+       9 req
+  input          3% ▊                 $0.39
+   [a] [model] · endpoint · agent   [w] 1h   esc closes
   ```
 
   The tier figures are **modelled, not measured**: the split comes from the rate
@@ -516,10 +517,32 @@ abctl is for, and the other three are surfaces you visit and leave.
   because a gateway reports one number per call and never breaks it down. They
   are apportioned so the column sums to the window total exactly, and a tier the
   rate table says nothing about shows `—` rather than `$0.00`, which would claim
-  the tier was free. Below 72 columns the tier column drops and the panel
+  the tier was free. Below 86 columns the tier column drops and the panel
   degrades to the by-model breakdown alone.
 
-  These rows carry **no** `~`, unlike the sessions table's `SAVED~`. The caveat is
+  `└ reasoning` wears a `~` that no other row does, because it is **modelled twice
+  over**: its share of output comes from the token counts, not from a cost the provider
+  reported, so it is only the share of output
+  *spend* where every model in the window bills output at one rate. A mixed window can
+  be off by the spread between those rates. Nothing reports a reasoning cost, so this
+  is the best available figure rather than a measured one.
+
+  `└ reasoning` is a **child of output, not a fifth tier**. Reasoning has no rate
+  of its own — it is the share of the generated tokens the model spent thinking,
+  billed at the output rate — so its figure is already inside output's, and only
+  the four unindented rows sum to the window total. Its share is denominated in
+  that same total, which is what makes `31% ⊂ 54%` read as containment.
+
+  The row is always present, in one of three states. A reported split shows its figure
+  with a `~`. A split reported as **zero** shows an exact `$0.00` and no `~` — the model
+  was asked to think and spent nothing on it, which is a measurement and the reading that
+  says an effort setting is not reaching the model. `—` means no figure: the endpoint
+  reports no split, or the apportioned share fell below a micro. Anthropic reports the
+  count as `output_tokens_details.thinking_tokens` and OpenAI-format endpoints as
+  `completion_tokens_details.reasoning_tokens`; both are read.
+
+  The four **tier** rows carry **no** `~`, unlike the sessions table's `SAVED~`
+  (the `└ reasoning` child does, for the reason given above). The caveat is
   real but this panel has no money heading to hang it on — `WHERE IT WENT` names
   the column, not the figures — so the choice was a tilde on every row or the
   sentence above, and the sentence won.

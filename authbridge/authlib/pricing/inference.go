@@ -237,7 +237,7 @@ func outputUncounted(inf *pipeline.InferenceExtension) bool {
 	// conclusion that it generalizes. It does not, and Anthropic is where the bug lives.
 	//
 	// The mechanism, on a truncated Anthropic stream: message_start's usage goes through
-	// mergeAnthropicPromptMaxSeen, which ORs Present and merges Input, CacheRead and
+	// mergeAnthropicUsageMaxSeen, which ORs Present and merges Input, CacheRead and
 	// CacheWrite — but never assigns Output. Output is assigned only in the
 	// message_delta arm. So the Output BIT arrives on the first frame while the Output
 	// TALLY only ever arrives on the last, nothing records that they came from different

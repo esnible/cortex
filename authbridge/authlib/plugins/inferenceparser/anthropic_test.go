@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
+	"github.com/rossoctl/cortex/authbridge/authlib/plugins/internal/parsercommon"
 )
 
 func TestInferenceParser_AnthropicMessages_Request(t *testing.T) {
@@ -530,5 +531,277 @@ func TestInferenceParser_AnthropicMessages_QueryStringPath(t *testing.T) {
 	}
 	if ext.FinishReason != "end_turn" {
 		t.Errorf("FinishReason = %q, want end_turn", ext.FinishReason)
+	}
+}
+
+// TestInferenceParser_AnthropicMessages_NonStreamingThinkingTokens covers
+// usage.output_tokens_details.thinking_tokens, which reports how much of
+// output_tokens the model spent on internal reasoning. The usage block below is
+// captured verbatim from a real claude-opus-5 turn at output_config.effort "max":
+// 948 of 1593 generated tokens were thinking. Reasoning is a SUBSET of output,
+// never a sibling — adding them double-counts every thinking token.
+func TestInferenceParser_AnthropicMessages_NonStreamingThinkingTokens(t *testing.T) {
+	p := NewInferenceParser()
+	pctx := &pipeline.Context{Path: "/v1/messages"}
+	pctx.Extensions.Inference = &pipeline.InferenceExtension{Model: "claude-opus-5", IsAction: true}
+
+	body := []byte(`{
+		"id": "msg_bdrk_1", "type": "message", "role": "assistant", "model": "claude-opus-5",
+		"content": [{"type": "thinking", "thinking": ""}, {"type": "text", "text": "582, 663, 744, 825, 906."}],
+		"stop_reason": "end_turn",
+		"usage": {
+			"input_tokens": 56,
+			"cache_creation_input_tokens": 0,
+			"cache_read_input_tokens": 0,
+			"output_tokens": 1593,
+			"output_tokens_details": {"thinking_tokens": 948}
+		}
+	}`)
+	p.OnResponseFrame(context.Background(), pctx, body, true)
+
+	ext := pctx.Extensions.Inference
+	if ext.ReasoningTokens != 948 {
+		t.Errorf("ReasoningTokens = %d, want 948", ext.ReasoningTokens)
+	}
+	// Reasoning must not inflate the totals it is a subset of.
+	if ext.OutputTokens != 1593 || ext.TotalTokens != 1649 {
+		t.Errorf("output %d / total %d, want 1593/1649 (reasoning must not be added)",
+			ext.OutputTokens, ext.TotalTokens)
+	}
+	if ext.PresentKinds&uint8(parsercommon.KindReasoning) == 0 {
+		t.Errorf("PresentKinds = %#b, want KindReasoning set", ext.PresentKinds)
+	}
+}
+
+// TestInferenceParser_AnthropicMessages_StreamThinkingTokensOnMessageDelta pins
+// where the field actually arrives when streaming — which is what every Claude
+// Code turn does. The three usage blocks below are captured verbatim from a real
+// streamed claude-opus-5 turn: message_start carries NO output_tokens_details,
+// message_delta carries it, and the trailing message_stop carries a usage block
+// with output_tokens but no details at all.
+//
+// That last frame is the trap: reading details from message_start finds nothing,
+// and any last-wins fold over message_stop would zero a real count back out. This
+// is the same failure shape as the ?beta=true prompt-cache counts.
+func TestInferenceParser_AnthropicMessages_StreamThinkingTokensOnMessageDelta(t *testing.T) {
+	p := NewInferenceParser()
+	pctx := &pipeline.Context{Path: "/v1/messages"}
+	pctx.Extensions.Inference = &pipeline.InferenceExtension{Model: "claude-opus-5", Stream: true, IsAction: true}
+
+	frames := [][]byte{
+		[]byte(`{"type":"message_start","message":{"id":"msg_bdrk_2","type":"message","role":"assistant","usage":{"input_tokens":22,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":6}}}`),
+		[]byte(`{"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`),
+		[]byte(`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"1729 is a taxicab number."}}`),
+		[]byte(`{"type":"content_block_stop","index":0}`),
+		[]byte(`{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":22,"output_tokens":235,"output_tokens_details":{"thinking_tokens":119}}}`),
+		[]byte(`{"type":"message_stop","usage":{"input_tokens":22,"output_tokens":235}}`),
+	}
+	for _, f := range frames {
+		if action := p.OnResponseFrame(context.Background(), pctx, f, false); action.Type != pipeline.Continue {
+			t.Fatalf("frame action = %v, want Continue", action.Type)
+		}
+	}
+	p.OnResponseFrame(context.Background(), pctx, nil, true)
+
+	ext := pctx.Extensions.Inference
+	if ext.ReasoningTokens != 119 {
+		t.Errorf("ReasoningTokens = %d, want 119 (from message_delta, not cleared by message_stop)",
+			ext.ReasoningTokens)
+	}
+	if ext.OutputTokens != 235 {
+		t.Errorf("OutputTokens = %d, want 235", ext.OutputTokens)
+	}
+	if ext.PresentKinds&uint8(parsercommon.KindReasoning) == 0 {
+		t.Errorf("PresentKinds = %#b, want KindReasoning set", ext.PresentKinds)
+	}
+}
+
+// TestInferenceParser_AnthropicMessages_ThinkingTokensAbsent guards the
+// distinction PresentKinds exists to carry: a provider that never reports a
+// reasoning split must leave the bit CLEAR, not assert a reported zero. Claude
+// with thinking off, and every pre-details gateway, land here — and a set bit
+// would make abctl print "reasoning (of output) 0", which claims the model did no
+// reasoning when the truth is that nothing said.
+func TestInferenceParser_AnthropicMessages_ThinkingTokensAbsent(t *testing.T) {
+	p := NewInferenceParser()
+	pctx := &pipeline.Context{Path: "/v1/messages"}
+	pctx.Extensions.Inference = &pipeline.InferenceExtension{Model: "claude-opus-5", IsAction: true}
+
+	body := []byte(`{
+		"id": "msg_bdrk_3", "type": "message", "role": "assistant", "model": "claude-opus-5",
+		"content": [{"type": "text", "text": "ok"}],
+		"stop_reason": "end_turn",
+		"usage": {"input_tokens": 10, "output_tokens": 4}
+	}`)
+	p.OnResponseFrame(context.Background(), pctx, body, true)
+
+	ext := pctx.Extensions.Inference
+	if ext.ReasoningTokens != 0 {
+		t.Errorf("ReasoningTokens = %d, want 0", ext.ReasoningTokens)
+	}
+	if ext.PresentKinds&uint8(parsercommon.KindReasoning) != 0 {
+		t.Errorf("PresentKinds = %#b, want KindReasoning CLEAR when the wire omits details",
+			ext.PresentKinds)
+	}
+}
+
+// TestInferenceParser_AnthropicMessages_ThinkingTokensPartiallyAbsent pins the
+// INNER nil check, which the outer one does not cover.
+//
+// A gateway can forward the output_tokens_details key without the count inside it
+// — an empty object, or an explicit null. Both leave the struct pointer non-nil
+// and the int pointer nil, so a guard that tested only the outer pointer would
+// dereference nil and panic the parser on a well-formed HTTP response. Neither
+// shape appeared in any fixture, so removing the inner check broke nothing that
+// any test could see.
+//
+// The correct outcome is the same as fully absent: KindReasoning stays CLEAR,
+// because a key with no number in it reported nothing.
+func TestInferenceParser_AnthropicMessages_ThinkingTokensPartiallyAbsent(t *testing.T) {
+	for _, tc := range []struct{ name, details string }{
+		{"empty details object", `"output_tokens_details": {}`},
+		{"explicit null count", `"output_tokens_details": {"thinking_tokens": null}`},
+		{"unrelated sub-field only", `"output_tokens_details": {"something_else": 7}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			p := NewInferenceParser()
+			pctx := &pipeline.Context{Path: "/v1/messages"}
+			pctx.Extensions.Inference = &pipeline.InferenceExtension{Model: "claude-opus-5", IsAction: true}
+
+			body := []byte(`{
+				"id": "msg_bdrk_4", "type": "message", "role": "assistant", "model": "claude-opus-5",
+				"content": [{"type": "text", "text": "ok"}],
+				"stop_reason": "end_turn",
+				"usage": {"input_tokens": 10, "output_tokens": 4, ` + tc.details + `}
+			}`)
+			// Must not panic, and must not claim a measurement.
+			p.OnResponseFrame(context.Background(), pctx, body, true)
+
+			ext := pctx.Extensions.Inference
+			if ext.ReasoningTokens != 0 {
+				t.Errorf("ReasoningTokens = %d, want 0", ext.ReasoningTokens)
+			}
+			if ext.PresentKinds&uint8(parsercommon.KindReasoning) != 0 {
+				t.Errorf("PresentKinds = %#b, want KindReasoning CLEAR for a count-free details object",
+					ext.PresentKinds)
+			}
+			// The kinds that WERE reported must survive the partial details object.
+			if ext.OutputTokens != 4 {
+				t.Errorf("OutputTokens = %d, want 4", ext.OutputTokens)
+			}
+		})
+	}
+}
+
+// TestInferenceParser_AnthropicMessages_ThinkingTokensOnMessageStart pins that a
+// value and its presence bit travel together.
+//
+// Anthropic puts output_tokens_details on message_delta today, which is why the
+// streaming fixture above does. Nothing guarantees that: a gateway may relay it on
+// message_start instead. When the value merge lived in the message_delta branch
+// while Present was unioned for every event, this input set KindReasoning with a
+// value of 0 — and `abctl cost` would print "reasoning (of output) 0", the exact
+// claim ThinkingTokensAbsent forbids.
+func TestInferenceParser_AnthropicMessages_ThinkingTokensOnMessageStart(t *testing.T) {
+	p := NewInferenceParser()
+	pctx := &pipeline.Context{Path: "/v1/messages"}
+	pctx.Extensions.Inference = &pipeline.InferenceExtension{Model: "claude-opus-5", Stream: true, IsAction: true}
+
+	frames := [][]byte{
+		[]byte(`{"type":"message_start","message":{"id":"msg_bdrk_5","type":"message","role":"assistant","usage":{"input_tokens":22,"output_tokens":6,"output_tokens_details":{"thinking_tokens":119}}}}`),
+		[]byte(`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}`),
+		// No details here, so only the max-seen merge can carry the earlier value.
+		[]byte(`{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":22,"output_tokens":235}}`),
+	}
+	for _, f := range frames {
+		p.OnResponseFrame(context.Background(), pctx, f, false)
+	}
+	p.OnResponseFrame(context.Background(), pctx, nil, true)
+
+	ext := pctx.Extensions.Inference
+	if ext.ReasoningTokens != 119 {
+		t.Errorf("ReasoningTokens = %d, want 119 from message_start", ext.ReasoningTokens)
+	}
+	if ext.PresentKinds&uint8(parsercommon.KindReasoning) == 0 {
+		t.Errorf("PresentKinds = %#b, want KindReasoning set", ext.PresentKinds)
+	}
+	// NO "the bit must never be set with a zero value" CHECK HERE, and deliberately so:
+	// that shape is LEGAL. TestInferenceParser_AnthropicMessages_ThinkingTokensReportedZero
+	// REQUIRES it — a present-and-zero count is a measurement, not an absence, which is the
+	// rule apportion.go and the drawer's reportedZero branch are both built on. An assertion
+	// forbidding it here stated the opposite of the design and was inert only because this
+	// fixture reports 119.
+	//
+	// The split-brain bug this test exists for is already caught above: a bit unioned in one
+	// place with the value merged in another leaves ReasoningTokens at 0 against a set bit,
+	// and the 119 assertion fails on exactly that.
+}
+
+// TestInferenceParser_AnthropicMessages_ThinkingTokensReportedZero pins the wire shape
+// the partially-absent cases above cannot express: the count is PRESENT and it is zero.
+//
+// That is a measurement — the model was asked to think and spent nothing on it, which
+// is the observation that says an effort setting is not reaching the model — so
+// KindReasoning must be SET, unlike every absent shape. A parser that treated zero as
+// absence would pass every other fixture here.
+func TestInferenceParser_AnthropicMessages_ThinkingTokensReportedZero(t *testing.T) {
+	p := NewInferenceParser()
+	pctx := &pipeline.Context{Path: "/v1/messages"}
+	pctx.Extensions.Inference = &pipeline.InferenceExtension{Model: "claude-opus-5", IsAction: true}
+
+	body := []byte(`{
+		"id": "msg_bdrk_6", "type": "message", "role": "assistant", "model": "claude-opus-5",
+		"content": [{"type": "text", "text": "ok"}],
+		"stop_reason": "end_turn",
+		"usage": {"input_tokens": 10, "output_tokens": 400,
+			"output_tokens_details": {"thinking_tokens": 0}}
+	}`)
+	p.OnResponseFrame(context.Background(), pctx, body, true)
+
+	ext := pctx.Extensions.Inference
+	if ext.ReasoningTokens != 0 {
+		t.Errorf("ReasoningTokens = %d, want 0", ext.ReasoningTokens)
+	}
+	if ext.PresentKinds&uint8(parsercommon.KindReasoning) == 0 {
+		t.Errorf("PresentKinds = %#b, want KindReasoning SET — a reported zero is a "+
+			"measurement, not an absence", ext.PresentKinds)
+	}
+}
+
+// TestInferenceParser_AnthropicMessages_ThinkingTokensStreamedZero is the STREAMING
+// reported-zero shape, which the non-streaming case above cannot stand in for.
+//
+// It is the shape mergeAnthropicUsageMaxSeen's own doc is built around: a bit set while
+// the value is nothing. Max-seen means a zero never raises the running total, so the
+// only thing carrying the observation across frames is the Present union — and a fold
+// that took presence from the value would drop it here while passing every other
+// streaming fixture, all of which report a non-zero count.
+func TestInferenceParser_AnthropicMessages_ThinkingTokensStreamedZero(t *testing.T) {
+	p := NewInferenceParser()
+	pctx := &pipeline.Context{Path: "/v1/messages"}
+	pctx.Extensions.Inference = &pipeline.InferenceExtension{Model: "claude-opus-5", Stream: true, IsAction: true}
+
+	frames := [][]byte{
+		[]byte(`{"type":"message_start","message":{"id":"msg_bdrk_7","type":"message","role":"assistant","usage":{"input_tokens":22,"output_tokens":6}}}`),
+		[]byte(`{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ok"}}`),
+		[]byte(`{"type":"message_delta","delta":{"stop_reason":"end_turn"},"usage":{"input_tokens":22,"output_tokens":400,"output_tokens_details":{"thinking_tokens":0}}}`),
+		// A trailing details-free block, which must not clear what was reported.
+		[]byte(`{"type":"message_stop","usage":{"input_tokens":22,"output_tokens":400}}`),
+	}
+	for _, f := range frames {
+		p.OnResponseFrame(context.Background(), pctx, f, false)
+	}
+	p.OnResponseFrame(context.Background(), pctx, nil, true)
+
+	ext := pctx.Extensions.Inference
+	if ext.ReasoningTokens != 0 {
+		t.Errorf("ReasoningTokens = %d, want 0", ext.ReasoningTokens)
+	}
+	if ext.PresentKinds&uint8(parsercommon.KindReasoning) == 0 {
+		t.Errorf("PresentKinds = %#b, want KindReasoning SET — the count was on the wire and "+
+			"it was zero, which is a measurement", ext.PresentKinds)
+	}
+	if ext.OutputTokens != 400 {
+		t.Errorf("OutputTokens = %d, want 400", ext.OutputTokens)
 	}
 }

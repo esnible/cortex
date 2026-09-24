@@ -6,6 +6,10 @@ import (
 	"math"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -13,6 +17,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/rossoctl/cortex/authbridge/authlib/pricing"
 	"github.com/rossoctl/cortex/authbridge/authlib/usage"
 	"github.com/rossoctl/cortex/authbridge/cmd/abctl/apiclient"
 )
@@ -1299,13 +1304,54 @@ func TestRenderSpendDrawer_DoesNotRestateTheBandsFigures(t *testing.T) {
 	}
 }
 
-// The tree glyphs are gone: they implied a parent row that does not exist.
+// No ORPHAN tree glyph. The original rule was "no glyphs at all", because every row
+// they prefixed was top-level and the glyph implied a parent none of them had. The
+// reasoning row is the first row in this panel that genuinely has one — output,
+// directly above it — so the glyph is now allowed exactly where it tells the truth.
+// The invariant is unchanged: a glyph must have its parent on the preceding line.
+//
+// "├" stays banned outright. It means "more siblings follow", and reasoning is the
+// only child this panel has.
+// BOTH FIXTURES, which is what lets this subsume the drawer's adjacency check: the glyph
+// row's parent must be output whether or not a split was reported, and a regression that
+// inserted the child at a fixed index passes on one fixture and fails on the other.
 func TestRenderSpendDrawer_HasNoOrphanTreeGlyph(t *testing.T) {
-	joined := strings.Join(renderSpendDrawer(tierSnap(), nil, usage.GroupModel, "1h", 100), "\n")
-	for _, glyph := range []string{"└", "├"} {
-		if strings.Contains(joined, glyph) {
-			t.Errorf("the panel still draws %q, which implies a parent row:\n%s", glyph, joined)
-		}
+	for _, tc := range []struct {
+		name string
+		snap *usage.Snapshot
+	}{{"unreported split", tierSnap()}, {"reported split", reasoningSnap()}} {
+		t.Run(tc.name, func(t *testing.T) {
+			lines := renderSpendDrawer(tc.snap, nil, usage.GroupModel, "1h", 100)
+			joined := strings.Join(lines, "\n")
+			if strings.Contains(joined, "├") {
+				t.Errorf("the panel draws \"├\", which claims a sibling follows:\n%s", joined)
+			}
+			// THE GLYPH MUST BE PRESENT BEFORE ITS PARENT IS CHECKED. The loop below skips
+			// any row without a "└", so flattening childTierLabel to no glyph would make
+			// every iteration skip and this test go green — the same dead-assertion shape
+			// as drawnBarGlyphs' inverted rune range. Count first, then check.
+			glyphRows := 0
+			for _, l := range lines {
+				if strings.Contains(l, "└") {
+					glyphRows++
+				}
+			}
+			if glyphRows == 0 {
+				t.Fatalf("no row carries \"└\", so the parent check below cannot fail:\n%s", joined)
+			}
+			for i, l := range lines {
+				if !strings.Contains(l, "└") {
+					continue
+				}
+				if i == 0 {
+					t.Errorf("row 0 carries \"└\" with nothing above it to be a child of:\n%s", joined)
+					continue
+				}
+				if !strings.Contains(lines[i-1], "output") {
+					t.Errorf("row %d carries \"└\" but the line above it is not output:\n%s", i, joined)
+				}
+			}
+		})
 	}
 }
 
@@ -1805,5 +1851,152 @@ func TestPaneView_DrawsTheDrawersStoredError(t *testing.T) {
 	if !strings.Contains(out, "unavailable") {
 		t.Errorf("paneView drew no diagnostic for a drawer whose poll failed — a stored error with "+
 			"no reader is the defect renderSpendDrawer's error path exists to end:\n%s", out)
+	}
+}
+
+// reasoningSnap is tierSnap with a reported reasoning split, so the drawer is
+// exercised with a real child FIGURE rather than only the not-known cell. No other
+// drawer fixture sets one, which is why the populated child was never rendered here.
+func reasoningSnap() *usage.Snapshot {
+	s := tierSnap()
+	s.Totals.OutputTokens = 1593
+	s.Totals.ReasoningTokens = 948
+	s.Totals.PresentKinds = uint8(usage.KindOutput | usage.KindReasoning)
+	return s
+}
+
+// TestRenderSpendDrawer_EmitsEveryTierPlusTheChild is the regression test for the
+// bug this feature shipped and nothing caught: the assembly loop was bounded by
+// numTierRows while the tier column had grown to tierPanelLines, so inserting the
+// child DISPLACED a row instead of adding one. The ranking is by cost descending, so
+// what fell off was the cheapest tier — `input` simply vanished from a panel still
+// claiming to break down the whole bill.
+//
+// It was found by rendering the panel and reading it, not by a test. Only the line
+// COUNT was pinned, and the count was still right: five left rows either way. Pinning
+// the labels is what makes the next such regression fail here.
+func TestRenderSpendDrawer_EmitsEveryTierPlusTheChild(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		snap *usage.Snapshot
+	}{
+		{"reasoning reported", reasoningSnap()},
+		{"reasoning unreported", tierSnap()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			joined := strings.Join(renderSpendDrawer(tc.snap, nil, usage.GroupModel, "1h", 100), "\n")
+			// Every rate tier, by name. "input" last in the cost ranking is the one the
+			// old bound dropped.
+			for _, label := range []string{"input", "cache-write", "cache-read", "output"} {
+				if !strings.Contains(joined, label) {
+					t.Errorf("the panel omits the %q tier:\n%s", label, joined)
+				}
+			}
+			// And the child, whatever it renders.
+			if !strings.Contains(joined, "reasoning") {
+				t.Errorf("the panel omits the reasoning child:\n%s", joined)
+			}
+		})
+	}
+}
+
+// With a split reported, the drawer must show the child's FIGURE — the populated
+// path, which no other drawer fixture reaches.
+func TestRenderSpendDrawer_ChildCarriesItsFigure(t *testing.T) {
+	var child string
+	for _, l := range renderSpendDrawer(reasoningSnap(), nil, usage.GroupModel, "1h", 100) {
+		if strings.Contains(l, "reasoning") {
+			child = l
+		}
+	}
+	if child == "" {
+		t.Fatal("no reasoning row")
+	}
+	if strings.Contains(child, emptyCell) {
+		t.Errorf("child row = %q shows the not-known cell despite a reported split", child)
+	}
+	// THE MICROS, not the rendered cents. `Contains(child, "$3.48")` passes on any figure
+	// within ~5,000 micros of the right one — including one apportioned from
+	// OutputCostMicros instead of output's DISPLAYED figure, which is the distinction
+	// ApportionReasoning exists to make.
+	//
+	// 3_483_542 is read off the code, not derived here: two hand-derived versions of this
+	// number were wrong by 479 and 740 micros, both invisible behind the rounded string.
+	// Regenerate with ApportionReasoning(tiers[TierOutput]) on drawerTotals(reasoningSnap()).
+	const wantMicros = 3_483_542
+	tiers, ok := drawerTotals(reasoningSnap()).ApportionTiers()
+	if !ok {
+		t.Fatal("the fixture apportions to nothing")
+	}
+	got, has := drawerTotals(reasoningSnap()).ApportionReasoning(tiers[pricing.TierOutput])
+	if !has || got != wantMicros {
+		t.Errorf("ApportionReasoning = %d (has=%v), want %d", got, has, wantMicros)
+	}
+	if want := formatUSDTotalMicros(wantMicros); !strings.Contains(child, want) {
+		t.Errorf("child row = %q, want the apportioned %s", child, want)
+	}
+}
+
+// TestRenderSpendDrawer_NarrowHeightIsUnchangedByTheChildRow pins the claim the
+// narrow path's own doc comment makes — "degrades to exactly the per-model drawer
+// that shipped before" — as a LINE COUNT, which nothing checked.
+//
+// The reasoning child took the tier column from 4 rows to 5. Reserved
+// unconditionally, that grew the one-column drawer too, which has no tier column at
+// all: a narrow terminal permanently lost a body row to a child that cannot render
+// there. The reservation is width-aware for exactly this reason.
+func TestRenderSpendDrawer_NarrowHeightIsUnchangedByTheChildRow(t *testing.T) {
+	narrow := spendDrawerTwoColumnMin - 1
+	// The series column plus "(other)", the header, and the hint line — what shipped
+	// before the tier column existed, and what must still ship at this width.
+	want := spendDrawerSeries + 1 + 2
+	for _, snap := range []*usage.Snapshot{reasoningSnap(), tierSnap()} {
+		got := renderSpendDrawer(snap, nil, usage.GroupModel, "1h", narrow)
+		if len(got) != want {
+			t.Errorf("one-column drawer is %d lines, want %d:\n%s",
+				len(got), want, strings.Join(got, "\n"))
+		}
+		// NO SECOND CHECK AGAINST spendDrawerLinesFor(narrow). The renderer pads to
+		// exactly that, so it compares the renderer with its own padding rule and cannot
+		// fail — the pattern the sanitize test rejects by name. `want` above is the
+		// independent witness.
+		// And no tier or child content leaked into the one-column form.
+		if joined := strings.Join(got, "\n"); strings.Contains(joined, "reasoning") {
+			t.Errorf("the one-column drawer draws the reasoning child:\n%s", joined)
+		}
+	}
+	// Two columns still get the taller reservation, or the fix traded one bug for another.
+	if spendDrawerLinesFor(spendDrawerTwoColumnMin) <= want {
+		t.Errorf("two-column reservation %d is not taller than the one-column %d",
+			spendDrawerLinesFor(spendDrawerTwoColumnMin), want)
+	}
+}
+
+// THE README'S TWO-COLUMN THRESHOLD IS PINNED TO THE CONSTANT.
+//
+// It is a hand-written literal derived from seven constants, and it had already drifted
+// once before this PR — the prose said 72 against an actual 84 — then this PR moved the
+// real value to 86 by widening tierLabelWidth AND tierMoneyWidth for " └ reasoning". A
+// number nothing checks will drift again on the next width change.
+//
+// MATCHED IN CONTEXT AND COMPARED, not searched for as a substring. A
+// strings.Contains(readme, "86") version of this test is blind at the CURRENT value:
+// "8693" and "186" appear elsewhere in the file and supply those digits, so the sentence
+// could say anything and the test would still pass. A substring check closed this finding
+// once without closing the gap, under a comment claiming it would fail when the constant
+// moved.
+func TestREADME_StatesTheCurrentTwoColumnThreshold(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "README.md"))
+	if err != nil {
+		t.Fatalf("read README: %v", err)
+	}
+	m := regexp.MustCompile(`Below (\d+) columns`).FindSubmatch(raw)
+	if m == nil {
+		t.Fatalf("cmd/abctl/README.md no longer says \"Below N columns\"; this test pins that " +
+			"sentence against spendDrawerTwoColumnMin and cannot find it")
+	}
+	if got, want := string(m[1]), strconv.Itoa(spendDrawerTwoColumnMin); got != want {
+		t.Errorf("README documents a %s-column threshold; spendDrawerTwoColumnMin is %s — "+
+			"the drawer's documented width has drifted from the code", got, want)
 	}
 }

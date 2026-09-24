@@ -84,6 +84,18 @@ type Counts struct {
 	// provider reports how much of what it generated was reasoning. Adding the two
 	// double-counts every reasoning token at the output rate, which is the most
 	// expensive tier there is.
+	//
+	// THE SUBSET RELATION IS NOT ENFORCED HERE, which is a decision rather than an
+	// omission. plausibleTokenReport screens for negatives and an implausible ceiling
+	// but not for ReasoningTokens > OutputTokens, so a provider reporting a
+	// contradictory pair is stored as it reported it — and `abctl cost`'s token line
+	// and the detail pane both print it, which is the only way a reader notices the
+	// provider bug. Clamping at ingest would make every surface agree on a number
+	// nobody measured.
+	//
+	// ApportionReasoning DOES clamp what it derives, because a bar drawn longer than
+	// its parent's is a containment claim the layout makes rather than one it relays.
+	// Numbers stay faithful; geometry is not allowed to lie.
 	ReasoningTokens int64 `json:"reasoningTokens,omitempty"`
 	// RefusedTokenRequests counts the requests whose token report was REJECTED as
 	// implausible and contributed nothing to any figure above. See plausibleTokenReport for
