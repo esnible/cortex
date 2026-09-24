@@ -364,10 +364,13 @@ func TestRenderTierRows_ReasoningIsNotATier(t *testing.T) {
 	c.PresentKinds = uint8(usage.KindOutput | usage.KindReasoning)
 	lines := renderTierRows(c, 60)
 
-	// numTierRows counts RATES and must not have grown.
-	if numTierRows != pricing.NumTiers {
-		t.Errorf("numTierRows = %d but there are %d rate tiers; reasoning became a tier",
-			numTierRows, pricing.NumTiers)
+	// numTierRows counts RATES, and `numTierRows != pricing.NumTiers` was asserted here
+	// — a tautology, since that is the const's definition. What is worth pinning is that
+	// the SUMMING rows are still exactly the rate tiers, which is a property of the
+	// render and can fail.
+	if got := len(tierRowsOnly(lines)); got != pricing.NumTiers {
+		t.Errorf("%d summing rows against %d rate tiers; reasoning became a tier",
+			got, pricing.NumTiers)
 	}
 	// The reasoning row must use the INDENTED label — flush left it reads as a fifth
 	// tier. Asserted as "carries childTierLabel" rather than "starts with a space",

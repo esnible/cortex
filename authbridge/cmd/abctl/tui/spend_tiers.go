@@ -212,11 +212,16 @@ func reasoningChildRow(c usage.Counts, tiers [pricing.NumTiers]int64, ok bool,
 	peak int64, budget, width int) string {
 	notKnown := clipRow(fmt.Sprintf("%-*s %s", tierLabelWidth, childTierLabel, emptyCell), width)
 
-	// The present bit decides, as everywhere else: a clear bit with a zero value means
-	// nothing reported a split, which is not the same as a split of zero. A provider
-	// that exposes no reasoning counter gets the not-known cell, never $0.00 — the same
+	// THE BIT AND THE VALUE TOGETHER, not the bit alone — the parenthesisation says so
+	// rather than leaving it to Go's precedence. A clear bit with a zero value means
+	// nothing reported a split, which is not the same as a split of zero: a provider
+	// exposing no reasoning counter gets the not-known cell, never $0.00, the same
 	// refusal renderTierRows makes for a tier absent from the mix.
-	if !ok || c.PresentKinds&usage.KindReasoning == 0 && c.ReasoningTokens == 0 {
+	//
+	// A non-zero value with a CLEAR bit still renders, which is why the value is in the
+	// condition at all: that is an event from a producer predating PresentKinds, where
+	// the value is the only evidence there is. Same rule as tokenSplit's `add`.
+	if !ok || (c.PresentKinds&usage.KindReasoning == 0 && c.ReasoningTokens == 0) {
 		return notKnown
 	}
 	// No denominator, no defensible figure. Reasoning cannot be a share of an output
@@ -232,6 +237,20 @@ func reasoningChildRow(c usage.Counts, tiers [pricing.NumTiers]int64, ok bool,
 	// gateway that reports them inconsistently would otherwise draw a child longer than
 	// the bar above it — a lie that looks authoritative. Clamp rather than refuse: the
 	// figure is still the best available, and the parent bounds it.
+	//
+	// DISPLAY-ONLY, AND DELIBERATELY SO. The subset relation is not enforced at ingest:
+	// parsercommon leaves the counts as reported, plausibleTokenReport screens only for
+	// negatives and an implausible ceiling, and `abctl cost`'s token line and the detail
+	// pane both print reasoning against output exactly as the provider stated them —
+	// including a contradictory pair. That is on purpose. A count is a measurement
+	// somebody else made, and silently correcting it here would hide the provider bug
+	// from the two surfaces where a reader could notice it.
+	//
+	// What cannot be left alone is GEOMETRY. A bar's length and a row's indent are
+	// claims this layout makes itself, not ones it relays: drawing a child longer than
+	// its parent asserts containment is false, which is a lie the display invented. So
+	// the numbers stay faithful and the picture stays consistent, and the clamp lives at
+	// the only layer that draws.
 	if micros > tiers[pricing.TierOutput] {
 		micros = tiers[pricing.TierOutput]
 	}

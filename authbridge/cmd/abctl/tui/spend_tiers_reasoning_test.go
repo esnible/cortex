@@ -112,8 +112,10 @@ func TestRenderTierRows_ReasoningNeverExceedsOutput(t *testing.T) {
 	inverted := reasoningCounts()
 	inverted.ReasoningTokens = 4_000 // > OutputTokens (1,593)
 
-	// Reasoning equal to output: the boundary, where clamping must not overshoot
-	// into making the child smaller than it is.
+	// Reasoning equal to output: the boundary. Every comparison in the loop below is
+	// `>`, so "the clamp must not overshoot and make the child SMALLER" needs its own
+	// check — asserted at the end of the subtest rather than named here and left
+	// untested.
 	equal := reasoningCounts()
 	equal.ReasoningTokens = equal.OutputTokens
 
@@ -147,14 +149,26 @@ func TestRenderTierRows_ReasoningNeverExceedsOutput(t *testing.T) {
 				t.Errorf("reasoning is %d%% of the bill but output is only %d%%; a subset cannot "+
 					"exceed its set\n  %s\n  %s", reasoningPct, outputPct, outputRow, reasoningRow)
 			}
-			// THE MONEY CELL NEEDS ITS OWN ASSERTION, and it is the one that catches a
-			// money clamp deleted on its own. pct is derived from the ALREADY-clamped
-			// micros and then clamped a SECOND time against the output tier's share, so
-			// the share check above stays green when only the money clamp is removed —
-			// while the dollar figure and the bar both render several times output.
+			// THE MONEY CELL NEEDS ITS OWN ASSERTION, because the share cannot stand in
+			// for it. pct is DERIVED from micros, so a share that looks sane does not
+			// witness a sane figure: floor(micros*100/total) collapses a range of micros
+			// onto the same percentage, and on this fixture an unclamped child rendered
+			// ~2.5x output while the share check stayed green.
+			//
+			// (An earlier version of this comment blamed a second clamp on the share.
+			// That clamp was removed as unreachable — see reasoningChildRow — so the
+			// reason is the floor division, not a second guard.)
+			//
+			// rOK/oOK are asserted rather than used as a filter: a `&&` over them would
+			// let this assertion skip itself the moment the child renders not-known,
+			// which is exactly how a guard goes quiet without failing.
 			rMoney, rOK := rowMoney(reasoningRow)
 			oMoney, oOK := rowMoney(outputRow)
-			if rOK && oOK && rMoney > oMoney {
+			if !rOK || !oOK {
+				t.Fatalf("no figure to compare (child ok=%v, parent ok=%v); this assertion "+
+					"cannot fail:\n  %s\n  %s", rOK, oOK, outputRow, reasoningRow)
+			}
+			if rMoney > oMoney {
 				t.Errorf("the child's figure $%.4f exceeds its parent's $%.4f:\n  %s\n  %s",
 					rMoney, oMoney, outputRow, reasoningRow)
 			}
@@ -171,6 +185,14 @@ func TestRenderTierRows_ReasoningNeverExceedsOutput(t *testing.T) {
 			if drawnBarGlyphs(reasoningRow) > drawnBarGlyphs(outputRow) {
 				t.Errorf("the child's bar is longer than its parent's:\n  %s\n  %s",
 					outputRow, reasoningRow)
+			}
+			// THE OTHER DIRECTION, which only the equal case can witness: all of the
+			// output was reasoning, so the child must render its parent's figure and not
+			// a clamped-down one. Without this the clamp could subtract and every `>`
+			// above would still pass.
+			if tc.name == "reasoning equal to output" && rMoney != oMoney {
+				t.Errorf("all output was reasoning, so the child should equal its parent, "+
+					"got $%.4f against $%.4f:\n  %s\n  %s", rMoney, oMoney, outputRow, reasoningRow)
 			}
 		})
 	}
@@ -301,13 +323,18 @@ func TestRenderTierRows_HeightConstantAcrossReasoningStates(t *testing.T) {
 // it — otherwise the child row pushes the footer off the terminal, the defect
 // keys.go records for spendDrawerLines.
 func TestSpendDrawerLines_AccountsForTheChildRow(t *testing.T) {
+	// THE ONLY LIVE COMPARISON HERE: a constant against what the renderer actually
+	// produces. `tierPanelLines != numTierRows+1` and `spendDrawerLines < tierPanelLines`
+	// were also asserted and both were tautologies — the first restates the const
+	// definition, and spendDrawerLines is max(tierPanelLines, ...)+2 so the second cannot
+	// fail. Comparing a constant to its own definition reads as coverage and is none.
 	if want := len(renderTierRows(reasoningCounts(), tierColumnWidth)); tierPanelLines < want {
 		t.Errorf("tierPanelLines = %d but the panel renders %d lines", tierPanelLines, want)
 	}
-	if tierPanelLines != numTierRows+1 {
-		t.Errorf("tierPanelLines = %d, want numTierRows+1 = %d", tierPanelLines, numTierRows+1)
-	}
-	if spendDrawerLines < tierPanelLines {
-		t.Errorf("spendDrawerLines = %d cannot hold a %d-line tier panel", spendDrawerLines, tierPanelLines)
+	// The drawer must actually emit them, which is a property of renderSpendDrawer
+	// rather than of the constants. Asserted against a real render.
+	if got := len(renderSpendDrawer(reasoningSnap(), nil, usage.GroupModel, "1h", 100)); got > spendDrawerLines {
+		t.Errorf("the drawer emitted %d lines but reserves %d; the footer will be pushed off",
+			got, spendDrawerLines)
 	}
 }

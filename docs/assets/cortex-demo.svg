@@ -242,7 +242,7 @@ clipPath rect{width:100000px}
 <text y="94.0"><tspan x="16.0" textLength="445.2" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">  WHERE IT WENT                              BY MODEL</tspan></text>
 <text y="112.0"><tspan x="16.0" textLength="831.6" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">  cache-read    43% ████████████     $0.27   claude-opus-5          $0.63       4 req   319k tokens</tspan></text>
 <text y="130.0"><tspan x="16.0" textLength="831.6" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">  output        31% █████████        $0.20   claude-sonnet-5        $0.02       1 req    16k tokens</tspan></text>
-<text y="148.0"><tspan x="16.0" textLength="134.4" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">   └ reasoning —</tspan></text>
+<text y="148.0"><tspan x="16.0" textLength="352.8" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">   └ reasoning  17% ████▉            $0.11</tspan></text>
 <text y="166.0"><tspan x="16.0" textLength="352.8" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">  cache-write   21% ██████           $0.14</tspan></text>
 <text y="184.0"><tspan x="16.0" textLength="352.8" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">  input          5% █▍               $0.03</tspan></text>
 <text y="202.0"><tspan x="16.0" textLength="504.0" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">   [a] [model] · endpoint · agent   [w] LAST 1H   esc closes</tspan></text>
@@ -280,19 +280,19 @@ clipPath rect{width:100000px}
 <text y="112.0"><tspan x="16.0" textLength="1008.0" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">  USAGE — all sessions — 10m0s @ 1m0s — tokens — ungrouped                                                              </tspan></text>
 <text y="130.0"></text>
 <text y="148.0"><tspan x="16.0" textLength="1008.0" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">  tok                                                                                                                   </tspan></text>
-<text y="166.0"><tspan x="16.0" textLength="1008.0" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9"> 209k                                                       ████                                                        </tspan></text>
-<text y="184.0"><tspan x="16.0" textLength="1008.0" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">                                                            ████                                                        </tspan></text>
-<text y="202.0"><tspan x="16.0" textLength="1008.0" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9"> 167k                                                       ████                                                        </tspan></text>
-<text y="220.0"><tspan x="16.0" textLength="1008.0" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">                                                            ████                                                        </tspan></text>
-<text y="238.0"><tspan x="16.0" textLength="1008.0" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9"> 125k             ████                                      ████                                                        </tspan></text>
-<text y="256.0"><tspan x="16.0" textLength="1008.0" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">                  ████                                      ████                                                        </tspan></text>
-<text y="274.0"><tspan x="16.0" textLength="1008.0" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">  83k             ████                                      ████                                                        </tspan></text>
-<text y="292.0"><tspan x="16.0" textLength="1008.0" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">                  ████                                      ████                                                        </tspan></text>
-<text y="310.0"><tspan x="16.0" textLength="1008.0" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">  41k             ████                                      ████                                                        </tspan></text>
-<text y="328.0"><tspan x="16.0" textLength="1008.0" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">                  ████                                      ████                                                        </tspan></text>
+<text y="166.0"><tspan x="16.0" textLength="1008.0" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9"> 209k                                                 ████                                                              </tspan></text>
+<text y="184.0"><tspan x="16.0" textLength="1008.0" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">                                                      ████                                                              </tspan></text>
+<text y="202.0"><tspan x="16.0" textLength="1008.0" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9"> 167k                                                 ████                                                              </tspan></text>
+<text y="220.0"><tspan x="16.0" textLength="1008.0" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">                                                      ████                                                              </tspan></text>
+<text y="238.0"><tspan x="16.0" textLength="1008.0" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9"> 125k       ████                                      ████                                                              </tspan></text>
+<text y="256.0"><tspan x="16.0" textLength="1008.0" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">            ████                                      ████                                                              </tspan></text>
+<text y="274.0"><tspan x="16.0" textLength="1008.0" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">  83k       ████                                      ████                                                              </tspan></text>
+<text y="292.0"><tspan x="16.0" textLength="1008.0" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">            ████                                      ████                                                              </tspan></text>
+<text y="310.0"><tspan x="16.0" textLength="1008.0" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">  41k       ████                                      ████                                                              </tspan></text>
+<text y="328.0"><tspan x="16.0" textLength="1008.0" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">            ████                                      ████                                                              </tspan></text>
 <text y="346.0"><tspan x="16.0" textLength="1008.0" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">   0 ┼────┴─────┴─────┴─────┴─────┴─────┴─────┴─────┴─────┴─────                                                        </tspan></text>
 <text y="364.0"><tspan x="16.0" textLength="1008.0" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">      42:24       :24         :24         :24         :24                                                               </tspan></text>
-<text y="382.0"><tspan x="16.0" textLength="1008.0" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">     0     0     126k  0     0     0     0     0     0     209k                                                         </tspan></text>
+<text y="382.0"><tspan x="16.0" textLength="1008.0" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">     0     126k  0     0     0     0     0     0     209k  0                                                            </tspan></text>
 <text y="400.0"></text>
 <text y="418.0"><tspan x="16.0" textLength="1008.0" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">  REQUESTS 5    ERRORS 0 (0.0%)    TOKENS 335k    LATENCY 2.90s    COST $0.65 [unlabelled]                              </tspan></text>
 <text y="436.0"></text>
