@@ -323,11 +323,8 @@ func TestRenderTierRows_HeightConstantAcrossReasoningStates(t *testing.T) {
 // it — otherwise the child row pushes the footer off the terminal, the defect
 // keys.go records for spendDrawerLines.
 func TestSpendDrawerLines_AccountsForTheChildRow(t *testing.T) {
-	// THE ONLY LIVE COMPARISON HERE: a constant against what the renderer actually
-	// produces. `tierPanelLines != numTierRows+1` and `spendDrawerLines < tierPanelLines`
-	// were also asserted and both were tautologies — the first restates the const
-	// definition, and spendDrawerLines is max(tierPanelLines, ...)+2 so the second cannot
-	// fail. Comparing a constant to its own definition reads as coverage and is none.
+	// A CONSTANT AGAINST WHAT THE RENDERER PRODUCES, which is the only form of this
+	// assertion that can fail: comparing tierPanelLines to its own definition cannot.
 	if want := len(renderTierRows(reasoningCounts(), tierColumnWidth)); tierPanelLines < want {
 		t.Errorf("tierPanelLines = %d but the panel renders %d lines", tierPanelLines, want)
 	}

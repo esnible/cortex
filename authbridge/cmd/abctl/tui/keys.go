@@ -1217,7 +1217,7 @@ func (m *model) layout() {
 	// off the bottom on every pane — the failure the strip's own reservation exists to prevent,
 	// five rows at a time instead of one. See spendDrawerReservesRows.
 	if m.spendDrawerReservesRows() {
-		bodyH -= spendDrawerLines
+		bodyH -= spendDrawerLinesFor(m.width)
 	}
 	// And one more while the filter is open: View() prepends filterInput above the body, so
 	// the line exists on screen whether or not the budget admits it. Unreserved, the view came

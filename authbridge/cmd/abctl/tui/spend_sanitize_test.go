@@ -154,9 +154,14 @@ func TestRenderSpendDrawer_AWideErrorMessageStaysInsideTheReservation(t *testing
 	wide := errors.New("unexpected status 500: " + strings.Repeat("過", 40))
 	for _, width := range []int{20, 40, 72, 120} {
 		lines := renderSpendDrawer(nil, wide, usage.GroupModel, "MONTH", width)
-		if len(lines) != spendDrawerLines {
+		// Against the reservation FOR THIS WIDTH rather than the constant. The reservation
+		// became width-aware when the tier column grew a fifth row: that row cannot render
+		// in one column, so reserving it there cost a narrow terminal a body row. The
+		// invariant is unchanged — emitted must equal reserved — and is now parameterised
+		// by the one input layout() already knows.
+		if want := spendDrawerLinesFor(width); len(lines) != want {
 			t.Errorf("width %d: %d lines, want %d — the reservation is the height, so an extra "+
-				"line pushes the footer off the bottom", width, len(lines), spendDrawerLines)
+				"line pushes the footer off the bottom", width, len(lines), want)
 		}
 		for i, line := range lines {
 			if n := lipgloss.Width(line); n > width {

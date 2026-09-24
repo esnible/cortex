@@ -69,3 +69,51 @@ func (c Counts) ApportionTiers() (tiers [pricing.NumTiers]int64, ok bool) {
 	}
 	return tiers, true
 }
+
+// ApportionReasoning is the reasoning share of an already-apportioned output figure,
+// in micros.
+//
+// HERE RATHER THAN IN A RENDERER, for the reason ApportionTiers gives for itself: it
+// is the one place this arithmetic lives, so the surfaces cannot disagree about a
+// figure derived more than once. It was written inside abctl's spend drawer first,
+// which left `abctl cost --json` unable to publish the number the TUI drew — a
+// consumer could only get it by reimplementing this, which is what costJSON.Tiers
+// refuses for the tier split.
+//
+// outputMicros is the DISPLAYED output figure, not c.OutputCostMicros: the displayed
+// one is already scaled to the gateway's authoritative total, so deriving from the raw
+// mix would produce a child that does not divide into the parent beside it.
+//
+// ok is false when there is no defensible figure, and the caller renders "not known
+// here" — never $0.00, which would assert the reasoning was free. Four ways to get
+// there:
+//
+//   - nothing reported a split (the present bit clear AND the value zero; a non-zero
+//     value with a clear bit still counts, being an event from a producer predating
+//     PresentKinds)
+//   - no output tokens, so there is no denominator
+//   - no output money to take a share of
+//   - a share that truncates below one micro, which is reachable on a small window
+//
+// The result is clamped to outputMicros. Reasoning cannot exceed output on the wire,
+// but a provider reporting otherwise must not produce a child figure above its parent;
+// the counts themselves are left as reported — see Counts.ReasoningTokens.
+func (c Counts) ApportionReasoning(outputMicros int64) (micros int64, ok bool) {
+	if c.PresentKinds&KindReasoning == 0 && c.ReasoningTokens == 0 {
+		return 0, false
+	}
+	if c.OutputTokens <= 0 || outputMicros <= 0 {
+		return 0, false
+	}
+	// Float ratio bounded by the parent, the form ApportionTiers uses and for its
+	// reason: the integer product of two window-sized sums overflows int64.
+	micros = int64(float64(outputMicros) *
+		(float64(c.ReasoningTokens) / float64(c.OutputTokens)))
+	if micros > outputMicros {
+		micros = outputMicros
+	}
+	if micros == 0 {
+		return 0, false
+	}
+	return micros, true
+}

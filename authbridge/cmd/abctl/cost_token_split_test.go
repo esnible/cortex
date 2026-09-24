@@ -78,3 +78,56 @@ func TestTokenSplit_BitAndValueAreBothConsulted(t *testing.T) {
 		t.Errorf("tokenSplit = %q, want the 948 from a producer predating PresentKinds", legacy)
 	}
 }
+
+// `abctl cost --json` must publish the reasoning figure the TUI's drawer draws.
+// Without it a scripted consumer can only get that number by reimplementing
+// usage.ApportionReasoning, which is the drift costJSON.Tiers exists to prevent.
+func TestTiersJSON_PublishesReasoningAndKeepsTheFourTiersSumming(t *testing.T) {
+	c := usage.Counts{
+		CostMicros:      4_546_200,
+		InputCostMicros: 3000, CacheWriteCostMicros: 7500,
+		CacheReadCostMicros: 30000, OutputCostMicros: 45000,
+		OutputTokens: 1593, ReasoningTokens: 948,
+		PresentKinds: uint8(usage.KindOutput | usage.KindReasoning),
+	}
+	got := tiersJSONOf(c)
+	if got == nil {
+		t.Fatal("no tiers published for a Counts with a mix")
+	}
+	if got.Reasoning == nil {
+		t.Fatal("reasoningOfOutput is absent despite a reported split; a consumer would have " +
+			"to reimplement the apportionment")
+	}
+	// INSIDE output, not beside it.
+	if *got.Reasoning > got.Output {
+		t.Errorf("reasoning %d exceeds output %d", *got.Reasoning, got.Output)
+	}
+	// And the four tiers still reconcile to the total without it.
+	if sum := got.Input + got.CacheWrite + got.CacheRead + got.Output; sum != c.CostMicros {
+		t.Errorf("the four tiers sum to %d, want %d — reasoning must not be in the sum",
+			sum, c.CostMicros)
+	}
+	// It is the SAME figure the drawer derives, by construction: one call.
+	want, ok := c.ApportionReasoning(got.Output)
+	if !ok || want != *got.Reasoning {
+		t.Errorf("published %d but ApportionReasoning gives %d (ok=%v)", *got.Reasoning, want, ok)
+	}
+}
+
+// Absent, not zero, when nothing reported a split — so a consumer can tell "no figure"
+// from "free".
+func TestTiersJSON_OmitsReasoningWhenThereIsNoFigure(t *testing.T) {
+	c := usage.Counts{
+		CostMicros:      4_546_200,
+		InputCostMicros: 3000, OutputCostMicros: 45000,
+		OutputTokens: 1593,
+		PresentKinds: uint8(usage.KindOutput),
+	}
+	got := tiersJSONOf(c)
+	if got == nil {
+		t.Fatal("no tiers published")
+	}
+	if got.Reasoning != nil {
+		t.Errorf("reasoningOfOutput = %d for a provider reporting no split; want absent", *got.Reasoning)
+	}
+}

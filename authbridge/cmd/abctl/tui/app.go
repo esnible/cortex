@@ -1912,7 +1912,7 @@ func (m *model) paneView() string {
 				axis, window := m.drawerLabels()
 				lines = renderSpendDrawer(m.spend.drawer.snap, m.spend.drawer.err, axis, window, m.width)
 			}
-			for len(lines) < spendDrawerLines {
+			for len(lines) < spendDrawerLinesFor(m.width) {
 				lines = append(lines, "")
 			}
 			for _, line := range lines {

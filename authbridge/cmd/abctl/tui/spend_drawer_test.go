@@ -1313,6 +1313,19 @@ func TestRenderSpendDrawer_HasNoOrphanTreeGlyph(t *testing.T) {
 	if strings.Contains(joined, "├") {
 		t.Errorf("the panel draws \"├\", which claims a sibling follows:\n%s", joined)
 	}
+	// THE GLYPH MUST BE PRESENT BEFORE ITS PARENT IS CHECKED. The loop below skips any
+	// row without a "└", so flattening childTierLabel to no glyph would make every
+	// iteration skip and this test go green — the same dead-assertion shape as
+	// drawnBarGlyphs' inverted rune range. Count first, then check.
+	glyphRows := 0
+	for _, l := range lines {
+		if strings.Contains(l, "└") {
+			glyphRows++
+		}
+	}
+	if glyphRows == 0 {
+		t.Fatalf("no row carries \"└\", so the parent check below cannot fail:\n%s", joined)
+	}
 	for i, l := range lines {
 		if !strings.Contains(l, "└") {
 			continue
@@ -1913,5 +1926,40 @@ func TestRenderSpendDrawer_ChildCarriesItsFigure(t *testing.T) {
 	}
 	if !strings.Contains(child, "$") {
 		t.Errorf("child row = %q carries no figure", child)
+	}
+}
+
+// TestRenderSpendDrawer_NarrowHeightIsUnchangedByTheChildRow pins the claim the
+// narrow path's own doc comment makes — "degrades to exactly the per-model drawer
+// that shipped before" — as a LINE COUNT, which nothing checked.
+//
+// The reasoning child took the tier column from 4 rows to 5. Reserved
+// unconditionally, that grew the one-column drawer too, which has no tier column at
+// all: a narrow terminal permanently lost a body row to a child that cannot render
+// there. The reservation is width-aware for exactly this reason.
+func TestRenderSpendDrawer_NarrowHeightIsUnchangedByTheChildRow(t *testing.T) {
+	narrow := spendDrawerTwoColumnMin - 1
+	// The series column plus "(other)", the header, and the hint line — what shipped
+	// before the tier column existed, and what must still ship at this width.
+	want := spendDrawerSeries + 1 + 2
+	for _, snap := range []*usage.Snapshot{reasoningSnap(), tierSnap()} {
+		got := renderSpendDrawer(snap, nil, usage.GroupModel, "1h", narrow)
+		if len(got) != want {
+			t.Errorf("one-column drawer is %d lines, want %d:\n%s",
+				len(got), want, strings.Join(got, "\n"))
+		}
+		if len(got) != spendDrawerLinesFor(narrow) {
+			t.Errorf("drawer emitted %d lines but the reservation for width %d is %d",
+				len(got), narrow, spendDrawerLinesFor(narrow))
+		}
+		// And no tier or child content leaked into the one-column form.
+		if joined := strings.Join(got, "\n"); strings.Contains(joined, "reasoning") {
+			t.Errorf("the one-column drawer draws the reasoning child:\n%s", joined)
+		}
+	}
+	// Two columns still get the taller reservation, or the fix traded one bug for another.
+	if spendDrawerLinesFor(spendDrawerTwoColumnMin) <= want {
+		t.Errorf("two-column reservation %d is not taller than the one-column %d",
+			spendDrawerLinesFor(spendDrawerTwoColumnMin), want)
 	}
 }

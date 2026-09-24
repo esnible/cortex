@@ -71,6 +71,26 @@ const (
 	spendDrawerLines = max(tierPanelLines, spendDrawerSeries+1) + 2
 )
 
+// spendDrawerLinesFor is the reservation at a given WIDTH, and the width is why it is
+// a function where spendDrawerLines is a constant.
+//
+// The tier column only exists in two-column mode, so only there does the panel need
+// room for tierPanelLines. Reserving the two-column height unconditionally cost a
+// narrow terminal a body row to a child row that cannot render at that width — the
+// reasoning child took the panel from 4 left rows to 5, and the one-column drawer,
+// which shows only the series, grew with it for nothing.
+//
+// Width is known wherever this is called, unlike the DATA, which is why the same
+// argument does not apply to varying the height by whether a split was reported: see
+// renderTierRows.
+func spendDrawerLinesFor(width int) int {
+	left := spendDrawerSeries + 1 // one column: the ranked series plus "(other)"
+	if width >= spendDrawerTwoColumnMin {
+		left = max(tierPanelLines, spendDrawerSeries+1)
+	}
+	return left + 2 // the header and the hint line
+}
+
 // spendDrawerAxes are the breakdown axes `g` cycles through.
 //
 // NO GroupNone in the cycle, unlike the Usage pane's grouping. This drawer's only content
@@ -697,7 +717,7 @@ func renderSpendDrawer(snap *usage.Snapshot, err error, axis usage.Group, window
 		out := make([]string, 0, spendDrawerLines)
 		out = append(out, clipRow("  breakdown unavailable for "+windowLabel+": "+
 			sanitizeLabel(err.Error()), width))
-		for len(out) < spendDrawerLines-1 {
+		for len(out) < spendDrawerLinesFor(width)-1 {
 			out = append(out, "")
 		}
 		return append(out, fitStripFigures(" ", plainFigures(
@@ -739,7 +759,10 @@ func renderSpendDrawer(snap *usage.Snapshot, err error, axis usage.Group, window
 	// would emit more body rows than spendDrawerLines reserves and push the footer off
 	// the terminal, which is the failure the block above documents. min keeps both, and
 	// the one-column path takes tierPanelLines because tiers is nil and never indexed.
-	bound := tierPanelLines
+	// ONE COLUMN HAS NO TIER ROWS, so its bound is the series count. Bounded by
+	// tierPanelLines it walked a fifth slot that is always empty at that width and
+	// emitted a blank body row.
+	bound := spendDrawerSeries + 1
 	if twoCol {
 		bound = min(tierPanelLines, len(tiers))
 	}
@@ -791,7 +814,7 @@ func renderSpendDrawer(snap *usage.Snapshot, err error, axis usage.Group, window
 	// Blank lines rather than a taller body, because the body is already sized: the drawer occupies
 	// the space that was set aside for it, so the table's position does not jump when a second
 	// model appears.
-	for len(out) < spendDrawerLines {
+	for len(out) < spendDrawerLinesFor(width) {
 		out = append(out, "")
 	}
 	return out

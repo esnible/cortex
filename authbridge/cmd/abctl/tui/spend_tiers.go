@@ -212,77 +212,29 @@ func reasoningChildRow(c usage.Counts, tiers [pricing.NumTiers]int64, ok bool,
 	peak int64, budget, width int) string {
 	notKnown := clipRow(fmt.Sprintf("%-*s %s", tierLabelWidth, childTierLabel, emptyCell), width)
 
-	// THE BIT AND THE VALUE TOGETHER, not the bit alone — the parenthesisation says so
-	// rather than leaving it to Go's precedence. A clear bit with a zero value means
-	// nothing reported a split, which is not the same as a split of zero: a provider
-	// exposing no reasoning counter gets the not-known cell, never $0.00, the same
-	// refusal renderTierRows makes for a tier absent from the mix.
+	// THE ARITHMETIC IS usage.ApportionReasoning'S, not this file's. It lives beside
+	// ApportionTiers for the reason that function states about itself — one place, so the
+	// drawer, `abctl cost` and the JSON cannot disagree about a figure derived three
+	// times. It was written here first, which left --json unable to publish the number
+	// this panel draws.
 	//
-	// A non-zero value with a CLEAR bit still renders, which is why the value is in the
-	// condition at all: that is an event from a producer predating PresentKinds, where
-	// the value is the only evidence there is. Same rule as tokenSplit's `add`.
-	if !ok || (c.PresentKinds&usage.KindReasoning == 0 && c.ReasoningTokens == 0) {
-		return notKnown
-	}
-	// No denominator, no defensible figure. Reasoning cannot be a share of an output
-	// that was never counted.
-	if c.OutputTokens <= 0 || tiers[pricing.TierOutput] <= 0 {
-		return notKnown
-	}
-	// Float ratio bounded by the parent, the form ApportionTiers uses and for its
-	// reason: the integer product of two window-sized sums overflows int64.
-	micros := int64(float64(tiers[pricing.TierOutput]) *
-		(float64(c.ReasoningTokens) / float64(c.OutputTokens)))
-	// CLAMPED TO THE PARENT. Reasoning should never exceed output on the wire, but a
-	// gateway that reports them inconsistently would otherwise draw a child longer than
-	// the bar above it — a lie that looks authoritative. Clamp rather than refuse: the
-	// figure is still the best available, and the parent bounds it.
-	//
-	// DISPLAY-ONLY, AND DELIBERATELY SO. The subset relation is not enforced at ingest:
-	// parsercommon leaves the counts as reported, plausibleTokenReport screens only for
-	// negatives and an implausible ceiling, and `abctl cost`'s token line and the detail
-	// pane both print reasoning against output exactly as the provider stated them —
-	// including a contradictory pair. That is on purpose. A count is a measurement
-	// somebody else made, and silently correcting it here would hide the provider bug
-	// from the two surfaces where a reader could notice it.
-	//
-	// What cannot be left alone is GEOMETRY. A bar's length and a row's indent are
-	// claims this layout makes itself, not ones it relays: drawing a child longer than
-	// its parent asserts containment is false, which is a lie the display invented. So
-	// the numbers stay faithful and the picture stays consistent, and the clamp lives at
-	// the only layer that draws.
-	if micros > tiers[pricing.TierOutput] {
-		micros = tiers[pricing.TierOutput]
-	}
-	// APPORTIONED TO NOTHING IS NOT APPORTIONED TO ZERO, and this is the child's
-	// version of the `tiers[tier] == 0` escape the tier rows take. The multiply above
-	// truncates, so a real reasoning count whose share of the window falls below one
-	// micro lands here — reachable on a small window, around a hundred output tokens at
-	// opus-5 rates. Rendering it would print "$0.00", which asserts the reasoning was
-	// FREE: the one claim renderTierRows refuses for a tier, arriving through the child.
-	//
-	// The not-known cell instead. The tier rows cannot say "<$0.01" here either — that
-	// form means "too small to state", and what is true is that the apportionment could
-	// not resolve a figure at all.
-	if micros == 0 {
+	// ok from ApportionTiers gates first: with no mix to apportion by there is no output
+	// figure to take a share of.
+	micros, hasFigure := c.ApportionReasoning(tiers[pricing.TierOutput])
+	if !ok || !hasFigure {
 		return notKnown
 	}
 	// Floored against the same total the tier rows use, so the child is comparable down
 	// the column. Deliberately NOT tierShares, which must keep summing to 100 across
 	// exactly the four tiers.
 	//
-	// NO SECOND CLAMP HERE, and the omission is deliberate rather than an oversight.
-	// This share is derived from micros AFTER the clamp above, so it is already bounded
-	// by the parent's:
+	// NO CLAMP ON THE SHARE, because it is already bounded by the parent's: it derives
+	// from micros AFTER ApportionReasoning's clamp, and
 	//
 	//	floor(micros*100/total) <= floor(tiers[output]*100/total) <= shares[output]
 	//
 	// the right-hand step holding because tierShares only ever ADDS its rounding
-	// remainder to the largest share, never subtracts. A `pct > shares[output]` guard
-	// was written here first and was unreachable — no fixture could enter it, and
-	// mutation-testing confirmed removing it changed no output. Unreachable code with
-	// an untestable branch is worse than none: it implies a hazard that does not exist
-	// and invites a reader to protect the wrong invariant.
+	// remainder to the largest share, never subtracts.
 	pct := 0
 	if c.CostMicros > 0 {
 		pct = int(micros * 100 / c.CostMicros)
