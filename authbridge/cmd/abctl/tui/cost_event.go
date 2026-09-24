@@ -74,27 +74,6 @@ func outputCost(resp *pipeline.SessionEvent) (usd float64, ok bool) {
 	return ev.OutputUSD, true
 }
 
-// promptTokens is the request's own billed token count: what the provider
-// counted for everything we sent. It lives on the response because the provider
-// is the only party that tokenizes, but it is a request-side quantity — which is
-// what lets a request row show a total at all.
-//
-// The PromptTokens fallback cannot currently fire, and is kept only to mirror
-// savedTokensAndCost: parsercommon.TokenUsage.Fill is the sole production writer
-// of these fields and sets PromptTokens to Input+CacheRead+CacheWrite — the same
-// sum computed here — so when the split is zero the aggregate is zero too. It
-// costs nothing and would start earning its keep if a parser ever published the
-// aggregate directly.
-func promptTokens(resp *pipeline.InferenceExtension) int {
-	if resp == nil {
-		return 0
-	}
-	if n := resp.InputTokens + resp.CacheReadTokens + resp.CacheWriteTokens; n > 0 {
-		return n
-	}
-	return resp.PromptTokens
-}
-
 // savingSign distinguishes a realized saving from a projected one. A projected
 // saving (on_error: observe, where bytes were measured but not removed) uses "~"
 // instead of "−": the money was still spent, and rendering it identically would

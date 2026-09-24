@@ -2,7 +2,9 @@ package session
 
 import (
 	"encoding/json"
+	"fmt"
 	"math"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -839,6 +841,393 @@ func TestAppend_RunningTotalsMatchAFullRecomputation(t *testing.T) {
 					"subtraction path was never exercised", held, tc.maxEvents)
 			}
 		})
+	}
+}
+
+// promptContextTurn is a request/response pair as the store records one: manifest and message
+// count on both sides, token counts on the response, since the provider is the only party that
+// tokenizes. ntools == 0 makes it a one-shot, which the rule excludes.
+//
+// STATED AS THE MAIN AGENT, which is what a current proxy publishes for the interactive thread.
+// promptContextTurnAs is the same turn under any other role — and it exists because hard-coding the
+// role here meant no store test ever appended an event the rule has to REJECT on it.
+func promptContextTurn(id string, at time.Time, msgs, ntools, context int) []pipeline.SessionEvent {
+	return promptContextTurnAs(id, at, msgs, ntools, context, pipeline.AgentRoleMain)
+}
+
+// promptContextTurnAs is promptContextTurn under a stated role: AgentRoleSubagent for a Task-spawned
+// thread, "" for a client that states nothing at all, which is every client that is not Claude Code.
+func promptContextTurnAs(id string, at time.Time, msgs, ntools, context int,
+	role pipeline.AgentRole) []pipeline.SessionEvent {
+	inf := func() *pipeline.InferenceExtension {
+		tools := make([]pipeline.InferenceTool, ntools)
+		return &pipeline.InferenceExtension{
+			Model:     "claude-opus-5",
+			Messages:  make([]pipeline.InferenceMessage, msgs),
+			Tools:     tools,
+			AgentRole: role,
+		}
+	}
+	resp := inf()
+	resp.InputTokens, resp.CacheReadTokens = 300, context-300
+	return []pipeline.SessionEvent{
+		{At: at, RequestID: id, Phase: pipeline.SessionRequest,
+			Direction: pipeline.Outbound, Inference: inf()},
+		{At: at.Add(time.Second), RequestID: id, Phase: pipeline.SessionResponse,
+			Direction: pipeline.Outbound, Inference: resp},
+	}
+}
+
+// THE FIGURE OUTLIVES THE EVENTS IT WAS READ FROM, which is the opposite of the invariant
+// TestAppend_RunningTotalsMatchAFullRecomputation holds for cost.
+//
+// cost is a SUM and stays equal to sumCost(Events), shedding whatever a trim evicts — that is
+// what scopes the COST column exactly like the TOKENS column beside it. This is an EXTREMUM under
+// a total order, so a trim has nothing to subtract from it; recomputing it over the survivors
+// would report a small conversation when the conversation is large and merely aged out.
+//
+// THE ASSERTIONS DIVIDE THE WORK, and it is worth saying which does which because the PR
+// description credited the wrong one. Making the figure recomputable from Events — the instinct, by
+// analogy to cost — reintroduces exactly the bug this field exists to remove, and it is caught by
+// `got == nil` BELOW THE LIST: the winning turn has been evicted and every survivor is a one-shot,
+// so a recomputing ListSessions reports nothing at all and the Fatal fires first. The negative
+// assertion at the end never runs under that regression.
+//
+// WHAT THE NEGATIVE ASSERTION GUARDS IS THE FIXTURE, which is what its own message says: it fires if
+// maxEvents is ever raised far enough for the winning turn to survive, leaving a test that passes
+// while exercising no trim at all. That is a real job — this test is otherwise indistinguishable
+// from TestAppend_MaintainsThePromptContextFigure — but it is not the regression guard.
+func TestAppend_PromptContextSurvivesATrim(t *testing.T) {
+	const maxEvents = 4
+	s := New(time.Hour, maxEvents, 0)
+	defer s.Close()
+	base := time.Now()
+
+	// The winning agentic turn, then enough one-shots to evict it. Nothing here is an intent
+	// event — planTrim's pin needs an INBOUND A2A request and these are outbound inference —
+	// so the trim is a plain FIFO drop and the winning turn really does leave the slice.
+	for _, e := range promptContextTurn("win", base, 600, 27, 500_000) {
+		s.Append("sess", e)
+	}
+	for i := 0; i < maxEvents*2; i++ {
+		for _, e := range promptContextTurn(fmt.Sprintf("o%d", i),
+			base.Add(time.Duration(i+1)*time.Minute), 3, 0, 7_000) {
+			s.Append("sess", e)
+		}
+	}
+
+	var got *pipeline.PromptContext
+	for _, sum := range s.ListSessions() {
+		if sum.ID == "sess" {
+			got = sum.PromptContext
+		}
+	}
+	if got == nil {
+		t.Fatal("no figure after the trim — the gauge went blank for a session that reached 500k")
+	}
+	if got.Tokens != 500_000 {
+		t.Errorf("reported %d, want 500000", got.Tokens)
+	}
+
+	// THE TRIM REALLY RAN, asserted directly rather than inferred from a figure comparison. View is
+	// the accessor for the events an entry still holds — this package has no Snapshot method — and it
+	// copies the whole slice.
+	live := s.View("sess").Events
+	if len(live) != maxEvents {
+		t.Fatalf("the entry holds %d events, want the cap of %d — this test's subject is what "+
+			"survives a trim, and nothing was trimmed", len(live), maxEvents)
+	}
+	// AND THE WINNING TURN IS NOT AMONG THE SURVIVORS, which is the precise thing the figure has to
+	// outlive. Named by request id, so the check does not depend on how many one-shots it took to
+	// push it out.
+	for _, e := range live {
+		if e.RequestID == "win" {
+			t.Fatalf("the 500k turn is still held (seq %d), so the stored figure could have been "+
+				"recomputed and this test proves nothing about the trim", e.Seq)
+		}
+	}
+
+	// And it is NOT recomputable from what survived — the fixture guard described above, kept
+	// because it also catches a survivor that happens to carry a 500k figure of its own.
+	var fold pipeline.PromptContextFold
+	fold.AddAll(live)
+	if fold.Tokens() == got.Tokens {
+		t.Error("a recomputation over surviving events matched the stored figure, so this test " +
+			"is not exercising the trim — raise the one-shot count")
+	}
+}
+
+// The ordinary path: Append maintains the figure, ListSessions reports it, and a session with
+// nothing to say reports nil rather than zero.
+func TestAppend_MaintainsThePromptContextFigure(t *testing.T) {
+	s := New(time.Hour, 0, 0)
+	defer s.Close()
+	base := time.Now()
+	for _, e := range promptContextTurn("c1", base, 600, 27, 500_000) {
+		s.Append("agentic", e)
+	}
+	for _, e := range promptContextTurn("o1", base, 3, 0, 282_000) {
+		s.Append("oneshot", e)
+	}
+
+	// Both flagged so an absent session fails loudly instead of the switch below silently
+	// asserting nothing for it — a missing case here would otherwise pass.
+	var sawAgentic, sawOneshot bool
+	for _, sum := range s.ListSessions() {
+		switch sum.ID {
+		case "agentic":
+			sawAgentic = true
+			if sum.PromptContext == nil || sum.PromptContext.Tokens != 500_000 {
+				t.Errorf("agentic: %+v, want tokens=500000", sum.PromptContext)
+			}
+			if sum.PromptContext != nil && !sum.PromptContext.Stated {
+				t.Error("agentic: Stated=false, but the fixture declares AgentRoleMain")
+			}
+		case "oneshot":
+			sawOneshot = true
+			if sum.PromptContext != nil {
+				t.Errorf("oneshot: %+v, want nil — no manifest means no conversation to measure",
+					sum.PromptContext)
+			}
+		}
+	}
+	if !sawAgentic {
+		t.Error("\"agentic\" session missing from ListSessions — the assertions above never ran")
+	}
+	if !sawOneshot {
+		t.Error("\"oneshot\" session missing from ListSessions — the assertions above never ran")
+	}
+}
+
+// summaryFor is the saw-flag dance the two tests above write out by hand: a session missing from
+// ListSessions has to fail LOUDLY rather than leave the assertions on it silently unrun.
+func summaryFor(t *testing.T, s *Store, id string) SessionSummary {
+	t.Helper()
+	for _, sum := range s.ListSessions() {
+		if sum.ID == id {
+			return sum
+		}
+	}
+	t.Fatalf("session %q missing from ListSessions — every assertion on it went unrun", id)
+	return SessionSummary{}
+}
+
+// A SUBAGENT'S TURN MUST NOT REACH THE WIRE, asserted at the Append boundary and not only one
+// package down.
+//
+// Until promptContextTurnAs existed every store fixture stated AgentRoleMain, so no test here ever
+// appended an event the rule has to REJECT on its role: the exclusion rested entirely on the pipeline
+// suite, and a store that folded the wrong half of a session would have passed this package.
+//
+// THE SUBAGENT WINS ON EVERY COMPARATOR better() RANKS BY — later, more messages, larger context — so
+// it takes the column under any rule except the one that excludes it outright, and 900,000 against a
+// one-million window is the bar an operator would act on.
+func TestAppend_PromptContextExcludesASubagent(t *testing.T) {
+	s := New(time.Hour, 0, 0)
+	defer s.Close()
+	base := time.Now()
+
+	for _, e := range promptContextTurn("main", base, 600, 27, 500_000) {
+		s.Append("mixed", e)
+	}
+	for _, e := range promptContextTurnAs("sub", base.Add(time.Minute), 900, 11, 900_000,
+		pipeline.AgentRoleSubagent) {
+		s.Append("mixed", e)
+	}
+	// A subagent carries its OWN manifest — 11 tools against the main thread's 27 — which is why the
+	// manifest filter cannot exclude it and the role has to.
+	for _, e := range promptContextTurnAs("only", base, 900, 11, 900_000,
+		pipeline.AgentRoleSubagent) {
+		s.Append("subagent-only", e)
+	}
+
+	got := summaryFor(t, s, "mixed").PromptContext
+	if got == nil {
+		t.Fatal("no figure for a session with a main-agent turn in it")
+	}
+	if got.Tokens != 500_000 {
+		t.Errorf("reported %d, want 500000 — the subagent's turn took the column", got.Tokens)
+	}
+	// A session that is nothing but subagent traffic has no conversation to measure, so the field is
+	// absent rather than zero and the gauge draws an em dash.
+	if got := summaryFor(t, s, "subagent-only").PromptContext; got != nil {
+		t.Errorf("subagent-only session published %+v, want nil", got)
+	}
+}
+
+// THE ORDERING IS APPLIED AT THIS BOUNDARY, on figures chosen so that LATEST and LARGEST disagree.
+//
+// Both turns state the role, so better() takes the stated arm and leads with At: the 12,000-token
+// turn after a compaction REPLACES the 830,000-token turn before it. Picking figures that disagree is
+// the point — a store that took a plain max over token counts would pass an "assert the big one
+// survives" test, and that reading is exactly what SessionSummary.PromptContext's doc used to invite
+// by calling itself the largest request seen.
+//
+// SO THIS FIELD IS NOT MONOTONIC and nothing may treat it as a high-water mark. The reported case is
+// this one: 999,623 held against a one-million window for ten hours after a compaction left the
+// conversation at 400,249 — a bar at 98.6% for a session with 600k of headroom.
+//
+// APPENDED IN BOTH ORDERS, in two sessions, because the rule is a max over a total order rather than
+// a sequential latch: the answer is the ordering's and not the arrival's. Fresh fixtures per session,
+// since Append interns strings in place through the shared InferenceExtension pointer.
+func TestAppend_PromptContextAppliesTheOrderingNotAMax(t *testing.T) {
+	s := New(time.Hour, 0, 0)
+	defer s.Close()
+	base := time.Now()
+	before := func() []pipeline.SessionEvent {
+		return promptContextTurn("before", base, 2468, 27, 830_000)
+	}
+	after := func() []pipeline.SessionEvent {
+		return promptContextTurn("after", base.Add(time.Hour), 40, 27, 12_000)
+	}
+	appendAll := func(id string, turns ...[]pipeline.SessionEvent) {
+		for _, turn := range turns {
+			for _, e := range turn {
+				s.Append(id, e)
+			}
+		}
+	}
+	appendAll("in-order", before(), after())
+	appendAll("reversed", after(), before())
+
+	for _, id := range []string{"in-order", "reversed"} {
+		got := summaryFor(t, s, id).PromptContext
+		if got == nil {
+			t.Fatalf("%s: no figure for a session with two stated turns", id)
+		}
+		if got.Tokens != 12_000 {
+			t.Errorf("%s: reported %d, want 12000 — the stated arm leads with At, so the turn "+
+				"AFTER the compaction holds the column; 830000 would mean a max over tokens",
+				id, got.Tokens)
+		}
+		if !got.Stated {
+			t.Errorf("%s: Stated=false, but both fixtures declare AgentRoleMain", id)
+		}
+		if !got.At.Equal(base.Add(time.Hour).Add(time.Second)) {
+			t.Errorf("%s: At=%v, want the later turn's response timestamp", id, got.At)
+		}
+	}
+}
+
+// THE FALLBACK ARM AT THE Append BOUNDARY, which is the third role promptContextTurnAs was written
+// for and the one nothing used. Every store fixture stated a role, so the unstated rule — the one
+// that runs for every client that is not Claude Code, since agentRole is empty whenever the request
+// says nothing — was exercised only in the pipeline tests.
+//
+// THE SAME TWO TURNS AS TestAppend_PromptContextAppliesTheOrderingNotAMax WITH THE ROLE WITHHELD, so
+// the two tests are one comparison rather than two fixtures: 830,000 at 2,468 messages, then 12,000
+// at 40 messages an hour later. Stated, better() leads with At and the answer is 12,000. Unstated it
+// leads with the message count and the answer is 830,000. The arms DISAGREE on this input, which is
+// what makes the assertion below evidence that the fallback ran rather than evidence that something
+// ran.
+//
+// AND HOLDING THE PRE-COMPACTION FIGURE IS THE FALLBACK'S DOCUMENTED COST, not a defect to fix here:
+// with no role to read, how long the conversation is separates the main thread from a subagent, and
+// a stale figure beats one that flips to a subagent's. See pipeline.PromptContextOf, which also says
+// why no window fixes it.
+func TestAppend_PromptContextFallsBackToTheMessageCount(t *testing.T) {
+	s := New(time.Hour, 0, 0)
+	defer s.Close()
+	base := time.Now()
+	for _, e := range promptContextTurnAs("before", base, 2468, 27, 830_000, "") {
+		s.Append("unstated", e)
+	}
+	for _, e := range promptContextTurnAs("after", base.Add(time.Hour), 40, 27, 12_000, "") {
+		s.Append("unstated", e)
+	}
+
+	got := summaryFor(t, s, "unstated").PromptContext
+	if got == nil {
+		t.Fatal("no figure for a session whose turns carry a manifest but state no role")
+	}
+	if got.Tokens != 830_000 {
+		t.Errorf("reported %d, want 830000 — with no role stated the most messages wins; 12000 is "+
+			"the STATED arm's answer for these same two turns, so the wrong arm ranked them",
+			got.Tokens)
+	}
+	if got.Stated {
+		t.Error("Stated=true for turns that declare no role")
+	}
+	// The comparator that won has to reach the wire, or a client cannot merge against this figure by
+	// the same rule the server ranked it with.
+	if got.Msgs != 2468 {
+		t.Errorf("Msgs=%d, want 2468 — the published figure must carry the count that won it",
+			got.Msgs)
+	}
+}
+
+// A session the store forgets entirely has no figure: the entry goes, and the fold with it. A
+// session recreated under the same id starts fresh, consistent with nextSeq restarting at 1.
+func TestPromptContext_WholeEntryEvictionDropsTheFigure(t *testing.T) {
+	s := New(time.Hour, 0, 1) // maxSessions=1
+	defer s.Close()
+	base := time.Now()
+	for _, e := range promptContextTurn("c1", base, 600, 27, 500_000) {
+		s.Append("first", e)
+	}
+	for _, e := range promptContextTurn("c2", base.Add(time.Minute), 600, 27, 100_000) {
+		s.Append("second", e)
+	}
+	for _, sum := range s.ListSessions() {
+		if sum.ID == "first" {
+			t.Error("the evicted session is still listed; this test is not exercising eviction")
+		}
+	}
+	for _, e := range promptContextTurn("c3", base.Add(2*time.Minute), 3, 0, 9_000) {
+		s.Append("first", e)
+	}
+	// Flagged so a "first" absent from the list (the recreate silently failing) fails loudly
+	// instead of the check below asserting nothing.
+	var sawRecreated bool
+	for _, sum := range s.ListSessions() {
+		if sum.ID == "first" {
+			sawRecreated = true
+			if sum.PromptContext != nil {
+				t.Errorf("recreated session carried a figure forward: %+v", sum.PromptContext)
+			}
+		}
+	}
+	if !sawRecreated {
+		t.Error("recreated \"first\" session missing from ListSessions — the assertion above never ran")
+	}
+}
+
+// NIL MUST SERIALIZE AS AN ABSENT FIELD, not as {"tokens":0}. A client reading zero would draw
+// an empty track where the column's contract is an em dash, and "barely used" and "not known"
+// are different answers this column has to keep apart.
+func TestSessionSummary_PromptContextOmittedWhenNil(t *testing.T) {
+	b, err := json.Marshal(SessionSummary{ID: "s"})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	// Case-insensitive: an untagged field marshals under its exact Go name, "PromptContext"
+	// (capital P), not "promptContext" — a case-sensitive check here would never see it and
+	// would pass whether or not the tag exists, pinning nothing.
+	if strings.Contains(strings.ToLower(string(b)), "promptcontext") {
+		t.Errorf("a nil figure serialized as %s, want the field absent", b)
+	}
+
+	at := time.Now().UTC().Truncate(time.Second)
+	b, err = json.Marshal(SessionSummary{
+		ID:            "s",
+		PromptContext: &pipeline.PromptContext{Tokens: 851_000, Stated: true, At: at, Msgs: 1509},
+	})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var back SessionSummary
+	if err := json.Unmarshal(b, &back); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if back.PromptContext == nil {
+		t.Fatal("the figure did not survive the round trip")
+	}
+	// All four fields, not the three PromptContext held before Msgs joined it — the fold's
+	// current() and better() both compare Msgs, so dropping it here would silently pin a
+	// round trip that loses part of the total order.
+	if back.PromptContext.Tokens != 851_000 || !back.PromptContext.Stated ||
+		!back.PromptContext.At.Equal(at) || back.PromptContext.Msgs != 1509 {
+		t.Errorf("round-tripped to %+v", back.PromptContext)
 	}
 }
 

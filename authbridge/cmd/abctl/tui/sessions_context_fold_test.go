@@ -35,15 +35,15 @@ func TestSessionContextFor_FoldMatchesAFullRescan(t *testing.T) {
 		all = append(all, next...)
 		m.events[id] = all
 
-		got := m.sessionContextFor(id)
-		want := sessionContext(all)
+		got := m.sessionContextFor(id, nil)
+		want := pipeline.PromptContextOf(all)
 		if got != want {
 			t.Fatalf("after %d events: folded %d, rescan %d", len(all), got, want)
 		}
 	}
 	// And the run really was folded rather than rescanned: every event has been accounted for.
-	if run := m.contextRun[id]; run.n != len(all) {
-		t.Errorf("folded %d events, slice holds %d", run.n, len(all))
+	if run := m.contextRun[id]; run.Folded() != len(all) {
+		t.Errorf("folded %d events, slice holds %d", run.Folded(), len(all))
 	}
 }
 
@@ -55,9 +55,9 @@ func TestSessionContextFor_RepeatCallIsAHit(t *testing.T) {
 		id: conversation("c1", time.Now(), 600, 500_000),
 	}}
 
-	first := m.sessionContextFor(id)
+	first := m.sessionContextFor(id, nil)
 	run := m.contextRun[id]
-	if got := m.sessionContextFor(id); got != first {
+	if got := m.sessionContextFor(id, nil); got != first {
 		t.Errorf("second call = %d, first = %d", got, first)
 	}
 	if m.contextRun[id] != run {
@@ -82,7 +82,7 @@ func TestSessionContextFor_AReplacementRebasesRatherThanDropping(t *testing.T) {
 			id: conversation("c1", base, 600, 500_000),
 		}}
 		m.sessionsTbl = newSessionsTable()
-		if got, want := m.sessionContextFor(id), 500_000; got != want {
+		if got, want := m.sessionContextFor(id, nil), 500_000; got != want {
 			t.Fatalf("before the snapshot: %d, want %d", got, want)
 		}
 		return m
@@ -94,7 +94,7 @@ func TestSessionContextFor_AReplacementRebasesRatherThanDropping(t *testing.T) {
 		m := newModel()
 		m.Update(snapshotLoadedMsg{id: id,
 			events: conversation("c2", base.Add(time.Hour), 900, 700_000)})
-		if got, want := m.sessionContextFor(id), 700_000; got != want {
+		if got, want := m.sessionContextFor(id, nil), 700_000; got != want {
 			t.Errorf("after the snapshot: %d, want %d", got, want)
 		}
 	})
@@ -102,13 +102,13 @@ func TestSessionContextFor_AReplacementRebasesRatherThanDropping(t *testing.T) {
 	// A SHORTER one does not WHERE NO ROLE IS STATED, and this is the knowingly-stale case. If the
 	// server has evicted the pre-compaction request, a refetch carries only the short
 	// post-compaction conversation and the gauge keeps the old figure — the same trade-off
-	// sessionContext documents for the live case, reached by a different route. A dash or a
+	// pipeline.PromptContextOf documents for the live case, reached by a different route. A dash or a
 	// subagent's figure is worse; the fix is the role, one subtest down.
 	t.Run("a shorter one keeps the remembered figure", func(t *testing.T) {
 		m := newModel()
 		m.Update(snapshotLoadedMsg{id: id,
 			events: conversation("c2", base.Add(time.Hour), 40, 62_000)})
-		if got, want := m.sessionContextFor(id), 500_000; got != want {
+		if got, want := m.sessionContextFor(id, nil), 500_000; got != want {
 			t.Errorf("after the snapshot: %d, want %d", got, want)
 		}
 	})
@@ -120,7 +120,7 @@ func TestSessionContextFor_AReplacementRebasesRatherThanDropping(t *testing.T) {
 		m := newModel()
 		m.Update(snapshotLoadedMsg{id: id,
 			events: mainAgent("c2", base.Add(time.Hour), 17, 59_807)})
-		if got, want := m.sessionContextFor(id), 59_807; got != want {
+		if got, want := m.sessionContextFor(id, nil), 59_807; got != want {
 			t.Errorf("after the snapshot: %d, want %d", got, want)
 		}
 	})
@@ -133,11 +133,11 @@ func TestSessionContextFor_AReplacementRebasesRatherThanDropping(t *testing.T) {
 			id: mainAgent("c1", base.Add(time.Hour), 600, 500_000),
 		}}
 		m.sessionsTbl = newSessionsTable()
-		if got, want := m.sessionContextFor(id), 500_000; got != want {
+		if got, want := m.sessionContextFor(id, nil), 500_000; got != want {
 			t.Fatalf("before the snapshot: %d, want %d", got, want)
 		}
 		m.Update(snapshotLoadedMsg{id: id, events: mainAgent("c0", base, 900, 700_000)})
-		if got, want := m.sessionContextFor(id), 500_000; got != want {
+		if got, want := m.sessionContextFor(id, nil), 500_000; got != want {
 			t.Errorf("after the snapshot: %d, want %d — an earlier turn took the column", got, want)
 		}
 	})
@@ -150,14 +150,14 @@ func TestFoldSessionContext_TiesKeepTheLatest(t *testing.T) {
 	evs := conversation("first", base, 700, 445_000)
 	evs = append(evs, conversation("second", base.Add(time.Minute), 700, 448_000)...)
 
-	if got, want := sessionContext(evs), 448_000; got != want {
-		t.Errorf("sessionContext = %d, want %d", got, want)
+	if got, want := pipeline.PromptContextOf(evs), 448_000; got != want {
+		t.Errorf("pipeline.PromptContextOf = %d, want %d", got, want)
 	}
 	// And the same answer when the two arrive in separate folds, which is the production path.
 	m := &model{events: map[string][]pipeline.SessionEvent{"s": evs[:2]}}
-	_ = m.sessionContextFor("s")
+	_ = m.sessionContextFor("s", nil)
 	m.events["s"] = evs
-	if got, want := m.sessionContextFor("s"), 448_000; got != want {
+	if got, want := m.sessionContextFor("s", nil), 448_000; got != want {
 		t.Errorf("folded in two steps = %d, want %d", got, want)
 	}
 }

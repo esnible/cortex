@@ -316,7 +316,7 @@ func rowTokens(c cellContext) int {
 		if resp == nil {
 			return 0
 		}
-		return promptTokens(resp.Inference)
+		return pipeline.PromptTokensOf(resp.Inference)
 	default:
 		return 0
 	}

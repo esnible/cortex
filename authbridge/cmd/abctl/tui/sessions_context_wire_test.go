@@ -66,21 +66,21 @@ func project(events []pipeline.SessionEvent, counts bool) []pipeline.SessionEven
 // two ints the projection records before dropping the slices.
 func TestSessionContext_ReadsAProjectedTimelineThroughTheCounts(t *testing.T) {
 	full := conversation("c1", time.Now(), 600, 500_000)
-	if got, want := sessionContext(full), 500_000; got != want {
+	if got, want := pipeline.PromptContextOf(full), 500_000; got != want {
 		t.Fatalf("unprojected fixture = %d, want %d", got, want)
 	}
-	if got, want := sessionContext(projected(full)), 500_000; got != want {
+	if got, want := pipeline.PromptContextOf(projected(full)), 500_000; got != want {
 		t.Errorf("projected = %d, want %d — the counts are what make a delivered row readable",
 			got, want)
 	}
 	// And a one-shot stays a one-shot through the projection: a manifest of zero is STATED as
 	// zero, which is the same answer the slice gave.
-	if got := sessionContext(projected(oneShot("o1", time.Now(), 282_000))); got != 0 {
+	if got := pipeline.PromptContextOf(projected(oneShot("o1", time.Now(), 282_000))); got != 0 {
 		t.Errorf("a projected one-shot = %d, want 0", got)
 	}
 	// A proxy that projects without stating the counts cannot be read, and must not be guessed
 	// at: this is the case contextRun's remembered figure exists for.
-	if got := sessionContext(projectedNoCounts(full)); got != 0 {
+	if got := pipeline.PromptContextOf(projectedNoCounts(full)); got != 0 {
 		t.Errorf("projected with no counts = %d, want 0", got)
 	}
 }
@@ -97,8 +97,8 @@ func TestSessionContext_StillReadsAnOldProxysSlices(t *testing.T) {
 			}
 		}
 	}
-	if got, want := sessionContext(evs), 500_000; got != want {
-		t.Errorf("sessionContext = %d, want %d — counts-only reading would blank every row "+
+	if got, want := pipeline.PromptContextOf(evs), 500_000; got != want {
+		t.Errorf("pipeline.PromptContextOf = %d, want %d — counts-only reading would blank every row "+
 			"served by a proxy that predates them", got, want)
 	}
 }
@@ -115,7 +115,7 @@ func TestSessionContextFor_AProjectedSnapshotKeepsTheStreamsFigure(t *testing.T)
 	m := &model{events: map[string][]pipeline.SessionEvent{id: full}}
 	m.sessionsTbl = newSessionsTable()
 
-	if got, want := m.sessionContextFor(id), 500_000; got != want {
+	if got, want := m.sessionContextFor(id, nil), 500_000; got != want {
 		t.Fatalf("from the stream: %d, want %d", got, want)
 	}
 
@@ -124,7 +124,7 @@ func TestSessionContextFor_AProjectedSnapshotKeepsTheStreamsFigure(t *testing.T)
 	// stops testing the rebase. The counts-less window is the case the memory exists for.
 	m.Update(snapshotLoadedMsg{id: id, events: projectedNoCounts(full), projected: true})
 
-	if got, want := m.sessionContextFor(id), 500_000; got != want {
+	if got, want := m.sessionContextFor(id, nil), 500_000; got != want {
 		t.Errorf("after a view=summary snapshot: %d, want %d — the column blanked on drill-in",
 			got, want)
 	}
@@ -142,7 +142,7 @@ func TestSessionContextFor_AnOlderPageKeepsTheFigure(t *testing.T) {
 	full := conversation("c1", base, 600, 500_000)
 	m := pagedModel(t, full)
 
-	if got, want := m.sessionContextFor("sess-1"), 500_000; got != want {
+	if got, want := m.sessionContextFor("sess-1", nil), 500_000; got != want {
 		t.Fatalf("from the stream: %d, want %d", got, want)
 	}
 	// The snapshot leaves the slice projected — and clears the paging state, so [o] rebuilds it.
@@ -153,7 +153,7 @@ func TestSessionContextFor_AnOlderPageKeepsTheFigure(t *testing.T) {
 	older := projectedNoCounts(conversation("c0", base.Add(-time.Hour), 40, 62_000))
 	m.applyOlderPage(olderPageLoadedMsg{id: "sess-1", events: older, serverOldest: 1})
 
-	if got, want := m.sessionContextFor("sess-1"), 500_000; got != want {
+	if got, want := m.sessionContextFor("sess-1", nil), 500_000; got != want {
 		t.Errorf("after an older page: %d, want %d — nothing in the slice can answer this "+
 			"question any more, so the remembered figure is the only source left", got, want)
 	}
@@ -174,7 +174,7 @@ func TestSessionContextFor_ADetailFetchFillsTheGauge(t *testing.T) {
 	// source of a figure at all. Against a current proxy the snapshot answers on its own — see
 	// TestSessionsTable_AnIdleSessionsSnapshotFillsTheGauge.
 	m := &model{events: map[string][]pipeline.SessionEvent{id: projectedNoCounts(full)}}
-	if got := m.sessionContextFor(id); got != 0 {
+	if got := m.sessionContextFor(id, nil); got != 0 {
 		t.Fatalf("a projected timeline: %d, want 0 (the dash)", got)
 	}
 
@@ -182,7 +182,7 @@ func TestSessionContextFor_ADetailFetchFillsTheGauge(t *testing.T) {
 	resp := full[1]
 	m.replaceHeldEvent(id, &resp)
 
-	if got, want := m.sessionContextFor(id), 500_000; got != want {
+	if got, want := m.sessionContextFor(id, nil), 500_000; got != want {
 		t.Errorf("after the detail fetch: %d, want %d — the write-back was invisible to the "+
 			"length check", got, want)
 	}
@@ -197,7 +197,7 @@ func TestSessionContextFor_APodSwitchVoidsTheFigure(t *testing.T) {
 	m.parentCtx, m.ctx = context.Background(), context.Background()
 	m.cancel = func() {}
 
-	if got, want := m.sessionContextFor("sess-1"), 500_000; got != want {
+	if got, want := m.sessionContextFor("sess-1", nil), 500_000; got != want {
 		t.Fatalf("on the first pod: %d, want %d", got, want)
 	}
 
@@ -205,7 +205,7 @@ func TestSessionContextFor_APodSwitchVoidsTheFigure(t *testing.T) {
 	// The next pod happens to have a session with the same id and the same event count.
 	m.events["sess-1"] = conversation("other", base.Add(time.Hour), 40, 62_000)
 
-	if got, want := m.sessionContextFor("sess-1"), 62_000; got != want {
+	if got, want := m.sessionContextFor("sess-1", nil), 62_000; got != want {
 		t.Errorf("on the second pod: %d, want %d — the previous pod's context carried over",
 			got, want)
 	}
@@ -219,18 +219,18 @@ func TestSessionContextFor_AReleaseOfItsEventsKeepsTheFigure(t *testing.T) {
 	m := &model{events: map[string][]pipeline.SessionEvent{
 		id: conversation("c1", time.Now(), 600, 500_000),
 	}}
-	if got, want := m.sessionContextFor(id), 500_000; got != want {
+	if got, want := m.sessionContextFor(id, nil), 500_000; got != want {
 		t.Fatalf("before the release: %d, want %d", got, want)
 	}
 
 	delete(m.events, id) // what the picker's prune does
-	if got, want := m.sessionContextFor(id), 500_000; got != want {
+	if got, want := m.sessionContextFor(id, nil), 500_000; got != want {
 		t.Errorf("after the release: %d, want %d", got, want)
 	}
 	// And a later streamed turn still wins — on the message count here, since these fixtures
 	// state no role.
 	m.events[id] = conversation("c2", time.Now().Add(time.Minute), 900, 700_000)
-	if got, want := m.sessionContextFor(id), 700_000; got != want {
+	if got, want := m.sessionContextFor(id, nil), 700_000; got != want {
 		t.Errorf("after a new turn: %d, want %d", got, want)
 	}
 }
@@ -258,18 +258,18 @@ func TestSessionContextFor_ATieAcrossARebaseKeepsTheLaterTurn(t *testing.T) {
 
 	m := &model{events: map[string][]pipeline.SessionEvent{id: all}}
 	m.sessionsTbl = newSessionsTable()
-	if got, want := m.sessionContextFor(id), 500_000; got != want {
+	if got, want := m.sessionContextFor(id, nil), 500_000; got != want {
 		t.Fatalf("from the stream: %d, want %d", got, want)
 	}
 	m.Update(snapshotLoadedMsg{id: id, events: projectedNoCounts(all), projected: true})
-	if got, want := m.sessionContextFor(id), 500_000; got != want {
+	if got, want := m.sessionContextFor(id, nil), 500_000; got != want {
 		t.Fatalf("after the snapshot: %d, want %d", got, want)
 	}
 
 	resp := older[1] // the detail pane fetched the older turn's response
 	m.replaceHeldEvent(id, &resp)
 
-	if got, want := m.sessionContextFor(id), 500_000; got != want {
+	if got, want := m.sessionContextFor(id, nil), 500_000; got != want {
 		t.Errorf("after opening the older turn: %d, want %d — an older tie took the column",
 			got, want)
 	}
@@ -290,13 +290,13 @@ func TestSessionsTable_AnIdleSessionsSnapshotFillsTheGauge(t *testing.T) {
 
 	m := &model{events: map[string][]pipeline.SessionEvent{}}
 	m.sessionsTbl = newSessionsTable()
-	if got := m.sessionContextFor(id); got != 0 {
+	if got := m.sessionContextFor(id, nil); got != 0 {
 		t.Fatalf("before the snapshot: %d, want 0 — abctl holds nothing for this session", got)
 	}
 
 	m.Update(snapshotLoadedMsg{id: id, events: projected(evs), projected: true})
 
-	if got, want := m.sessionContextFor(id), 851_000; got != want {
+	if got, want := m.sessionContextFor(id, nil), 851_000; got != want {
 		t.Errorf("after the snapshot: %d, want %d — the conversation's figure, not the "+
 			"one-shot's 7,000 and not a dash", got, want)
 	}
@@ -320,7 +320,7 @@ func TestSessionsTable_AProjectedUnstatedTimelinePicksTheMainThread(t *testing.T
 	m.sessionsTbl = newSessionsTable()
 	m.Update(snapshotLoadedMsg{id: id, events: projected(evs), projected: true})
 
-	if got, want := m.sessionContextFor(id), 851_000; got != want {
+	if got, want := m.sessionContextFor(id, nil), 851_000; got != want {
 		t.Errorf("after the snapshot: %d, want %d — the subagent spoke last and is a candidate; "+
 			"with no role stated only the message count keeps the column on the main thread",
 			got, want)
@@ -343,7 +343,7 @@ func TestSessionsTable_AProjectedTimelineReadsTheRole(t *testing.T) {
 	m.sessionsTbl = newSessionsTable()
 	m.Update(snapshotLoadedMsg{id: id, events: projected(evs), projected: true})
 
-	if got, want := m.sessionContextFor(id), 217_121; got != want {
+	if got, want := m.sessionContextFor(id, nil), 217_121; got != want {
 		t.Errorf("after the snapshot: %d, want %d — a longer, later subagent took the column, so "+
 			"the projected row states no role", got, want)
 	}
@@ -370,7 +370,7 @@ func TestSessionContextFor_DoesNotRescanTheFoldedPrefix(t *testing.T) {
 		m := &model{events: map[string][]pipeline.SessionEvent{
 			id: conversation("c1", base, 600, 500_000),
 		}}
-		if got, want := m.sessionContextFor(id), 500_000; got != want {
+		if got, want := m.sessionContextFor(id, nil), 500_000; got != want {
 			t.Fatalf("the first fold: %d, want %d", got, want)
 		}
 		// Same length, so only a re-read of the prefix can notice.
@@ -380,7 +380,7 @@ func TestSessionContextFor_DoesNotRescanTheFoldedPrefix(t *testing.T) {
 
 	t.Run("a repeat call with nothing appended", func(t *testing.T) {
 		m := poisoned(t)
-		if got, want := m.sessionContextFor(id), 500_000; got != want {
+		if got, want := m.sessionContextFor(id, nil), 500_000; got != want {
 			t.Errorf("repeat call = %d, want %d — 999000 means the length check stopped "+
 				"short-circuiting, so every row rescans on every rebuild", got, want)
 		}
@@ -390,7 +390,7 @@ func TestSessionContextFor_DoesNotRescanTheFoldedPrefix(t *testing.T) {
 		m := poisoned(t)
 		m.events[id] = append(m.events[id],
 			conversation("c2", base.Add(time.Hour), 700, 600_000)...)
-		if got, want := m.sessionContextFor(id), 600_000; got != want {
+		if got, want := m.sessionContextFor(id, nil), 600_000; got != want {
 			t.Errorf("after one turn = %d, want %d — 999000 means the delta fold became a "+
 				"whole-slice fold", got, want)
 		}
@@ -406,7 +406,7 @@ func TestSessionContextFor_ThePickerReleaseKeepsTheFigure(t *testing.T) {
 	base := time.Now()
 	m := fitModel(t, paneEvents, 200, 40, conversation("c1", base, 600, 500_000))
 	m.events["other"] = conversation("c2", base, 900, 700_000)
-	if got, want := m.sessionContextFor("other"), 700_000; got != want {
+	if got, want := m.sessionContextFor("other", nil), 700_000; got != want {
 		t.Fatalf("before the release: %d, want %d", got, want)
 	}
 
@@ -423,7 +423,7 @@ func TestSessionContextFor_ThePickerReleaseKeepsTheFigure(t *testing.T) {
 	for _, id := range []string{"sess-1", "other"} {
 		if _, held := m.events[id]; !held {
 			released = true
-			if got := m.sessionContextFor(id); got == 0 {
+			if got := m.sessionContextFor(id, nil); got == 0 {
 				t.Errorf("%q had its events released and its gauge went to a dash", id)
 			}
 		}
@@ -480,6 +480,51 @@ func assertGaugeFilled(t *testing.T, cell, when string) {
 	}
 }
 
+// assertGaugeShows fails unless the cell is EXACTLY the gauge promptTokens draws at the width the
+// table built the row against — a different question from assertGaugeFilled's, and the one the
+// tests below actually mean.
+//
+// INK BETWEEN THE BRACKETS WAS NOT ENOUGH, measured rather than argued — and the measurement is the
+// DOUBLED figure. Drawing contextGauge(m.sessionContextFor(...)*2, contextW) in rebuildSessionsTable
+// left the whole tui suite green before this helper existed, and fails all five row tests below with
+// it: a gauge at twice the figure still has ink between its brackets, so "the row repainted" was
+// pinned as "something was drawn". The figure and the cell have to be pinned TOGETHER.
+//
+// AND NOT THE CONSTANT GAUGE, which is the mutation the review that found this named first and which
+// does not in fact isolate anything: contextGauge(1, contextW) fails
+// TestSessionsTable_ContextColumnReplacesActive, which requires a full block at 500k, and
+// TestSessionsTable_UnknownContextIsADash, which requires the dash — so it never reaches the tests
+// below on its own account. Recorded because a reader reaching for it would conclude the weakness had
+// already been closed.
+//
+// assertGaugeFilled IS STILL CALLED FIRST, for the diagnostic rather than for the coverage: a %q
+// gauge against another %q gauge is hard to read, so the shape failures — "not a gauge at all", "an
+// EMPTY track" — get to speak before the byte comparison does. Its deliberate weakness is right for
+// that purpose (a small figure legitimately draws less than a full block) and wrong as the only
+// assertion in a test whose name promises a figure.
+//
+// THE WIDTH IS READ BACK OFF THE INSTALLED HEADER rather than recomputed from m.width. The fitter
+// shrinks columns on a narrow terminal and rebuildSessionsTable draws every cell to the FITTED
+// width, so asking m.sessionsTbl.Columns() is asking the table what it built the row against —
+// the same object heldContextCell reads the row from, which is what keeps the two in step.
+func assertGaugeShows(t *testing.T, m *model, id string, promptTokens int, when string) {
+	t.Helper()
+	cell := heldContextCell(t, m, id)
+	assertGaugeFilled(t, cell, when)
+	w := sessionsColumnWidth(m.sessionsTbl.Columns(), contextColumnTitle)
+	want := contextGauge(promptTokens, w)
+	// A dash or an empty string would make the comparison below assert the ABSENCE of a figure,
+	// which is a claim no caller of this helper is making.
+	if want == "" || want == emptyCell {
+		t.Fatalf("%s the gauge of %d at the fitted width %d is %q — this helper asserts a FIGURE, "+
+			"so the fixture or the width is wrong", when, promptTokens, w, want)
+	}
+	if cell != want {
+		t.Errorf("%s the row holds %q, want %q — the gauge of %d prompt tokens at width %d",
+			when, cell, want, promptTokens, w)
+	}
+}
+
 // THE FIGURE IS NOT THE ROW, and every test above this one stops at the figure.
 //
 // Which is how the reported bug survived a suite this size. TestSessionsTable_AnIdleSessionsSnapshotFillsTheGauge
@@ -527,11 +572,11 @@ func TestSessionsTable_ASnapshotRepaintsTheGaugeItFilled(t *testing.T) {
 	m.Update(snapshotLoadedMsg{
 		id: id, events: projected(conversation("c1", base, 600, 500_000)), projected: true})
 
-	if got, want := m.sessionContextFor(id), 500_000; got != want {
+	if got, want := m.sessionContextFor(id, nil), 500_000; got != want {
 		t.Fatalf("the figure is %d, want %d — this test is about the ROW, which cannot be "+
 			"right until the figure is", got, want)
 	}
-	assertGaugeFilled(t, heldContextCell(t, m, id), "after the snapshot")
+	assertGaugeShows(t, m, id, 500_000, "after the snapshot")
 }
 
 // AN OLDER PAGE IS THE SAME DEFECT AT THE SECOND SITE. [o] merges a projected page, rebases, and
@@ -554,11 +599,12 @@ func TestSessionsTable_AnOlderPageRepaintsTheGauge(t *testing.T) {
 		events:       projected(conversation("c0", base.Add(-time.Hour), 40, 62_000)),
 		serverOldest: 1})
 
-	if got, want := m.sessionContextFor("sess-1"), 62_000; got != want {
+	if got, want := m.sessionContextFor("sess-1", nil), 62_000; got != want {
 		t.Fatalf("the figure is %d, want %d", got, want)
 	}
-	// 62,000 of 1M draws a half-block sliver and no full block — see assertGaugeFilled.
-	assertGaugeFilled(t, heldContextCell(t, m, "sess-1"), "after the older page")
+	// 62,000 of 1M draws a half-block sliver and no full block — see assertGaugeFilled, which is
+	// why the exact comparison is against contextGauge's own output rather than against a literal.
+	assertGaugeShows(t, m, "sess-1", 62_000, "after the older page")
 }
 
 // AND THE DETAIL FETCH IS THE THIRD, which matters most of the three: against a proxy that projects
@@ -589,8 +635,148 @@ func TestSessionsTable_ADetailFetchRepaintsTheGauge(t *testing.T) {
 	resp := full[1] // what GetEvent returns: the manifest is back
 	m.Update(detailEventLoadedMsg{sessionID: "s", seq: resp.Seq, event: &resp})
 
-	if got, want := m.sessionContextFor("s"), 500_000; got != want {
+	if got, want := m.sessionContextFor("s", nil), 500_000; got != want {
 		t.Fatalf("the figure is %d, want %d", got, want)
 	}
-	assertGaugeFilled(t, heldContextCell(t, m, "s"), "after the detail fetch")
+	assertGaugeShows(t, m, "s", 500_000, "after the detail fetch")
+}
+
+// THE BUG THIS WHOLE CHANGE EXISTS FOR: a session idle since before abctl attached shows a gauge
+// on the first /v1/sessions poll, with no Enter, no snapshot and no wait.
+//
+// Asserted on the RENDERED ROW rather than on sessionContextFor, because a correct figure that
+// nothing paints is the defect PR #1102 fixed and this file's own tests missed.
+func TestSessionsTable_AnIdleRowShowsTheServersFigureWithoutBeingOpened(t *testing.T) {
+	base := time.Now()
+	const id = "idle"
+	m := &model{width: 200, pane: paneSessions, events: map[string][]pipeline.SessionEvent{}}
+	m.sessionsTbl = newSessionsTable()
+
+	// What the poll delivers: a row abctl holds no events for, carrying the server's figure.
+	m.Update(sessionsLoadedMsg([]session.SessionSummary{{
+		ID: id, UpdatedAt: base, EventCount: 1509,
+		PromptContext: &pipeline.PromptContext{Tokens: 851_000, Stated: true, At: base},
+	}}))
+
+	// The SERVER's 851,000 and nothing else: abctl holds no events for this row, so an exact
+	// comparison here is also what pins that rebuildSessionsTable passes s.PromptContext into
+	// sessionContextFor at all rather than dropping it.
+	assertGaugeShows(t, m, id, 851_000, "on the first poll")
+}
+
+// AND THE PROXY-UPGRADE REGRESSION, which is why PromptContext carries Stated.
+//
+// NAMED FOR THE FIGURE, NOT THE ROW, which a review corrected: this asserts on sessionContextFor,
+// and a TestSessionsTable_ prefix is a promise about the rendered cell — the very confusion the
+// comment above TestSessionsTable_ASnapshotRepaintsTheGaugeItFilled says let the reported bug
+// survive this suite. The claim here is about the merge RULE at abctl's call site, so the name says
+// so and the sessions table it used to build (and never read) is gone.
+//
+// The row-level half of this path is covered rather than dropped:
+// TestSessionsTable_AnIdleRowShowsTheServersFigureWithoutBeingOpened pins that a server figure
+// reaches the cell, and the three repaint tests above pin that a local one does.
+func TestSessionContextFor_AStatedServerFigureBeatsAStaleUnstatedLocalOne(t *testing.T) {
+	base := time.Now()
+	const id = "s"
+	// abctl's own figure, folded from a proxy that stated no roles: the documented
+	// stale-fallback case, 700k held from before a compaction.
+	m := &model{width: 200, pane: paneSessions, events: map[string][]pipeline.SessionEvent{
+		id: conversation("pre", base.Add(-time.Hour), 2468, 700_000),
+	}}
+	if got := m.sessionContextFor(id, nil); got != 700_000 {
+		t.Fatalf("local figure is %d, want 700000 — the fixture is not exercising the fallback", got)
+	}
+
+	server := &pipeline.PromptContext{Tokens: 200_000, Stated: true, At: base}
+	if got := m.sessionContextFor(id, server); got != 200_000 {
+		t.Errorf("merged to %d, want 200000 — a stated figure beats an unstated one at any "+
+			"size, so max() over token counts is not the rule", got)
+	}
+}
+
+// AND MERGING CAN MOVE AN UNSTATED FIGURE THE OTHER WAY, which is the mirror of the test above and
+// the reason sessionContextFor's doc no longer reads as though merging can only improve a row.
+//
+// REPRODUCED THROUGH THE REAL PATH, not constructed: abctl attached mid-session and had followed a
+// compaction correctly, while the server's fold — older, and with the longer memory — still held the
+// pre-compaction turn. The unstated arm LEADS ON Msgs, so 2,468 retained messages outrank the
+// client's post-compaction 952 and the merge hands the column back to the stale figure. That row
+// showed 400,249 before this PR published anything.
+//
+// THE ORDERING IS NOT THE BUG HERE, so this test pins the behaviour rather than forbidding it. It is
+// the known cost of the message-count fallback, stated in pipeline.PromptContextOf: with no role to
+// read, a compaction leaves the longer pre-compaction request retained and the gauge keeps showing
+// the old context. abctl only had the better answer by the accident of having attached later, which
+// is not a rule the merge can prefer. If a rule is ever found that does better, it belongs in
+// better() for BOTH combines, and this expectation should change there.
+func TestSessionContextFor_AStaleServerFigureCanTakeTheColumnFromAFresherLocalOne(t *testing.T) {
+	base := time.Now()
+	const id = "s"
+	// The client's own fold: unstated, and correctly following the compaction.
+	m := &model{width: 200, pane: paneSessions, events: map[string][]pipeline.SessionEvent{
+		id: conversation("post-compaction", base, 952, 400_249),
+	}}
+	if got := m.sessionContextFor(id, nil); got != 400_249 {
+		t.Fatalf("local figure is %d, want 400249 — the fixture is not exercising the fallback", got)
+	}
+
+	// The server's: unstated too, ten hours older, and longer because it never lost the
+	// pre-compaction turn.
+	server := &pipeline.PromptContext{Tokens: 999_623, Msgs: 2468, At: base.Add(-10 * time.Hour)}
+	if got := m.sessionContextFor(id, server); got != 999_623 {
+		t.Errorf("merged to %d, want 999623 — with no role stated the merge ranks on message count, "+
+			"so a stale server figure CAN take the column from a fresher local one; see the comment "+
+			"above before changing this expectation", got)
+	}
+}
+
+// An old proxy sends nothing, and nothing must not blank a row abctl can answer for itself.
+//
+// AT THE FIGURE, AND NAMED FOR IT: nil is the merge's identity, which is a claim about
+// sessionContextFor and not about a cell. The ROW-level half has its own sibling —
+// TestSessionsTable_ACachedOnlyRowDrawsItsOwnFigure passes nil at the other call site, and the three
+// repaint tests above all reach rebuildSessionsTable with a summary carrying no figure — so routing
+// this one through the table as well would add a fourth copy of a covered path rather than coverage.
+func TestSessionContextFor_ANilServerFigureKeepsTheLocalOne(t *testing.T) {
+	base := time.Now()
+	const id = "s"
+	m := &model{width: 200, events: map[string][]pipeline.SessionEvent{
+		id: conversation("c1", base, 600, 500_000),
+	}}
+	if got := m.sessionContextFor(id, nil); got != 500_000 {
+		t.Errorf("got %d, want 500000", got)
+	}
+}
+
+// AND THE CACHED-ONLY ROW STILL DRAWS ITS GAUGE, which is the second call site — the one the server
+// does not list at all, so it passes nil and abctl's own fold is the ONLY possible source.
+//
+// On the RENDERED ROW, for the headline test's reason: the figure is not the row. This is also the
+// path a future "the server always sends it now, drop the local fold" simplification breaks, and it
+// would break it silently — the server has forgotten these sessions by definition (#870), so there
+// is nothing for such a change to fall back to.
+//
+// ITS OWN FIGURE, ASSERTED AS A FIGURE. This test read `assertGaugeFilled` until a review measured
+// what that buys: replacing the cell with a constant contextGauge(1, contextW) left it green, so
+// "draws its own figure" was pinned only as "draws something". It also has no `!= emptyCell`
+// before-arm to lean on, unlike the three repaint tests above — the row does not exist until
+// sessionsLoadedMsg builds it — which made the exactness the whole of the assertion rather than half
+// of it.
+func TestSessionsTable_ACachedOnlyRowDrawsItsOwnFigure(t *testing.T) {
+	base := time.Now()
+	const id = "vanished"
+	m := &model{width: 200, pane: paneSessions, events: map[string][]pipeline.SessionEvent{
+		id: conversation("c1", base, 600, 500_000),
+	}}
+	m.sessionsTbl = newSessionsTable()
+
+	// The server lists nothing — a proxy restart, or any blip that empties /v1/sessions — so the
+	// row comes from cachedOnlySessionIDs and carries no summary to read a figure from.
+	m.Update(sessionsLoadedMsg{})
+
+	if len(m.sessions) != 0 {
+		t.Fatalf("the server list is %v, want empty — this test is about a row with no summary",
+			m.sessions)
+	}
+	assertGaugeShows(t, m, id, 500_000, "on a cached-only row")
 }

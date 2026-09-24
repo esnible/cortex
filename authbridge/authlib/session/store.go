@@ -87,6 +87,26 @@ type entry struct {
 	// larger, and it is the only way to subtract without either parsing again or re-deriving
 	// the pin rule. applyTrim reshapes this and Events together for that second reason.
 	money []eventMoney
+
+	// context is the CONTEXT gauge's answer for this session: the main-agent turn that RANKS
+	// HIGHEST under the rule's total order, in prompt tokens — the LATEST such turn where the
+	// client states its role, the one with the MOST MESSAGES where it does not. Maintained by
+	// Append and read by ListSessions; see pipeline.PromptContextFold for the order itself.
+	//
+	// NOT A MAXIMUM OVER TOKENS, so this can DECREASE: the stated arm leads with the timestamp,
+	// which is the point of the column. A compaction is the ordinary case — 830,000 before it and
+	// 12,000 on the turn after — and nothing here or on the wire may be read as a high-water mark.
+	//
+	// AN EXTREMUM, NOT A SUM, and that is the whole difference from cost above. It is deliberately
+	// NOT maintained in lockstep with Events: nothing about it is accumulated, so a trim has
+	// nothing to subtract from it, where a partial sum over a trimmed slice sheds exactly what left
+	// the slice. Recomputing it over the survivors would not understate by a known amount the way
+	// that sum does — it would report a small conversation for a session whose conversation is
+	// large and merely aged out. See TestAppend_PromptContextSurvivesATrim.
+	//
+	// So this needs none of the machinery cost needs: no subtraction on trim, and no parallel
+	// per-event slice to make that subtraction decode-free. Fixed size per SESSION.
+	context pipeline.PromptContextFold
 }
 
 // MaxSessionIDLen is the longest session ID the store keeps intact; longer ids
@@ -298,6 +318,34 @@ func (s *Store) Append(sessionID string, event pipeline.SessionEvent) {
 	sess.money = append(sess.money, money)
 	sess.cost.Add(money.cost)
 	sess.avoided.Add(money.avoided)
+	// AND THE PROMPT-CONTEXT FIGURE, which unlike the two above sheds nothing on trim.
+	//
+	// THE PROPERTY IS THAT AN EVENT APPENDED AND IMMEDIATELY EVICTED STILL CONTRIBUTES, because
+	// the figure outlives the events it was read from — TestAppend_PromptContextSurvivesATrim pins
+	// it. WHAT SECURES IT IS THAT Add READS &event, THE LOCAL PARAMETER, rather than the tail of
+	// sess.Events. An earlier version of this comment called the placement "load-bearing rather than
+	// incidental" instead, which is false as stated and would have sent a reader guarding the wrong
+	// thing: what breaks the property is sourcing the candidate from the stored slice.
+	//
+	// FREE OF THE TRIM, NOT FREE OF EVERYTHING BELOW IT, and the distinction is worth stating
+	// because the first correction of that claim overshot in the other direction. The trim reshapes
+	// sess.Events and sess.money and subtracts from sess.cost and sess.avoided, none of which this
+	// reads, and there is no early return between here and it — so moving this call past the TRIM
+	// would change nothing. THE RECORDERS ARE NOT IN THAT CLASS: they run between here and the trim
+	// and are handed &event, and Recorder's contract forbids blocking and re-entering the store
+	// while saying nothing about MUTATION. Every implementation in tree reads only
+	// (usage.Aggregator, costledger.Writer, and logAppended just below), so nothing is wrong today —
+	// but that is a property of those implementations rather than a guarantee from the interface, so
+	// moving this call below them is not provably free and must not be done casually.
+	//
+	// NOT HOISTED ABOVE THE LOCK like moneyOf, and that is not an oversight. moneyOf is a
+	// json.Unmarshal and was hoisted because of a measured regression; this is a phase check, a
+	// nil check, len(Tools), two AgentRole comparisons, a messageCount read, TWO int adds and
+	// one comparison (pipeline.PromptTokensOf sums three fields), a Round(0) that clears a
+	// monotonic reading, and — once the fold already holds a figure — better()'s time.Time
+	// Equal/After chain: tens of nanoseconds, no allocation, NO DECODE. Splitting it to hoist the
+	// extraction would add an exported type for plumbing alone and save nothing measurable.
+	sess.context.Add(&event)
 	sess.UpdatedAt = now
 	s.activeID = sessionID
 
@@ -610,6 +658,41 @@ type SessionSummary struct {
 	// tell apart from a real one.
 	Saturated bool `json:"saturated,omitempty"`
 	Active    bool `json:"active"` // true if this is the most recently updated session
+	// PromptContext is how full this session's conversation got, by the rule in
+	// pipeline.PromptContextFold: the main-agent turn that RANKS HIGHEST under that rule's total
+	// order, in prompt tokens. Where the client states its role that is the LATEST such turn;
+	// where it does not it is the one with the MOST MESSAGES. See pipeline.PromptContext, which is
+	// this field's type and carries the order.
+	//
+	// NO MONOTONICITY IS PROMISED, and a client must not build on one: this figure can DECREASE
+	// between two polls. A compaction is the ordinary case, not a corner — the stated arm leads
+	// with arrival time, so a session reporting 830,000 before one reports 12,000 on the turn
+	// after it. WHERE THE ROLE IS STATED that is what the column is for: an operator needs how full
+	// the conversation is NOW rather than how full it has ever been. The unstated arm claims no such
+	// thing — it ranks by message count, so it can legitimately hold a pre-compaction turn for the
+	// rest of a session, which is the documented cost of having no role to read rather than a defect
+	// (see pipeline.PromptContextOf). So the figure decreases on one arm and goes stale on the
+	// other, and neither is a guarantee to build on.
+	//
+	// RETENTION-INDEPENDENT ALL THE SAME — unlike TotalTokens and CostMicros above, and the
+	// asymmetry is deliberate rather than an inconsistency. Those are sums over the events the
+	// store still holds, so a trim sheds exactly what left the slice, which is why CostMicros can
+	// honestly call itself the cost of the events in this session. This is an extremum under a
+	// total order: nothing about it is accumulated, so a trim has nothing to subtract from it and
+	// it outlives the events it was read from. Recomputing it over the survivors would not
+	// understate by a known amount the way that sum does — it would report a small conversation
+	// for a session whose conversation is large and merely aged out of the store. A client showing
+	// the three on one row must not present any of them as a check on another.
+	//
+	// A POINTER SO ABSENT AND ZERO STAY APART, which is the same standing rule CostMicros states
+	// for its omitempty: an unknown figure must never render as a real one. A session with only
+	// one-shot completions has no conversation to measure and is indistinguishable here from one
+	// nobody observed; both must reach a client as an absent field so it can draw an em dash.
+	//
+	// RESETS ON PROXY RESTART, like CostMicros and unlike a cost-ledger window, because the store
+	// is in-memory per-pod. A client that has been watching longer than this proxy has been up may
+	// hold a larger figure legitimately — see pipeline.MergePromptContext, which is how the two combine.
+	PromptContext *pipeline.PromptContext `json:"promptContext,omitempty"`
 }
 
 // ListSessions returns summaries for every non-expired session. Order is
@@ -640,6 +723,11 @@ func (s *Store) ListSessions() []SessionSummary {
 			// usage.Counts.Saturated gives for covering every money field in a Counts.
 			Saturated: sess.cost.Saturated || sess.avoided.Saturated,
 			Active:    id == s.activeID,
+			// Read, not computed — and unlike TotalTokens above this is NOT a walk. Folding the rule
+			// here instead would repeat the mistake entry.cost documents: O(events) per session
+			// under the read lock, on abctl's two-second poll, in front of a lock whose writer side
+			// is Append on the proxy's request path, with maxEvents unset by default.
+			PromptContext: sess.context.Publish(),
 		})
 	}
 	// Most recently updated first.
