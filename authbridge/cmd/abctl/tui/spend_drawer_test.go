@@ -1312,36 +1312,46 @@ func TestRenderSpendDrawer_DoesNotRestateTheBandsFigures(t *testing.T) {
 //
 // "├" stays banned outright. It means "more siblings follow", and reasoning is the
 // only child this panel has.
+// BOTH FIXTURES, which is what lets this subsume the drawer's adjacency check: the glyph
+// row's parent must be output whether or not a split was reported, and a regression that
+// inserted the child at a fixed index passes on one fixture and fails on the other.
 func TestRenderSpendDrawer_HasNoOrphanTreeGlyph(t *testing.T) {
-	lines := renderSpendDrawer(tierSnap(), nil, usage.GroupModel, "1h", 100)
-	joined := strings.Join(lines, "\n")
-	if strings.Contains(joined, "├") {
-		t.Errorf("the panel draws \"├\", which claims a sibling follows:\n%s", joined)
-	}
-	// THE GLYPH MUST BE PRESENT BEFORE ITS PARENT IS CHECKED. The loop below skips any
-	// row without a "└", so flattening childTierLabel to no glyph would make every
-	// iteration skip and this test go green — the same dead-assertion shape as
-	// drawnBarGlyphs' inverted rune range. Count first, then check.
-	glyphRows := 0
-	for _, l := range lines {
-		if strings.Contains(l, "└") {
-			glyphRows++
-		}
-	}
-	if glyphRows == 0 {
-		t.Fatalf("no row carries \"└\", so the parent check below cannot fail:\n%s", joined)
-	}
-	for i, l := range lines {
-		if !strings.Contains(l, "└") {
-			continue
-		}
-		if i == 0 {
-			t.Errorf("row 0 carries \"└\" with nothing above it to be a child of:\n%s", joined)
-			continue
-		}
-		if !strings.Contains(lines[i-1], "output") {
-			t.Errorf("row %d carries \"└\" but the line above it is not output:\n%s", i, joined)
-		}
+	for _, tc := range []struct {
+		name string
+		snap *usage.Snapshot
+	}{{"unreported split", tierSnap()}, {"reported split", reasoningSnap()}} {
+		t.Run(tc.name, func(t *testing.T) {
+			lines := renderSpendDrawer(tc.snap, nil, usage.GroupModel, "1h", 100)
+			joined := strings.Join(lines, "\n")
+			if strings.Contains(joined, "├") {
+				t.Errorf("the panel draws \"├\", which claims a sibling follows:\n%s", joined)
+			}
+			// THE GLYPH MUST BE PRESENT BEFORE ITS PARENT IS CHECKED. The loop below skips
+			// any row without a "└", so flattening childTierLabel to no glyph would make
+			// every iteration skip and this test go green — the same dead-assertion shape
+			// as drawnBarGlyphs' inverted rune range. Count first, then check.
+			glyphRows := 0
+			for _, l := range lines {
+				if strings.Contains(l, "└") {
+					glyphRows++
+				}
+			}
+			if glyphRows == 0 {
+				t.Fatalf("no row carries \"└\", so the parent check below cannot fail:\n%s", joined)
+			}
+			for i, l := range lines {
+				if !strings.Contains(l, "└") {
+					continue
+				}
+				if i == 0 {
+					t.Errorf("row 0 carries \"└\" with nothing above it to be a child of:\n%s", joined)
+					continue
+				}
+				if !strings.Contains(lines[i-1], "output") {
+					t.Errorf("row %d carries \"└\" but the line above it is not output:\n%s", i, joined)
+				}
+			}
+		})
 	}
 }
 
@@ -1887,30 +1897,6 @@ func TestRenderSpendDrawer_EmitsEveryTierPlusTheChild(t *testing.T) {
 				t.Errorf("the panel omits the reasoning child:\n%s", joined)
 			}
 		})
-	}
-}
-
-// The child sits directly under output IN THE DRAWER, not just in renderTierRows.
-// A regression that emitted five left rows but inserted the child at the wrong index
-// would pass both the line count and the label check above.
-func TestRenderSpendDrawer_ChildFollowsOutput(t *testing.T) {
-	lines := renderSpendDrawer(reasoningSnap(), nil, usage.GroupModel, "1h", 100)
-	outputAt, childAt := -1, -1
-	for i, l := range lines {
-		switch {
-		case strings.Contains(l, "reasoning"):
-			childAt = i
-		case strings.Contains(l, "output"):
-			outputAt = i
-		}
-	}
-	if outputAt < 0 || childAt < 0 {
-		t.Fatalf("output at %d, child at %d; both must render:\n%s",
-			outputAt, childAt, strings.Join(lines, "\n"))
-	}
-	if childAt != outputAt+1 {
-		t.Errorf("child is at line %d and output at %d; the child must directly follow "+
-			"its parent:\n%s", childAt, outputAt, strings.Join(lines, "\n"))
 	}
 }
 
