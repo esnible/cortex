@@ -739,9 +739,10 @@ func renderSpendDrawer(snap *usage.Snapshot, err error, axis usage.Group, window
 
 	out := make([]string, 0, spendDrawerLines)
 	out = append(out, drawerHeaders(axis, twoCol, width))
-	//
-	// The right column's slots are filled by the `i < len(rows)` guard below, so a
-	// column shorter than the bound pads itself rather than ending the loop early.
+	// THE LEFT COLUMN IS tierPanelLines, NOT numTierRows: the four rate tiers PLUS the
+	// reasoning row that hangs under output. The right column's slots are filled by the
+	// `i < len(rows)` guard below, so whichever column is shorter pads itself rather than
+	// ending the loop early.
 	//
 	// DERIVED FROM THE RESERVATION, minus the header and the hint line, so the loop and
 	// the reservation cannot disagree about the panel's height.

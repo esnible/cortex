@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -1978,22 +1979,27 @@ func TestRenderSpendDrawer_NarrowHeightIsUnchangedByTheChildRow(t *testing.T) {
 //
 // It is a hand-written literal derived from seven constants, and it had already drifted
 // once before this PR — the prose said 72 against an actual 84 — then this PR moved the
-// real value to 85 by widening tierLabelWidth for " └ reasoning". A number nothing
-// checks will drift again on the next width change.
+// real value to 85 by widening tierLabelWidth for " └ reasoning". A number nothing checks
+// will drift again on the next width change.
 //
-// The repo staleness-checks the demo SVG for the same reason; this is the same idea three
-// lines wide. Asserting the number APPEARS is deliberately weak — it cannot tell prose
-// about the threshold from prose that happens to contain the digits — but it fails when
-// the constant moves, which is the drift that actually happens.
+// MATCHED IN CONTEXT AND COMPARED, not searched for as a substring. A
+// strings.Contains(readme, "85") version of this test was blind: "$5.85" in the ASCII
+// sample four lines above the prose supplies those digits, so the sentence could say
+// anything and the test still passed — and at a drifted 86 both "186" and "8693"
+// elsewhere in the file would have covered for it. It closed the finding without closing
+// the gap, under a comment claiming it would fail when the constant moved.
 func TestREADME_StatesTheCurrentTwoColumnThreshold(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join("..", "README.md"))
 	if err != nil {
 		t.Fatalf("read README: %v", err)
 	}
-	want := strconv.Itoa(spendDrawerTwoColumnMin)
-	if !strings.Contains(string(raw), want) {
-		t.Errorf("cmd/abctl/README.md does not mention %s, the current "+
-			"spendDrawerTwoColumnMin — the drawer's documented width threshold has drifted "+
-			"from the code", want)
+	m := regexp.MustCompile(`Below (\d+) columns`).FindSubmatch(raw)
+	if m == nil {
+		t.Fatalf("cmd/abctl/README.md no longer says \"Below N columns\"; this test pins that " +
+			"sentence against spendDrawerTwoColumnMin and cannot find it")
+	}
+	if got, want := string(m[1]), strconv.Itoa(spendDrawerTwoColumnMin); got != want {
+		t.Errorf("README documents a %s-column threshold; spendDrawerTwoColumnMin is %s — "+
+			"the drawer's documented width has drifted from the code", got, want)
 	}
 }
