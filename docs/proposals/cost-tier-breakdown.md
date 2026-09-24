@@ -105,6 +105,22 @@ evidence available, `~` says it is inexact, and a reader who wants coverage has
 already labels it `reasoning (of output)` — so including it as a fifth bar would
 double-count. It stays in `abctl cost`'s token line and out of the bars.
 
+> **Superseded in part.** `reasoning` is now drawn in this panel, as an *indented
+> child of `output`* carrying its own bar and figure.
+>
+> The reason behind 3.5 is unchanged and still enforced: it is not a tier, it is
+> excluded from the shares that sum to 100, `numTierRows` stays pinned to
+> `pricing.NumTiers`, and `ApportionTiers` still returns exactly four figures summing
+> to `CostMicros`. What changed is the inference that "not a tier" required "not
+> drawn". This panel was the only cost surface that could not answer what an effort
+> setting costs, and the containment is carried by the indent and by exclusion from
+> the sum rather than by absence.
+>
+> The child's money is apportioned from `output`'s *displayed* figure and clamped to
+> it, so it always divides into the row directly above. It renders the not-known cell
+> when no split was reported, and is always present so the panel's height does not
+> follow its data (6 below). See `childTierLabel` and `reasoningChildRow`.
+
 **3.6 No residual twins for the new fields.** `CostMicros` has
 `UngroupedCostMicros` and `SeriesOvershootMicros` because the authoritative total
 must reconcile across grouping. A modelled mix is an apportionment key; an
@@ -269,7 +285,11 @@ implementation:
 2. A window priced entirely from gateway headers, with `Σ modelledTier == 0`, renders `emptyCell` and does not divide by zero (3.4).
 3. A mix covering a small fraction of the priced spend still apportions, and wears `~` — the positive control for having removed the threshold, since a reintroduced floor would blank this case.
 4. Display order is by amount, not by `pricing.Tier` declaration order (3.7). The fixture must order the two differently, or the test passes under either implementation.
-5. `reasoning` never appears as a bar and never joins the sum (3.5).
+5. `reasoning` never joins the sum (3.5). ~~never appears as a bar~~ — superseded: it
+   is drawn as an indented child of `output`, so the criterion is now that the four
+   unindented rows still sum to 100, that the child's figure and bar never exceed
+   `output`'s, and that a reported split too small to apportion renders the not-known
+   cell rather than `$0.00`.
 6. The panel's line count is identical across every coverage state, which is what keeps the reservation honest.
 7. At a width too narrow for two columns, the output equals today's drawer.
 8. Saturation: a tier at `MaxInt64` sets `Saturated` and does not wrap — the failure already found once in `rankSeriesByCost`, whose raw `+=` ranked an overflowing series below a ten-micro one.

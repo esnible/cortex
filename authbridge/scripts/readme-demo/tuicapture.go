@@ -40,14 +40,18 @@ import (
 
 // Turn is one request/response exchange with a model.
 type Turn struct {
-	Messages   int     `yaml:"messages"`
-	Tools      int     `yaml:"tools"`
-	Input      int     `yaml:"input"`
-	CacheRead  int     `yaml:"cache_read"`
-	CacheWrite int     `yaml:"cache_write"`
-	Output     int     `yaml:"output"`
-	PromptUSD  float64 `yaml:"prompt_usd"`
-	OutputUSD  float64 `yaml:"output_usd"`
+	Messages   int `yaml:"messages"`
+	Tools      int `yaml:"tools"`
+	Input      int `yaml:"input"`
+	CacheRead  int `yaml:"cache_read"`
+	CacheWrite int `yaml:"cache_write"`
+	Output     int `yaml:"output"`
+	// Reasoning is the share of Output the model spent thinking, so the `$`
+	// breakdown's reasoning child renders a real figure rather than the
+	// not-known cell. A SUBSET of Output, never added to it.
+	Reasoning int     `yaml:"reasoning"`
+	PromptUSD float64 `yaml:"prompt_usd"`
+	OutputUSD float64 `yaml:"output_usd"`
 	// ToolCall, when set, adds an outbound MCP tool call after the model
 	// response, so the events timeline shows an agent doing something and not
 	// only talking to a model.
@@ -280,7 +284,9 @@ func (c *Capturer) build(f Fixture) []pendingEvent {
 					CacheReadTokens:  t.CacheRead,
 					CacheWriteTokens: t.CacheWrite,
 					OutputTokens:     t.Output,
-					TotalTokens:      t.Input + t.CacheRead + t.CacheWrite + t.Output,
+					ReasoningTokens:  t.Reasoning,
+					// Reasoning is NOT added: it is already inside Output.
+					TotalTokens: t.Input + t.CacheRead + t.CacheWrite + t.Output,
 				},
 				Plugins: costPlugins(t),
 				Invocations: &pipeline.Invocations{Outbound: []pipeline.Invocation{
