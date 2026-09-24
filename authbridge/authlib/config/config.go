@@ -25,7 +25,7 @@ import (
 // authbridge/docs/plugin-reference.md for how each plugin
 // declares its own config schema and defaults.
 type Config struct {
-	Mode     string         `yaml:"mode" json:"mode"` // "envoy-sidecar", "waypoint", "proxy-sidecar"
+	Mode     string         `yaml:"mode" json:"mode"` // "envoy-sidecar", "proxy-sidecar"
 	Listener ListenerConfig `yaml:"listener" json:"listener"`
 	Pipeline PipelineConfig `yaml:"pipeline" json:"pipeline"`
 	Session  SessionConfig  `yaml:"session" json:"session"`
@@ -692,7 +692,6 @@ func normalizeYAMLMaps(v any) any {
 // ListenerConfig holds per-mode listener addresses.
 type ListenerConfig struct {
 	ExtProcAddr         string `yaml:"ext_proc_addr" json:"ext_proc_addr"`
-	ExtAuthzAddr        string `yaml:"ext_authz_addr" json:"ext_authz_addr"`
 	ForwardProxyAddr    string `yaml:"forward_proxy_addr" json:"forward_proxy_addr"`
 	ReverseProxyAddr    string `yaml:"reverse_proxy_addr" json:"reverse_proxy_addr"`
 	ReverseProxyBackend string `yaml:"reverse_proxy_backend" json:"reverse_proxy_backend"`
@@ -745,7 +744,7 @@ type ListenerConfig struct {
 	// binding is harmless when nothing is redirected to it (cooperative
 	// HTTP_PROXY deployments simply never receive connections on it). An empty
 	// value only disables the listener for modes that have no preset default for
-	// this field (e.g. waypoint / envoy-sidecar); under proxy-sidecar / lite the
+	// this field (envoy-sidecar); under proxy-sidecar / lite the
 	// preset refills it, matching the always-on enforce-redirect design.
 	TransparentProxyAddr string `yaml:"transparent_proxy_addr" json:"transparent_proxy_addr"`
 
@@ -889,7 +888,6 @@ type StatsConfig struct {
 // Valid mode strings.
 const (
 	ModeEnvoySidecar = "envoy-sidecar"
-	ModeWaypoint     = "waypoint"
 	ModeProxySidecar = "proxy-sidecar"
 )
 

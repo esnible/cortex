@@ -229,7 +229,7 @@ This view shows the plugin chain for both inbound and outbound directions, separ
 - **BODY** — `yes` if the plugin buffers bodies (drives Envoy `ProcessingMode: BUFFERED`), `no` otherwise.
 - **EVENTS** — number of events in the currently-selected session whose data was populated by this plugin (empty when zero). Use this to see *which* plugins were active in this conversation.
 
-Session recording itself isn't a plugin — the listener (ext_proc / ext_authz / proxy) snapshots `pctx` after each phase and appends to `session.Store` directly, so it doesn't appear in this table.
+Session recording itself isn't a plugin — the listener (ext_proc / proxy) snapshots `pctx` after each phase and appends to `session.Store` directly, so it doesn't appear in this table.
 
 Select any plugin and press `Enter` for a plugin-detail pane with its declared reads / writes / body-access flag.
 

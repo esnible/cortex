@@ -81,7 +81,7 @@ still omit `audience`, `audience_file`, and `allowed_audiences` entirely
 **Session / log migration:** jwt-validation deny-path `Details` used a
 single key `expected_audience` (string). It now emits
 `expected_audiences` (comma-joined list of configured inbound audiences)
-and `expected_audience_host` (waypoint per-request derived audience, may
+and `expected_audience_host` (per-host derived audience, may
 be empty). Update saved queries and dashboards that filtered on the old
 key.
 
@@ -584,7 +584,7 @@ value):
 
 - Auth gates (jwt-validation): `expected_issuer`, `expected_audiences`
   (comma-joined configured inbound audiences), `expected_audience_host`
-  (waypoint per-request derived audience, may be empty), `token_subject`,
+  (per-host derived audience, may be empty), `token_subject`,
   `token_audience`, `token_scopes`.
 - Outbound routers (token-exchange): `route_matched` (`"true"`/`"false"`),
   `route_host`, `target_audience`, `requested_scopes`, `cache_hit`.
@@ -776,9 +776,6 @@ nothing about how the response may be relayed.
   mutator is fine — they never rewrite the same bytes.
 - A mutator of **either** direction cannot precede a `ReadsBody`-only plugin.
   The reader must see the original bytes.
-- Waypoint mode (ext_authz listener) cannot propagate body mutations —
-  the ext_authz API has no body-mutation field. Do not combine
-  body-mutating plugins with `mode: waypoint`.
 
 > **Reader-ordering is validated in request order only.** `RunResponse` iterates
 > the chain in reverse, so on the response pass the rule inverts — a reader needs
@@ -1275,11 +1272,10 @@ outbound resolve run in the **same** process:
 
 - the reverse+forward proxy sidecar (`authbridge-proxy`, and its
   `authbridge-lite` image variant);
-- a **single-replica** extproc/extauthz (`authbridge-envoy`).
+- a **single-replica** extproc (`authbridge-envoy`).
 
-Multi-replica (HA) or shared/scaled Istio ambient waypoint deployments
-can land mint and resolve on different processes, which the in-memory
-store cannot bridge. Those need an external store behind the same
+Multi-replica (HA) deployments can land mint and resolve on different
+processes, which the in-memory store cannot bridge. Those need an external store behind the same
 interface — a **current limitation**, tracked as a future enhancement.
 
 ### Security

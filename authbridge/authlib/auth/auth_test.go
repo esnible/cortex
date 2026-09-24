@@ -184,7 +184,7 @@ func TestHandleInbound_AudienceOverride(t *testing.T) {
 		t.Errorf("expected [default-aud], got %v", mv.lastAudiences)
 	}
 
-	// Explicit audience overrides default (waypoint mode)
+	// Explicit audience overrides default (per-host audience mode)
 	a.HandleInbound(context.Background(), "Bearer t", "/api", "derived-from-host")
 	if len(mv.lastAudiences) != 1 || mv.lastAudiences[0] != "derived-from-host" {
 		t.Errorf("expected [derived-from-host], got %v", mv.lastAudiences)

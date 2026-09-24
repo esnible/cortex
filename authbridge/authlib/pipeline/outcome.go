@@ -96,8 +96,8 @@ func (c *Context) Outcome() *Outcome {
 //   - No deny AND StatusCode == 0 → OutcomeError (no response was
 //     written: upstream transport failure, listener panic, etc.).
 //
-// Listeners with no HTTP-status concept (check-only protocols like
-// ext_authz) should construct Outcome explicitly using
+// Listeners with no HTTP-status concept (check-only protocols)
+// should construct Outcome explicitly using
 // pctx.RejectingPlugin() — the "StatusCode == 0 means error" rule is
 // HTTP-listener specific. StatusCode is taken from pctx.StatusCode
 // verbatim. Duration is left zero; RunFinish auto-fills from

@@ -144,7 +144,7 @@ Validates inbound JWTs: signature via JWKS, issuer, and audience.
 - `keycloak_url` / `keycloak_realm` (string) — used to derive `jwks_url` when omitted.
 - `audience` (string) — expected `aud` claim; one of `audience` / `audience_file` / `audience_mode=per-host` required.
 - `audience_file` (string) — file to read expected audience from. Default `/shared/client-id.txt`.
-- `audience_mode` (string) — `static` (default) or `per-host` (derived from the `Host` header via waypoint routing).
+- `audience_mode` (string) — `static` (default) or `per-host` (derived from the `Host` header).
 - `allowed_audiences` (`[]string`) — extra audience values accepted (OR semantics).
 - `bypass_paths` (`[]string`) — path globs skipped. Default `/healthz`, `/readyz`, `/livez`, `/metrics`, `/.well-known/*`.
 - `placeholder_mode` (bool) — replace the validated inbound token with an opaque placeholder before forwarding, for later outbound resolution. Default `false`.
@@ -331,7 +331,7 @@ interface each IdP implements, see
 - `identity.assertion_type` (string) — client-assertion URN: `jwt-spiffe` (default) or `jwt-bearer` (Okta).
 - `routes.file` (string) — path to `routes.yaml`. Default `/etc/authproxy/routes.yaml`.
 - `routes.rules` (list) — inline route entries (`host`, `target_audience`, `token_scopes`, `token_url`, `action`), combined with file-loaded routes.
-- `audience_from_host` (bool) — derive audience from host for unrouted requests (waypoint mode). Default `false`.
+- `audience_from_host` (bool) — derive audience from host for unrouted requests. Default `false`.
 - `resolve_placeholders` (bool) — resolve an inbound placeholder-prefixed bearer to its real token before exchange; unresolvable placeholders are denied. Default `false`.
 
 ## `tool-prune`

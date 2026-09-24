@@ -97,7 +97,7 @@ type Context struct {
 	// "https" — future transports ("ws" / "wss" / gRPC-specific
 	// schemes) pass through unchanged as free-form strings. Populated
 	// by the listener at pctx construction from the transport-native
-	// field: the :scheme pseudo-header in ext_proc and ext_authz,
+	// field: the :scheme pseudo-header in ext_proc,
 	// r.URL.Scheme in the forward and reverse proxies.
 	//
 	// Empty when the listener can't determine scheme (legacy test
@@ -109,7 +109,7 @@ type Context struct {
 
 	// Path is the URL path of the request, never including a query
 	// string: the proxy listeners populate it from r.URL.Path, and
-	// ext_proc / ext_authz run the raw request target through the same
+	// ext_proc runs the raw request target through the same
 	// URL parser (httpx.PathOnly → url.ParseRequestURI), so the value
 	// is identical across listener modes — modulo unparseable targets,
 	// which net/http rejects with 400 before any pipeline runs and the
@@ -390,7 +390,7 @@ func (c *Context) ClientInfo() *EventClient {
 // "unknown" means on a given listener. In THIS change: the forward proxy, at three
 // construction sites — serveOutbound, handleConnect and HandleTransparentConn. Arriving with
 // the cost work later in this series: ext_proc, at its four, and the reverse proxy, at its
-// one. extauthz builds no session events, so it has nothing to attribute.
+// one.
 //
 // Until the second half lands, an inbound event records no client and Label() answers
 // "unknown" for it — while that string is documented as "this request carried no

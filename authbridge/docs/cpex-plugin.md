@@ -221,8 +221,8 @@ The caller's MCP client then surfaces a failed tool call rather than a
 transport break, and the `cpex.*` code rides in `error.data.error` (not
 the HTTP status). Non-MCP requests — and JSON-RPC notifications with no
 id — get the plain 403 / 502 in the table above. (See
-`authbridge/authlib/listener/httpx/render.go`; the gRPC listeners,
-extproc / extauthz, don't use this renderer.)
+`authbridge/authlib/listener/httpx/render.go`; the gRPC listener,
+extproc, doesn't use this renderer.)
 
 ## Bypass list curation
 
