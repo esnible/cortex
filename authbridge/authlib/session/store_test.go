@@ -1084,6 +1084,53 @@ func TestAppend_PromptContextAppliesTheOrderingNotAMax(t *testing.T) {
 	}
 }
 
+// THE FALLBACK ARM AT THE Append BOUNDARY, which is the third role promptContextTurnAs was written
+// for and the one nothing used. Every store fixture stated a role, so the unstated rule — the one
+// that runs for every client that is not Claude Code, since agentRole is empty whenever the request
+// says nothing — was exercised only in the pipeline tests.
+//
+// THE SAME TWO TURNS AS TestAppend_PromptContextAppliesTheOrderingNotAMax WITH THE ROLE WITHHELD, so
+// the two tests are one comparison rather than two fixtures: 830,000 at 2,468 messages, then 12,000
+// at 40 messages an hour later. Stated, better() leads with At and the answer is 12,000. Unstated it
+// leads with the message count and the answer is 830,000. The arms DISAGREE on this input, which is
+// what makes the assertion below evidence that the fallback ran rather than evidence that something
+// ran.
+//
+// AND HOLDING THE PRE-COMPACTION FIGURE IS THE FALLBACK'S DOCUMENTED COST, not a defect to fix here:
+// with no role to read, how long the conversation is separates the main thread from a subagent, and
+// a stale figure beats one that flips to a subagent's. See pipeline.PromptContextOf, which also says
+// why no window fixes it.
+func TestAppend_PromptContextFallsBackToTheMessageCount(t *testing.T) {
+	s := New(time.Hour, 0, 0)
+	defer s.Close()
+	base := time.Now()
+	for _, e := range promptContextTurnAs("before", base, 2468, 27, 830_000, "") {
+		s.Append("unstated", e)
+	}
+	for _, e := range promptContextTurnAs("after", base.Add(time.Hour), 40, 27, 12_000, "") {
+		s.Append("unstated", e)
+	}
+
+	got := summaryFor(t, s, "unstated").PromptContext
+	if got == nil {
+		t.Fatal("no figure for a session whose turns carry a manifest but state no role")
+	}
+	if got.Tokens != 830_000 {
+		t.Errorf("reported %d, want 830000 — with no role stated the most messages wins; 12000 is "+
+			"the STATED arm's answer for these same two turns, so the wrong arm ranked them",
+			got.Tokens)
+	}
+	if got.Stated {
+		t.Error("Stated=true for turns that declare no role")
+	}
+	// The comparator that won has to reach the wire, or a client cannot merge against this figure by
+	// the same rule the server ranked it with.
+	if got.Msgs != 2468 {
+		t.Errorf("Msgs=%d, want 2468 — the published figure must carry the count that won it",
+			got.Msgs)
+	}
+}
+
 // A session the store forgets entirely has no figure: the entry goes, and the fold with it. A
 // session recreated under the same id starts fresh, consistent with nextSeq restarting at 1.
 func TestPromptContext_WholeEntryEvictionDropsTheFigure(t *testing.T) {
