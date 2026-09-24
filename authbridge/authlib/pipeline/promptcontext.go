@@ -401,6 +401,15 @@ func nothingKnown(p *PromptContext) bool { return p == nil || p.Tokens <= 0 }
 // server's figure with its own and need no version detection: an old proxy sends nothing, and
 // nothing is a valid operand.
 //
+// AND CLOSED OVER "NOTHING KNOWN", which is a separate claim from accepting it: two operands that
+// both say nothing merge to NIL rather than to whichever of them was passed. Without that arm,
+// MergePromptContext(nil, &PromptContext{Stated: true}) returned a non-nil figure carrying no tokens
+// — an empty value wearing the one representation this package treats as real, which the next merge
+// or the next marshal would then carry forward. No caller outside a test can build that operand and
+// the gauge could not see the difference (it reads Tokens and draws an em dash either way), so this
+// closes a half-truth rather than fixing a symptom: the identity holds of the RESULT as well as of
+// the inputs, by construction instead of by what nothing happens to construct.
+//
 // FULLY-TIED OPERANDS KEEP a, exactly as the fold keeps its incumbent: better() is false both ways
 // for two figures equal on every field it compares, and two such figures are interchangeable for
 // every purpose this package has.
@@ -414,6 +423,10 @@ func nothingKnown(p *PromptContext) bool { return p == nil || p.Tokens <= 0 }
 // reader that the receiver may be nil; two plainly nilable arguments say so in the signature.
 func MergePromptContext(a, b *PromptContext) *PromptContext {
 	switch {
+	case nothingKnown(a) && nothingKnown(b):
+		// Its own arm rather than falling through to the next one and handing back b, which is what
+		// leaked an empty operand out as a result. See the closure paragraph above.
+		return nil
 	case nothingKnown(a):
 		return b
 	case nothingKnown(b):

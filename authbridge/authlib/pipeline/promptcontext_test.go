@@ -867,10 +867,21 @@ func TestMergePromptContext_AZeroTokenFigureIsTheIdentity(t *testing.T) {
 		}
 	}
 
-	// Both operands empty stays empty rather than becoming a figure: the merge returns an operand,
-	// and no operand here has anything to say.
-	if got := MergePromptContext(&PromptContext{Stated: true}, nil); got != nil {
-		t.Errorf("merging an empty figure with nil = %+v, want nil", got)
+	// CLOSED OVER "NOTHING KNOWN", IN BOTH DIRECTIONS, which the loop above cannot reach: every pair
+	// it builds has one real figure in it, so it never asks what two empty operands merge to. The
+	// answer has to be nil — a result that is itself a valid operand — rather than whichever of them
+	// was passed, or the identity is true of the inputs and false of the output, and the next merge
+	// or the next marshal carries a "nothing known" value shaped exactly like a real figure.
+	for _, pair := range [][2]*PromptContext{
+		{nil, {Stated: true}},           // the direction that returned the figure
+		{{Stated: true}, nil},           // and the one that already returned nil
+		{{Stated: true}, {Msgs: 9_000}}, // neither nil, neither saying anything
+		{nil, nil},
+	} {
+		if got := MergePromptContext(pair[0], pair[1]); got != nil {
+			t.Errorf("MergePromptContext(%+v, %+v) = %+v, want nil — two operands that say nothing "+
+				"must merge to nothing", pair[0], pair[1], got)
+		}
 	}
 }
 
