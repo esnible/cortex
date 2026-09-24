@@ -151,23 +151,6 @@ func TestRenderSpendBand_AWideCellDoesNotWidenTheOthers(t *testing.T) {
 	}
 }
 
-// narrowestWidthShowing is the smallest terminal width at which this span's cell is drawn at all.
-//
-// Measured from the renderer rather than computed, because the answer depends on the label, the
-// marked value's width and the drop order at once — and a width derived a second way is a width
-// that drifts from the one the band actually uses.
-func narrowestWidthShowing(t *testing.T, s spendSummary, span spendSpan) int {
-	t.Helper()
-	label := spendSpanDefs[span].label
-	for width := 1; width <= 200; width++ {
-		if strings.Contains(strings.Join(renderSpendBand(s, width), "\n"), label) {
-			return width
-		}
-	}
-	t.Fatalf("%q is not drawn at any width up to 200", label)
-	return 0
-}
-
 // Each of the three disclosure glyphs still rides on the figure it qualifies.
 func TestRenderSpendBand_CarriesTheFigureMarkers(t *testing.T) {
 	for _, tc := range []struct {

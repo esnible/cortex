@@ -561,13 +561,6 @@ func modelOf(pctx *pipeline.Context) string {
 	return pctx.Extensions.Inference.Model
 }
 
-// tierOf picks the tier the pruned manifest belonged to, delegating the rule to
-// authlib/pricing so the UI that renders the saving and the plugin that measures
-// it cannot disagree about which tier it came from.
-func tierOf(inf *pipeline.InferenceExtension) pricing.Tier {
-	return pricing.PromptTier(pricing.UsageFromInference(inf))
-}
-
 // noteDrift logs, once, any configured name absent from the first manifest the
 // plugin actually sees. A stale list costs savings rather than correctness, so
 // it surfaces as a warning instead of a failure.

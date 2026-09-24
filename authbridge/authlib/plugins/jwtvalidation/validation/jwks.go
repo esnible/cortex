@@ -24,11 +24,6 @@ type jwksConfig struct {
 	refreshInterval time.Duration
 }
 
-// WithRefreshInterval sets the JWKS cache refresh interval.
-func WithRefreshInterval(d time.Duration) JWKSOption {
-	return func(c *jwksConfig) { c.refreshInterval = d }
-}
-
 // NewJWKSVerifier creates a Verifier that validates JWTs against a JWKS endpoint.
 // The JWKS keys are cached and auto-refreshed in the background.
 func NewJWKSVerifier(ctx context.Context, jwksURL, issuer string, opts ...JWKSOption) (*JWKSVerifier, error) {

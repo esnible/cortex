@@ -138,10 +138,6 @@ func handleStatsFactory(provider StatsProvider) func(http.ResponseWriter, *http.
 	}
 }
 
-func (s *StatServer) ListenAndServe() error {
-	return s.server.ListenAndServe()
-}
-
 // Serve serves on an already-bound listener, letting the caller bind first (and
 // handle a bind error synchronously) before the server starts accepting.
 func (s *StatServer) Serve(l net.Listener) error {

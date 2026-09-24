@@ -69,21 +69,10 @@ func formatCompact(v float64) string {
 	}
 }
 
-func formatUSD(v float64) string {
-	switch {
-	case v >= 1:
-		return fmt.Sprintf("%.2f", v)
-	case v >= 0.01:
-		return fmt.Sprintf("%.3f", v)
-	default:
-		return fmt.Sprintf("%.4f", v)
-	}
-}
-
-// formatUSD4 is formatUSD at fixed precision, for the case where two amounts of
-// different magnitude share one column and their decimal points must line up.
-// Neither returns a "$" — the caller places it, since a saving needs it inside
-// the parentheses.
+// formatUSD4 renders a USD amount at fixed precision, for the case where two
+// amounts of different magnitude share one column and their decimal points must
+// line up. It returns no "$" — the caller places it, since a saving needs it
+// inside the parentheses.
 func formatUSD4(v float64) string { return fmt.Sprintf("%.4f", v) }
 
 // usdFloor is the smallest amount four decimal places can state. Anything
