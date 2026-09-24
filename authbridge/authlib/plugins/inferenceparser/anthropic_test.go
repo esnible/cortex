@@ -725,10 +725,16 @@ func TestInferenceParser_AnthropicMessages_ThinkingTokensOnMessageStart(t *testi
 	if ext.PresentKinds&uint8(parsercommon.KindReasoning) == 0 {
 		t.Errorf("PresentKinds = %#b, want KindReasoning set", ext.PresentKinds)
 	}
-	// The bit must never be set with a zero value: that is the reported-zero lie.
-	if ext.PresentKinds&uint8(parsercommon.KindReasoning) != 0 && ext.ReasoningTokens == 0 {
-		t.Error("KindReasoning is set with a value of 0; presence and value diverged")
-	}
+	// NO "the bit must never be set with a zero value" CHECK HERE, and deliberately so:
+	// that shape is LEGAL. TestInferenceParser_AnthropicMessages_ThinkingTokensReportedZero
+	// REQUIRES it — a present-and-zero count is a measurement, not an absence, which is the
+	// rule apportion.go and the drawer's reportedZero branch are both built on. An assertion
+	// forbidding it here stated the opposite of the design and was inert only because this
+	// fixture reports 119.
+	//
+	// The split-brain bug this test exists for is already caught above: a bit unioned in one
+	// place with the value merged in another leaves ReasoningTokens at 0 against a set bit,
+	// and the 119 assertion fails on exactly that.
 }
 
 // TestInferenceParser_AnthropicMessages_ThinkingTokensReportedZero pins the wire shape

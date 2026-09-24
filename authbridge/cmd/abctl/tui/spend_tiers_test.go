@@ -290,7 +290,14 @@ func TestRenderTierRows_RanksByCostNotByDeclarationOrder(t *testing.T) {
 	}
 }
 
-// NO figure wears the inexact marker, which is the reverse of what this test used to assert.
+// NO TIER figure wears the inexact marker, which is the reverse of what this test used to assert.
+//
+// SCOPED TO tierRowsOnly, because "no row in this panel wears the marker" is FALSE: the reasoning
+// child wears one, by the rule spend_tiers.go:108 states ("ONE FIGURE WEARS inexactMarker: the
+// reasoning child, and only it"). This loop passed over that only because tierCounts() reports no
+// split, so the child rendered the not-known cell and never reached the marker branch — the
+// fixture was doing the work, not the panel. Swapping in reasoningCounts() failed it outright.
+// The complement — that the child DOES wear one — is TestRenderTierRows_OnlyTheChildWearsTheInexactMarker.
 //
 // Every figure here still IS modelled — the mix is the rate table's while the total may be the
 // gateway's — so the disclosure was real and was given up rather than made unnecessary. It was
@@ -302,13 +309,13 @@ func TestRenderTierRows_RanksByCostNotByDeclarationOrder(t *testing.T) {
 // make deliberately: it would put a tilde on every row of the panel again.
 func TestRenderTierRows_MarksNoFigureInexact(t *testing.T) {
 	rows := 0
-	for _, line := range renderTierRows(tierCounts(), 60) {
+	for _, line := range tierRowsOnly(renderTierRows(tierCounts(), 60)) {
 		if line == "" {
 			continue
 		}
 		rows++
 		if strings.Contains(line, inexactMarker) {
-			t.Errorf("row %q carries %q; this panel states the caveat nowhere on a row", line,
+			t.Errorf("tier row %q carries %q; the tier rows state the caveat nowhere", line,
 				inexactMarker)
 		}
 	}

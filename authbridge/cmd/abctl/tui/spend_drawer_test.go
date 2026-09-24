@@ -1990,15 +1990,15 @@ func TestRenderSpendDrawer_NarrowHeightIsUnchangedByTheChildRow(t *testing.T) {
 //
 // It is a hand-written literal derived from seven constants, and it had already drifted
 // once before this PR — the prose said 72 against an actual 84 — then this PR moved the
-// real value to 85 by widening tierLabelWidth for " └ reasoning". A number nothing checks
-// will drift again on the next width change.
+// real value to 86 by widening tierLabelWidth AND tierMoneyWidth for " └ reasoning". A
+// number nothing checks will drift again on the next width change.
 //
 // MATCHED IN CONTEXT AND COMPARED, not searched for as a substring. A
-// strings.Contains(readme, "85") version of this test was blind: "$5.85" in the ASCII
-// sample four lines above the prose supplies those digits, so the sentence could say
-// anything and the test still passed — and at a drifted 86 both "186" and "8693"
-// elsewhere in the file would have covered for it. It closed the finding without closing
-// the gap, under a comment claiming it would fail when the constant moved.
+// strings.Contains(readme, "86") version of this test is blind at the CURRENT value:
+// "8693" and "186" appear elsewhere in the file and supply those digits, so the sentence
+// could say anything and the test would still pass. A substring check closed this finding
+// once without closing the gap, under a comment claiming it would fail when the constant
+// moved.
 func TestREADME_StatesTheCurrentTwoColumnThreshold(t *testing.T) {
 	raw, err := os.ReadFile(filepath.Join("..", "README.md"))
 	if err != nil {

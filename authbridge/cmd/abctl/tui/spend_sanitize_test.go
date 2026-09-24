@@ -157,7 +157,7 @@ func TestRenderSpendDrawer_AWideErrorMessageStaysInsideTheReservation(t *testing
 	// same function compares the renderer with its own padding rule and cannot fail —
 	// the constant this used to name was an independent witness and this restores one.
 	//
-	// 6 below spendDrawerTwoColumnMin (85) and 7 at or above it: the tier column, and
+	// 6 below spendDrawerTwoColumnMin (86) and 7 at or above it: the tier column, and
 	// with it the reasoning child's row, only exists in two columns. 120 is the only
 	// width here that reaches it.
 	for _, tc := range []struct {

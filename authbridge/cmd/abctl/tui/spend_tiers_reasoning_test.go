@@ -151,6 +151,19 @@ func TestRenderTierRows_ReasoningNeverExceedsOutput(t *testing.T) {
 			if reasoningRow == "" {
 				t.Fatal("no reasoning row rendered")
 			}
+			// THE OPERAND IS ASSERTED, NOT FILTERED — the rule this subtest writes out for the
+			// bars below and skipped here. sharePercent's ok is spent as a `continue` above, so
+			// an output row whose share does not parse never lands in outputRow and leaves
+			// outputPct at 0. `reasoningPct > outputPct` then reads 0 > 0 and passes on all three
+			// cases, including the fixture built to report reasoning ABOVE output.
+			//
+			// ASSERTED ON THE ROW, NOT ON A ZERO SHARE, and the difference was measured:
+			// tierShareCell floors any tier holding money to "<1%", which sharePercent reads back
+			// as 1, so `outputPct == 0` is unreachable while the row exists. Guarding the value
+			// would have been exactly the dead check this comment exists to avoid.
+			if outputRow == "" {
+				t.Fatal("no output row rendered; the share comparison has nothing to bound against")
+			}
 			if reasoningPct > outputPct {
 				t.Errorf("reasoning is %d%% of the bill but output is only %d%%; a subset cannot "+
 					"exceed its set\n  %s\n  %s", reasoningPct, outputPct, outputRow, reasoningRow)

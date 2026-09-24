@@ -473,18 +473,23 @@ func TestUsageChartHeight_MatchesTheRenderedChrome(t *testing.T) {
 // which has no tier column, grew with it.
 //
 // SIZES CHOSEN HERE, NOT fitSizes, and that is the whole reason this test exists.
-// fitSizes has no entry that is both narrow enough for one column (< 85) and tall enough
-// to open the drawer (>= spendDrawerMinHeight, 27): its sub-85 widths are 20 and 24 rows
+// fitSizes has no entry that is both narrow enough for one column (< 86) and tall enough
+// to open the drawer (>= spendDrawerMinHeight, 28): its sub-86 widths are 20 and 24 rows
 // tall, so `$` does not expand and the case is vacuous. Written against fitSizes first,
 // this test passed with the call site reverted — which is how the gap was measured
 // rather than argued.
 func TestLayout_DrawerReservationMatchesWhatItDraws(t *testing.T) {
 	forceColor(t)
-	narrowSeen := false
+	narrowSeen, wideSeen := false, false
+	// BOTH SIDES OF THE BOUNDARY, at spendDrawerTwoColumnMin-1 and spendDrawerTwoColumnMin
+	// themselves. Written as 84 and 85 these were BOTH one-column widths — the constant is
+	// 86 — so the two-column half of the sweep rested entirely on {120,40} and the boundary
+	// the comment above calls this test's reason to exist was never crossed. The guards at
+	// the end are what stop that recurring silently.
 	for _, dim := range [][2]int{
 		{80, 30},  // one column: below spendDrawerTwoColumnMin, tall enough to open
-		{84, 40},  // one column, at the boundary
-		{85, 40},  // two columns: the first width that reaches them
+		{85, 40},  // one column, at the boundary: spendDrawerTwoColumnMin-1
+		{86, 40},  // two columns: the first width that reaches them
 		{120, 40}, // two columns, comfortably
 	} {
 		w, h := dim[0], dim[1]
@@ -502,6 +507,8 @@ func TestLayout_DrawerReservationMatchesWhatItDraws(t *testing.T) {
 		}
 		if w < spendDrawerTwoColumnMin {
 			narrowSeen = true
+		} else {
+			wideSeen = true
 		}
 		if got := lipgloss.Height(m.View()); got != h {
 			t.Errorf("%dx%d with the drawer open: view is %d lines, want exactly %d — taller "+
@@ -513,6 +520,14 @@ func TestLayout_DrawerReservationMatchesWhatItDraws(t *testing.T) {
 	// the wide case twice and cannot fail on it.
 	if !narrowSeen {
 		t.Fatal("no one-column width was exercised; the over-reservation case is unasserted")
+	}
+	// AND THE WIDE HALF, for the same reason in the other direction. Both halves were
+	// nominally covered while every width above was under the constant, so the sweep had
+	// silently become the narrow case four times. Asserting reachability is cheaper than
+	// rederiving the boundary by hand every time a column width moves.
+	if !wideSeen {
+		t.Fatalf("no width reached two columns (spendDrawerTwoColumnMin is %d); the tier "+
+			"column's reservation is unasserted", spendDrawerTwoColumnMin)
 	}
 }
 
