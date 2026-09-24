@@ -144,13 +144,28 @@ func runReadClaudeSessions(args []string, stdout, stderr io.Writer) int {
 	// `abctl observe` is the incremental caller.
 	res, err := claude.Harvest(claude.Options{ConfigDir: *dir, Merge: *merge})
 	if err != nil {
-		if errors.Is(err, claude.ErrCorruptMetadata) {
-			// Refused rather than treated as empty. A corrupt file read as absent would
-			// silently rebuild from scratch under the flag whose whole purpose is not
-			// losing entries — the same trap readState exists to close for
-			// claude-code-state.json. Name the repair, and name the way past it.
+		// Two refusals, two remedies. Checked narrowest first: the oversized file also wraps
+		// ErrCorruptMetadata, and its permissions are fine, so the permission advice is wrong
+		// for it.
+		//
+		// Both DO offer --merge=false, because it genuinely repairs both: Harvest reads the
+		// file only under Merge, and the save renames over the path, needing the directory
+		// writable rather than the old file readable. Verified on an unreadable file and on a
+		// 17.7 MB one. It is also the gentler of the two remedies — it leaves no .bad file to
+		// clean up — so it goes first, with mv kept for whoever wants the old bytes preserved.
+		if errors.Is(err, claude.ErrMetadataTooLarge) {
+			// The path is already in the error text, so it is not repeated here.
 			fmt.Fprintf(stderr, "abctl: %v\n"+
-				"  Fix or move the file, or re-run with --merge=false to rebuild it.\n", err)
+				"  Re-run with --merge=false to rebuild it, or move the file aside first\n"+
+				"  to keep the old entries.\n", err)
+			return 1
+		}
+		if errors.Is(err, claude.ErrCorruptMetadata) {
+			// A file that does not parse is rebuilt by Harvest itself, so what reaches here
+			// could not be read at all. Name what a human can do.
+			fmt.Fprintf(stderr, "abctl: %v\n"+
+				"  Re-run with --merge=false to rebuild it, or fix the file's permissions\n"+
+				"  to keep the old entries.\n", err)
 			return 1
 		}
 		fmt.Fprintf(stderr, "abctl: %v\n", err)
@@ -173,6 +188,26 @@ func runReadClaudeSessions(args []string, stdout, stderr io.Writer) int {
 
 	if res.Recovered > 0 {
 		fmt.Fprintf(stderr, "abctl: merged %d entry(s) written concurrently by another run\n", res.Recovered)
+	}
+
+	// Said out loud because the entries it may have lost are gone without a trace: an unlocked
+	// harvest can have its whole contribution erased by a concurrent run's rename.
+	if res.LockTimedOut {
+		fmt.Fprintf(stderr, "abctl: timed out waiting for the lock on %s; harvested anyway, so a concurrent run may have overwritten this one\n", res.Path)
+	}
+
+	// Same risk, different cause, so different words: a timeout means another run holds the lock,
+	// this means locking did not work at all. Reported for the same reason — the harvest ran
+	// unlocked either way.
+	if res.LockFailed != "" {
+		fmt.Fprintf(stderr, "abctl: could not lock %s (%s); harvested anyway, so a concurrent run may have overwritten this one\n", res.Path, res.LockFailed)
+	}
+
+	// Said out loud because the counts cannot show it: a rebuild reports everything harvested
+	// and nothing kept, which is exactly what a first run reports. The entries it dropped —
+	// sessions whose transcripts are gone — leave no trace for the operator to notice.
+	if res.Rebuilt {
+		fmt.Fprintf(stderr, "abctl: the existing file could not be parsed; rebuilt it from %s\n", res.ConfigDir)
 	}
 
 	// Reported rather than silent: the count is the only way to notice that a wrong

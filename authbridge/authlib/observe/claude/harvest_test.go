@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -222,13 +223,13 @@ func TestHarvest_IncrementalRequiresMerge(t *testing.T) {
 	}
 }
 
-// A corrupt existing file is refused under Merge, distinguishably, so the command layer
-// can name --merge=false as the way past.
-func TestHarvest_CorruptMetadataIsDistinguishable(t *testing.T) {
-	metadataHome(t)
-	cfg := filepath.Join(t.TempDir(), "claude")
-	writeSessionTranscript(t, filepath.Join(cfg, "projects", "-p"), "s1.jsonl",
-		`{"type":"ai-title","aiTitle":"t"}`)
+// writeMetadataFile puts raw bytes at the metadata path, creating the directory.
+//
+// Its own helper because every corrupt-file test needs the same four lines, and the mode
+// matters: SaveMetadata writes 0o600, so a fixture that differs would test a file the
+// product never produces.
+func writeMetadataFile(t *testing.T, body string) string {
+	t.Helper()
 	path, err := SessionMetadataPath()
 	if err != nil {
 		t.Fatal(err)
@@ -236,13 +237,156 @@ func TestHarvest_CorruptMetadataIsDistinguishable(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, []byte("{not json"), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// A file that does not parse is rebuilt from the transcripts rather than refused, so the
+// titles come back on their own instead of waiting for a hand-run --merge=false.
+func TestHarvest_CorruptMetadataIsRebuilt(t *testing.T) {
+	metadataHome(t)
+	cfg := filepath.Join(t.TempDir(), "claude")
+	writeSessionTranscript(t, filepath.Join(cfg, "projects", "-p"), "s1.jsonl",
+		`{"type":"ai-title","aiTitle":"t"}`)
+	path := writeMetadataFile(t, "{not json")
+
+	// Incremental too, which is how `abctl observe` calls it: the rebuild has to clear the
+	// baseline, or a skip test against an empty map is the only thing making this work.
+	res, err := Harvest(Options{ConfigDir: cfg, Merge: true, Incremental: true})
+	if err != nil {
+		t.Fatalf("Harvest: %v", err)
+	}
+	if !res.Rebuilt {
+		t.Error("Rebuilt = false, want true: the caller cannot tell a rebuild from a first run")
+	}
+	if got := res.Meta["s1"].Title; got != "t" {
+		t.Errorf("Meta[s1].Title = %q, want the harvested title", got)
+	}
+	if got := readMetadataFile(t, path)["s1"].Title; got != "t" {
+		t.Errorf("on disk Title = %q, want the file replaced with the rebuild", got)
+	}
+}
+
+// An UNREADABLE file is still refused, and left alone. This is the destructive case the
+// rebuild must not reach: a permission or I/O failure says nothing about the contents, so
+// replacing the file there would drop entries that are very likely intact.
+func TestHarvest_UnreadableMetadataIsRefusedNotRebuilt(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores the mode bits this test relies on")
+	}
+	metadataHome(t)
+	cfg := filepath.Join(t.TempDir(), "claude")
+	writeSessionTranscript(t, filepath.Join(cfg, "projects", "-p"), "s1.jsonl",
+		`{"type":"ai-title","aiTitle":"t"}`)
+	// VALID JSON, so the only thing making this unreadable is the mode. A corrupt body here
+	// would let the test pass for the wrong reason if the classification were inverted.
+	path := writeMetadataFile(t, `{"old":{"title":"keep me"}}`)
+	if err := os.Chmod(path, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(path, 0o600) })
+
+	res, err := Harvest(Options{ConfigDir: cfg, Merge: true})
+	if !errors.Is(err, ErrCorruptMetadata) {
+		t.Fatalf("err = %v, want it to wrap ErrCorruptMetadata", err)
+	}
+	if res.Rebuilt {
+		t.Error("Rebuilt = true: an unreadable file must not be rebuilt over")
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := readMetadataFile(t, path)["old"].Title; got != "keep me" {
+		t.Errorf("Title = %q, want the untouched entry: the file was replaced", got)
+	}
+}
+
+// An oversized but VALID file is refused, not rebuilt over. The read cap makes such a file
+// fail json.Unmarshal, which would classify it as a parse failure and destroy it: measured at
+// 18.5MB/17000 entries replaced by 412 bytes/1 entry.
+func TestHarvest_OversizedValidMetadataIsRefusedNotRebuilt(t *testing.T) {
+	metadataHome(t)
+	path, err := SessionMetadataPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// Built as text rather than by marshalling a map: cheaper, and it keeps the fixture's size
+	// the point of the test rather than a side effect of the struct.
+	var b []byte
+	b = append(b, '{')
+	pad := strings.Repeat("x", 4<<10)
+	for i := 0; len(b) <= 16<<20; i++ {
+		if i > 0 {
+			b = append(b, ',')
+		}
+		b = append(b, fmt.Sprintf("%q:{\"title\":%q}", fmt.Sprintf("sess-%06d", i), pad)...)
+	}
+	b = append(b, '}')
+	if !json.Valid(b) {
+		t.Fatal("fixture is not valid JSON, so this would not test the rebuild path")
+	}
+	if err := os.WriteFile(path, b, 0o600); err != nil {
 		t.Fatal(err)
 	}
 
-	_, err = Harvest(Options{ConfigDir: cfg, Merge: true})
+	cfg := filepath.Join(t.TempDir(), "claude")
+	writeSessionTranscript(t, filepath.Join(cfg, "projects", "-p"), "fresh.jsonl",
+		`{"type":"ai-title","aiTitle":"new"}`)
+
+	res, err := Harvest(Options{ConfigDir: cfg, Merge: true})
+	if err == nil {
+		t.Fatalf("Harvest succeeded (Rebuilt=%v); want it refused rather than rebuilding", res.Rebuilt)
+	}
 	if !errors.Is(err, ErrCorruptMetadata) {
-		t.Fatalf("err = %v, want it to wrap ErrCorruptMetadata", err)
+		t.Errorf("err = %v, want it to wrap ErrCorruptMetadata", err)
+	}
+	// Distinguishable through both wraps, so a caller can give the right remedy: this file's
+	// permissions are fine and "fix the permissions" would be wrong advice.
+	if !errors.Is(err, ErrMetadataTooLarge) {
+		t.Errorf("err = %v, want it to wrap ErrMetadataTooLarge", err)
+	}
+	if res.Rebuilt {
+		t.Error("Rebuilt is true for a file that was merely too large to read")
+	}
+	// The assertion that matters: the bytes are still there.
+	st, serr := os.Stat(path)
+	if serr != nil {
+		t.Fatal(serr)
+	}
+	if got := st.Size(); got != int64(len(b)) {
+		t.Errorf("file is %d bytes, was %d — it was rewritten", got, len(b))
+	}
+}
+
+// A rebuild is still a merge otherwise: it replaces the unparseable file, and the next
+// harvest keeps what it wrote.
+func TestHarvest_RebuildThenMergeKeepsEntries(t *testing.T) {
+	metadataHome(t)
+	cfg := filepath.Join(t.TempDir(), "claude")
+	dir := filepath.Join(cfg, "projects", "-p")
+	writeSessionTranscript(t, dir, "s1.jsonl", `{"type":"ai-title","aiTitle":"one"}`)
+	writeMetadataFile(t, "{not json")
+
+	if _, err := Harvest(Options{ConfigDir: cfg, Merge: true}); err != nil {
+		t.Fatalf("rebuild: %v", err)
+	}
+	writeSessionTranscript(t, dir, "s2.jsonl", `{"type":"ai-title","aiTitle":"two"}`)
+	res, err := Harvest(Options{ConfigDir: cfg, Merge: true})
+	if err != nil {
+		t.Fatalf("second harvest: %v", err)
+	}
+	if res.Rebuilt {
+		t.Error("Rebuilt = true on a file this package just wrote")
+	}
+	for id, want := range map[string]string{"s1": "one", "s2": "two"} {
+		if got := res.Meta[id].Title; got != want {
+			t.Errorf("Meta[%s].Title = %q, want %q", id, got, want)
+		}
 	}
 }
 
@@ -2707,5 +2851,44 @@ func TestTitleFromTranscript_CwdIsBounded(t *testing.T) {
 	if !strings.HasSuffix(got, "/the-leaf") {
 		t.Errorf("title = %q, want it to end in %q — clipping a cwd must keep the leaf",
 			got[max(0, len(got)-20):], "/the-leaf")
+	}
+}
+
+// A short write must not be renamed over the good file. This is the seam writeAll exists for:
+// the failure is a write error that Close and Rename both survive, which no real filesystem
+// produces, and the bug it guards — `err :=` shadowing inside SaveMetadata — is invisible to
+// every test that writes to a working disk.
+func TestSaveMetadata_AFailedWriteKeepsTheOldFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session-metadata.json")
+	const keep = `{"old":{"title":"keep me"}}`
+	if err := os.WriteFile(path, []byte(keep), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	was := writeAll
+	writeAll = func(io.Writer, []byte) (int, error) { return 0, errors.New("disk on fire") }
+	t.Cleanup(func() { writeAll = was })
+
+	if err := SaveMetadata(path, map[string]SessionMetadata{"new": {Title: "t"}}); err == nil {
+		t.Fatal("SaveMetadata returned nil after the write failed")
+	}
+	// The point of the test: the old file, not a truncated new one.
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(b) != keep {
+		t.Errorf("file = %q, want the original %q", b, keep)
+	}
+	// And no temp file left behind to accumulate one per failure.
+	ents, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range ents {
+		if strings.HasSuffix(e.Name(), ".tmp") {
+			t.Errorf("temp file %s was left behind", e.Name())
+		}
 	}
 }

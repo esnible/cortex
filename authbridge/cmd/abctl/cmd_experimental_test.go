@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -28,6 +29,40 @@ func writeSessionTranscript(t *testing.T, dir, name string, lines ...string) {
 	if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// oversizedMetadata builds a VALID metadata file just over Harvest's 16 MiB read cap.
+//
+// Raw text rather than marshalling a map: 4000-odd entries through encoding/json took seconds,
+// and what the test needs is the size and the validity, not realistic content.
+func oversizedMetadata(t *testing.T) []byte {
+	t.Helper()
+	var b []byte
+	b = append(b, '{')
+	pad := strings.Repeat("x", 4<<10)
+	for i := 0; len(b) <= 16<<20; i++ {
+		if i > 0 {
+			b = append(b, ',')
+		}
+		b = append(b, fmt.Sprintf("%q:{\"title\":%q}", fmt.Sprintf("sess-%06d", i), pad)...)
+	}
+	b = append(b, '}')
+	// Asserted, because an INVALID oversized file would exercise the rebuild path instead and
+	// the test would pass for the wrong reason.
+	if !json.Valid(b) {
+		t.Fatal("fixture is not valid JSON, so this would not test the refusal")
+	}
+	return b
+}
+
+// fileSize reports the file's size, for before/after comparison.
+func fileSize(t *testing.T, path string) int64 {
+	t.Helper()
+	st, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat %s: %v", path, err)
+	}
+	return st.Size()
 }
 
 // readMetadataFile decodes what the command wrote.
@@ -381,10 +416,9 @@ func TestReadClaudeSessions_MergePrefersTheFreshHarvest(t *testing.T) {
 	}
 }
 
-// A corrupt existing file must not be read as empty under --merge: that would rebuild
-// from scratch under the flag whose purpose is not losing entries. Refuse, and name
-// the way past it.
-func TestReadClaudeSessions_MergeRefusesACorruptFile(t *testing.T) {
+// A file that does not parse is rebuilt in place, without --merge=false and without the
+// operator having to know that flag exists. Reported, because the counts cannot show it.
+func TestReadClaudeSessions_MergeRebuildsACorruptFile(t *testing.T) {
 	home := prefsHome(t)
 	path := filepath.Join(home, tui.SessionMetadataRel)
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -399,25 +433,133 @@ func TestReadClaudeSessions_MergeRefusesACorruptFile(t *testing.T) {
 		`{"type":"user","cwd":"/w"}`)
 
 	var out, errb bytes.Buffer
+	if code := runExperimental([]string{"read-claude-sessions", "--dir", cfg}, &out, &errb); code != 0 {
+		t.Fatalf("exit = %d, want 0: %s", code, errb.String())
+	}
+	if !strings.Contains(errb.String(), "rebuilt it") {
+		t.Errorf("stderr does not report the rebuild: %q", errb.String())
+	}
+	if _, ok := readMetadataFile(t, path)["fresh"]; !ok {
+		t.Error("the corrupt file was not rebuilt")
+	}
+}
+
+// A file that could not be READ is still refused, and left alone. The rebuild must not
+// reach this case: a permission failure says nothing about the contents.
+func TestReadClaudeSessions_MergeRefusesAnUnreadableFile(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores the mode bits this test relies on")
+	}
+	home := prefsHome(t)
+	path := filepath.Join(home, tui.SessionMetadataRel)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// Valid JSON, so the mode is the only thing making it unreadable.
+	if err := os.WriteFile(path, []byte(`{"old":{"title":"keep me"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(path, 0o600) })
+
+	cfg := filepath.Join(t.TempDir(), "claude")
+	writeSessionTranscript(t, filepath.Join(cfg, "projects", "-p"), "fresh.jsonl",
+		`{"type":"user","cwd":"/w"}`)
+
+	var out, errb bytes.Buffer
 	if code := runExperimental([]string{"read-claude-sessions", "--dir", cfg}, &out, &errb); code != 1 {
 		t.Errorf("exit = %d, want 1", code)
 	}
-	if !strings.Contains(errb.String(), "--merge=false") {
-		t.Errorf("stderr does not name the way past it: %q", errb.String())
+	// Asserted before the mode is restored, so the message is the one a user with a genuinely
+	// unreadable file sees.
+	if got := errb.String(); !strings.Contains(got, "--merge=false") {
+		t.Errorf("stderr does not name the remedy that repairs this:\n%s", got)
 	}
-	// The bad file is left alone rather than overwritten, so it can still be repaired.
-	b, err := os.ReadFile(path)
-	if err != nil || string(b) != "{not json" {
-		t.Errorf("the corrupt file was modified: %q, %v", b, err)
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatal(err)
 	}
+	if got := readMetadataFile(t, path)["old"].Title; got != "keep me" {
+		t.Errorf("Title = %q, want the untouched entry: the file was replaced", got)
+	}
+}
 
-	// --merge=false is that way past it.
-	var out2, errb2 bytes.Buffer
-	if code := runExperimental([]string{"read-claude-sessions", "--dir", cfg, "--merge=false"}, &out2, &errb2); code != 0 {
-		t.Fatalf("--merge=false exit = %d: %s", code, errb2.String())
+// AND THE REMEDY THE REFUSAL NAMES ACTUALLY WORKS. Without this, the advice in the message
+// above is only asserted to be PRESENT, not to be true — which is how it came to be deleted
+// as impossible in the first place: --merge=false skips the read entirely (Harvest reads the
+// file only under Merge) and the save renames over the path, so the old file never has to be
+// readable. Same fixture as the refusal, one flag different.
+func TestReadClaudeSessions_MergeFalseRepairsAnUnreadableFile(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root ignores the mode bits this test relies on")
 	}
-	if _, ok := readMetadataFile(t, path)["fresh"]; !ok {
-		t.Error("--merge=false did not rebuild the file")
+	home := prefsHome(t)
+	path := filepath.Join(home, tui.SessionMetadataRel)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte(`{"old":{"title":"keep me"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(path, 0o600) })
+
+	cfg := filepath.Join(t.TempDir(), "claude")
+	writeSessionTranscript(t, filepath.Join(cfg, "projects", "-p"), "fresh.jsonl",
+		`{"type":"ai-title","aiTitle":"new"}`)
+
+	var out, errb bytes.Buffer
+	if code := runExperimental([]string{"read-claude-sessions", "--dir", cfg, "--merge=false"}, &out, &errb); code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr:\n%s", code, errb.String())
+	}
+	if got := readMetadataFile(t, path)["fresh"].Title; got != "new" {
+		t.Errorf("Meta[fresh].Title = %q, want the rebuild to have written it", got)
+	}
+	// The old entry is gone, which is what --merge=false MEANS. Asserted so the test cannot be
+	// read as claiming the unreadable entries were somehow recovered.
+	if _, ok := readMetadataFile(t, path)["old"]; ok {
+		t.Error("the old entry survived a --merge=false rebuild")
+	}
+}
+
+// An oversized but valid file is refused with its OWN remedy — not the permission advice, which
+// would be wrong: the file is intact and readable, just over the read cap.
+func TestReadClaudeSessions_OversizedFileNamesTheRightRepair(t *testing.T) {
+	home := prefsHome(t)
+	path := filepath.Join(home, tui.SessionMetadataRel)
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, oversizedMetadata(t), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	size := fileSize(t, path)
+
+	cfg := filepath.Join(t.TempDir(), "claude")
+	writeSessionTranscript(t, filepath.Join(cfg, "projects", "-p"), "fresh.jsonl",
+		`{"type":"user","cwd":"/w"}`)
+
+	var out, errb bytes.Buffer
+	if code := runExperimental([]string{"read-claude-sessions", "--dir", cfg}, &out, &errb); code != 1 {
+		t.Errorf("exit = %d, want 1", code)
+	}
+	if got := errb.String(); !strings.Contains(got, "too large") {
+		t.Errorf("stderr does not say what is wrong:\n%s", got)
+	}
+	if got := errb.String(); strings.Contains(got, "permissions") {
+		t.Errorf("stderr gives the permission remedy for an intact file:\n%s", got)
+	}
+	// The remedy that actually works, asserted because it was once removed on the theory that
+	// --merge=false "would hit the same read". It does not: Harvest reads the file only under
+	// Merge, and the save renames over the path. Measured against a 17.7 MB file.
+	if got := errb.String(); !strings.Contains(got, "--merge=false") {
+		t.Errorf("stderr does not name the remedy that repairs this without deleting anything:\n%s", got)
+	}
+	if got := fileSize(t, path); got != size {
+		t.Errorf("file is %d bytes, was %d — it was rewritten", got, size)
 	}
 }
 

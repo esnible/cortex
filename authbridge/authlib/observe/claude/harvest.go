@@ -19,13 +19,53 @@ import (
 // tree. Read here so a user who has moved it is not told there are no sessions.
 const ConfigDirEnv = "CLAUDE_CONFIG_DIR"
 
-// ErrCorruptMetadata reports that an existing metadata file could not be trusted, so a
-// merge refused rather than rebuilding from scratch and dropping its entries.
+// ErrCorruptMetadata reports that an existing metadata file was there and could not be
+// read, so a merge refused rather than replacing a file whose contents are unknown.
+//
+// NARROWER THAN THE NAME SUGGESTS: a file that reads fine but does not parse no longer
+// comes back here, because Harvest rebuilds it instead. What is left is every file Harvest
+// refuses because a rebuild might replace good entries — one that could not be read (a
+// permission or I/O failure) and one too large to read whole (ErrMetadataTooLarge). The two
+// need different advice, so a caller printing a remedy must check the narrower sentinel
+// first rather than assuming this one means permissions.
 //
 // Exported because the repair is a CLI affordance: `abctl experimental
 // read-claude-sessions` names --merge=false as the way past, and only the command layer
 // knows its own flags. Callers discriminate with errors.Is.
 var ErrCorruptMetadata = errors.New("corrupt session metadata")
+
+// ErrLockTimeout reports that the metadata lock could not be acquired before its deadline,
+// so the harvest proceeded UNLOCKED rather than not at all.
+//
+// Its own error so a caller can tell "this filesystem cannot flock" from "another process
+// is holding it": both proceed unlocked, but only the second means a concurrent harvest is
+// real and a lost update is possible.
+//
+// Declared here rather than in lock_unix.go so it is part of the package API on every
+// platform — an errors.Is against it must compile where the lock is a no-op too, which is
+// the Windows cross-check lock_other.go exists to keep working.
+var ErrLockTimeout = errors.New("timed out waiting for the session metadata lock")
+
+// ErrMetadataTooLarge reports that the metadata file is larger than ReadMetadata's cap, so it
+// could not be read whole and was refused rather than rebuilt over.
+//
+// Exported, unlike errMetadataNotJSON, because the remedy differs and callers must not give the
+// wrong one: this file is intact and its permissions are fine, so "fix the permissions" is wrong
+// advice. It is also permanent — every launch refuses again — which a caller may want to say
+// before a full-screen viewer hides it.
+var ErrMetadataTooLarge = errors.New("session metadata file is too large to read")
+
+// errMetadataNotJSON marks the one read failure Harvest can recover from by rebuilding.
+//
+// A SENTINEL RATHER THAN A STRING MATCH on ReadMetadata's message, and rather than
+// treating every non-permission error as a parse failure: io.ReadAll can fail with EIO
+// mid-file, which reads exactly like a truncated document and must not be rebuilt over.
+// Classifying on what the error IS, not on what it is not, keeps the destructive branch
+// reachable only from the one case that is provably a parse failure.
+//
+// Unexported: callers outside this package have no decision to make with it, since
+// Harvest acts on it before they see anything.
+var errMetadataNotJSON = errors.New("metadata is not valid JSON")
 
 // Options selects how much work one harvest does.
 type Options struct {
@@ -47,8 +87,11 @@ type Options struct {
 	//     file is a cache with no eviction, and `--merge=false` is the only thing that prunes it.
 	//   - Merge:false DROPS every entry this harvest did not see, which includes entries from any
 	//     OTHER config dir and any session pruned since. That is what makes it the way to rebuild a
-	//     wrong file, and also why it is not the default: run it with a --dir narrower than the one
-	//     that produced the file and it discards the difference without asking.
+	//     file whose entries are WRONG — a file that parses but says the wrong thing, which nothing
+	//     else can fix — and also why it is not the default: run it with a --dir narrower than the
+	//     one that produced the file and it discards the difference without asking. It is no longer
+	//     needed for a file that does not parse; Harvest rebuilds that one itself, and reports it
+	//     on Result.Rebuilt.
 	Merge bool
 	// Incremental skips transcripts no newer than the entry already recorded for
 	// them, so only recently-touched sessions are parsed.
@@ -95,6 +138,31 @@ type Result struct {
 	// grow, so counting it as recovered drove Kept negative and the subcommand printed
 	// "-1 kept from the existing file". Not part of the Total identity below for the same reason.
 	Replaced int
+	// Rebuilt reports that the existing file did not parse, so this harvest replaced it from
+	// the transcripts instead of merging into it.
+	//
+	// Worth a field because the counts alone cannot show it: a rebuild looks exactly like an
+	// ordinary first run — everything Harvested, nothing Kept — and the entries it dropped
+	// (sessions whose transcripts are gone) leave no trace anywhere for a caller to notice.
+	Rebuilt bool
+	// LockTimedOut reports that the metadata lock could not be taken before its deadline, so
+	// this harvest ran unlocked and a concurrent run's rename may erase its entries.
+	//
+	// A field because the alternative is silence: without it, the one failure mode this lock
+	// exists to prevent is invisible from outside, and "some titles vanished" has no diagnosis.
+	LockTimedOut bool
+	// LockFailed carries a lock failure that was NOT a timeout — flock refused for some other
+	// reason, e.g. the lock file could not be created or the filesystem rejected the call.
+	//
+	// Separate from LockTimedOut because the two need different words: a timeout means someone
+	// else holds it, while this means locking did not work at all, and reporting "timed out" for
+	// an EIO would send the reader looking for a process that does not exist. Empty when locking
+	// succeeded, was not attempted (no Merge), or is a no-op on this platform.
+	//
+	// Same consequence as a timeout, which is why it is reported at all: the harvest proceeds
+	// UNLOCKED, so a concurrent run's rename can erase everything it wrote. Before this, that
+	// state was the only one where wholesale loss was possible and nothing recorded it.
+	LockFailed string
 	// Meta is what the run wrote: the merged whole under Merge, or just this harvest
 	// otherwise. Keyed by session id.
 	//
@@ -147,9 +215,21 @@ func Harvest(opts Options) (Result, error) {
 	// Best-effort: a filesystem that cannot flock still harvests, unlocked, on the footing every
 	// platform had before this. Not taken without Merge, where there is nothing to lose — that path
 	// replaces the file by definition.
+	// The error is recorded, not returned: proceeding unlocked is the deliberate fallback, so a
+	// caller that wants to report the risk can, and one that does not still harvests.
 	if opts.Merge {
-		if unlock, lerr := lockMetadata(path); lerr == nil {
+		unlock, lerr := lockMetadata(path)
+		switch {
+		case lerr == nil:
 			defer unlock()
+		case errors.Is(lerr, ErrLockTimeout):
+			res.LockTimedOut = true
+		default:
+			// ARMED, because the fallback is the same as a timeout's — harvest unlocked — but
+			// nothing said so. A flock that fails for any other reason left LockTimedOut false
+			// and no other trace, so the one state where a concurrent rename can erase every
+			// entry this run wrote was also the one state a caller could not report.
+			res.LockFailed = lerr.Error()
 		}
 	}
 
@@ -159,16 +239,38 @@ func Harvest(opts Options) (Result, error) {
 	var existing map[string]SessionMetadata
 	if opts.Merge {
 		if existing, err = ReadMetadata(path); err != nil {
-			// Wrapped in a sentinel rather than returned bare. A corrupt file read as
-			// absent would silently rebuild from scratch under the flag whose whole
-			// purpose is not losing entries — the same trap readState exists to close
-			// for claude-code-state.json. The caller names the repair.
-			return res, fmt.Errorf("%w: %w", ErrCorruptMetadata, err)
+			// A FILE THAT DOES NOT PARSE IS REBUILT; a file that could not be READ is
+			// refused. Refusing both is what this used to do, on the reasoning that a
+			// rebuild drops entries the flag exists to keep. What that reasoning missed is
+			// where the entries actually go: the only ones a rebuild loses are those whose
+			// transcripts are gone, and refusing did not preserve those either — it just
+			// deferred the choice onto a user who had to know --merge=false to make it,
+			// while `abctl observe` showed no titles at all until they did. Since every
+			// launch read the same bad file, that state never cleared itself.
+			//
+			// The read failure stays a refusal, and the distinction is the whole safety
+			// argument: a permission or I/O error says nothing about the contents, so
+			// replacing the file there would destroy entries that are very likely intact.
+			if !errors.Is(err, errMetadataNotJSON) {
+				return res, fmt.Errorf("%w: %w", ErrCorruptMetadata, err)
+			}
+			existing = map[string]SessionMetadata{}
+			res.Rebuilt = true
 		}
 	}
 
 	var since map[string]SessionMetadata
-	if opts.Incremental {
+	if opts.Incremental && !res.Rebuilt {
+		// NOT INCREMENTAL OVER A REBUILD, though today nothing observable turns on it: the
+		// rebuild replaced existing with an empty map, so every transcript looks new and the
+		// scan reads them all either way. NO TEST PINS THIS — a mutation removing the
+		// !res.Rebuilt term passes the suite, deliberately recorded here rather than guarded
+		// with a test that would only be asserting the coincidence.
+		//
+		// Kept because the equivalence is a property of the line above, not of this one: give
+		// the rebuild any non-empty baseline — salvaged entries, a defaulted map — and a set
+		// since starts skipping transcripts the rebuild exists to read. Saying "a rebuild is
+		// not incremental" directly costs one term and cannot come apart.
 		since = existing
 	}
 
@@ -1728,10 +1830,16 @@ type contentBlock struct {
 // ReadMetadata reads the existing file, distinguishing absent from unreadable.
 //
 // An empty map with a nil error means genuinely no file yet — the first run, which is
-// not a problem. A non-nil error means a file was there and could not be trusted, and
-// the caller must say so out loud rather than proceeding: under merge, treating a
-// corrupt file as empty would discard exactly the entries the flag exists to keep.
-// Same distinction, for the same reason, as readState in cmd_claudecode.go.
+// not a problem. A non-nil error means a file was there and could not be trusted; what
+// the caller should DO about it depends on which error, and this function's job is only
+// to keep them apart. Same distinction, for the same reason, as readState in
+// cmd_claudecode.go.
+//
+// Three outcomes a caller can discriminate, because Harvest treats them differently:
+// errMetadataNotJSON for a file whose bytes are not JSON, which Harvest rebuilds over;
+// ErrMetadataTooLarge for a valid file past the read cap, which it refuses because
+// rebuilding would destroy intact entries; and a bare os/io error — permission, EIO —
+// which it also refuses, since nothing there says the contents are bad.
 //
 // A file holding JSON `null` decodes to a nil map, which is indistinguishable from an
 // empty object for merging purposes, so it is normalised rather than refused.
@@ -1744,24 +1852,44 @@ func ReadMetadata(path string) (map[string]SessionMetadata, error) {
 		return nil, err
 	}
 	defer f.Close() //nolint:errcheck // read-only
-	// BOUNDED, the same 16 MiB the viewer's own reader of this file uses. Both now cap it, and
-	// for the same reason: a stray large file at this path would otherwise be read whole and
-	// decoded before the viewer starts — `abctl observe` calls this synchronously to check the
-	// file is readable, so an unbounded read stalls startup with nothing on screen to say why.
-	// Far past any real metadata file: the measured 192-session file is 74 KB.
+	// BOUNDED at the same 16 MiB the viewer's own reader of this file uses, for the same reason:
+	// a stray large file at this path would otherwise be read whole and decoded before the viewer
+	// starts — `abctl observe` calls this synchronously to check the file is readable, so an
+	// unbounded read stalls startup with nothing on screen to say why. Far past any real metadata
+	// file: the measured 192-session file is 74 KB.
 	//
-	// Truncation surfaces as a JSON error rather than as silent data loss, which is the right
-	// outcome here: this reader's caller refuses to merge over a file it cannot parse, so a
-	// file too large to read is treated like any other unreadable one instead of quietly
-	// becoming a smaller map.
+	// THE CAP IS SHARED; THE CONTRACT AT IT IS NOT, and the difference is deliberate rather than
+	// an oversight to be unified. This function has a caller that can act — it returns an error,
+	// so the CLI and the pre-flight both name a remedy — and refuses loudly with
+	// ErrMetadataTooLarge. tui.LoadSessionMetadata has nowhere to report anything (it runs while
+	// the model is built, before tea.NewProgram owns the screen) and so returns an empty map,
+	// costing the TITLE column. What both must agree on is WHICH files are too large, which is
+	// why the constant and the read-one-past-it shape are duplicated there rather than eyeballed:
+	// they once disagreed, and the viewer silently decoded a truncated prefix of a file this one
+	// refused whole.
+	//
+	// Truncation is reported as ITS OWN failure, not left to surface as a JSON error. A valid
+	// file over the cap decodes as a parse failure, and Harvest rebuilds over parse failures —
+	// which would replace a good 17 MB file with a 400-byte one. So the cap is checked before
+	// the decode, and the error deliberately carries its own sentinel: not errMetadataNotJSON,
+	// so it cannot be rebuilt over; not a bare read error either, because nothing is wrong with the
+	// bytes — it carries ErrMetadataTooLarge, which the CLI and the viewer's pre-flight each
+	// branch on to give the right remedy. Read one over the cap to tell "exactly at the cap"
+	// from "larger".
 	const maxMetadataBytes = 16 << 20
-	b, err := io.ReadAll(io.LimitReader(f, maxMetadataBytes))
+	b, err := io.ReadAll(io.LimitReader(f, maxMetadataBytes+1))
 	if err != nil {
 		return nil, err
 	}
+	if len(b) > maxMetadataBytes {
+		return nil, fmt.Errorf("%w: %s is larger than the %d byte read limit", ErrMetadataTooLarge, path, maxMetadataBytes)
+	}
 	var m map[string]SessionMetadata
 	if uerr := json.Unmarshal(b, &m); uerr != nil {
-		return nil, fmt.Errorf("%s is not valid JSON: %w", path, uerr)
+		// Sentinel-wrapped so Harvest can tell a parse failure from a file it could not
+		// read: only the former is safe to rebuild over. The message keeps the path and
+		// the decoder's own detail, both of which reach the user.
+		return nil, fmt.Errorf("%w: %s is not valid JSON: %w", errMetadataNotJSON, path, uerr)
 	}
 	if m == nil {
 		return map[string]SessionMetadata{}, nil
@@ -1834,6 +1962,14 @@ func recoverConcurrentEntries(path string, meta map[string]SessionMetadata) (add
 	return added, replaced, nil
 }
 
+// writeAll writes body to w. A var, not a call, purely as a test seam.
+//
+// The bug it guards is the `err :=` shadow in SaveMetadata: a scoped error would be dropped,
+// and Close and Rename would then rename a TRUNCATED file over the good one. Nothing a test
+// can provoke on a working filesystem — a short write without an error is not something a
+// real file does — so the injection point is the only way to reach that path.
+var writeAll = func(w io.Writer, body []byte) (int, error) { return w.Write(body) }
+
 // SaveMetadata writes the map atomically, creating ~/.cortex if needed.
 //
 // Same mechanics as saveUserConfig, for the same reasons: CreateTemp rather than a
@@ -1879,16 +2015,11 @@ func SaveMetadata(path string, meta map[string]SessionMetadata) error {
 	// would then see success, renaming a truncated file over the good one. The bug
 	// saveUserConfig's comment records having made.
 	//
-	// TRIPWIRE LOST IN THE MOVE, recorded rather than left silent: in package main this was
-	// `writeAll(f, body)`, an indirected io.Writer.Write that a test could swap for a failing
-	// one — added because the shadowing bug above is invisible to every test that writes to a
-	// working filesystem. That var stays in cmd/abctl for saveUserConfig, which is what its
-	// own test swaps, and it cannot travel here without duplicating it across two modules. No
-	// test ever reached it through the harvest path (the write-failure test uses an
-	// unwritable directory instead), so nothing regressed today — but the injection point is
-	// gone, so a future edit that reintroduces the shadowing has one fewer way to be caught.
-	// Restoring it is three lines if that ever feels too thin.
-	_, err = f.Write(body)
+	// Through writeAll, not f.Write directly, so a test can make the write fail while Close
+	// and Rename still succeed — the only shape that catches the shadowing above, and one no
+	// real filesystem produces on demand. cmd/abctl has its own copy of this seam for
+	// saveUserConfig; the duplication is two lines and buys each module its own tripwire.
+	_, err = writeAll(f, body)
 	if cerr := f.Close(); err == nil {
 		err = cerr
 	}
