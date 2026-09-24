@@ -421,7 +421,27 @@ func TestRenderTierRows_NegativeReasoningIsRefused(t *testing.T) {
 // The child is the row most likely to break it — its label is exactly
 // tierLabelWidth and was what forced that constant from 11 to 12.
 func TestRenderTierRows_ChildMoneyColumnAlignsWithTheTiers(t *testing.T) {
-	lines := renderTierRows(reasoningCounts(), tierColumnWidth)
+	// EVERY CHILD STATE THAT CARRIES A FIGURE, because the fixture decides which branch
+	// is measured. With only the apportioned case, a reported zero formatted on its own
+	// no-bar path put its figure at column 28 against the tiers' 41 and nothing failed.
+	reportedZero := reasoningCounts()
+	reportedZero.ReasoningTokens = 0
+	for _, tc := range []struct {
+		name string
+		c    usage.Counts
+	}{
+		{"apportioned figure", reasoningCounts()},
+		{"reported zero", reportedZero},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assertChildFigureAligns(t, tc.c)
+		})
+	}
+}
+
+func assertChildFigureAligns(t *testing.T, counts usage.Counts) {
+	t.Helper()
+	lines := renderTierRows(counts, tierColumnWidth)
 
 	endOf := func(row string) int {
 		i := strings.LastIndex(row, "$")

@@ -229,30 +229,32 @@ func reasoningChildRow(c usage.Counts, tiers [pricing.NumTiers]int64, ok bool,
 	//
 	// ok from ApportionTiers gates first: with no mix to apportion by there is no output
 	// figure to take a share of.
-	// A REPORTED ZERO IS A MEASUREMENT, and it renders $0.00 — exactly, with no marker.
+	// A REPORTED ZERO IS A MEASUREMENT, and it renders an exact $0.00.
 	//
-	// Checked BEFORE ApportionReasoning, which refuses a zero count along with every
-	// other case it has no figure for. This row used to take the not-known cell here,
-	// copying the `tiers[tier] == 0` escape the tier rows make — the wrong borrowing. A
-	// TIER apportioning to zero is absent from the modelled mix, so its figure is
-	// unknown; a reasoning count of zero means the provider measured the split and it
-	// was nothing. "—" for a value we have discards it, and `abctl cost`'s token line
-	// prints "reasoning (of output) 0" for the same Counts, so the two surfaces told
-	// different stories about one measured fact.
-	//
-	// NO inexactMarker: zero tokens cost zero whatever the output rate, so this is the
-	// one child figure that is not modelled at all. The marker qualifies the token-ratio
-	// approximation and there is no ratio here to qualify.
+	// Checked BEFORE ApportionReasoning, which refuses a zero count along with every case
+	// it has no figure for. This row used to take the not-known cell here, copying the
+	// `tiers[tier] == 0` escape the tier rows make — the wrong borrowing. A TIER
+	// apportioning to zero is absent from the modelled mix, so its figure is unknown; a
+	// reasoning count of zero means the provider measured the split and it was nothing.
+	// "—" for a value we have discards it, and `abctl cost`'s token line prints
+	// "reasoning (of output) 0" for the same Counts, so the two surfaces told different
+	// stories about one measured fact.
 	//
 	// It is also the observation worth having — effort reached the model and bought no
 	// reasoning — which is unreadable as "—".
-	if ok && c.PresentKinds&usage.KindReasoning != 0 && c.ReasoningTokens == 0 {
-		return clipRow(fmt.Sprintf("%-*s %s %s", tierLabelWidth, childTierLabel,
-			tierShareCell(0, 0), tierMoneyCell(0)), width)
-	}
-	micros, hasFigure := c.ApportionReasoning(tiers[pricing.TierOutput])
-	if !ok || !hasFigure {
-		return notKnown
+	//
+	// FORMATTED THROUGH THE SAME SWITCH as every other state, not on its own path. A
+	// separate no-bar Sprintf here put the figure at column 28 against the tiers' 41,
+	// because the bar SLOT is padding the other rows carry whether or not they fill it.
+	reportedZero := ok && c.PresentKinds&usage.KindReasoning != 0 && c.ReasoningTokens == 0
+
+	micros := int64(0)
+	if !reportedZero {
+		var hasFigure bool
+		micros, hasFigure = c.ApportionReasoning(tiers[pricing.TierOutput])
+		if !ok || !hasFigure {
+			return notKnown
+		}
 	}
 	// Floored against the same total the tier rows use, so the child is comparable down
 	// the column. Deliberately NOT tierShares, which must keep summing to 100 across
@@ -272,7 +274,13 @@ func reasoningChildRow(c usage.Counts, tiers [pricing.NumTiers]int64, ok bool,
 	// PREFIXED, the convention spend_strip.go states for this glyph: the marker precedes a
 	// figure that is not exact. Prefixing also keeps the decimal points aligned with the tier
 	// rows, which a trailing glyph would push out of line.
-	money := padLeft(inexactMarker+formatUSDTotalMicros(micros), tierMoneyWidth)
+	//
+	// NOT ON A REPORTED ZERO: zero tokens cost zero whatever the output rate, so that is the
+	// one child figure with no token-ratio approximation in it for a marker to qualify.
+	money := tierMoneyCell(micros)
+	if !reportedZero {
+		money = padLeft(inexactMarker+formatUSDTotalMicros(micros), tierMoneyWidth)
+	}
 	var row string
 	switch {
 	case budget > 0:
