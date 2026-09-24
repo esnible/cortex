@@ -127,11 +127,15 @@ func TestBobShellEnable_CreatesThenIdempotent(t *testing.T) {
 // already ended blank had the user's own blank line eaten on disable. The single
 // fixture ending in a non-blank line could not reach that.
 func TestBobShellEnable_PreservesSurroundingContent(t *testing.T) {
-	for _, tc := range []struct{ name, original string }{
-		{"ends with content", "# my rc\nexport EDITOR=vim\n\nalias ll='ls -l'\n"},
-		{"ends with a blank line", "# mine\n\n"},
-		{"no trailing newline", "# mine"},
-		{"empty", ""},
+	// wantBack differs from original only where writeRC's documented exception
+	// applies: a file with no trailing newline gains one, because an unterminated end
+	// marker is unfindable by disable and swallows the next append.
+	for _, tc := range []struct{ name, original, wantBack string }{
+		{"ends with content", "# my rc\nexport EDITOR=vim\n\nalias ll='ls -l'\n", "# my rc\nexport EDITOR=vim\n\nalias ll='ls -l'\n"},
+		{"ends with a blank line", "# mine\n\n", "# mine\n\n"},
+		{"exactly one newline", "\n", "\n"},
+		{"no trailing newline", "# mine", "# mine\n"},
+		{"empty", "", ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rc := filepath.Join(t.TempDir(), ".zshrc")
@@ -158,8 +162,8 @@ func TestBobShellEnable_PreservesSurroundingContent(t *testing.T) {
 			if code := bobShellDisable(rc, true, &out, &errb); code != 0 {
 				t.Fatalf("disable: exit = %d, want 0", code)
 			}
-			if back := readFile(t, rc); back != tc.original {
-				t.Errorf("enable/disable round trip changed the file:\nwant %q\ngot  %q", tc.original, back)
+			if back := readFile(t, rc); back != tc.wantBack {
+				t.Errorf("enable/disable round trip changed the file:\nwant %q\ngot  %q", tc.wantBack, back)
 			}
 		})
 	}
@@ -551,5 +555,88 @@ func TestValidateAliasPath(t *testing.T) {
 		t.Error("a path containing a single quote was accepted")
 	} else if !strings.Contains(err.Error(), "single quote") {
 		t.Errorf("error does not name the problem: %v", err)
+	}
+}
+
+// TestBobShellEnable_TerminatesTheEndMarker pins the newline writeRC adds to a file
+// that had none. Two things break without it, and neither is cosmetic: the next line
+// appended to the rc file fuses onto the end marker and is commented out by it, and
+// disable can no longer match the marker — so it reports success, exits 0, and
+// leaves the live alias in the file.
+func TestBobShellEnable_TerminatesTheEndMarker(t *testing.T) {
+	rc := filepath.Join(t.TempDir(), ".zshrc")
+	if err := os.WriteFile(rc, []byte("# my rc\nMY_OWN_SETTING=kept"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var out, errb bytes.Buffer
+	if code := bobShellEnable(rc, testAbctl, true, &out, &errb); code != 0 {
+		t.Fatalf("enable: exit = %d, want 0 (stderr: %s)", code, errb.String())
+	}
+	if got := readFile(t, rc); !strings.HasSuffix(got, bobShellMarkerEnd+"\n") {
+		t.Fatalf("the end marker is not a complete line:\n%q", got)
+	}
+
+	// What that costs when it is missing: a later append lands on the marker's line.
+	f, err := os.OpenFile(rc, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString("export APPENDED_LATER=1\n"); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+	for _, want := range []string{bobShellMarkerEnd + "\n", "\nexport APPENDED_LATER=1\n"} {
+		if got := readFile(t, rc); !strings.Contains(got, want) {
+			t.Errorf("appended line fused onto the marker; want %q in:\n%s", want, got)
+		}
+	}
+
+	// And disable still finds the block, rather than exiting 0 with the alias left in.
+	out.Reset()
+	if code := bobShellDisable(rc, true, &out, &errb); code != 0 {
+		t.Fatalf("disable: exit = %d, want 0", code)
+	}
+	if got := readFile(t, rc); strings.Contains(got, "alias bob") {
+		t.Errorf("disable exited 0 but left the alias behind:\n%s", got)
+	}
+}
+
+// TestBobShellEnable_WritesThroughASymlink pins that a symlinked rc file — a link
+// into a dotfiles repo, which is how rc files usually look — is followed rather than
+// replaced. os.Rename over the link turns it into a regular file: the alias lands
+// somewhere the repo does not track, the repo's copy never gets it, and later
+// dotfile edits stop reaching the shell.
+func TestBobShellEnable_WritesThroughASymlink(t *testing.T) {
+	dir := t.TempDir()
+	real := filepath.Join(dir, "dotfiles", "zshrc")
+	if err := os.MkdirAll(filepath.Dir(real), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(real, []byte("# real rc\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, ".zshrc")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+
+	var out, errb bytes.Buffer
+	if code := bobShellEnable(link, testAbctl, true, &out, &errb); code != 0 {
+		t.Fatalf("exit = %d, want 0 (stderr: %s)", code, errb.String())
+	}
+
+	fi, err := os.Lstat(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode()&os.ModeSymlink == 0 {
+		t.Error("the symlink was replaced by a regular file")
+	}
+	if got := readFile(t, real); !strings.Contains(got, bobShellAliasLine(testAbctl)) {
+		t.Errorf("the alias did not reach the link target:\n%s", got)
+	}
+	// The backup belongs beside the real file too, not beside the link.
+	if _, err := os.Stat(real + ".bak"); err != nil {
+		t.Errorf("no backup beside the link target: %v", err)
 	}
 }

@@ -19,7 +19,11 @@ import (
 //
 // The markers delimit the block this command owns. Everything outside them is the
 // user's, and a rewrite must leave it byte-identical — an rc file is hand-written
-// over years and holds things nothing else has a copy of. They also make `status`
+// over years and holds things nothing else has a copy of. One exception, in
+// writeRC: a file that did not end in a newline gains one, because an unterminated
+// end marker swallows whatever is appended next and makes the block unfindable by
+// disable. Adding the missing byte is the lesser harm, and disable still restores
+// everything else exactly. They also make `status`
 // and `disable` exact: both look for this block rather than pattern-matching a
 // line that happens to mention bob, so a user's own `alias bob=...` written before
 // they ever ran this is neither reported as ours nor removed as ours.
@@ -349,8 +353,31 @@ func readRC(path string) (lines []string, trailingNewline bool, err error) {
 // tightening it to 0600 is a change the user did not ask for.
 func writeRC(path string, lines []string, trailingNewline bool) error {
 	body := strings.Join(lines, "\n")
-	if trailingNewline && body != "" {
+	// len(lines), not body != "": a file holding exactly one newline is one empty
+	// line, and joins to the same "" an empty file does. Testing the body suppressed
+	// the newline for both, so disable wrote that file as 0 bytes and ate the user's
+	// only byte — the round trip this file's header promises is byte-identical.
+	if len(lines) > 0 && (trailingNewline || strings.HasSuffix(body, bobShellMarkerEnd)) {
+		// A file that did not end with a newline gets one anyway when our block is
+		// the new tail, because the end marker MUST be a complete line. Left
+		// unterminated, the next thing appended to the rc file fuses onto it and is
+		// swallowed by the comment — a `#`-prefixed line is what the marker is —
+		// and `disable` can no longer match the marker, so it reports success,
+		// exits 0, and leaves the live alias in place. That is a worse outcome than
+		// adding the byte the file was missing, and it is not a round-trip
+		// violation: disable removes our lines and restores the original tail.
 		body += "\n"
+	}
+	// Resolve a symlink and write through to its target. An rc file is very often a
+	// link into a dotfiles repo, and os.Rename over the link REPLACES it with a
+	// regular file: the alias lands in a file the repo does not track, the repo's
+	// own copy never gets it, and every later dotfile edit silently stops reaching
+	// the shell. Backing up beside the link rather than the target has the same
+	// shape of wrongness, so resolve before the backup so both land on the real
+	// file. (writeSettings does not do this because settings.json is rarely
+	// symlinked; rc files are symlinked far more often.)
+	if resolved, rerr := filepath.EvalSymlinks(path); rerr == nil {
+		path = resolved
 	}
 	mode := os.FileMode(0o600)
 	if cur, rerr := os.ReadFile(path); rerr == nil { //nolint:gosec // operator-supplied path

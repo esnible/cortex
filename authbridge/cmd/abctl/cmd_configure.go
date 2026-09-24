@@ -115,8 +115,19 @@ func runConfigure(args []string, stdout, stderr io.Writer) int {
 		// `abctl claude-code` is — that spelling names a command that really worked and
 		// may sit in someone's script, whereas this one only ever printed a notice, so
 		// keeping it alive would be preserving a name nothing depended on.
+		// Default the verb to status for the bare `abctl configure bob`, which is the
+		// most likely spelling of all: the notice this replaced took no verb, so that
+		// is what a note or a shell history from before the rename holds. Joining an
+		// empty tail printed a command ending in a space with no verb, which on paste
+		// just reprints usage — the one input most likely to arrive got the one
+		// suggestion that does not work. status is the safe default: it is the verb
+		// that changes nothing.
+		action := strings.Join(args[1:], " ")
+		if action == "" {
+			action = "status"
+		}
 		fmt.Fprintf(stderr, "abctl: %q is now \"bobshell\"; run `abctl configure bobshell %s`\n",
-			agent, strings.Join(args[1:], " "))
+			agent, action)
 		return 2
 	default:
 		// The named list is the answer to a typo; the usage block after it is the

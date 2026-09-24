@@ -173,6 +173,23 @@ func TestConfigure_UsageErrors(t *testing.T) {
 		}
 	})
 
+	// The bare spelling, which is the likeliest of all: the notice this replaced took
+	// no verb. The command it prints has to be pasteable, and joining an empty tail
+	// printed one ending in a space with no verb — which on paste reprints usage.
+	t.Run("bare old bob spelling suggests a runnable command", func(t *testing.T) {
+		var out, errb bytes.Buffer
+		if code := runConfigure([]string{"bob"}, &out, &errb); code != 2 {
+			t.Errorf("exit = %d, want 2", code)
+		}
+		got := strings.TrimRight(errb.String(), "\n")
+		if !strings.Contains(got, "`abctl configure bobshell status`") {
+			t.Errorf("the suggestion is not a runnable command: %q", got)
+		}
+		if strings.Contains(got, "bobshell `") || strings.Contains(got, "bobshell  ") {
+			t.Errorf("the suggested command has no verb: %q", got)
+		}
+	})
+
 	t.Run("unknown agent", func(t *testing.T) {
 		var out, errb bytes.Buffer
 		if code := runConfigure([]string{"frobnicate"}, &out, &errb); code != 2 {
