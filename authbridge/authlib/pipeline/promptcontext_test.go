@@ -648,6 +648,81 @@ func TestMergePromptContext_NeitherStatedRanksMsgsAheadOfAt(t *testing.T) {
 	}
 }
 
+// THE ZERO FOLD LOSES TO EVERY CANDIDATE AND BEATS NONE, which is the property Add's and
+// TokensMergedWith's identity disjuncts exist to preserve.
+//
+// PINNING THE PROPERTY, NOT THE LINE, and the difference is worth stating because a review asked for
+// exactly this. Those disjuncts are unreachable — every candidate that gets as far as them already
+// beats an empty fold on some comparator — so no test can distinguish them from their own absence,
+// and they survive mutation by construction. Their stated purpose is that a future reordering of
+// better()'s comparators must not be able to make an empty operand legitimate quietly, and THAT is
+// testable: this asserts the ordering property directly, so such a reordering fails here rather than
+// merely widening what those lines silently cover.
+//
+// CANDIDATES BY FIELD, spanning the shapes the arms take: stated and unstated, a count of zero (which
+// falls through to at), an unset At (which falls through to tokens), and the smallest figure a
+// candidate can carry.
+func TestPromptContextFold_TheZeroFoldLosesToEveryCandidate(t *testing.T) {
+	at := time.Now().Round(0)
+	var zero PromptContextFold
+	for _, c := range []candidate{
+		{tokens: 500_000, msgs: 600, at: at, stated: true},
+		{tokens: 500_000, msgs: 600, at: at},
+		{tokens: 500_000, at: at},    // no count: the arm falls through to at
+		{tokens: 500_000},            // no count and no time: only tokens separates it
+		{tokens: 1, stated: true},    // the smallest stated figure
+		{tokens: 1},                  // and the smallest unstated one
+		{tokens: 1, at: time.Time{}}, // an explicit zero At, which is what the fold holds
+	} {
+		if !better(c, zero.current()) {
+			t.Errorf("better(%+v, zero fold) = false — an empty fold is not a legitimate operand, "+
+				"so every candidate must outrank it", c)
+		}
+		if better(zero.current(), c) {
+			t.Errorf("better(zero fold, %+v) = true — an empty fold outranked a real candidate", c)
+		}
+	}
+}
+
+// A NON-POSITIVE FIGURE IS NOT A CANDIDATE, asserted on candidateOf itself rather than through
+// PromptContextOf.
+//
+// WHY NOT THROUGH THE FOLD: Add refuses a non-positive candidate too, so a whole-slice assertion
+// reports 0 whichever of the two guards is doing the work and cannot tell `n <= 0` here from `n == 0`.
+// Asking candidateOf directly is what pins the comparison this function actually makes.
+//
+// THE NEGATIVE IS REACHABLE, unlike this file's identity disjuncts: PromptTokensOf falls back to the
+// aggregate FIELD when the split is zero, and that field arrives by JSON decode. Add takes any
+// candidate onto an empty fold, so `== 0` would let one such event make a session's PUBLISHED figure
+// negative. Mutation-checked: `n <= 0` -> `n == 0` fails the last case here.
+func TestCandidateOf_RefusesANonPositiveFigure(t *testing.T) {
+	agentic := func(promptTokens int) *SessionEvent {
+		return &SessionEvent{
+			At: time.Now(), Phase: SessionResponse, Direction: Outbound,
+			Inference: &InferenceExtension{
+				Model: "claude-opus-5", Messages: make([]InferenceMessage, 40),
+				Tools: toolsOf(27), AgentRole: AgentRoleMain,
+				// The aggregate field rather than the split, which is the only route to a
+				// negative: PromptTokensOf reads the split first.
+				PromptTokens: promptTokens,
+			},
+		}
+	}
+
+	// The control: an otherwise identical event with a real figure IS a candidate, or the two
+	// assertions below would pass on the manifest or the phase instead.
+	if got := candidateOf(agentic(500_000)); got.tokens != 500_000 {
+		t.Fatalf("candidateOf on a 500k agentic response = %+v, want tokens=500000 — the fixture is "+
+			"not producing a candidate at all", got)
+	}
+	for _, n := range []int{0, -1} {
+		if got := candidateOf(agentic(n)); got != (candidate{}) {
+			t.Errorf("candidateOf on a response reporting %d prompt tokens = %+v, want the zero "+
+				"candidate — a non-positive figure says nothing", n, got)
+		}
+	}
+}
+
 // EVERY CANDIDATE'S at IS WALL-CLOCK ONLY, which is what makes better()'s equality check transitive
 // and therefore the max associative.
 //

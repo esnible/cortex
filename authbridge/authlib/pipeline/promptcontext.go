@@ -210,6 +210,16 @@ func candidateOf(e *SessionEvent) candidate {
 		return candidate{}
 	}
 	n := PromptTokensOf(e.Inference)
+	// <= 0 RATHER THAN == 0, the same question nothingKnown asks of a published figure and for the
+	// same reason: nothing in the type refuses a negative. PromptTokensOf falls back to the aggregate
+	// FIELD when the split is zero, and that field arrives by JSON decode, so a buggy or hostile
+	// producer can put a negative figure in it. What == 0 would let through is not a mis-RANKED
+	// candidate — tokens is the last comparator in either arm, so a negative loses to every real
+	// figure — but a fold with nothing else in it: Add takes ANY candidate onto an empty fold (its
+	// identity disjunct), so one such event would make the session's published figure negative, and
+	// every consumer would then have to re-derive that a negative means nothing known. Reachable,
+	// unlike this file's two identity disjuncts, and pinned by
+	// TestCandidateOf_RefusesANonPositiveFigure.
 	if n <= 0 {
 		return candidate{}
 	}
@@ -346,7 +356,11 @@ func better(a, b candidate) bool {
 // in the slice, and a restore from disk has no order to offer at all.
 func (f *PromptContextFold) Add(e *SessionEvent) {
 	c := candidateOf(e)
-	if c.tokens == 0 {
+	// <= 0, matching candidateOf, nothingKnown and Publish rather than asking a narrower question
+	// than any of them. candidateOf already refuses a non-positive figure, so this cannot differ
+	// today; the four checks agreeing on what "nothing known" is costs nothing and is one fewer
+	// thing to reconcile for anyone who adds a fifth.
+	if c.tokens <= 0 {
 		return
 	}
 	// The zero fold is the monoid's identity, stated explicitly even though better() already
@@ -357,7 +371,15 @@ func (f *PromptContextFold) Add(e *SessionEvent) {
 	// too it wins on tokens, which the guard above proved non-zero. It is kept so that a future
 	// reordering of better()'s comparators cannot quietly make an empty fold a legitimate operand:
 	// the identity is a property of the monoid, not an accident of which field is compared last.
-	if f.tokens == 0 || better(c, f.current()) {
+	//
+	// THE DISJUNCT ITSELF CANNOT BE PINNED, and a review was right that saying "kept to guard a
+	// future reordering" with nothing behind it is half a claim. No input reaches it — that is the
+	// paragraph above — so no test can distinguish this line from its absence, and it survives
+	// mutation by construction. What IS pinned is the property it protects:
+	// TestPromptContextFold_TheZeroFoldLosesToEveryCandidate asserts that an empty fold loses to
+	// every shape of candidate and beats none, so a reordering that made an empty operand
+	// legitimate fails there rather than silently changing what this line covers for.
+	if f.tokens <= 0 || better(c, f.current()) {
 		f.tokens, f.msgs, f.at, f.stated = c.tokens, c.msgs, c.at, c.stated
 	}
 }
@@ -432,7 +454,10 @@ func (p *PromptContext) candidate() candidate {
 // observed; both must render as an em dash rather than as a figure. Same standing rule
 // SessionSummary.CostMicros states for its own omitempty.
 func (f PromptContextFold) Publish() *PromptContext {
-	if f.tokens == 0 {
+	// <= 0 for nothingKnown's reason, and so that this producer cannot emit a figure the combines
+	// would then classify as nothing known: the fold's own guards refuse a non-positive figure, so
+	// this is unreachable, and the four checks agreeing is the point.
+	if f.tokens <= 0 {
 		return nil
 	}
 	return &PromptContext{Tokens: f.tokens, Stated: f.stated, At: f.at, Msgs: f.msgs}
@@ -576,8 +601,9 @@ func (f PromptContextFold) TokensMergedWith(p *PromptContext) int {
 		return f.tokens
 	}
 	// A zero fold is the monoid's identity here as everywhere: Publish() would return nil for it,
-	// and nil is what MergePromptContext returns the other operand for.
-	if f.tokens == 0 || better(p.candidate(), f.current()) {
+	// and nil is what MergePromptContext returns the other operand for. <= 0 to match the other
+	// three checks; see Add.
+	if f.tokens <= 0 || better(p.candidate(), f.current()) {
 		return p.Tokens
 	}
 	return f.tokens
