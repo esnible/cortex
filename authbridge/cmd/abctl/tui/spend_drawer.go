@@ -759,20 +759,18 @@ func renderSpendDrawer(snap *usage.Snapshot, err error, axis usage.Group, window
 	// would emit more body rows than spendDrawerLines reserves and push the footer off
 	// the terminal, which is the failure the block above documents. min keeps both, and
 	// the one-column path takes tierPanelLines because tiers is nil and never indexed.
-	// THE TALLER COLUMN GOVERNS, which is the same rule spendDrawerLinesFor reserves by.
-	// It was min(tierPanelLines, len(tiers)) — the tier column alone — while the
-	// reservation took max(tierPanelLines, spendDrawerSeries+1); the two agreed only
-	// because spendDrawerSeries+1 is 4 and tierPanelLines is 5 today. That unstated
-	// inequality is not "by construction", and raising spendDrawerSeries would have
-	// truncated the series column here while the reservation still held room for it.
+	// THE BOUND IS THE RESERVATION, minus the header and the hint line — derived from
+	// spendDrawerLinesFor rather than restated, so the loop and the reservation cannot
+	// disagree about the panel's height. They did: the reservation took
+	// max(tierPanelLines, spendDrawerSeries+1) while this was min(tierPanelLines,
+	// len(tiers)), and the two agreed only because spendDrawerSeries+1 is 4 against
+	// tierPanelLines' 5.
 	//
-	// One column has no tier rows at all, so there the series count is the whole height.
-	// Bounded by tierPanelLines it walked a fifth slot that is always empty at that
-	// width and emitted a blank body row.
-	bound := spendDrawerSeries + 1
-	if twoCol {
-		bound = max(min(tierPanelLines, len(tiers)), spendDrawerSeries+1)
-	}
+	// The min was here to stop tiers[i] reading past the end, and a max wrapper added
+	// later to fix the height put that panic straight back for any len(tiers) < 4. Both
+	// concerns are real and neither belongs in the bound: the height is a layout fact and
+	// the index is a slice fact, so the index is guarded where it is read.
+	bound := spendDrawerLinesFor(width) - 2
 	for i := 0; i < bound; i++ {
 		// NO BRANCH GLYPHS BETWEEN THE COLUMNS' OWN ROWS. "├" and "└" once prefixed every
 		// row here and implied a parent none of them had; the column headers name the
@@ -799,8 +797,16 @@ func renderSpendDrawer(snap *usage.Snapshot, err error, axis usage.Group, window
 		// row follows it: the fourth tier row is drawn beside an empty series slot on any window
 		// with fewer than four series, and paneView passes these straight to styleMuted.Render,
 		// so the padding becomes styled trailing whitespace on a line nobody can see the end of.
+		// GUARDED, not assumed. renderTierRows returns tierPanelLines rows today, but the
+		// contract is held by a test in another package while this index is what crashes
+		// the render if it ever slips. A short tier column pads with blanks — a missing row
+		// is a cosmetic loss, an out-of-range read is a dead TUI.
+		tier := ""
+		if i < len(tiers) {
+			tier = tiers[i]
+		}
 		out = append(out, strings.TrimRight(fmt.Sprintf("  %-*s%s",
-			tierColumnWidth+drawerColumnGutter, tiers[i], strings.TrimLeft(series, " ")), " "))
+			tierColumnWidth+drawerColumnGutter, tier, strings.TrimLeft(series, " ")), " "))
 	}
 	// The hint line is LAST and always present: it is the only place the two keys and the
 	// current axis are written down, and a drawer whose controls are undiscoverable is a

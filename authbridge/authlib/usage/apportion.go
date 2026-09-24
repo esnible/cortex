@@ -85,24 +85,22 @@ func (c Counts) ApportionTiers() (tiers [pricing.NumTiers]int64, ok bool) {
 // mix would produce a child that does not divide into the parent beside it.
 //
 // ok is false when there is no defensible figure, and the caller renders "not known
-// here" — never $0.00, which would assert the reasoning was free. Four ways to get
+// here" — never $0.00, which would assert the reasoning was free. Three ways to get
 // there:
 //
-//   - nothing reported a split (the present bit clear AND the value zero; a non-zero
-//     value with a clear bit still counts, being an event from a producer predating
-//     PresentKinds)
-//   - no output tokens, so there is no denominator
-//   - no output money to take a share of
-//   - a share that truncates below one micro, which is reachable on a small window
+//   - no reasoning to apportion: the count is zero (nothing reported it, or it was
+//     reported as nothing) or negative
+//   - no denominator, or no output money to take a share of
+//   - a share that truncates below one micro, reachable on a small window
+//
+// A positive count with the present bit CLEAR does apportion: that is an event from a
+// producer predating PresentKinds, where the value is the only evidence there is.
 //
 // The result is clamped to outputMicros. Reasoning cannot exceed output on the wire,
 // but a provider reporting otherwise must not produce a child figure above its parent;
 // the counts themselves are left as reported — see Counts.ReasoningTokens.
 func (c Counts) ApportionReasoning(outputMicros int64) (micros int64, ok bool) {
-	if c.PresentKinds&KindReasoning == 0 && c.ReasoningTokens == 0 {
-		return 0, false
-	}
-	// NEGATIVE IS REFUSED, not merely zero, and refused HERE rather than left to
+	// NEGATIVE OR ZERO IS REFUSED, not merely zero, and refused HERE rather than left to
 	// plausibleTokenReport. A negative count makes the ratio negative, the upper clamp
 	// below does not fire and the `micros == 0` escape does not either — so a caller got
 	// (-595103, true) and would publish negative money or hand it to tierBar.
@@ -113,8 +111,12 @@ func (c Counts) ApportionReasoning(outputMicros int64) (micros int64, ok bool) {
 	// to conclude the other half was considered and ruled out. This function is exported
 	// and was clamped on the upper side only.
 	//
-	// `<= 0` also subsumes the reported-zero case, which used to reach the truncation
-	// escape instead: a split measured as nothing has no figure to apportion either.
+	// THE PRESENT BIT IS NOT CONSULTED, because this test subsumes it. A `bit == 0 &&
+	// value == 0` branch stood above and became dead the moment `<= 0` was added: every
+	// input reaching one fails the other. The bit distinguishes "nothing reported" from
+	// "reported zero", which matters to a RENDERER deciding between the not-known cell
+	// and "$0.00" — but not here, because neither has a figure to apportion. Callers that
+	// need the distinction read PresentKinds themselves.
 	if c.ReasoningTokens <= 0 {
 		return 0, false
 	}

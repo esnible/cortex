@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -140,5 +141,48 @@ func TestTiersJSON_OmitsReasoningWhenThereIsNoFigure(t *testing.T) {
 	}
 	if got.Reasoning != nil {
 		t.Errorf("reasoningOfOutput = %d for a provider reporting no split; want absent", *got.Reasoning)
+	}
+}
+
+// THE KEY NAME IS A PUBLISHED CONTRACT, so it is asserted through the MARSHALLER.
+// Every other test here reads the struct field, where the json tag is invisible: a
+// typo'd tag, or omitempty dropped so absence serialises as null, ships silently and
+// breaks every scripted consumer.
+func TestTiersJSON_MarshalsTheReasoningKey(t *testing.T) {
+	priced := usage.Counts{
+		CostMicros:      4_546_200,
+		InputCostMicros: 3000, CacheWriteCostMicros: 7500,
+		CacheReadCostMicros: 30000, OutputCostMicros: 45000,
+		OutputTokens: 1593, ReasoningTokens: 948,
+		PresentKinds: uint8(usage.KindOutput | usage.KindReasoning),
+	}
+	raw, err := json.Marshal(tiersJSONOf(priced))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	got := string(raw)
+	// The exact key, with its exact figure.
+	if !strings.Contains(got, `"reasoningOfOutput":1423927`) {
+		t.Errorf("marshalled %s\nwant a reasoningOfOutput of 1423927", got)
+	}
+	// The four tier keys must keep their names too — this is the same contract.
+	for _, key := range []string{`"input"`, `"cacheWrite"`, `"cacheRead"`, `"output"`} {
+		if !strings.Contains(got, key) {
+			t.Errorf("marshalled %s\nis missing %s", got, key)
+		}
+	}
+
+	// ABSENT, not null and not zero, when there is no figure. A consumer distinguishes
+	// "no reasoning reported" from "reasoning cost nothing" by the key's absence, which
+	// is what omitempty on a pointer buys and what a value type would have lost.
+	unreported := priced
+	unreported.ReasoningTokens = 0
+	unreported.PresentKinds = uint8(usage.KindOutput)
+	raw, err = json.Marshal(tiersJSONOf(unreported))
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if got := string(raw); strings.Contains(got, "reasoningOfOutput") {
+		t.Errorf("marshalled %s\nwant no reasoningOfOutput key at all", got)
 	}
 }

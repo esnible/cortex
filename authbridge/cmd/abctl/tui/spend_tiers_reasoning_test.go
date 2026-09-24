@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/lipgloss"
+
 	"github.com/rossoctl/cortex/authbridge/authlib/usage"
 )
 
@@ -323,16 +325,21 @@ func TestRenderTierRows_HeightConstantAcrossReasoningStates(t *testing.T) {
 // it — otherwise the child row pushes the footer off the terminal, the defect
 // keys.go records for spendDrawerLines.
 func TestSpendDrawerLines_AccountsForTheChildRow(t *testing.T) {
-	// A CONSTANT AGAINST WHAT THE RENDERER PRODUCES, which is the only form of this
-	// assertion that can fail: comparing tierPanelLines to its own definition cannot.
-	if want := len(renderTierRows(reasoningCounts(), tierColumnWidth)); tierPanelLines < want {
-		t.Errorf("tierPanelLines = %d but the panel renders %d lines", tierPanelLines, want)
+	// EQUALITY, NOT AN INEQUALITY, in both directions. `tierPanelLines < want` passed
+	// when the panel returned FEWER rows than the constant — which is the case the
+	// drawer's bare tiers[i] read used to panic on — and `got > spendDrawerLines` passed
+	// on under-emission, which is the floating-footer bug this file documents. Each
+	// inequality guarded one side of a two-sided invariant.
+	if want := len(renderTierRows(reasoningCounts(), tierColumnWidth)); want != tierPanelLines {
+		t.Errorf("the panel renders %d lines but tierPanelLines is %d", want, tierPanelLines)
 	}
-	// The drawer must actually emit them, which is a property of renderSpendDrawer
-	// rather than of the constants. Asserted against a real render.
-	if got := len(renderSpendDrawer(reasoningSnap(), nil, usage.GroupModel, "1h", 100)); got > spendDrawerLines {
-		t.Errorf("the drawer emitted %d lines but reserves %d; the footer will be pushed off",
-			got, spendDrawerLines)
+	// And the drawer emits exactly its reservation FOR THAT WIDTH — not the constant,
+	// which is the two-column value and would let a narrow render pass short.
+	const w = 100
+	if got, want := len(renderSpendDrawer(reasoningSnap(), nil, usage.GroupModel, "1h", w)),
+		spendDrawerLinesFor(w); got != want {
+		t.Errorf("the drawer emitted %d lines and reserves %d; either way the footer moves",
+			got, want)
 	}
 }
 
@@ -371,5 +378,51 @@ func TestRenderTierRows_NegativeReasoningIsRefused(t *testing.T) {
 	}
 	if strings.Contains(child[0], "-") {
 		t.Errorf("child row = %q carries a negative figure", child[0])
+	}
+}
+
+// THE CHILD'S MONEY COLUMN ALIGNS WITH THE TIERS', which
+// TestRenderTierRows_MoneyIsRightAligned cannot say: it wraps its input in
+// tierRowsOnly and then locks the exclusion in with `len(ends) != numTierRows`, so
+// the one row this feature adds is outside the alignment it has to obey.
+//
+// The child is the row most likely to break it — its label is exactly
+// tierLabelWidth and was what forced that constant from 11 to 12.
+func TestRenderTierRows_ChildMoneyColumnAlignsWithTheTiers(t *testing.T) {
+	lines := renderTierRows(reasoningCounts(), tierColumnWidth)
+
+	endOf := func(row string) int {
+		i := strings.LastIndex(row, "$")
+		if i < 0 {
+			return -1
+		}
+		return lipgloss.Width(row[:i]) + lipgloss.Width(strings.TrimSpace(row[i:]))
+	}
+	var tierEnd, childEnd int
+	for _, l := range lines {
+		switch {
+		case strings.HasPrefix(l, childTierLabel):
+			childEnd = endOf(l)
+		case tierEnd == 0:
+			tierEnd = endOf(l)
+		}
+	}
+	if tierEnd <= 0 || childEnd <= 0 {
+		t.Fatalf("no figure to measure (tier %d, child %d):\n%s",
+			tierEnd, childEnd, strings.Join(lines, "\n"))
+	}
+	if childEnd != tierEnd {
+		t.Errorf("the child's figure ends at column %d and a tier's at %d, so the decimal "+
+			"points do not line up:\n%s", childEnd, tierEnd, strings.Join(lines, "\n"))
+	}
+}
+
+// childTierLabel must be EXACTLY tierLabelWidth runes, which spend_tiers.go asserts in
+// a comment and nothing checked. Shorter and the bars start at two columns on that row;
+// longer and it pushes the whole row right.
+func TestChildTierLabel_IsExactlyTheLabelWidth(t *testing.T) {
+	if n := len([]rune(childTierLabel)); n != tierLabelWidth {
+		t.Errorf("childTierLabel %q is %d runes, want tierLabelWidth = %d",
+			childTierLabel, n, tierLabelWidth)
 	}
 }
