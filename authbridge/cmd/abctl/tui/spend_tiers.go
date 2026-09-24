@@ -250,7 +250,9 @@ func reasoningChildRow(c usage.Counts, tiers [pricing.NumTiers]int64, ok bool,
 // has not learned the indent convention, so it has to follow the rank rather than
 // sit at a fixed line.
 func insertAfterOutput(rows []string, order [numTierRows]pricing.Tier, child string) []string {
-	at := len(rows) // fall back to last, so a missing output row cannot drop the child
+	// Fall back to last so a missing output row cannot drop the child. UNREACHABLE
+	// TODAY: order is a permutation of all four tiers, so TierOutput is always found.
+	at := len(rows)
 	for i, tier := range order {
 		if tier == pricing.TierOutput {
 			at = i + 1

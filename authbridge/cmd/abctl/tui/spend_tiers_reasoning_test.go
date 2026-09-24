@@ -124,10 +124,14 @@ func TestRenderTierRows_ReasoningNeverExceedsOutput(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		c    usage.Counts
+		// wantEqual says the child must render its parent's figure EXACTLY, which is the
+		// only way to catch a clamp that subtracts. A field rather than a string match on
+		// tc.name, so renaming the case cannot silently disable the assertion.
+		wantEqual bool
 	}{
-		{"well-formed", sane},
-		{"reasoning reported above output", inverted},
-		{"reasoning equal to output", equal},
+		{name: "well-formed", c: sane},
+		{name: "reasoning reported above output", c: inverted},
+		{name: "reasoning equal to output", c: equal, wantEqual: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var outputPct, reasoningPct int
@@ -174,27 +178,34 @@ func TestRenderTierRows_ReasoningNeverExceedsOutput(t *testing.T) {
 				t.Errorf("the child's figure $%.4f exceeds its parent's $%.4f:\n  %s\n  %s",
 					rMoney, oMoney, outputRow, reasoningRow)
 			}
-			// THE COUNTER MUST COUNT, asserted before it is trusted. The first version
-			// of drawnBarGlyphs used an inverted rune range and returned 0 for every
-			// row, so the comparison below was 0 > 0 and could not fail while the
-			// commit message claimed it checked the bar. A dead assertion is worse than
-			// an absent one: it reads as coverage. This guard makes that class of
-			// mistake fail loudly instead of silently passing.
-			if drawnBarGlyphs(outputRow) == 0 {
-				t.Fatalf("drawnBarGlyphs counted no glyphs in %q; the bar assertion below "+
-					"cannot fail", outputRow)
+			// BOTH OPERANDS MUST COUNT, asserted before either is trusted. A `>`
+			// comparison is blind on both sides: a counter returning 0 for every row makes
+			// it 0 > 0, and a CHILD that drew no bar makes it 0 > 12 — both pass. The
+			// first hole was closed by guarding the parent alone, which left the second
+			// open, and a child rendered with no bar at all still passed.
+			childBar, parentBar := drawnBarGlyphs(reasoningRow), drawnBarGlyphs(outputRow)
+			if parentBar == 0 || childBar == 0 {
+				t.Fatalf("bar glyphs: child %d, parent %d — a zero on either side makes the "+
+					"comparison below unfailable:\n  %s\n  %s",
+					childBar, parentBar, outputRow, reasoningRow)
 			}
-			if drawnBarGlyphs(reasoningRow) > drawnBarGlyphs(outputRow) {
-				t.Errorf("the child's bar is longer than its parent's:\n  %s\n  %s",
-					outputRow, reasoningRow)
+			if childBar > parentBar {
+				t.Errorf("the child's bar is %d glyphs against its parent's %d:\n  %s\n  %s",
+					childBar, parentBar, outputRow, reasoningRow)
 			}
-			// THE OTHER DIRECTION, which only the equal case can witness: all of the
-			// output was reasoning, so the child must render its parent's figure and not
-			// a clamped-down one. Without this the clamp could subtract and every `>`
-			// above would still pass.
-			if tc.name == "reasoning equal to output" && rMoney != oMoney {
-				t.Errorf("all output was reasoning, so the child should equal its parent, "+
-					"got $%.4f against $%.4f:\n  %s\n  %s", rMoney, oMoney, outputRow, reasoningRow)
+			// THE OTHER DIRECTION, which only the equal case witnesses: all of the output
+			// was reasoning, so the child must render its parent's figure and its parent's
+			// bar, not clamped-down ones. Without this a clamp that SUBTRACTS passes every
+			// `>` above.
+			if tc.wantEqual {
+				if rMoney != oMoney {
+					t.Errorf("all output was reasoning, so the child should equal its parent, "+
+						"got $%.4f against $%.4f:\n  %s\n  %s", rMoney, oMoney, outputRow, reasoningRow)
+				}
+				if childBar != parentBar {
+					t.Errorf("all output was reasoning, so the bars should match, got %d "+
+						"against %d:\n  %s\n  %s", childBar, parentBar, outputRow, reasoningRow)
+				}
 			}
 		})
 	}

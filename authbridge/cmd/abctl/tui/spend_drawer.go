@@ -743,16 +743,6 @@ func renderSpendDrawer(snap *usage.Snapshot, err error, axis usage.Group, window
 	// The right column's slots are filled by the `i < len(rows)` guard below, so a
 	// column shorter than the bound pads itself rather than ending the loop early.
 	//
-	// THE LOWER OF THE TWO, because the constant and the slice each guard a different
-	// failure and neither alone guards both.
-	//
-	// tiers[i] below is indexed bare, so renderTierRows returning FEWER rows than
-	// tierPanelLines is an out-of-range panic mid-render — a crashed TUI, from a
-	// contract held only by a test in another package. Reading the length alone fixes
-	// that but removes the ceiling: renderTierRows returning MORE rows (a second child)
-	// would emit more body rows than spendDrawerLines reserves and push the footer off
-	// the terminal, which is the failure the block above documents. min keeps both, and
-	// the one-column path takes tierPanelLines because tiers is nil and never indexed.
 	// DERIVED FROM THE RESERVATION, minus the header and the hint line, so the loop and
 	// the reservation cannot disagree about the panel's height.
 	//
@@ -786,10 +776,12 @@ func renderSpendDrawer(snap *usage.Snapshot, err error, axis usage.Group, window
 		// row follows it: the fourth tier row is drawn beside an empty series slot on any window
 		// with fewer than four series, and paneView passes these straight to styleMuted.Render,
 		// so the padding becomes styled trailing whitespace on a line nobody can see the end of.
-		// GUARDED, not assumed: renderTierRows' row count is a contract held in another
-		// package, and this index is what crashes the render if it slips. A short tier
-		// column pads with blanks — a missing row is cosmetic, an out-of-range read is a
-		// dead TUI.
+		// GUARDED, not assumed. UNREACHABLE TODAY — bound is len(tiers) in two columns and
+		// the one-column path continues above — so no test covers it, and saying so is the
+		// point: renderTierRows' row count is a contract held in another package, and this
+		// is the index that would crash the render if it slipped. A short tier column pads
+		// with blanks; a missing row is cosmetic where an out-of-range read is a dead TUI.
+		// Same standing as addSat's overflow guard in authlib/usage.
 		tier := ""
 		if i < len(tiers) {
 			tier = tiers[i]

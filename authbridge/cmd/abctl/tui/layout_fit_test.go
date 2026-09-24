@@ -461,3 +461,57 @@ func TestUsageChartHeight_MatchesTheRenderedChrome(t *testing.T) {
 			"  body=%d chart=%d", got, usagePaneChromeRows, len(body), len(chart))
 	}
 }
+
+// THE DRAWER'S RESERVATION IS ASSERTED AS AN EQUALITY, at widths either side of
+// spendDrawerTwoColumnMin, because that is the only shape catching BOTH ways it can be
+// wrong.
+//
+// assertFits above tests `got > m.height` — taller than the terminal. Over-reservation
+// makes the view SHORTER, so holding back a row the drawer cannot draw passes every fit
+// test in this file. That is what reserving the two-column height at a one-column width
+// did: the reasoning child took the tier column to five rows and the one-column drawer,
+// which has no tier column, grew with it.
+//
+// SIZES CHOSEN HERE, NOT fitSizes, and that is the whole reason this test exists.
+// fitSizes has no entry that is both narrow enough for one column (< 85) and tall enough
+// to open the drawer (>= spendDrawerMinHeight, 27): its sub-85 widths are 20 and 24 rows
+// tall, so `$` does not expand and the case is vacuous. Written against fitSizes first,
+// this test passed with the call site reverted — which is how the gap was measured
+// rather than argued.
+func TestLayout_DrawerReservationMatchesWhatItDraws(t *testing.T) {
+	forceColor(t)
+	narrowSeen := false
+	for _, dim := range [][2]int{
+		{80, 30},  // one column: below spendDrawerTwoColumnMin, tall enough to open
+		{84, 40},  // one column, at the boundary
+		{85, 40},  // two columns: the first width that reaches them
+		{120, 40}, // two columns, comfortably
+	} {
+		w, h := dim[0], dim[1]
+		m := fitModel(t, paneEvents, w, h, cursorRowsFixture(60))
+		m.spend.drawer.snap = reasoningSnap()
+		for span := spendSpan(0); span < numSpendSpans; span++ {
+			m.spend.chains[span].snap = reasoningSnap()
+		}
+		// Through the real key, like the filter cases: the budget changes with
+		// spend.expanded, so the handler has to recompute the layout. A test that set the
+		// flag itself would pass over a handler that forgot.
+		m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'$'}})
+		if !m.spendDrawerVisible() {
+			t.Fatalf("%dx%d: the drawer did not open, so this case asserts nothing", w, h)
+		}
+		if w < spendDrawerTwoColumnMin {
+			narrowSeen = true
+		}
+		if got := lipgloss.Height(m.View()); got != h {
+			t.Errorf("%dx%d with the drawer open: view is %d lines, want exactly %d — taller "+
+				"pushes the footer off, shorter means a row was reserved and never drawn",
+				w, h, got, h)
+		}
+	}
+	// The narrow case is the one the reservation bug lived in; without it this test is
+	// the wide case twice and cannot fail on it.
+	if !narrowSeen {
+		t.Fatal("no one-column width was exercised; the over-reservation case is unasserted")
+	}
+}

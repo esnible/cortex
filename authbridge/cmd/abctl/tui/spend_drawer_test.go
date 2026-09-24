@@ -1924,8 +1924,15 @@ func TestRenderSpendDrawer_ChildCarriesItsFigure(t *testing.T) {
 	if strings.Contains(child, emptyCell) {
 		t.Errorf("child row = %q shows the not-known cell despite a reported split", child)
 	}
-	if !strings.Contains(child, "$") {
-		t.Errorf("child row = %q carries no figure", child)
+	// THE FIGURE, not merely "a $". `Contains(child, "$")` passes on any amount —
+	// including one apportioned from OutputCostMicros instead of output's DISPLAYED
+	// figure, which is the distinction ApportionReasoning exists to make and the drawer
+	// was the one surface with no value pinned.
+	//
+	//	tiers[output]     = 5_852_431 at this snapshot's mix and total
+	//	reasoningOfOutput = floor(5852431 * 948/1593) = 3_483_063  ->  "$3.48"
+	if !strings.Contains(child, "$3.48") {
+		t.Errorf("child row = %q, want the apportioned $3.48", child)
 	}
 }
 

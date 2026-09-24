@@ -413,11 +413,15 @@ func TestRenderTierRows_ReasoningIsNotATier(t *testing.T) {
 // this pane by five rows and under-filled it by six.
 func TestRenderTierRows_HeightIsConstant(t *testing.T) {
 	for name, c := range map[string]usage.Counts{
-		"full mix": tierCounts(),
-		"no mix":   {Requests: 35, CostMicros: 4_546_200},
-		"empty":    {},
-		"one tier": {CostMicros: 4_546_200, OutputCostMicros: 45000},
-		"negative": {CostMicros: -5, OutputCostMicros: 45000},
+		// A REPORTED SPLIT among the fixtures, so the populated child is rendered at every
+		// width in the sweep — including the narrow ones where tierBarBudget returns 0 and
+		// reasoningChildRow takes its bar-less branch, which nothing else renders.
+		"reasoning": reasoningCounts(),
+		"full mix":  tierCounts(),
+		"no mix":    {Requests: 35, CostMicros: 4_546_200},
+		"empty":     {},
+		"one tier":  {CostMicros: 4_546_200, OutputCostMicros: 45000},
+		"negative":  {CostMicros: -5, OutputCostMicros: 45000},
 	} {
 		for _, w := range []int{10, 20, 34, 46, 60, 100, 200} {
 			got := renderTierRows(c, w)
