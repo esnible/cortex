@@ -84,9 +84,9 @@ All of this happens transparently via sidecar injection -- no application code c
 ```
 authbridge/
 ├── authlib/                          # Shared auth library (Go module)
-│   ├── validation/                   #   JWKS-backed JWT verifier
-│   ├── exchange/                     #   RFC 8693 token exchange client
-│   ├── cache/                        #   SHA-256 keyed token cache
+│   ├── plugins/                      #   Every plugin; each owns its own config
+│   │   ├── jwtvalidation/            #     JWKS-backed JWT verifier (validation/)
+│   │   └── tokenexchange/            #     RFC 8693 exchange client + token cache
 │   ├── bypass/                       #   Path pattern matcher
 │   ├── spiffe/                       #   SPIFFE credential sources
 │   ├── routing/                      #   Host-to-audience router
@@ -191,17 +191,17 @@ wants to register.
 **Configuration loading:**
 - YAML config with `${ENV_VAR}` expansion, mode presets, and startup validation.
 - Plugin settings are local to each plugin under `pipeline.*.plugins[].config`; the runtime YAML itself only carries `mode`, `listener`, `session`, `stats`, and the pipeline composition. See [`docs/plugin-reference.md`](docs/plugin-reference.md) for the per-plugin decode pattern.
-- The operator-supplied env vars (`KEYCLOAK_URL`, `KEYCLOAK_REALM`, `TOKEN_URL`, `ISSUER`, `DEFAULT_OUTBOUND_POLICY`, `CLIENT_ID`) are consumed by the default `authbridge-combined.yaml` via `${VAR}` expansion — they land inside the appropriate plugin's `config:` block rather than a top-level section.
+- The operator-supplied env vars (`KEYCLOAK_URL`, `KEYCLOAK_REALM`, `TOKEN_URL`, `ISSUER`, `DEFAULT_OUTBOUND_POLICY`, `CLIENT_ID`) are consumed by the default `authbridge-runtime-config` via `${VAR}` expansion — they land inside the appropriate plugin's `config:` block rather than a top-level section.
 - `jwt-validation` derives `jwks_url` from `issuer` when omitted (appends `/protocol/openid-connect/certs`).
 - `token-exchange` derives `token_url` from `keycloak_url + keycloak_realm` when omitted (Keycloak convention).
 - Credential files: the **operator** registers each workload with Keycloak and creates a Secret containing `client-id.txt` + `client-secret.txt`; the operator's webhook mounts that Secret at `/shared/client-id.txt` and `/shared/client-secret.txt` in containers that share the `shared-data` volume. SPIRE-issued credentials are sourced in-process via the `spiffe.Provider` (built from the top-level `spiffe:` block in `authbridge-runtime`) — authbridge's hot path reads X.509 SVIDs from an in-memory `spiffe.X509Source` (no per-handshake file I/O), and `token-exchange` consumes a JWT-SVID from the injected Provider via `plugins.BuildWithSPIFFE`. The Provider also mirrors `/opt/jwt_svid.token`, `/opt/svid.pem`, `/opt/svid_key.pem`, and `/opt/svid_bundle.pem` for external readers (e2e probes, debugging, future Envoy filesystem SDS). The `spiffe-helper` binary is no longer bundled in any combined image, and the `SPIRE_ENABLED` env var no longer gates anything — presence/absence of the `spiffe:` block in YAML drives behavior. `jwt-validation` reads the audience from `/shared/client-id.txt` via `audience_file`; `token-exchange` reads client credentials via `client_id_file` / `client_secret_file`. Each plugin attempts a synchronous read at Configure time and falls back to a background poll from its `Init` goroutine if the file isn't yet readable. The legacy in-pod `client-registration` sidecar has been removed entirely; the `rossoctl.io/client-registration-inject: "true"` label is **no longer functional** — the operator's `ClientRegistrationReconciler` still treats it as a "skip operator-managed registration" signal (`SkipReason` in `operator/internal/clientreg/names.go:58`), but the legacy sidecar that the label deferred to is gone. Setting it today silently breaks registration; do not add it to new manifests.
 - Outbound route config: `token-exchange` reads `/etc/authproxy/routes.yaml` by default (path is per-plugin, configured via `routes.file` in its config block); inline rules can be declared under `routes.rules`.
-- Outbound `default_policy`: `passthrough` (default) or `exchange`, configured per-plugin (no top-level `DEFAULT_OUTBOUND_POLICY` field anymore; the env var is still expanded into the plugin config by `authbridge-combined.yaml`).
+- Outbound `default_policy`: `passthrough` (default) or `exchange`, configured per-plugin (no top-level `DEFAULT_OUTBOUND_POLICY` field anymore; the env var is still expanded into the plugin config by `authbridge-runtime-config`).
 
 **Key library packages (authlib/):**
-- `authlib/validation/` -- JWKS-backed JWT verifier (used internally by `jwt-validation` plugin)
-- `authlib/exchange/` -- RFC 8693 token exchange client (used internally by `token-exchange` plugin)
-- `authlib/cache/` -- SHA-256 keyed token cache
+- `authlib/plugins/jwtvalidation/validation/` -- JWKS-backed JWT verifier (used internally by `jwt-validation` plugin)
+- `authlib/plugins/tokenexchange/exchange/` -- RFC 8693 token exchange client (used internally by `token-exchange` plugin)
+- `authlib/plugins/tokenexchange/cache/` -- SHA-256 keyed token cache
 - `authlib/routing/` -- Host-to-audience route resolver (used internally by `token-exchange` plugin)
 - `authlib/auth/` -- `HandleInbound` + `HandleOutbound` composition; each plugin instance constructs its own `auth.Auth` from its own local config
 - `authlib/config/` -- Mode presets, YAML config loader, credential-file waiters, top-level (mode + listener + session) validation
@@ -598,10 +598,23 @@ See [`docs/framework-architecture.md`](docs/framework-architecture.md#9-config-h
 
 ## Code Conventions
 
-### Go (authlib, cmd/authbridge-{proxy,envoy}, demo-app)
-- Go 1.25
-- Modules: `authbridge/authlib/` (pure library — all listeners, all plugins) and `authbridge/cmd/authbridge-{proxy,envoy}/` (mode-specific binaries that wire listeners + plugins together). The `authbridge-lite` image is the proxy binary built with the `lite` profile, not a separate module.
-- `authbridge/go.work` workspace links the modules for local development
+### Go (authlib, cmd/*, demo-app)
+- Go 1.26.5 across `go.work` and the nine workspace modules; the three
+  self-contained `demos/*` modules are still on 1.24.
+- Modules (12 under `authbridge/`): `authlib/` (pure library — all listeners, all
+  plugins); `cmd/{authbridge-proxy,authbridge-envoy,authbridge-cpex,authbridge-praxis,abctl}/`
+  (thin mains that wire listeners + plugins together); `storage/redis/`;
+  `scripts/{profile-tags,readme-demo}/`; and `demos/{echo,finance-sparc,ibac}/`.
+  The `authbridge-lite` image is the proxy binary built with the `lite` profile,
+  not a separate module.
+- `authbridge/go.work` links 9 of the 12 for local development — the three
+  `demos/*` modules are deliberately outside the workspace.
+- **Neither `gofmt` nor `go vet` is fully gated.** pre-commit has no Go hooks;
+  `ci.yaml` runs `go fmt ./...` (which rewrites and exits 0, so it cannot fail)
+  and `go vet ./...` on only 7 of the 12 modules. Run `gofmt -l` yourself before
+  pushing, and `go mod tidy -diff` if you dropped a package or its last import.
+  See the root [`CLAUDE.md`](../CLAUDE.md) Pre-commit Hooks section for the
+  per-module breakdown — it is kept in one place on purpose.
 - Logging with `log/slog`; the binaries log under their own name (`authbridge-proxy`, `authbridge-envoy`). Note the `authbridge-lite` image runs the `authbridge-proxy` binary, so it logs as `authbridge-proxy`.
 - gRPC ext-proc using `envoyproxy/go-control-plane` types (in `authlib/listener/extproc`)
 - JWT validation with `lestrrat-go/jwx/v2` (in `authlib/plugins/jwtvalidation/validation`)
@@ -621,15 +634,18 @@ See [`docs/framework-architecture.md`](docs/framework-architecture.md#9-config-h
 ## Common Tasks for Code Changes
 
 ### Modifying Token Exchange Logic
-- Edit `authlib/exchange/` -- the RFC 8693 token exchange client
+- Edit `authlib/plugins/tokenexchange/exchange/` -- the RFC 8693 token exchange client
 - The token exchange POST parameters follow RFC 8693 exactly
-- Test by rebuilding the affected combined image (e.g.,
+- Test by rebuilding the affected image. `GO_BUILD_TAGS` is required — every
+  plugin is opt-in, so a build without it registers none and rejects every
+  config it is handed:
   `cd authbridge && podman build -f cmd/authbridge-envoy/Dockerfile
+  --build-arg GO_BUILD_TAGS="$(go -C scripts/profile-tags run . envoy)"
   -t authbridge-envoy:latest .` then `kind load docker-image
-  authbridge-envoy:latest --name rossoctl`).
+  authbridge-envoy:latest --name rossoctl`.
 
 ### Modifying Inbound JWT Validation
-- Edit `authlib/validation/` -- the JWKS-backed JWT verifier
+- Edit `authlib/plugins/jwtvalidation/validation/` -- the JWKS-backed JWT verifier
 - JWKS cache auto-refreshes
 - Direction detection: `x-authbridge-direction: inbound` header (injected by Envoy inbound listener config)
 

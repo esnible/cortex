@@ -1,6 +1,7 @@
 # AuthBridge Binaries
 
-Two mode-specific authbridge binaries (proxy, envoy) plus the `abctl` TUI.
+Four mode-specific authbridge binaries (proxy, envoy, cpex, praxis) plus the
+`abctl` TUI — see the table below for which are published and which are paused.
 Each binary is hardcoded to a single deployment shape; the YAML `mode:`
 field must match the binary or boot fails. Mode is selected at build time
 by which binary you run, not at runtime via a flag. The `authbridge-lite`

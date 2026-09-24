@@ -229,7 +229,7 @@ Once the webhook is deployed, create the namespace and apply the ConfigMaps:
 
 ```bash
 kubectl create namespace team1
-kubectl apply -f authbridge/demos/github-issue/k8s/configmaps-webhook.yaml -n team1
+kubectl apply -f authbridge/demos/github-issue/k8s/configmaps.yaml -n team1
 ```
 
 > **Note:** If you want to use a different namespace, set `AUTHBRIDGE_NAMESPACE=<your-namespace>` and update all subsequent commands accordingly.

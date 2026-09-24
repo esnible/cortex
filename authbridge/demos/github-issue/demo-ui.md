@@ -1210,7 +1210,7 @@ kubectl delete namespace team1
 ## Next Steps
 
 - **Manual Deployment**: See [demo-manual.md](demo-manual.md) for deploying everything via `kubectl`
-- **AuthBridge Binary**: See the [AuthBridge README](../../cmd/authbridge/README.md) for inbound
+- **AuthBridge Binary**: See the [AuthBridge Binaries README](../../cmd/README.md) for inbound
   JWT validation and outbound token exchange internals
 - **Token-Exchange Routes**: See the [routes-configuration guide](../token-exchange-routes/README.md) for
   route-based token exchange to multiple tool services

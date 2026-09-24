@@ -229,7 +229,7 @@ Once the webhook is deployed, create the namespace and apply the ConfigMaps:
 
 ```bash
 kubectl create namespace team1
-kubectl apply -f authbridge/demos/github-issue/k8s/configmaps-webhook.yaml -n team1
+kubectl apply -f authbridge/demos/github-issue/k8s/configmaps.yaml -n team1
 ```
 
 > **Note:** If you want to use a different namespace, set `AUTHBRIDGE_NAMESPACE=<your-namespace>` and update all subsequent commands accordingly.
@@ -1197,10 +1197,8 @@ kubectl delete mutatingwebhookconfiguration rossoctl-webhook-authbridge-mutating
 ## Next Steps
 
 - **UI Deployment**: See [demo-ui.md](demo-ui.md) for deploying via the Rossoctl dashboard
-- **AuthBridge Binary**: See the [AuthBridge README](../../cmd/authbridge-envoy/README.md) for inbound
+- **AuthBridge Binary**: See the [AuthBridge Binaries README](../../cmd/README.md) for inbound
   JWT validation and outbound token exchange internals
 - **Token-Exchange Routes**: See the [routes-configuration guide](../token-exchange-routes/README.md) for
   route-based token exchange to multiple tool services
-- **Access Policies**: See the [access policies proposal](../../PROPOSAL-access-policies.md)
-  for role-based delegation control
 - **AuthBridge Overview**: See the [AuthBridge README](../../README.md) for architecture details

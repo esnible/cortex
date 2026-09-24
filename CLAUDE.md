@@ -80,9 +80,9 @@ The sidecar injection webhook lives in a separate repo: [rossoctl/operator](http
 cortex/
 ├── authbridge/               # Authentication bridge components
 │   ├── authlib/              #   Shared auth building blocks (Go module)
-│   │   ├── validation/       #     JWKS-backed JWT verifier
-│   │   ├── exchange/         #     RFC 8693 token exchange client
-│   │   ├── cache/            #     SHA-256 keyed token cache
+│   │   ├── plugins/          #     Every plugin; each owns its own config
+│   │   │   ├── jwtvalidation/#       JWKS-backed JWT verifier (validation/)
+│   │   │   └── tokenexchange/#       RFC 8693 exchange client + token cache
 │   │   ├── bypass/           #     Path pattern matcher
 │   │   ├── spiffe/           #     SPIFFE credential sources
 │   │   ├── routing/          #     Host-to-audience router
@@ -133,7 +133,8 @@ cortex/
 **Mode-specific binaries** providing transparent traffic interception for both inbound JWT validation and outbound OAuth 2.0 token exchange (RFC 8693). Each binary is hardcoded to its deployment shape; mode is no longer selected at runtime. The `authbridge-lite` **image** is a build variant of the proxy binary (not a separate binary) — see below.
 
 **Library:** `authbridge/authlib/` (shared)
-**Language:** Go 1.25
+**Language:** Go 1.26.5 (`authbridge/go.work` and the nine workspace modules; the
+three self-contained `demos/*` modules are still on 1.24)
 **Detailed guide:** [`authbridge/CLAUDE.md`](authbridge/CLAUDE.md)
 
 **Binaries:**
@@ -209,7 +210,9 @@ Sidecar binaries, one Dockerfile each; the `authbridge-lite` image is a build va
 
 `cmd/abctl/` is also a Go module here but is not a sidecar — it is the operator-facing TUI over the session API.
 
-**Go modules** (12 in total, all linked by `authbridge/go.work`; `go-tidy-check` in `ci.yaml` runs `go mod tidy -diff` in every one):
+**Go modules** (12 in total; `authbridge/go.work` links 9 of them — the three
+self-contained `demos/*` modules are outside the workspace. `go-tidy-check` in
+`ci.yaml` does cover all 12: it discovers them with `find`, not from `go.work`):
 - `authbridge/authlib/` — pure library: validation, exchange, cache, bypass, spiffe, routing, auth, config, all listener implementations, all plugins. **Consumed by two other repos** (`rossoctl/operator`, `rossoctl-cli`), so removing exported API here is a cross-repo change.
 - `authbridge/cmd/authbridge-{proxy,envoy,cpex,praxis}/` — thin main packages that import authlib and start the listeners they need; they import no plugin package directly. (The `authbridge-lite` image is `authbridge-proxy` built with the `lite` profile.)
 - `authbridge/cmd/abctl/` — the TUI; also released as a standalone binary.
@@ -222,8 +225,8 @@ Sidecar binaries, one Dockerfile each; the `authbridge-lite` image is a build va
 
 | Workflow | Trigger | Purpose |
 |----------|---------|---------|
-| `ci.yaml` | PR to main/release-* | Pre-commit, Go fmt/vet/build/test for authlib and the cmd/authbridge-* binaries; Python tests |
-| `build.yaml` | Tag push (`v*`) or manual | Multi-arch Docker builds for: proxy-init, authbridge (proxy-sidecar combined), authbridge-envoy (envoy-sidecar combined), authbridge-lite (proxy Dockerfile built with the `lite` profile from `authbridge/scripts/profile-tags`). Every Go image passes `GO_BUILD_TAGS` naming a profile — plugins are all opt-in, so an image built without tags registers none |
+| `ci.yaml` | PR to main/release-* | Pre-commit; `go fmt`/`go vet`/build/test for authlib, both `scripts/*` and the `cmd/*` matrix; `go mod tidy -diff` for all 12 modules; Python tests. Note `go fmt` rewrites rather than fails — only vet/build/test/tidy actually gate |
+| `build.yaml` | Tag push (`v*`) or manual | Multi-arch Docker builds for all six matrix images: proxy-init, authbridge (proxy-sidecar combined), authbridge-envoy (envoy-sidecar combined), authbridge-lite (proxy Dockerfile built with the `lite` profile from `authbridge/scripts/profile-tags`), authbridge-cpex, and sparc-service (Python). Every Go image passes `GO_BUILD_TAGS` naming a profile — plugins are all opt-in, so an image built without tags registers none |
 | `security-scans.yaml` | PR to main | Dependency review, shellcheck, YAML lint, Hadolint, Bandit, Trivy, CodeQL |
 | `scorecard.yaml` | Weekly / push to main | OpenSSF Scorecard security health metrics |
 | `spellcheck_action.yml` | PR | Spellcheck on markdown files |
@@ -280,11 +283,21 @@ Hooks:
 - `ai-assisted-by-trailer` — Rewrites `Co-Authored-By` to `Assisted-By` (commit-msg stage)
 - `ruff`, `ruff-format` — Python linting/formatting on `authbridge/` files
 
-**There are no Go hooks.** `gofmt` and `go vet` run nowhere in pre-commit, and
-`ci.yaml`'s authlib job runs only `go build` and `go test -race` — no fmt or vet
-gate. Formatting drift therefore reaches main; a few files are gofmt-dirty
-there today. Run `gofmt -l` and `go vet` yourself before pushing rather than
-trusting the hooks to catch it.
+**There are no Go hooks** — `gofmt` and `go vet` run nowhere in pre-commit. In
+`ci.yaml` both run, but only one of them can fail:
+
+- `go vet ./...` **is** a gate, on 7 of the 12 modules: `authlib`, both
+  `scripts/*`, and the `cmd/{authbridge-proxy,authbridge-envoy,abctl,authbridge-praxis}`
+  matrix. Not vetted anywhere: `cmd/authbridge-cpex` (deliberately excluded — it
+  needs CGO and a pinned `libcpex_ffi.a`, so `build.yaml` covers it via the image
+  build), `storage/redis`, and the three `demos/*` modules.
+- `go fmt ./...` is **not** a gate. `go fmt` is `gofmt -l -w`: it rewrites the
+  checkout and exits 0, so it can never fail a build.
+
+Formatting drift therefore reaches main — a few files are gofmt-dirty there
+today, including three under `authlib`, where `go fmt` demonstrably runs on
+every PR. Run `gofmt -l` yourself before pushing, and `go vet` too if you
+touched one of the five unvetted modules.
 
 ## Languages and Tech Stack
 
@@ -372,10 +385,13 @@ cd authbridge && podman build -f cmd/authbridge-proxy/Dockerfile \
 ## Code Style and Conventions
 
 ### Go Code
-- Run `gofmt -l` and `go vet ./...` before pushing. **Neither is enforced** — not
-  by pre-commit and not by `ci.yaml` (see the Pre-commit Hooks section).
-- Run per-module with `GOWORK=off`, as CI does, so each module resolves its own
-  `replace` directives instead of pulling in workspace siblings.
+- Run `gofmt -l` before pushing. **It is not enforced anywhere:** pre-commit has
+  no Go hooks, and `ci.yaml`'s `go fmt ./...` is `gofmt -l -w`, which rewrites and
+  exits 0. `go vet` *is* gated, but only on 7 of the 12 modules — see the
+  Pre-commit Hooks section for which five are uncovered.
+- Run per-module with `GOWORK=off`, as every CI Go job except the `authlib` one
+  does, so each module resolves its own `replace` directives instead of pulling in
+  workspace siblings.
 - If a change deletes a package or its last import of a dependency, also run
   `go mod tidy -diff` in every module — `ci.yaml`'s `go-tidy-check` gates on it,
   and `build`/`vet`/`test` all pass while it fails.
@@ -406,7 +422,7 @@ cd authbridge && podman build -f cmd/authbridge-proxy/Dockerfile \
 
 ## Gotchas and Known Issues
 
-1. **Multiple Go modules:** The repo has several Go modules under `authbridge/` — `authlib/`, each `cmd/*/`, `storage/redis/`, `scripts/profile-tags/`, and the `demos/*/` self-contained ones — linked by `authbridge/go.work`. Local commands from a specific module directory should typically set `GOWORK=off` (as CI does) so the module resolves its own `replace` directives instead of pulling in workspace siblings.
+1. **Multiple Go modules:** The repo has 12 Go modules under `authbridge/` — `authlib/`, each `cmd/*/`, `storage/redis/`, both `scripts/*/`, and the three self-contained `demos/*/` ones. `authbridge/go.work` links the first nine; the `demos/*` modules are deliberately outside the workspace. Local commands from a specific module directory should typically set `GOWORK=off` (as every CI Go job but `authlib`'s does) so the module resolves its own `replace` directives instead of pulling in workspace siblings.
 
 2. **Avoid committing venvs:** Virtual environment directories (e.g. `authbridge/proxy-init/quickstart/venv/`) should be gitignored (the repo's `.gitignore` has a `venv` pattern). Do not create and commit new virtual environments under version control.
 

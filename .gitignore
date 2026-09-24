@@ -75,8 +75,11 @@ __pycache__/
 #
 # Spelled out per binary on purpose. A Go binary has no extension, so no glob
 # can tell "the compiled output" from a source file or a package directory —
-# `authbridge/cmd/*/*` would ignore the source. One line per binary is the
-# only pattern that is both complete and safe; keep adding to it.
+# `authbridge/cmd/*/*` would ignore the source. One line per binary is the only
+# pattern that is safe, so the list below is exhaustive for `cmd/` and for the
+# two `scripts/` helpers further down. The `demos/*` mains are deliberately not
+# listed: they are built from their own Dockerfiles, not by hand in this tree
+# (no workflow builds them either). Keep adding to it.
 authbridge/cmd/abctl/abctl
 authbridge/cmd/authbridge-proxy/authbridge-proxy
 authbridge/cmd/authbridge-envoy/authbridge-envoy
@@ -107,9 +110,10 @@ cortex-ca/
 # gitlinks pins another branch's checkout into this tree, which is never wanted.
 .worktrees/
 
-# `go build ./...` inside authbridge/scripts/profile-tags drops its 3 MB binary beside
-# the source, where it is easy to stage by accident — it was, once.
+# `go build ./...` inside either authbridge/scripts helper drops its multi-MB
+# binary beside the source, where it is easy to stage by accident — it was, once.
 /authbridge/scripts/profile-tags/profile-tags
+/authbridge/scripts/readme-demo/readme-demo
 
 # Output dir for `make abctl` / `make authbridge-proxy`.
 /bin/
