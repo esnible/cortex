@@ -13,8 +13,8 @@ package pipeline
 // is scoped rather than left to be contradicted nine lines down: roled below COPIES its argument
 // where the tui original MUTATES it and hands the same slice back. A test moved between the two
 // packages therefore changes meaning without failing — `base := conversation(...)` followed by
-// `subagent(base)` restamps base over there and leaves it alone here. Nothing catches that but
-// reading this paragraph, which is why it is here.
+// `roled(base, AgentRoleSubagent)` restamps base over there and leaves it alone here. Nothing catches
+// that but reading this paragraph, which is why it is here.
 //
 // The tui copy also has a job this one does not: it states NO role, so the tests over there
 // keep exercising the unstated fallback rule on purpose.
@@ -70,8 +70,9 @@ func oneShot(id string, at time.Time, context int) []SessionEvent {
 // Claude Code's billing-header line publishes.
 //
 // COPIES FIRST, unlike the tui original, which mutated its argument and returned it. That reads
-// as pure and is not: `base := conversation(...)` followed by `subagent(base)` would restamp
-// base too. Safe there only because every caller happens to pass a fresh turn.
+// as pure and is not: `base := conversation(...)` followed by `roled(base, AgentRoleSubagent)` would
+// restamp base too. Safe there only because every caller happens to pass a fresh turn — mainAgent and
+// subagent build the turn themselves, so no caller in tree hands either copy a slice it still holds.
 func roled(evs []SessionEvent, role AgentRole) []SessionEvent {
 	out := make([]SessionEvent, len(evs))
 	for i := range evs {

@@ -311,8 +311,9 @@ func candidateOf(e *SessionEvent) candidate {
 //	unstated  two turns agreeing on message count and timestamp gave 100k or 200k for the same
 //	          session depending only on fold order
 //	          (TestPromptContextFold_ExactTimestampTiesAreDeterministic)
-//	stated    two mainAgent turns at one instant, 4,000 then 3,000, gave 3,000 where this gives
-//	          4,000 (the monoid fixture's m2/m3 pair, which ties on at and parts on tokens)
+//	stated    two mainAgent turns at one instant took the later ARRIVAL too — the monoid fixture's
+//	          m2 (400,249) folded before its m3 (300,000) gave 300,000, where this gives 400,249
+//	          because the pair ties on at and parts on tokens
 //
 // tokens now settles both pairs, AFTER at rather than before it, so `at` keeps the role it had and
 // the delta is confined to genuinely identical timestamps. Both changes are improvements — fold

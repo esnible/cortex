@@ -484,11 +484,18 @@ func assertGaugeFilled(t *testing.T, cell, when string) {
 // table built the row against — a different question from assertGaugeFilled's, and the one the
 // tests below actually mean.
 //
-// INK BETWEEN THE BRACKETS WAS NOT ENOUGH, which a review measured rather than argued: replacing
-// rebuildSessionsTable's gauge with a constant contextGauge(1, contextW) left the whole tui suite
-// green. A one-token figure has ink, so every "the row repainted" assertion below passed on a row
-// that had thrown its figure away. The figure and the cell have to be pinned TOGETHER, or a row test
-// claims only that something was drawn.
+// INK BETWEEN THE BRACKETS WAS NOT ENOUGH, measured rather than argued — and the measurement is the
+// DOUBLED figure. Drawing contextGauge(m.sessionContextFor(...)*2, contextW) in rebuildSessionsTable
+// left the whole tui suite green before this helper existed, and fails all five row tests below with
+// it: a gauge at twice the figure still has ink between its brackets, so "the row repainted" was
+// pinned as "something was drawn". The figure and the cell have to be pinned TOGETHER.
+//
+// AND NOT THE CONSTANT GAUGE, which is the mutation the review that found this named first and which
+// does not in fact isolate anything: contextGauge(1, contextW) fails
+// TestSessionsTable_ContextColumnReplacesActive, which requires a full block at 500k, and
+// TestSessionsTable_UnknownContextIsADash, which requires the dash — so it never reaches the tests
+// below on its own account. Recorded because a reader reaching for it would conclude the weakness had
+// already been closed.
 //
 // assertGaugeFilled IS STILL CALLED FIRST, for the diagnostic rather than for the coverage: a %q
 // gauge against another %q gauge is hard to read, so the shape failures — "not a gauge at all", "an

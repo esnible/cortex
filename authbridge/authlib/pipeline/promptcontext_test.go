@@ -288,10 +288,10 @@ func TestSessionContext_WithNoArrivalTimeTheStatedArmIsLargestWins(t *testing.T)
 // non-determinism.
 //
 // NOT THE ONLY INPUT THAT CHANGED, which this comment used to claim. The predecessor compared with
-// `!Before` in the STATED arm too, so an exact-timestamp tie there went to the later arrival as
-// well: two mainAgent turns at one instant, 4,000 then 3,000, gave 3,000 where the total order gives
-// 4,000. That pair is pinned by the monoid fixture's m2/m3 members rather than here; see better()'s
-// own note on the disagreements.
+// `!Before` in the STATED arm too, so an exact-timestamp tie there went to the later arrival as well.
+// The monoid fixture carries that pair: its m2 (400,249) and m3 (300,000) are two mainAgent turns at
+// one instant, and folded in that order the predecessor kept 300,000 where the total order keeps
+// 400,249 on tokens. Pinned there rather than here; see better()'s own note on the disagreements.
 func TestPromptContextFold_ExactTimestampTiesAreDeterministic(t *testing.T) {
 	at := time.Now()
 	small := conversation("s", at, 600, 100_000)
