@@ -83,6 +83,18 @@ func (c Counts) ApportionTiers() (tiers [pricing.NumTiers]int64, ok bool) {
 // one is already scaled to the gateway's authoritative total, so deriving from the raw
 // mix would produce a child that does not divide into the parent beside it.
 //
+// A TOKEN RATIO APPLIED TO A COST FIGURE, which is a second approximation on top of
+// ApportionTiers' own. Reasoning's share of output COST equals its share of output
+// TOKENS only where every model in the window bills output at one rate. Across a mixed
+// window it can be off by the spread between those rates — an expensive model that did
+// no reasoning beside a cheap one that was nearly all reasoning is the worst case, and
+// the error there is an order of magnitude, not a rounding.
+//
+// Accepted because there is no better source: nothing reports a ReasoningCostMicros,
+// and the alternative is showing no figure at all for the component this feature exists
+// to expose. Callers must present it as modelled — `abctl cost` and the drawer already
+// mark the tier split that way, and the README says so for the child specifically.
+//
 // ok is false when there is no defensible figure, and the caller renders "not known
 // here" — never $0.00, which would assert the reasoning was free: a count that is zero
 // or negative, a missing denominator, or a share that truncates below one micro.

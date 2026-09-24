@@ -518,6 +518,12 @@ abctl is for, and the other three are surfaces you visit and leave.
   the tier was free. Below 85 columns the tier column drops and the panel
   degrades to the by-model breakdown alone.
 
+  `└ reasoning` is **modelled twice over**: its share of output comes from the token
+  counts, not from a cost the provider reported, so it is only the share of output
+  *spend* where every model in the window bills output at one rate. A mixed window can
+  be off by the spread between those rates. Nothing reports a reasoning cost, so this
+  is the best available figure rather than a measured one.
+
   `└ reasoning` is a **child of output, not a fifth tier**. Reasoning has no rate
   of its own — it is the share of the generated tokens the model spent thinking,
   billed at the output rate — so its figure is already inside output's, and only

@@ -39,14 +39,22 @@ const (
 	// be a pane wearing a smaller name.
 	spendDrawerSeries = 3
 
-	// spendDrawerMinHeight is the terminal height at which the drawer may open.
+	// spendDrawerMinHeight is the terminal height at which the drawer may open: the
+	// strip's own floor, the drawer's rows, and the separator between them.
 	//
-	// The strip's own floor is spendStripMinHeight (20) and the drawer adds five rows on
-	// top of it plus a separator, so 26 is the first height where opening it leaves the
-	// table more than a couple of rows. Below that the answer is "no", not "a table with
-	// two visible rows": the drawer exists to be read ALONGSIDE the data, and a drawer that
-	// squeezes the data out has defeated its own reason for not being a pane.
-	spendDrawerMinHeight = 27
+	// Below it the answer is "no", not "a table with two visible rows": the drawer exists
+	// to be read ALONGSIDE the data, and one that squeezes the data out has defeated its
+	// reason for not being a pane.
+	//
+	// DERIVED, for the reason spendDrawerLines states about itself — written as a literal
+	// it does not follow the drawer's height. It was 27 against a six-row drawer, and the
+	// reasoning child made the drawer seven: the floor stayed, so at a 27-row terminal the
+	// table lost a body row while the flash still said the breakdown needs 27.
+	//
+	// spendDrawerLines, not spendDrawerLinesFor: a floor has to admit the TALLEST form,
+	// and a height rule that varied with width would let the drawer open at a size where
+	// widening the terminal squeezes the table.
+	spendDrawerMinHeight = spendStripMinHeight + spendDrawerLines + dividerLines
 
 	// spendDrawerLines is how many rows the drawer adds to the view, and therefore how many
 	// layout() must hold back for it.

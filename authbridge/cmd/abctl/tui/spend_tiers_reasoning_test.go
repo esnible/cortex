@@ -428,12 +428,85 @@ func TestRenderTierRows_ChildMoneyColumnAlignsWithTheTiers(t *testing.T) {
 	}
 }
 
-// childTierLabel must be EXACTLY tierLabelWidth runes, which spend_tiers.go asserts in
-// a comment and nothing checked. Shorter and the bars start at two columns on that row;
-// longer and it pushes the whole row right.
-func TestChildTierLabel_IsExactlyTheLabelWidth(t *testing.T) {
-	if n := len([]rune(childTierLabel)); n != tierLabelWidth {
-		t.Errorf("childTierLabel %q is %d runes, want tierLabelWidth = %d",
+// childTierLabel must not EXCEED tierLabelWidth, which spend_tiers.go asserted in a
+// comment and nothing checked.
+//
+// A CEILING, NOT AN EQUALITY, because only one direction is a hazard: fmt's %-*s pads a
+// short label and never truncates a long one. An earlier version of this test asserted
+// equality and justified it as "shorter and the bars start at two columns", which is
+// false — shortening the label to " └ reason" leaves the alignment test passing and
+// fails only the tests matching the literal.
+func TestChildTierLabel_FitsTheLabelWidth(t *testing.T) {
+	if n := len([]rune(childTierLabel)); n > tierLabelWidth {
+		t.Errorf("childTierLabel %q is %d runes, above tierLabelWidth %d — fmt will not "+
+			"truncate it, so it pushes the share, bar and figure right",
 			childTierLabel, n, tierLabelWidth)
+	}
+	// And the alignment it exists to protect, measured rather than inferred from the width.
+	for _, l := range renderTierRows(reasoningCounts(), tierColumnWidth) {
+		if !strings.HasPrefix(l, childTierLabel) {
+			continue
+		}
+		if i := strings.Index(l, "%"); i >= 0 && lipgloss.Width(l[:i]) != tierLabelWidth+1+tierPctWidth-1 {
+			t.Errorf("the child's share cell starts at column %d, not %d:\n  %q",
+				lipgloss.Width(l[:i]), tierLabelWidth+tierPctWidth, l)
+		}
+	}
+}
+
+// THE CHILD'S BAR YIELDS BEFORE ITS FIGURES, the rule every tier row obeys — and the
+// child was exempted from the test that enforces it.
+//
+// TestRenderTierRows_TheBarYieldsBeforeTheShare iterates tierRowsOnly, which filters on
+// childTierLabel, so replacing its leading-space predicate with the label silently
+// removed the one row this feature added from that assertion. Deleting reasoningChildRow's
+// `budget > 0` arm, so the child always formats with a bar, left the whole package green.
+//
+// ASSERTED ON THE FIGURE, NOT ON THE ABSENCE OF GLYPHS. At a budget of 0 the bar formats
+// to nothing, so both branches produce a bar-less row and a glyph count cannot tell them
+// apart — the difference is one space, which pushes the row a column over and clipRow
+// truncates the money cell to "$1.4". A first version of this test asserted the glyph
+// count and the width and passed under exactly that mutation.
+func TestRenderTierRows_ChildBarYieldsBeforeItsFigures(t *testing.T) {
+	narrow := tierLabelWidth + 1 + tierPctWidth + 1 + tierMoneyWidth
+	if tierBarBudget(narrow) > 0 {
+		t.Fatalf("width %d still affords a bar (budget %d), so this case asserts nothing",
+			narrow, tierBarBudget(narrow))
+	}
+	atNarrow := childRows(renderTierRows(reasoningCounts(), narrow))
+	atWide := childRows(renderTierRows(reasoningCounts(), tierColumnWidth))
+	if len(atNarrow) != 1 || len(atWide) != 1 {
+		t.Fatalf("want one child row at each width, got %d and %d", len(atNarrow), len(atWide))
+	}
+
+	// THE FIGURE IS INTACT, which is what yielding the bar buys. Compared against the
+	// same data rendered wide: a row that kept its bar overflows by a column and clipRow
+	// eats the last digit, which still parses as a number.
+	narrowMoney, ok := rowMoney(atNarrow[0])
+	if !ok {
+		t.Fatalf("child row %q carries no figure", atNarrow[0])
+	}
+	wideMoney, ok := rowMoney(atWide[0])
+	if !ok {
+		t.Fatalf("child row %q carries no figure at full width", atWide[0])
+	}
+	if narrowMoney != wideMoney {
+		t.Errorf("the child's figure is $%.4f narrow against $%.4f wide — the bar did not "+
+			"yield and clipRow truncated it:\n  %q", narrowMoney, wideMoney, atNarrow[0])
+	}
+	// And the share survives too.
+	if _, ok := sharePercent(atNarrow[0]); !ok {
+		t.Errorf("child row = %q lost its share when the bar yielded", atNarrow[0])
+	}
+	// The child ends where the tiers end, or its column is not the same column.
+	for _, l := range renderTierRows(reasoningCounts(), narrow) {
+		if strings.HasPrefix(l, childTierLabel) {
+			continue
+		}
+		if lipgloss.Width(l) != lipgloss.Width(atNarrow[0]) {
+			t.Errorf("child row is %d columns and a tier row %d:\n  %q\n  %q",
+				lipgloss.Width(atNarrow[0]), lipgloss.Width(l), atNarrow[0], l)
+		}
+		break
 	}
 }

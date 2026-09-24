@@ -69,8 +69,13 @@ var tierLabels = map[pricing.Tier]string{
 	pricing.TierOutput:     "output",
 }
 
-// childTierLabel is the reasoning row's label, EXACTLY tierLabelWidth runes so the bars
-// still start at one column whatever the mix.
+// childTierLabel is the reasoning row's label, and it must not EXCEED tierLabelWidth.
+//
+// Longer is the hazard: fmt's %-*s pads a short label but never truncates a long one, so
+// an over-wide label pushes the share, bar and figure right and breaks the column the
+// other rows align to. Shorter is harmless — it pads — which is why the assertion is a
+// ceiling rather than an equality. It is written at exactly the width so the stem sits
+// flush against the labels above it.
 //
 // Indented off a box-drawing stem rather than flush left, because it carries a fact the
 // money column cannot: this row's dollars are already inside the row above. Flush left

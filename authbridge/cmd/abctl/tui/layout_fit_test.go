@@ -515,3 +515,45 @@ func TestLayout_DrawerReservationMatchesWhatItDraws(t *testing.T) {
 		t.Fatal("no one-column width was exercised; the over-reservation case is unasserted")
 	}
 }
+
+// AT THE FLOOR, THE DRAWER OPENS AND THE TABLE IS STILL USABLE — the property
+// spendDrawerMinHeight exists for, in its own words: "opening it leaves the table more
+// than a couple of rows".
+//
+// WHAT THIS CANNOT CATCH, and the reason is worth stating rather than discovering later.
+// The floor is now derived (spendStripMinHeight + spendDrawerLines + dividerLines), so
+// any assertion comparing it to those components is a tautology — the defect class three
+// earlier rounds of review found in this package. A one-row drift is therefore not
+// detectable here: with the floor at 27 against a seven-row drawer the body is 14 rows
+// instead of 15, and no non-arbitrary threshold separates those.
+//
+// What it does catch is a floor that has come loose altogether — low enough that opening
+// the drawer squeezes the table to nothing, which is the failure the constant's doc
+// describes and the one that makes the drawer "a pane, badly". The derivation is what
+// guards the single row.
+func TestLayout_DrawerFloorLeavesAUsableTable(t *testing.T) {
+	forceColor(t)
+	const w = 120
+	m := fitModel(t, paneEvents, w, spendDrawerMinHeight, cursorRowsFixture(60))
+	m.spend.drawer.snap = reasoningSnap()
+	for span := spendSpan(0); span < numSpendSpans; span++ {
+		m.spend.chains[span].snap = reasoningSnap()
+	}
+	m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'$'}})
+
+	// The floor is the height at which it MAY open, so it must.
+	if !m.spendDrawerVisible() {
+		t.Fatalf("the drawer did not open at spendDrawerMinHeight (%d), so the constant "+
+			"promises a height it does not deliver", spendDrawerMinHeight)
+	}
+	// The whole point of the floor: data is still readable beside the breakdown.
+	if got := m.eventsTbl.Height(); got < spendDrawerLines {
+		t.Errorf("at the floor the events table is %d rows against a %d-row drawer — the "+
+			"breakdown has squeezed out the data it exists to be read beside",
+			got, spendDrawerLines)
+	}
+	if got := lipgloss.Height(m.View()); got != spendDrawerMinHeight {
+		t.Errorf("at the floor the view is %d lines for a %d-line terminal",
+			got, spendDrawerMinHeight)
+	}
+}
