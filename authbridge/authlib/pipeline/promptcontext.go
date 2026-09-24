@@ -116,15 +116,16 @@ func PromptContextOf(events []SessionEvent) int {
 // one arriving event. TestSessionContextFor_DoesNotRescanTheFoldedPrefix pins that it does not
 // happen; BenchmarkSessionContextPerEvent says what it costs.
 //
-// A REMEMBERED MAXIMUM, not a cache of a pure function over m.events — and the difference is
+// A REMEMBERED EXTREMUM, not a cache of a pure function over m.events — and the difference is
 // load-bearing, not a convenience. The events abctl holds for a session can stop carrying the
 // evidence the figure was read from, and a cache would be invalidated by that and come back empty.
 // Three ways it happens: a proxy that projects without stating the counts (the version window
 // between abctl's CONTEXT column and InferenceExtension.MessageCount), the picker
 // releasing a live session's events for memory, and server-side FIFO eviction dropping the turn the
 // figure came from. What it costs is stated with the compaction trade-off above — a figure this
-// holds is the largest conversation abctl has SEEN for the session, which may be larger than
-// anything it still holds.
+// holds was read from whichever turn abctl has SEEN ranks highest under better(), and that turn may
+// be one it no longer holds. Highest-ranking is not largest, and the fold is no high-water mark:
+// within the stated arm the latest turn wins, so a compaction lowers the figure.
 type PromptContextFold struct {
 	n      int // events folded so far
 	tokens int
@@ -359,7 +360,26 @@ func (f PromptContextFold) Publish() *PromptContext {
 	return &PromptContext{Tokens: f.tokens, Stated: f.stated, At: f.at, Msgs: f.msgs}
 }
 
-// MergePromptContext combines two published figures, nil meaning "nothing known".
+// nothingKnown is the combine's IDENTITY TEST, shared by both entry points so they cannot disagree
+// about what an empty operand is. A DISJUNCTION rather than the nil check it replaced.
+//
+// A NON-NIL FIGURE CAN CARRY NOTHING. `&PromptContext{Stated: true}` says only "a rule that can see
+// subagents chose me", and better() ranks that first: it beat a real unstated local figure of 700,000
+// and both combines returned 0 — the gauge blanking for a session near its limit, from an operand
+// with no information in it. Publish() is the only producer today and returns nil for a fold with no
+// tokens, so this is LATENT rather than live; it is treated here for the same reason Add keeps its
+// provably-dead identity disjunct (see there), namely that the identity is a property of the monoid
+// and not an accident of which field better() happens to compare, so a future reordering of those
+// comparators must not be able to make an empty operand legitimate quietly. PromptContext is
+// exported with exported fields, so a JSON decode, a test or a future producer can construct one.
+//
+// <= 0 RATHER THAN == 0, because nothing in the type refuses a negative: candidateOf asks exactly
+// this of a figure it extracted itself, and a figure that did not come through it deserves the same
+// question. TestMergePromptContext_AZeroTokenFigureIsTheIdentity pins both operand positions.
+func nothingKnown(p *PromptContext) bool { return p == nil || p.Tokens <= 0 }
+
+// MergePromptContext combines two published figures, nil — or any figure carrying no tokens —
+// meaning "nothing known"; see nothingKnown.
 //
 // THE SAME ORDER AS THE FOLD'S, and it DEFERS to better() rather than restating it. PromptContext
 // is lossless (see there), so there is exactly one total order here, not two that have to be kept
@@ -376,9 +396,10 @@ func (f PromptContextFold) Publish() *PromptContext {
 // from the wire. Publishing Msgs makes the orders genuinely differ, which would mean maintaining
 // better()'s two arms twice; deferring instead makes disagreement impossible by construction.
 //
-// A max over a total order, so MergePromptContext is commutative, associative, and has nil as its
-// identity. That is what lets a client merge the server's figure with its own and need no version
-// detection: an old proxy sends nothing, and nothing is a valid operand.
+// A max over a total order, so MergePromptContext is commutative, associative, and has nil — or any
+// other operand nothingKnown accepts — as its identity. That is what lets a client merge the
+// server's figure with its own and need no version detection: an old proxy sends nothing, and
+// nothing is a valid operand.
 //
 // FULLY-TIED OPERANDS KEEP a, exactly as the fold keeps its incumbent: better() is false both ways
 // for two figures equal on every field it compares, and two such figures are interchangeable for
@@ -393,9 +414,9 @@ func (f PromptContextFold) Publish() *PromptContext {
 // reader that the receiver may be nil; two plainly nilable arguments say so in the signature.
 func MergePromptContext(a, b *PromptContext) *PromptContext {
 	switch {
-	case a == nil:
+	case nothingKnown(a):
 		return b
-	case b == nil:
+	case nothingKnown(b):
 		return a
 	case better(b.candidate(), a.candidate()):
 		return b
@@ -424,10 +445,18 @@ func MergePromptContext(a, b *PromptContext) *PromptContext {
 // figure as a current proxy sends it: 342 ns/op and 0 allocs/op, so the comparison itself costs
 // about 9ns a row and allocates nothing.
 //
-// THE LITERAL CANNOT STAY ON THE STACK, which is why this is a signature change rather than a
-// compiler hint. Publish() inlines, but MergePromptContext does not — cost 110 against a budget of
-// 80 — and its parameters flow to its result, so the escape analysis spills the published struct
-// whatever the caller looks like. A fold is a VALUE, so comparing out of one allocates nothing.
+// THE LITERAL DID NOT STAY ON THE STACK IN THE SHAPE THIS REPLACED, which is why the fix is a
+// signature change rather than a compiler hint. Publish() inlines, but MergePromptContext does not —
+// cost 110 against a budget of 80 — and the caller returned the PUBLISHED POINTER out of
+// localContextFor, so the struct crossed a function boundary and had to go on the heap: one per row
+// per rebuild, the 10 allocs/op above.
+//
+// NOT "WHATEVER THE CALLER LOOKS LIKE", which an earlier version of this paragraph claimed. Written
+// in a SINGLE frame — Publish() inlined at the call site and the merged pointer read and dropped
+// there — escape analysis does keep it on the stack; measured at 0 allocs. What this method buys is
+// that the row loop no longer DEPENDS on that: a fold is a VALUE, so comparing out of one allocates
+// nothing and no caller shape can put the struct back on the heap.
+// TestSessionContextFor_MergesWithoutAllocating asserts the zero rather than reporting it.
 //
 // STILL ONE ORDERING. This defers to better() exactly as MergePromptContext does, so the two are
 // views of the same total order rather than two implementations of it — the property this file
@@ -452,7 +481,7 @@ func MergePromptContext(a, b *PromptContext) *PromptContext {
 // RETURNS THE FIGURE, not the winner, and that is not a shortcut: the only caller draws a gauge from
 // an int, and handing back a *PromptContext would put the allocation straight back.
 func (f PromptContextFold) TokensMergedWith(p *PromptContext) int {
-	if p == nil {
+	if nothingKnown(p) {
 		return f.tokens
 	}
 	// A zero fold is the monoid's identity here as everywhere: Publish() would return nil for it,

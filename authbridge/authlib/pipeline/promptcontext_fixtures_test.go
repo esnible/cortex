@@ -88,3 +88,31 @@ func mainAgent(id string, at time.Time, msgs, context int) []SessionEvent {
 func subagent(id string, at time.Time, msgs, context int) []SessionEvent {
 	return roled(conversation(id, at, msgs, context), AgentRoleSubagent)
 }
+
+// projected is the shape the TIMELINE delivers, which no other fixture in this file produces: the
+// two SLICES nilled and their LENGTHS recorded in ToolCount and MessageCount first.
+//
+// MIRRORED RATHER THAN CALLED, exactly as the tui copy of it is — sessionapi.summarizeEvent is
+// unexported and in a package that imports this one, so calling it here would invert the dependency.
+// authlib/sessionapi pins its half (TestSummarizeEvent_CountsTheConversationItDrops).
+//
+// IT MATTERS THAT EVERY OTHER FIXTURE HERE BUILDS THE SLICES, because the tool-manifest filter and
+// the projection strip the same two fields: a hand-built fixture models the SSE stream and nothing
+// else. toolCount/messageCount exist for this shape, so their count branch needs it to be reachable
+// from this package's own suite rather than only across the module boundary.
+func projected(events []SessionEvent) []SessionEvent {
+	out := make([]SessionEvent, 0, len(events))
+	for _, e := range events {
+		c := e
+		if e.Inference != nil {
+			inf := *e.Inference
+			inf.MessageCount, inf.ToolCount = len(inf.Messages), len(inf.Tools)
+			inf.Messages = nil
+			inf.Tools = nil
+			inf.ToolCalls = nil
+			c.Inference = &inf
+		}
+		out = append(out, c)
+	}
+	return out
+}

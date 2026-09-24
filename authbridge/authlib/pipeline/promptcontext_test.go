@@ -825,3 +825,137 @@ func TestSessionContext_ZeroWhenNothingCanBeSaid(t *testing.T) {
 		})
 	}
 }
+
+// A ZERO-TOKEN FIGURE IS NOTHING KNOWN, in either operand position and in both combine paths.
+//
+// THE BAD CASE IS `&PromptContext{Stated: true}`, which better() ranks first on the dominance check:
+// before nothingKnown it beat a real unstated local figure of 700,000 and both combines returned 0 —
+// the gauge blanking for a session near its limit, from an operand carrying no information at all.
+//
+// LATENT, NOT LIVE: Publish() is the only producer today and returns nil rather than a zero-token
+// struct. But PromptContext is exported with exported fields, so a JSON decode, a test or a future
+// producer can construct one, and the identity is pinned here for the same reason Add keeps its
+// provably-dead identity disjunct — it is a property of the monoid rather than an accident of which
+// field better() happens to compare last.
+func TestMergePromptContext_AZeroTokenFigureIsTheIdentity(t *testing.T) {
+	at := time.Now()
+	for _, empty := range []*PromptContext{
+		{Stated: true}, // the dangerous one: wins the dominance check against any unstated figure
+		{Stated: true, At: at.Add(time.Hour), Msgs: 9_000}, // and would win it later and longer
+		{Msgs: 10_000},             // unstated, but ahead on the arm's leading comparator
+		{At: at.Add(time.Hour)},    // unstated, ahead on the arm's second
+		{Tokens: -1, Msgs: 10_000}, // <= 0 rather than == 0: nothing refuses a negative
+		{},                         // and the plain zero value
+	} {
+		// The local figure an old proxy's fold arrives at: unstated, 700k held from before a
+		// compaction, which is the documented stale-fallback state.
+		local := &PromptContext{Tokens: 700_000, At: at, Msgs: 2468}
+		if got := MergePromptContext(local, empty); got != local {
+			t.Errorf("MergePromptContext(local, %+v) = %+v, want the local figure — an empty "+
+				"operand is the identity, not a figure of zero", empty, got)
+		}
+		if got := MergePromptContext(empty, local); got != local {
+			t.Errorf("MergePromptContext(%+v, local) = %+v, want the local figure", empty, got)
+		}
+
+		// And the allocation-free path agrees, which it has to: it restates the identity handling
+		// and nothing else, so this is where a divergence would live.
+		var f PromptContextFold
+		f.AddAll(conversation("c1", at, 2468, 700_000))
+		if got, want := f.TokensMergedWith(empty), 700_000; got != want {
+			t.Errorf("TokensMergedWith(%+v) = %d, want %d", empty, got, want)
+		}
+	}
+
+	// Both operands empty stays empty rather than becoming a figure: the merge returns an operand,
+	// and no operand here has anything to say.
+	if got := MergePromptContext(&PromptContext{Stated: true}, nil); got != nil {
+		t.Errorf("merging an empty figure with nil = %+v, want nil", got)
+	}
+}
+
+// THE CURSOR CONTRACT, pinned in the package that owns it: AddAll advances n, Add does not.
+//
+// n is a cursor into a CALLER's slice — abctl reads it through Folded() to decide whether a slice
+// grew, shrank or was replaced wholesale — and a per-event caller has no slice, so the session store
+// folds thousands of events and leaves n at zero forever. Until this test, adding `f.n++` to Add left
+// `go test ./authlib/pipeline/` entirely green: the only thing guarding the contract stated at AddAll
+// was cmd/abctl/tui, a suite in another module, and the fold has a second consumer now.
+//
+// COUNTED IN EVENTS, NOT IN CANDIDATES. AddAll advances by len(events) including the one-shots the
+// rule rejects, because the length check it serves compares against len(slice) — a cursor that
+// counted only winners would re-fold the whole tail on every call.
+func TestPromptContextFold_AddAllAdvancesTheCursorAndAddDoesNot(t *testing.T) {
+	base := time.Now()
+	evs := conversation("c1", base, 600, 500_000)
+	evs = append(evs, oneShot("o1", base.Add(time.Minute), 282_000)...) // rejected, still counted
+
+	var byAll PromptContextFold
+	byAll.AddAll(evs)
+	if got, want := byAll.Folded(), len(evs); got != want {
+		t.Errorf("AddAll left Folded() = %d, want %d — every event, one-shots included", got, want)
+	}
+
+	var byOne PromptContextFold
+	for i := range evs {
+		byOne.Add(&evs[i])
+	}
+	if got := byOne.Folded(); got != 0 {
+		t.Errorf("Add advanced Folded() to %d, want 0 — the store's caller has no slice to index "+
+			"and never resets this", got)
+	}
+	// Same figure either way, so the two entry points differ in the cursor and nothing else.
+	if got, want := byOne.Tokens(), byAll.Tokens(); got != want {
+		t.Errorf("per-event fold = %d, whole-slice fold = %d", got, want)
+	}
+	if got, want := byAll.Tokens(), 500_000; got != want {
+		t.Errorf("folded %d, want %d — the fixture is not exercising the rule", got, want)
+	}
+
+	// ResetFolded zeroes the cursor and KEEPS the figure, which is the whole of what a rebase needs
+	// from it: dropping the figure there blanks a live session's gauge.
+	byAll.ResetFolded()
+	if got := byAll.Folded(); got != 0 {
+		t.Errorf("ResetFolded left Folded() = %d, want 0", got)
+	}
+	if got, want := byAll.Tokens(), 500_000; got != want {
+		t.Errorf("ResetFolded dropped the figure: %d, want %d", got, want)
+	}
+}
+
+// THE PROJECTED SHAPE, pinned in the package that owns the function that reads it.
+//
+// sessionapi.summarizeEvent nils Messages and Tools — 99.5% of an event — after recording their
+// lengths in ToolCount and MessageCount, and toolCount/messageCount exist to answer on either shape.
+// Until this test no fixture in this package set the counts with the slices nil, so the branch that
+// exists FOR that shape was reached only from cmd/abctl/tui, across a module boundary, while
+// statement coverage here looked complete.
+//
+// A CLIENT CONCERN, NOT A SERVER ONE, and worth stating because the reverse is easy to assume: the
+// store folds whole events with their slices populated, so Append always takes the len() branch. The
+// function lives here regardless, so its own suite pins both branches rather than resting on another
+// package's.
+func TestSessionContext_ReadsAProjectedEventThroughTheCounts(t *testing.T) {
+	base := time.Now()
+
+	// ToolCount is all that says this was an agentic turn rather than a one-shot.
+	if got, want := PromptContextOf(projected(conversation("c1", base, 600, 500_000))), 500_000; got != want {
+		t.Errorf("PromptContextOf = %d, want %d — a projected turn is admitted through ToolCount",
+			got, want)
+	}
+	// And a projected one-shot is still excluded, by a count of zero rather than a missing manifest.
+	if got := PromptContextOf(projected(oneShot("o1", base, 282_000))); got != 0 {
+		t.Errorf("PromptContextOf = %d, want 0 — ToolCount 0 is a one-shot", got)
+	}
+
+	// MessageCount has to RANK, not merely admit. Two unstated projected turns, the earlier one
+	// longer: messageCount leads the unstated arm, so the 1500-message turn wins. Read the slices
+	// only and both tie at msgs == 0, at decides, and the later smaller turn takes it — which is how
+	// this branch going missing would show, and why the assertion is a ranking rather than a read.
+	evs := projected(conversation("before", base, 1500, 851_000))
+	evs = append(evs, projected(conversation("after", base.Add(time.Hour), 40, 62_000))...)
+	if got, want := PromptContextOf(evs), 851_000; got != want {
+		t.Errorf("PromptContextOf = %d, want %d — MessageCount has to rank the projected turns, "+
+			"not just let them through", got, want)
+	}
+}
