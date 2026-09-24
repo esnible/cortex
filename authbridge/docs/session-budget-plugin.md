@@ -50,7 +50,7 @@ pipeline:
 | `max_cache_read_tokens` | 0 | Per-kind ceiling on prompt tokens served from cache. 0 = no limit. |
 | `max_cache_write_tokens` | 0 | Per-kind ceiling on prompt tokens written to cache. 0 = no limit. |
 | `max_output_tokens` | 0 | Per-kind ceiling on generated completion tokens. 0 = no limit. |
-| `max_reasoning_tokens` | 0 | Per-kind ceiling on reasoning-only output tokens (subset of output). 0 = no limit. See note below — this limit was inert on Anthropic traffic until recently. |
+| `max_reasoning_tokens` | 0 | Per-kind ceiling on reasoning-only output tokens (subset of output). 0 = no limit. |
 | `max_calls` | 0 | LLM/inference call cap (from `inference-parser`); MCP, A2A, and other outbound traffic do not count. 0 = no limit. See note below on enforcement scope. |
 | `max_duration_seconds` | 0 | Session lifetime cap (0 = no limit) |
 | `on_exceed` | `deny` | `deny` (403), `observe` (log only), or `pause` (webhook) |
@@ -64,18 +64,6 @@ pipeline:
 | `default_session_fallback` | `false` | Pool sessionless traffic into a shared `"default"` bucket. Single-workload only — one caller exhausting the budget denies the rest. Under `max_duration_seconds`, continuous traffic refreshes the TTL, so once elapsed exceeds the limit requests stay denied until the key expires or is deleted. |
 
 At least one of `max_tokens`, `max_input_tokens`, `max_cache_read_tokens`, `max_cache_write_tokens`, `max_output_tokens`, `max_reasoning_tokens`, `max_calls`, `max_duration_seconds` must be > 0.
-
-**`max_reasoning_tokens` was inert on Anthropic traffic, and is not any more.**
-`inference-parser` did not read Anthropic's
-`usage.output_tokens_details.thinking_tokens`, so `ReasoningTokens` was always 0 on
-that path and this limit could never be reached however low it was set. The parser
-reads it now, which makes the counter real **without any config change of yours**.
-
-If you set `max_reasoning_tokens` against Claude traffic and saw no effect, that was
-why — and with `on_exceed` at its `deny` default those sessions will now start
-receiving 403s once they cross it. Audit any value currently set before upgrading.
-OpenAI-format endpoints were never affected: that path has always read
-`completion_tokens_details.reasoning_tokens`.
 
 **`max_calls` enforcement scope.** Only inference calls surfaced by
 `inference-parser` increment the counter, but the limit check runs on
