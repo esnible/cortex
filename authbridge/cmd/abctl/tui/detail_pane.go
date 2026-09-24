@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/rossoctl/cortex/authbridge/authlib/costevent"
 	"github.com/rossoctl/cortex/authbridge/authlib/pipeline"
+	"github.com/rossoctl/cortex/authbridge/authlib/usage"
 )
 
 // showDetail loads the row's event into the detail viewport as colorized
@@ -145,6 +146,7 @@ func filterForDetail(data []byte, phase pipeline.SessionPhase) []byte {
 		a2aKeep = a2aRespKeys
 	}
 	if inf, ok := m["inference"].(map[string]any); ok {
+		restoreReportedZeroSplits(inf)
 		m["inference"] = filterFields(inf, keep)
 	}
 	if mcp, ok := m["mcp"].(map[string]any); ok {
@@ -209,6 +211,40 @@ var (
 	a2aReqKeys  = []string{"method", "rpcId", "sessionId", "messageId", "taskId", "role", "parts"}
 	a2aRespKeys = []string{"method", "rpcId", "sessionId", "taskId", "finalStatus", "artifact", "errorMessage"}
 )
+
+// restoreReportedZeroSplits puts back a split the provider MEASURED AND FOUND TO BE ZERO.
+//
+// InferenceExtension.ReasoningTokens is omitempty, so a provider that measured the split and
+// got none serialises identically to one that never measured at all — and filterFields keeps
+// only keys the map actually has, so both read as "no reasoning" in the pane that
+// inferenceRespKeys' own doc calls the place the exact figure lives. A measured zero is a
+// figure; absence is the lack of one. PresentKinds is the only thing that separates them,
+// and it travels in the same object.
+//
+// THE PANE, NOT THE WIRE FORMAT. Dropping omitempty upstream would publish a zero for every
+// provider that never reports a split — the opposite error, and the one the tier panel's
+// JSON tests forbid. So the repair belongs here, at the surface that lost the distinction.
+//
+// NO PHASE GUARD. Reasoning is response-side, but what keeps it off a request row is
+// inferenceReqKeys not listing it — one allow-list deciding visibility, per this file's
+// existing rule about a second copy of a predicate. A phase check here would be a guard the
+// allow-list already makes unreachable, so nothing could prove it worked.
+//
+// presentKinds is itself absent from both allow-lists and stays that way: the reader gets
+// the figure, not the bitfield.
+func restoreReportedZeroSplits(inf map[string]any) {
+	if _, ok := inf["reasoningTokens"]; ok {
+		return // a non-zero figure cleared omitempty on its own
+	}
+	// json.Unmarshal into `any` numbers everything as float64, including a uint8 bitfield.
+	bits, ok := inf["presentKinds"].(float64)
+	if !ok {
+		return // no presence bits: a producer predating them, where absence is all we know
+	}
+	if uint8(bits)&usage.KindReasoning != 0 {
+		inf["reasoningTokens"] = 0
+	}
+}
 
 // filterFields returns a new map containing only the keys in `keep` that are
 // present in obj. Keys not listed are dropped. This is strict filtering —

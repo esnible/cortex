@@ -531,21 +531,51 @@ func TestLayout_DrawerReservationMatchesWhatItDraws(t *testing.T) {
 	}
 }
 
+// THE FLOOR'S VALUE, AGAINST A LITERAL — the witness the test below cannot be.
+//
+// TestLayout_DrawerFloorLeavesAUsableTable sizes the terminal to spendDrawerMinHeight and
+// then asserts against spendDrawerMinHeight, so both sides move together and every value
+// passes it. Its own doc said as much and concluded "the derivation is what guards the
+// single row" — but nothing checked the derivation, so reverting the constant to the
+// literal 27 it once was left this whole package green. 27 is not a style choice: against
+// a seven-row drawer it costs the table the row the floor exists to protect.
+//
+// A LITERAL, like spend_sanitize_test.go's line pins and for the same reason: a
+// right-hand side spelled with spendStripMinHeight + spendDrawerLines + dividerLines is
+// the tautology this replaces. The terms are named in the failure message instead, so a
+// deliberate change to any of them reads as one number to update and an accidental one
+// names what moved.
+//
+// spendDrawerLines is already pinned to 7 twice (TestSpendDrawerLines_AccountsForTheChildRow
+// and the {120, 7} row in spend_sanitize_test.go), so this is the last unwitnessed link in
+// the chain, not a second copy of one.
+func TestSpendDrawerMinHeight_IsTwentyEight(t *testing.T) {
+	const wantFloor = 28 // 20 strip rows + 7 drawer rows + 1 divider
+	if spendDrawerMinHeight != wantFloor {
+		t.Errorf("the drawer's height floor is %d, want %d — recompute it from the terms: "+
+			"spendStripMinHeight %d + spendDrawerLines %d + dividerLines %d. If one of those "+
+			"moved deliberately, update this literal; if none did, the floor has been written "+
+			"as a constant again and no longer follows the drawer's height",
+			spendDrawerMinHeight, wantFloor,
+			spendStripMinHeight, spendDrawerLines, dividerLines)
+	}
+}
+
 // AT THE FLOOR, THE DRAWER OPENS AND THE TABLE IS STILL USABLE — the property
 // spendDrawerMinHeight exists for, in its own words: "opening it leaves the table more
 // than a couple of rows".
 //
 // WHAT THIS CANNOT CATCH, and the reason is worth stating rather than discovering later.
-// The floor is now derived (spendStripMinHeight + spendDrawerLines + dividerLines), so
-// any assertion comparing it to those components is a tautology — the defect class three
+// The floor is derived (spendStripMinHeight + spendDrawerLines + dividerLines), so any
+// assertion here comparing it to those components is a tautology — the defect class three
 // earlier rounds of review found in this package. A one-row drift is therefore not
 // detectable here: with the floor at 27 against a seven-row drawer the body is 14 rows
 // instead of 15, and no non-arbitrary threshold separates those.
 //
 // What it does catch is a floor that has come loose altogether — low enough that opening
 // the drawer squeezes the table to nothing, which is the failure the constant's doc
-// describes and the one that makes the drawer "a pane, badly". The derivation is what
-// guards the single row.
+// describes and the one that makes the drawer "a pane, badly". The single row is guarded
+// by TestSpendDrawerMinHeight_IsTwentyEight above, which pins the value to a literal.
 func TestLayout_DrawerFloorLeavesAUsableTable(t *testing.T) {
 	forceColor(t)
 	const w = 120
