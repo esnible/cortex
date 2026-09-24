@@ -76,10 +76,12 @@ import "time"
 // earlier version read "a session whose proxy states roles", the framing the paragraph above
 // dismantles. A proxy only PUBLISHES the field; what fills it is the client's billing-header line, so
 // no proxy version makes a session stated, and both an upgrade and a client change can be the reason
-// the first stated turn arrives mid-session. Expressed as the top rank of a total order rather than as a one-way latch, so that which of
-// the two arrived first cannot matter (see better).
+// the first stated turn arrives mid-session.
 //
-// THE PROMPT SIDE ONLY. PromptTokens is input + cache-read + cache-write; output is left out.
+// Expressed as the top rank of a total order rather than as a one-way latch, so that which of the two
+// arrived first cannot matter (see better).
+//
+// THE PROMPT SIDE ONLY. PromptTokensOf is input + cache-read + cache-write; output is left out.
 // Measured on the same sessions it is 0.003%-2.2% of the prompt, and 0.2% on the conversations
 // near the limit — a fifth of one eighth-block at 1M, so counting it would change no pixel.
 //
@@ -180,7 +182,7 @@ type candidate struct {
 // candidateOf extracts an event's claim, or a zero candidate if it makes none.
 func candidateOf(e *SessionEvent) candidate {
 	// RESPONSES ONLY, stated rather than relied on. The token counts arrive on the response
-	// pass, so a request snapshot carries zeroes and would be dropped by the PromptTokens
+	// pass, so a request snapshot carries zeroes and would be dropped by the PromptTokensOf
 	// check below anyway — but that is an accident of when SnapshotInference copies, not
 	// something this rule said. Checking the phase makes the doc above load-bearing and
 	// halves the candidates.
@@ -207,7 +209,7 @@ func candidateOf(e *SessionEvent) candidate {
 	if e.Inference.AgentRole == AgentRoleSubagent {
 		return candidate{}
 	}
-	n := PromptTokens(e.Inference)
+	n := PromptTokensOf(e.Inference)
 	if n <= 0 {
 		return candidate{}
 	}

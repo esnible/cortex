@@ -340,8 +340,9 @@ func (s *Store) Append(sessionID string, event pipeline.SessionEvent) {
 	//
 	// NOT HOISTED ABOVE THE LOCK like moneyOf, and that is not an oversight. moneyOf is a
 	// json.Unmarshal and was hoisted because of a measured regression; this is a phase check, a
-	// nil check, len(Tools), two AgentRole comparisons, a messageCount read, three int adds and
-	// one comparison, and — once the fold already holds a figure — better()'s time.Time
+	// nil check, len(Tools), two AgentRole comparisons, a messageCount read, TWO int adds and
+	// one comparison (pipeline.PromptTokensOf sums three fields), a Round(0) that clears a
+	// monotonic reading, and — once the fold already holds a figure — better()'s time.Time
 	// Equal/After chain: tens of nanoseconds, no allocation, NO DECODE. Splitting it to hoist the
 	// extraction would add an exported type for plumbing alone and save nothing measurable.
 	sess.context.Add(&event)

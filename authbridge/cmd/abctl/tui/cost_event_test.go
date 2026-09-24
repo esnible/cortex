@@ -105,7 +105,7 @@ func TestExchangeCellsSumToTotal(t *testing.T) {
 	if gotResp != "1,850" {
 		t.Errorf("response TOKENS = %q, want %q", gotResp, "1,850")
 	}
-	if want := pipeline.PromptTokens(inf) + inf.OutputTokens; want != inf.TotalTokens {
+	if want := pipeline.PromptTokensOf(inf) + inf.OutputTokens; want != inf.TotalTokens {
 		t.Errorf("the two rows sum to %d but the provider billed %d", want, inf.TotalTokens)
 	}
 }
@@ -204,7 +204,7 @@ func TestPromptCost_ReadsThePublishedFigure(t *testing.T) {
 	if got != 0.0414 {
 		t.Errorf("promptCost = %v, want the published 0.0414", got)
 	}
-	if flat := float64(pipeline.PromptTokens(inf)) * 3.8e-6; got >= flat {
+	if flat := float64(pipeline.PromptTokensOf(inf)) * 3.8e-6; got >= flat {
 		t.Errorf("published figure %v is not below the flat %v; the weighting was lost", got, flat)
 	}
 	// No record, and a record with no prompt figure, both decline rather than showing 0.
@@ -277,19 +277,19 @@ func TestPromptTokensSumsTheSplitTiers(t *testing.T) {
 	split := &pipeline.InferenceExtension{
 		InputTokens: 100, CacheReadTokens: 400, CacheWriteTokens: 25, PromptTokens: 525,
 	}
-	if got := pipeline.PromptTokens(split); got != 525 {
+	if got := pipeline.PromptTokensOf(split); got != 525 {
 		t.Errorf("promptTokens = %d, want 525", got)
 	}
 	// Cache-write tokens are prompt-side and must not be dropped: on a cold cache
 	// they are the bulk of the prompt, and they bill at ~1.25x the input rate.
 	noWrite := &pipeline.InferenceExtension{InputTokens: 100, CacheReadTokens: 400, PromptTokens: 500}
-	if got := pipeline.PromptTokens(noWrite); got != 500 {
+	if got := pipeline.PromptTokensOf(noWrite); got != 500 {
 		t.Errorf("promptTokens = %d, want 500", got)
 	}
-	if got := pipeline.PromptTokens(nil); got != 0 {
+	if got := pipeline.PromptTokensOf(nil); got != 0 {
 		t.Errorf("nil promptTokens = %d, want 0", got)
 	}
-	if got := pipeline.PromptTokens(&pipeline.InferenceExtension{}); got != 0 {
+	if got := pipeline.PromptTokensOf(&pipeline.InferenceExtension{}); got != 0 {
 		t.Errorf("empty promptTokens = %d, want 0", got)
 	}
 }
