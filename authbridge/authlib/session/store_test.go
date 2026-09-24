@@ -886,10 +886,17 @@ func promptContextTurnAs(id string, at time.Time, msgs, ntools, context int,
 // a total order, so a trim has nothing to subtract from it; recomputing it over the survivors
 // would report a small conversation when the conversation is large and merely aged out.
 //
-// THE SECOND ASSERTION FORBIDS A FUTURE "FIX". Making this recomputable from Events — the
-// instinct, by analogy to cost — reintroduces exactly the bug this field exists to remove: the
-// gauge blanking because the store forgot the turn. That regression must fail here rather than
-// look like a consistency improvement.
+// THE ASSERTIONS DIVIDE THE WORK, and it is worth saying which does which because the PR
+// description credited the wrong one. Making the figure recomputable from Events — the instinct, by
+// analogy to cost — reintroduces exactly the bug this field exists to remove, and it is caught by
+// `got == nil` BELOW THE LIST: the winning turn has been evicted and every survivor is a one-shot,
+// so a recomputing ListSessions reports nothing at all and the Fatal fires first. The negative
+// assertion at the end never runs under that regression.
+//
+// WHAT THE NEGATIVE ASSERTION GUARDS IS THE FIXTURE, which is what its own message says: it fires if
+// maxEvents is ever raised far enough for the winning turn to survive, leaving a test that passes
+// while exercising no trim at all. That is a real job — this test is otherwise indistinguishable
+// from TestAppend_MaintainsThePromptContextFigure — but it is not the regression guard.
 func TestAppend_PromptContextSurvivesATrim(t *testing.T) {
 	const maxEvents = 4
 	s := New(time.Hour, maxEvents, 0)
@@ -922,11 +929,29 @@ func TestAppend_PromptContextSurvivesATrim(t *testing.T) {
 		t.Errorf("reported %d, want 500000", got.Tokens)
 	}
 
-	// And it is NOT recomputable from what survived. View is the accessor for the events an
-	// entry still holds — this package has no Snapshot method — and it copies the whole slice.
-	var live pipeline.PromptContextFold
-	live.AddAll(s.View("sess").Events)
-	if live.Tokens() == got.Tokens {
+	// THE TRIM REALLY RAN, asserted directly rather than inferred from a figure comparison. View is
+	// the accessor for the events an entry still holds — this package has no Snapshot method — and it
+	// copies the whole slice.
+	live := s.View("sess").Events
+	if len(live) != maxEvents {
+		t.Fatalf("the entry holds %d events, want the cap of %d — this test's subject is what "+
+			"survives a trim, and nothing was trimmed", len(live), maxEvents)
+	}
+	// AND THE WINNING TURN IS NOT AMONG THE SURVIVORS, which is the precise thing the figure has to
+	// outlive. Named by request id, so the check does not depend on how many one-shots it took to
+	// push it out.
+	for _, e := range live {
+		if e.RequestID == "win" {
+			t.Fatalf("the 500k turn is still held (seq %d), so the stored figure could have been "+
+				"recomputed and this test proves nothing about the trim", e.Seq)
+		}
+	}
+
+	// And it is NOT recomputable from what survived — the fixture guard described above, kept
+	// because it also catches a survivor that happens to carry a 500k figure of its own.
+	var fold pipeline.PromptContextFold
+	fold.AddAll(live)
+	if fold.Tokens() == got.Tokens {
 		t.Error("a recomputation over surviving events matched the stored figure, so this test " +
 			"is not exercising the trim — raise the one-shot count")
 	}
