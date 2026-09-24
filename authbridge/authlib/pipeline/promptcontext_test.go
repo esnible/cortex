@@ -612,6 +612,47 @@ func TestMergePromptContext_NeitherStatedRanksMsgsAheadOfAt(t *testing.T) {
 	}
 }
 
+// EVERY CANDIDATE'S at IS WALL-CLOCK ONLY, which is what makes better()'s equality check transitive
+// and therefore the max associative.
+//
+// WHAT IT GUARDS: time.Time.Equal compares monotonic readings when both operands carry one and wall
+// clocks otherwise. Mix the two — a streamed event stamped by time.Now() against a figure decoded
+// from JSON or restored from disk, which is the restore-then-continue path the monoid claim is for —
+// and "equal" stops being transitive, which is the one property a max needs of its comparator. Both
+// constructors of candidate call Round(0) so the mix cannot arise.
+//
+// PINNING THE NORMALISATION AND NOT THE CYCLE, deliberately: the intransitive triple needs two
+// timestamps that agree on the wall clock and disagree on the monotonic reading, and Go offers no way
+// to build that pair on purpose — time.Now() is the only monotonic source, Add shifts both readings
+// together, and Round(0) removes the reading rather than changing it. Whether two time.Now() calls
+// can land wall-equal depends on the platform's clock resolution, so a test that waited for it would
+// be a machine-dependent skip. This asserts the invariant instead, which is what the fix installs.
+//
+// Mutation-checked: dropping Round(0) from either constructor fails this.
+func TestPromptContextFold_CandidateTimestampsCarryNoMonotonicReading(t *testing.T) {
+	// time.Now() is the only way to GET a monotonic reading, so the fixture has to start from one or
+	// the assertions below hold vacuously. A FIXTURE GUARD rather than a skip, which is this file's
+	// idiom: a test that cannot exercise its property should say so loudly rather than report a pass.
+	now := time.Now()
+	if now == now.Round(0) {
+		t.Fatal("time.Now() carries no monotonic reading here, so there is nothing to strip and " +
+			"this test proves nothing")
+	}
+
+	var f PromptContextFold
+	f.AddAll(conversation("c1", now, 600, 500_000))
+	if got := f.current().at; got != got.Round(0) {
+		t.Errorf("a folded candidate's at is %v, which still carries a monotonic reading — "+
+			"candidateOf must strip it", got)
+	}
+
+	p := &PromptContext{Tokens: 500_000, Msgs: 600, Stated: true, At: now}
+	if got := p.candidate().at; got != got.Round(0) {
+		t.Errorf("a published figure's candidate at is %v, which still carries a monotonic reading — "+
+			"PromptContext.candidate must strip it", got)
+	}
+}
+
 // THE ORDER ITSELF, WRITTEN DOWN — which is the one thing the cross-product test below cannot state,
 // because there the expectation is a call to better() and so it agrees with any better() at all.
 //
@@ -705,7 +746,12 @@ func TestBetter_RanksTheDocumentedOrderOnLiterals(t *testing.T) {
 // HERE and not in the monoid fixture: the commutativity check there compares pointers, so a tied
 // pair would fail it for a reason that has nothing to do with the law.
 func TestMergePromptContext_IsTheSameOrderAsTheFold(t *testing.T) {
-	at := time.Now()
+	// Round(0) MODELS A REAL FOLD, and the losslessness loop below needs it: a fold's at comes from
+	// candidateOf, which strips the monotonic reading, so a production fold never carries one. These
+	// folds are hand-built from the wire type, and a fixture that kept the reading would compare a
+	// stripped p.candidate() against an unstripped f.current() and fail on the provenance of the
+	// timestamp rather than on a dropped field.
+	at := time.Now().Round(0)
 	vals := []*PromptContext{
 		{Tokens: 100_000, Msgs: 952, At: at},
 		{Tokens: 700_000, Msgs: 2468, At: at.Add(-time.Hour)},

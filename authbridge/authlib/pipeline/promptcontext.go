@@ -160,6 +160,10 @@ func (f *PromptContextFold) AddAll(events []SessionEvent) {
 }
 
 // candidate is one event's claim on the column: extracted, then compared.
+//
+// ITS at IS WALL-CLOCK ONLY, stripped of any monotonic reading by every constructor of this type —
+// candidateOf below and PromptContext.candidate. That is a property of the TYPE rather than of one
+// call site, so it is stated here; see better() for what rests on it.
 type candidate struct {
 	tokens int
 	msgs   int
@@ -204,7 +208,21 @@ func candidateOf(e *SessionEvent) candidate {
 	return candidate{
 		tokens: n,
 		msgs:   messageCount(e.Inference),
-		at:     e.At,
+		// Round(0) STRIPS THE MONOTONIC READING, which removes a condition the monoid claim would
+		// otherwise lean on. time.Time.Equal compares monotonic readings when BOTH operands carry
+		// one and wall clocks otherwise, so on a MIX of the two — a streamed event stamped by
+		// time.Now() beside one decoded from JSON or restored from disk, which is exactly the
+		// restore-then-continue path better() invokes — equality is not guaranteed transitive, and
+		// a max is only associative over a transitive comparator. Normalising here makes every
+		// comparison wall-against-wall.
+		//
+		// NO BUG IS BEING FIXED HERE, and claiming one would be wrong: an attempt to construct the
+		// intransitive triple did not reproduce it, because two times taken close enough together
+		// to be wall-equal were produced by Add() and so shared a monotonic reading. Reaching it
+		// needs two separate time.Now() calls that agree on the wall clock and disagree on the
+		// monotonic one, which is machine-dependent. The reason to do this is that the monoid is
+		// claimed unconditionally, so it must not hold only for timestamps of one provenance.
+		at:     e.At.Round(0),
 		stated: e.Inference.AgentRole != "",
 	}
 }
@@ -221,6 +239,12 @@ func candidateOf(e *SessionEvent) candidate {
 // A max over a total order is commutative AND associative, which is what makes the fold a
 // monoid: replay order cannot change the answer, so a future restore-then-continue needs no
 // ordering guarantee.
+//
+// THAT NEEDS at.Equal TO BE TRANSITIVE, which it is only across timestamps of one kind: it compares
+// monotonic readings when both operands carry one and wall clocks otherwise, so a mix of a streamed
+// time.Now() and a decoded or restored value could make "equal" non-transitive and a max
+// non-associative. Both constructors of candidate strip the monotonic reading for that reason (see
+// candidate), so the claim above is unconditional rather than true of same-provenance timestamps only.
 //
 // EACH ARM'S LAST COMPARATOR IS DETERMINISM FILLER and nothing else — msgs where the role is
 // stated, tokens where it is not. Both arms APPEND to the rule they inherited rather than replace
@@ -343,8 +367,14 @@ type PromptContext struct {
 // candidate projects a published figure back onto the fold's comparison type, and is the whole
 // mechanism by which the wire order and the fold order cannot disagree: there is ONE ordering,
 // better(), and both are views of it. Total in both directions because PromptContext is lossless.
+//
+// Round(0) for the same reason candidateOf does it: a candidate's at is wall-clock only, so every
+// comparison better() makes is wall-against-wall whatever the operand's provenance. A figure that
+// came off the wire carries no monotonic reading anyway — json.Unmarshal cannot produce one — but a
+// caller can hand this type a time.Now(), and the normalisation is what makes that indistinguishable
+// rather than a second class of timestamp. See candidateOf for what it buys and what it does not.
 func (p *PromptContext) candidate() candidate {
-	return candidate{tokens: p.Tokens, msgs: p.Msgs, at: p.At, stated: p.Stated}
+	return candidate{tokens: p.Tokens, msgs: p.Msgs, at: p.At.Round(0), stated: p.Stated}
 }
 
 // Publish projects the fold for the wire, or nil when nothing can be said.
