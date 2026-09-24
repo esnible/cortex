@@ -17,6 +17,22 @@ import (
 // server forgot is #870's shape. pipeline.MergePromptContext resolves it by the rule rather than by
 // size: a stated figure beats an unstated one at any magnitude.
 //
+// AND MERGING MOVES THE FIGURE EITHER WAY, which "neither source dominates" must not be read as
+// denying: this is a max over a ranking, not an improvement. For an UNSTATED session the ranking
+// leads on message count and the server's fold usually has the longer memory, so a turn abctl has
+// already moved past can come back:
+//
+//	local   unstated, fresh, msgs   952, 400,249   had correctly followed a compaction
+//	server  unstated, stale, msgs 2,468, 999,623   still holds the pre-compaction turn
+//	merged                          999,623
+//
+// That obeys the documented ordering rather than defeating it — it is the known cost of the
+// message-count fallback (see pipeline.PromptContextOf: a compaction leaves the longer
+// pre-compaction request retained and the gauge keeps showing the old context), and abctl had the
+// better answer only by the accident of having attached later, which is not something the rule can
+// prefer. TestSessionContextFor_AStaleServerFigureCanTakeTheColumnFromAFresherLocalOne pins it, as
+// the mirror of the stated-beats-unstated case.
+//
 // server is nil for a proxy older than the field and for a session with no conversation to
 // measure. Both mean "nothing known", both are the merge's identity, and that is what lets this
 // need no version detection at all.

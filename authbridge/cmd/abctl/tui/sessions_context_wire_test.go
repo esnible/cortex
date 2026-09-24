@@ -480,6 +480,44 @@ func assertGaugeFilled(t *testing.T, cell, when string) {
 	}
 }
 
+// assertGaugeShows fails unless the cell is EXACTLY the gauge promptTokens draws at the width the
+// table built the row against — a different question from assertGaugeFilled's, and the one the
+// tests below actually mean.
+//
+// INK BETWEEN THE BRACKETS WAS NOT ENOUGH, which a review measured rather than argued: replacing
+// rebuildSessionsTable's gauge with a constant contextGauge(1, contextW) left the whole tui suite
+// green. A one-token figure has ink, so every "the row repainted" assertion below passed on a row
+// that had thrown its figure away. The figure and the cell have to be pinned TOGETHER, or a row test
+// claims only that something was drawn.
+//
+// assertGaugeFilled IS STILL CALLED FIRST, for the diagnostic rather than for the coverage: a %q
+// gauge against another %q gauge is hard to read, so the shape failures — "not a gauge at all", "an
+// EMPTY track" — get to speak before the byte comparison does. Its deliberate weakness is right for
+// that purpose (a small figure legitimately draws less than a full block) and wrong as the only
+// assertion in a test whose name promises a figure.
+//
+// THE WIDTH IS READ BACK OFF THE INSTALLED HEADER rather than recomputed from m.width. The fitter
+// shrinks columns on a narrow terminal and rebuildSessionsTable draws every cell to the FITTED
+// width, so asking m.sessionsTbl.Columns() is asking the table what it built the row against —
+// the same object heldContextCell reads the row from, which is what keeps the two in step.
+func assertGaugeShows(t *testing.T, m *model, id string, promptTokens int, when string) {
+	t.Helper()
+	cell := heldContextCell(t, m, id)
+	assertGaugeFilled(t, cell, when)
+	w := sessionsColumnWidth(m.sessionsTbl.Columns(), contextColumnTitle)
+	want := contextGauge(promptTokens, w)
+	// A dash or an empty string would make the comparison below assert the ABSENCE of a figure,
+	// which is a claim no caller of this helper is making.
+	if want == "" || want == emptyCell {
+		t.Fatalf("%s the gauge of %d at the fitted width %d is %q — this helper asserts a FIGURE, "+
+			"so the fixture or the width is wrong", when, promptTokens, w, want)
+	}
+	if cell != want {
+		t.Errorf("%s the row holds %q, want %q — the gauge of %d prompt tokens at width %d",
+			when, cell, want, promptTokens, w)
+	}
+}
+
 // THE FIGURE IS NOT THE ROW, and every test above this one stops at the figure.
 //
 // Which is how the reported bug survived a suite this size. TestSessionsTable_AnIdleSessionsSnapshotFillsTheGauge
@@ -531,7 +569,7 @@ func TestSessionsTable_ASnapshotRepaintsTheGaugeItFilled(t *testing.T) {
 		t.Fatalf("the figure is %d, want %d — this test is about the ROW, which cannot be "+
 			"right until the figure is", got, want)
 	}
-	assertGaugeFilled(t, heldContextCell(t, m, id), "after the snapshot")
+	assertGaugeShows(t, m, id, 500_000, "after the snapshot")
 }
 
 // AN OLDER PAGE IS THE SAME DEFECT AT THE SECOND SITE. [o] merges a projected page, rebases, and
@@ -557,8 +595,9 @@ func TestSessionsTable_AnOlderPageRepaintsTheGauge(t *testing.T) {
 	if got, want := m.sessionContextFor("sess-1", nil), 62_000; got != want {
 		t.Fatalf("the figure is %d, want %d", got, want)
 	}
-	// 62,000 of 1M draws a half-block sliver and no full block — see assertGaugeFilled.
-	assertGaugeFilled(t, heldContextCell(t, m, "sess-1"), "after the older page")
+	// 62,000 of 1M draws a half-block sliver and no full block — see assertGaugeFilled, which is
+	// why the exact comparison is against contextGauge's own output rather than against a literal.
+	assertGaugeShows(t, m, "sess-1", 62_000, "after the older page")
 }
 
 // AND THE DETAIL FETCH IS THE THIRD, which matters most of the three: against a proxy that projects
@@ -592,7 +631,7 @@ func TestSessionsTable_ADetailFetchRepaintsTheGauge(t *testing.T) {
 	if got, want := m.sessionContextFor("s", nil), 500_000; got != want {
 		t.Fatalf("the figure is %d, want %d", got, want)
 	}
-	assertGaugeFilled(t, heldContextCell(t, m, "s"), "after the detail fetch")
+	assertGaugeShows(t, m, "s", 500_000, "after the detail fetch")
 }
 
 // THE BUG THIS WHOLE CHANGE EXISTS FOR: a session idle since before abctl attached shows a gauge
@@ -612,11 +651,24 @@ func TestSessionsTable_AnIdleRowShowsTheServersFigureWithoutBeingOpened(t *testi
 		PromptContext: &pipeline.PromptContext{Tokens: 851_000, Stated: true, At: base},
 	}}))
 
-	assertGaugeFilled(t, heldContextCell(t, m, id), "on the first poll")
+	// The SERVER's 851,000 and nothing else: abctl holds no events for this row, so an exact
+	// comparison here is also what pins that rebuildSessionsTable passes s.PromptContext into
+	// sessionContextFor at all rather than dropping it.
+	assertGaugeShows(t, m, id, 851_000, "on the first poll")
 }
 
 // AND THE PROXY-UPGRADE REGRESSION, which is why PromptContext carries Stated.
-func TestSessionsTable_AStatedServerFigureBeatsAStaleUnstatedLocalOne(t *testing.T) {
+//
+// NAMED FOR THE FIGURE, NOT THE ROW, which a review corrected: this asserts on sessionContextFor,
+// and a TestSessionsTable_ prefix is a promise about the rendered cell — the very confusion the
+// comment above TestSessionsTable_ASnapshotRepaintsTheGaugeItFilled says let the reported bug
+// survive this suite. The claim here is about the merge RULE at abctl's call site, so the name says
+// so and the sessions table it used to build (and never read) is gone.
+//
+// The row-level half of this path is covered rather than dropped:
+// TestSessionsTable_AnIdleRowShowsTheServersFigureWithoutBeingOpened pins that a server figure
+// reaches the cell, and the three repaint tests above pin that a local one does.
+func TestSessionContextFor_AStatedServerFigureBeatsAStaleUnstatedLocalOne(t *testing.T) {
 	base := time.Now()
 	const id = "s"
 	// abctl's own figure, folded from a proxy that stated no roles: the documented
@@ -624,7 +676,6 @@ func TestSessionsTable_AStatedServerFigureBeatsAStaleUnstatedLocalOne(t *testing
 	m := &model{width: 200, pane: paneSessions, events: map[string][]pipeline.SessionEvent{
 		id: conversation("pre", base.Add(-time.Hour), 2468, 700_000),
 	}}
-	m.sessionsTbl = newSessionsTable()
 	if got := m.sessionContextFor(id, nil); got != 700_000 {
 		t.Fatalf("local figure is %d, want 700000 — the fixture is not exercising the fallback", got)
 	}
@@ -636,14 +687,55 @@ func TestSessionsTable_AStatedServerFigureBeatsAStaleUnstatedLocalOne(t *testing
 	}
 }
 
+// AND MERGING CAN MOVE AN UNSTATED FIGURE THE OTHER WAY, which is the mirror of the test above and
+// the reason sessionContextFor's doc no longer reads as though merging can only improve a row.
+//
+// REPRODUCED THROUGH THE REAL PATH, not constructed: abctl attached mid-session and had followed a
+// compaction correctly, while the server's fold — older, and with the longer memory — still held the
+// pre-compaction turn. The unstated arm LEADS ON Msgs, so 2,468 retained messages outrank the
+// client's post-compaction 952 and the merge hands the column back to the stale figure. That row
+// showed 400,249 before this PR published anything.
+//
+// THE ORDERING IS NOT THE BUG HERE, so this test pins the behaviour rather than forbidding it. It is
+// the known cost of the message-count fallback, stated in pipeline.PromptContextOf: with no role to
+// read, a compaction leaves the longer pre-compaction request retained and the gauge keeps showing
+// the old context. abctl only had the better answer by the accident of having attached later, which
+// is not a rule the merge can prefer. If a rule is ever found that does better, it belongs in
+// better() for BOTH combines, and this expectation should change there.
+func TestSessionContextFor_AStaleServerFigureCanTakeTheColumnFromAFresherLocalOne(t *testing.T) {
+	base := time.Now()
+	const id = "s"
+	// The client's own fold: unstated, and correctly following the compaction.
+	m := &model{width: 200, pane: paneSessions, events: map[string][]pipeline.SessionEvent{
+		id: conversation("post-compaction", base, 952, 400_249),
+	}}
+	if got := m.sessionContextFor(id, nil); got != 400_249 {
+		t.Fatalf("local figure is %d, want 400249 — the fixture is not exercising the fallback", got)
+	}
+
+	// The server's: unstated too, ten hours older, and longer because it never lost the
+	// pre-compaction turn.
+	server := &pipeline.PromptContext{Tokens: 999_623, Msgs: 2468, At: base.Add(-10 * time.Hour)}
+	if got := m.sessionContextFor(id, server); got != 999_623 {
+		t.Errorf("merged to %d, want 999623 — with no role stated the merge ranks on message count, "+
+			"so a stale server figure CAN take the column from a fresher local one; see the comment "+
+			"above before changing this expectation", got)
+	}
+}
+
 // An old proxy sends nothing, and nothing must not blank a row abctl can answer for itself.
-func TestSessionsTable_ANilServerFigureKeepsTheLocalOne(t *testing.T) {
+//
+// AT THE FIGURE, AND NAMED FOR IT: nil is the merge's identity, which is a claim about
+// sessionContextFor and not about a cell. The ROW-level half has its own sibling —
+// TestSessionsTable_ACachedOnlyRowDrawsItsOwnFigure passes nil at the other call site, and the three
+// repaint tests above all reach rebuildSessionsTable with a summary carrying no figure — so routing
+// this one through the table as well would add a fourth copy of a covered path rather than coverage.
+func TestSessionContextFor_ANilServerFigureKeepsTheLocalOne(t *testing.T) {
 	base := time.Now()
 	const id = "s"
 	m := &model{width: 200, events: map[string][]pipeline.SessionEvent{
 		id: conversation("c1", base, 600, 500_000),
 	}}
-	m.sessionsTbl = newSessionsTable()
 	if got := m.sessionContextFor(id, nil); got != 500_000 {
 		t.Errorf("got %d, want 500000", got)
 	}
@@ -656,6 +748,13 @@ func TestSessionsTable_ANilServerFigureKeepsTheLocalOne(t *testing.T) {
 // path a future "the server always sends it now, drop the local fold" simplification breaks, and it
 // would break it silently — the server has forgotten these sessions by definition (#870), so there
 // is nothing for such a change to fall back to.
+//
+// ITS OWN FIGURE, ASSERTED AS A FIGURE. This test read `assertGaugeFilled` until a review measured
+// what that buys: replacing the cell with a constant contextGauge(1, contextW) left it green, so
+// "draws its own figure" was pinned only as "draws something". It also has no `!= emptyCell`
+// before-arm to lean on, unlike the three repaint tests above — the row does not exist until
+// sessionsLoadedMsg builds it — which made the exactness the whole of the assertion rather than half
+// of it.
 func TestSessionsTable_ACachedOnlyRowDrawsItsOwnFigure(t *testing.T) {
 	base := time.Now()
 	const id = "vanished"
@@ -672,5 +771,5 @@ func TestSessionsTable_ACachedOnlyRowDrawsItsOwnFigure(t *testing.T) {
 		t.Fatalf("the server list is %v, want empty — this test is about a row with no summary",
 			m.sessions)
 	}
-	assertGaugeFilled(t, heldContextCell(t, m, id), "on a cached-only row")
+	assertGaugeShows(t, m, id, 500_000, "on a cached-only row")
 }
