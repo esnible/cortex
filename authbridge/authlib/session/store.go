@@ -322,12 +322,21 @@ func (s *Store) Append(sessionID string, event pipeline.SessionEvent) {
 	//
 	// THE PROPERTY IS THAT AN EVENT APPENDED AND IMMEDIATELY EVICTED STILL CONTRIBUTES, because
 	// the figure outlives the events it was read from — TestAppend_PromptContextSurvivesATrim pins
-	// it. WHAT SECURES IT IS THE ARGUMENT, not the position: Add reads &event, the local parameter,
-	// rather than the tail of sess.Events, and the trim below reshapes only sess.Events and
-	// sess.money with no early return in between. So this call could move below the trim and
-	// nothing would change. An earlier version of this comment called the placement "load-bearing
-	// rather than incidental", which is false as stated and would have sent a reader guarding the
-	// wrong thing; what would break the property is sourcing the candidate from the stored slice.
+	// it. WHAT SECURES IT IS THAT Add READS &event, THE LOCAL PARAMETER, rather than the tail of
+	// sess.Events. An earlier version of this comment called the placement "load-bearing rather than
+	// incidental" instead, which is false as stated and would have sent a reader guarding the wrong
+	// thing: what breaks the property is sourcing the candidate from the stored slice.
+	//
+	// FREE OF THE TRIM, NOT FREE OF EVERYTHING BELOW IT, and the distinction is worth stating
+	// because the first correction of that claim overshot in the other direction. The trim reshapes
+	// sess.Events and sess.money and subtracts from sess.cost and sess.avoided, none of which this
+	// reads, and there is no early return between here and it — so moving this call past the TRIM
+	// would change nothing. THE RECORDERS ARE NOT IN THAT CLASS: they run between here and the trim
+	// and are handed &event, and Recorder's contract forbids blocking and re-entering the store
+	// while saying nothing about MUTATION. Every implementation in tree reads only
+	// (usage.Aggregator, costledger.Writer, and logAppended just below), so nothing is wrong today —
+	// but that is a property of those implementations rather than a guarantee from the interface, so
+	// moving this call below them is not provably free and must not be done casually.
 	//
 	// NOT HOISTED ABOVE THE LOCK like moneyOf, and that is not an oversight. moneyOf is a
 	// json.Unmarshal and was hoisted because of a measured regression; this is a phase check, a
@@ -657,8 +666,12 @@ type SessionSummary struct {
 	// NO MONOTONICITY IS PROMISED, and a client must not build on one: this figure can DECREASE
 	// between two polls. A compaction is the ordinary case, not a corner — the stated arm leads
 	// with arrival time, so a session reporting 830,000 before one reports 12,000 on the turn
-	// after it. That is what the column is FOR, since an operator needs how full the conversation
-	// is now rather than how full it has ever been.
+	// after it. WHERE THE ROLE IS STATED that is what the column is for: an operator needs how full
+	// the conversation is NOW rather than how full it has ever been. The unstated arm claims no such
+	// thing — it ranks by message count, so it can legitimately hold a pre-compaction turn for the
+	// rest of a session, which is the documented cost of having no role to read rather than a defect
+	// (see pipeline.PromptContextOf). So the figure decreases on one arm and goes stale on the
+	// other, and neither is a guarantee to build on.
 	//
 	// RETENTION-INDEPENDENT ALL THE SAME — unlike TotalTokens and CostMicros above, and the
 	// asymmetry is deliberate rather than an inconsistency. Those are sums over the events the
