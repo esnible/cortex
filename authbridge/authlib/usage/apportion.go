@@ -102,6 +102,22 @@ func (c Counts) ApportionReasoning(outputMicros int64) (micros int64, ok bool) {
 	if c.PresentKinds&KindReasoning == 0 && c.ReasoningTokens == 0 {
 		return 0, false
 	}
+	// NEGATIVE IS REFUSED, not merely zero, and refused HERE rather than left to
+	// plausibleTokenReport. A negative count makes the ratio negative, the upper clamp
+	// below does not fire and the `micros == 0` escape does not either — so a caller got
+	// (-595103, true) and would publish negative money or hand it to tierBar.
+	//
+	// The ingest screen does catch negatives today. That is precisely the defence addSat
+	// refuses for itself in this package, in words that transfer: "unreachable today" is
+	// how the wrap arrived in the first place, and a half-guarded figure invites a reader
+	// to conclude the other half was considered and ruled out. This function is exported
+	// and was clamped on the upper side only.
+	//
+	// `<= 0` also subsumes the reported-zero case, which used to reach the truncation
+	// escape instead: a split measured as nothing has no figure to apportion either.
+	if c.ReasoningTokens <= 0 {
+		return 0, false
+	}
 	if c.OutputTokens <= 0 || outputMicros <= 0 {
 		return 0, false
 	}

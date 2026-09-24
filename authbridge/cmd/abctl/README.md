@@ -523,8 +523,11 @@ abctl is for, and the other three are surfaces you visit and leave.
   billed at the output rate — so its figure is already inside output's, and only
   the four unindented rows sum to the window total. Its share is denominated in
   that same total, which is what makes `31% ⊂ 54%` read as containment. The row is
-  always present and shows `—` when the provider reports no split, as every
-  non-Anthropic endpoint does.
+  always present and shows `—` when no reasoning split was reported — either because
+  the endpoint does not report one, or because the apportioned share fell below a
+  micro. Anthropic reports it as `output_tokens_details.thinking_tokens` and
+  OpenAI-format endpoints as `completion_tokens_details.reasoning_tokens`; both are
+  read.
 
   These rows carry **no** `~`, unlike the sessions table's `SAVED~`. The caveat is
   real but this panel has no money heading to hang it on — `WHERE IT WENT` names

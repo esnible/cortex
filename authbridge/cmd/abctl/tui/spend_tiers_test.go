@@ -372,13 +372,27 @@ func TestRenderTierRows_ReasoningIsNotATier(t *testing.T) {
 		t.Errorf("%d summing rows against %d rate tiers; reasoning became a tier",
 			got, pricing.NumTiers)
 	}
-	// The reasoning row must use the INDENTED label — flush left it reads as a fifth
-	// tier. Asserted as "carries childTierLabel" rather than "starts with a space",
-	// so the check names the thing meant instead of a property of today's spelling.
+	// The reasoning row must be INDENTED — flush left it reads as a fifth tier.
+	//
+	// ANCHORED ON THE LABEL FIRST. The row is formatted from childTierLabel, so
+	// `HasPrefix(row, childTierLabel)` is always true and flattening the label to plain
+	// "reasoning" would keep such a check green. The indent has to be asserted on the
+	// label itself, which is the thing that can change.
+	if !strings.HasPrefix(childTierLabel, " ") {
+		t.Errorf("childTierLabel %q is flush left, so the row reads as a fifth tier", childTierLabel)
+	}
+	found := false
 	for _, l := range lines {
-		if strings.Contains(l, "reasoning") && !strings.HasPrefix(l, childTierLabel) {
+		if !strings.Contains(l, "reasoning") {
+			continue
+		}
+		found = true
+		if !strings.HasPrefix(l, " ") {
 			t.Errorf("reasoning row is flush with the tiers, so it reads as a peer: %q", l)
 		}
+	}
+	if !found {
+		t.Fatal("no reasoning row rendered, so the indent check above cannot fail")
 	}
 	// And it must not be in the sum the tier rows own.
 	total := 0

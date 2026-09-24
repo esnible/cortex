@@ -98,19 +98,30 @@ func TestTiersJSON_PublishesReasoningAndKeepsTheFourTiersSumming(t *testing.T) {
 		t.Fatal("reasoningOfOutput is absent despite a reported split; a consumer would have " +
 			"to reimplement the apportionment")
 	}
-	// INSIDE output, not beside it.
-	if *got.Reasoning > got.Output {
-		t.Errorf("reasoning %d exceeds output %d", *got.Reasoning, got.Output)
+	// A HAND-DERIVED LITERAL, because deriving the expectation from the same call the
+	// code under test makes would publish any wrong figure silently — and the
+	// `> got.Output` check alone is fixture-guaranteed (948/1593 = 0.595, false even
+	// with the clamp deleted).
+	//
+	//	mixTotal          = 3000 + 7500 + 30000 + 45000 = 85500
+	//	tiers[output]     = floor(4546200 * 45000/85500) + remainder = 2392739
+	//	reasoningOfOutput = floor(2392739 * 948/1593)                = 1423927
+	const wantReasoning = 1_423_927
+	if *got.Reasoning != wantReasoning {
+		t.Errorf("reasoningOfOutput = %d, want %d", *got.Reasoning, wantReasoning)
+	}
+	if got.Output != 2_392_739 {
+		t.Errorf("tiers.output = %d, want 2392739; the literal above is derived from it",
+			got.Output)
 	}
 	// And the four tiers still reconcile to the total without it.
 	if sum := got.Input + got.CacheWrite + got.CacheRead + got.Output; sum != c.CostMicros {
 		t.Errorf("the four tiers sum to %d, want %d — reasoning must not be in the sum",
 			sum, c.CostMicros)
 	}
-	// It is the SAME figure the drawer derives, by construction: one call.
-	want, ok := c.ApportionReasoning(got.Output)
-	if !ok || want != *got.Reasoning {
-		t.Errorf("published %d but ApportionReasoning gives %d (ok=%v)", *got.Reasoning, want, ok)
+	// And it is the figure the drawer draws, which is the point of publishing it.
+	if drawn, ok := c.ApportionReasoning(got.Output); !ok || drawn != wantReasoning {
+		t.Errorf("the drawer derives %d (ok=%v) but the JSON publishes %d", drawn, ok, *got.Reasoning)
 	}
 }
 

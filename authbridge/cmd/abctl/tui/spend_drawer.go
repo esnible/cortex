@@ -746,8 +746,8 @@ func renderSpendDrawer(snap *usage.Snapshot, err error, axis usage.Group, window
 	// the last tier to make room for the child — cheapest tier first, so `input` simply
 	// vanished from a panel that still claimed to break down the whole bill.
 	//
-	// The right column is shorter and its slots are filled by the `i < len(rows)` guard
-	// below, so the two columns stay the same height by construction.
+	// The right column's slots are filled by the `i < len(rows)` guard below, so a
+	// column shorter than the bound pads itself rather than ending the loop early.
 	//
 	// THE LOWER OF THE TWO, because the constant and the slice each guard a different
 	// failure and neither alone guards both.
@@ -759,12 +759,19 @@ func renderSpendDrawer(snap *usage.Snapshot, err error, axis usage.Group, window
 	// would emit more body rows than spendDrawerLines reserves and push the footer off
 	// the terminal, which is the failure the block above documents. min keeps both, and
 	// the one-column path takes tierPanelLines because tiers is nil and never indexed.
-	// ONE COLUMN HAS NO TIER ROWS, so its bound is the series count. Bounded by
-	// tierPanelLines it walked a fifth slot that is always empty at that width and
-	// emitted a blank body row.
+	// THE TALLER COLUMN GOVERNS, which is the same rule spendDrawerLinesFor reserves by.
+	// It was min(tierPanelLines, len(tiers)) — the tier column alone — while the
+	// reservation took max(tierPanelLines, spendDrawerSeries+1); the two agreed only
+	// because spendDrawerSeries+1 is 4 and tierPanelLines is 5 today. That unstated
+	// inequality is not "by construction", and raising spendDrawerSeries would have
+	// truncated the series column here while the reservation still held room for it.
+	//
+	// One column has no tier rows at all, so there the series count is the whole height.
+	// Bounded by tierPanelLines it walked a fifth slot that is always empty at that
+	// width and emitted a blank body row.
 	bound := spendDrawerSeries + 1
 	if twoCol {
-		bound = min(tierPanelLines, len(tiers))
+		bound = max(min(tierPanelLines, len(tiers)), spendDrawerSeries+1)
 	}
 	for i := 0; i < bound; i++ {
 		// NO BRANCH GLYPHS BETWEEN THE COLUMNS' OWN ROWS. "├" and "└" once prefixed every

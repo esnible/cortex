@@ -335,3 +335,41 @@ func TestSpendDrawerLines_AccountsForTheChildRow(t *testing.T) {
 			got, spendDrawerLines)
 	}
 }
+
+// A REPORTED ZERO through the whole renderer, which is the surface carrying the
+// "$0.00 is a lie" rule. ApportionReasoning refuses the figure, and what matters here
+// is what the panel does with that refusal: the not-known cell, never $0.00, and the
+// row still present so the height does not follow the data.
+func TestRenderTierRows_ReportedZeroIsNotKnownNotFree(t *testing.T) {
+	c := reasoningCounts()
+	c.ReasoningTokens = 0 // measured, and measured as nothing: the bit stays set
+	child := childRows(renderTierRows(c, tierColumnWidth))
+	if len(child) != 1 {
+		t.Fatalf("want one child row for a reported zero, got %d", len(child))
+	}
+	if strings.Contains(child[0], "$0.00") {
+		t.Errorf("child row = %q asserts the reasoning was free", child[0])
+	}
+	if !strings.Contains(child[0], emptyCell) {
+		t.Errorf("child row = %q, want the not-known cell", child[0])
+	}
+}
+
+// A NEGATIVE count must not reach the bar or the share cell. Unreachable through the
+// live parser, which screens negatives at ingest — but renderTierRows takes a
+// usage.Counts from the ledger and from any other producer, and a negative here would
+// draw a bar from a negative length.
+func TestRenderTierRows_NegativeReasoningIsRefused(t *testing.T) {
+	c := reasoningCounts()
+	c.ReasoningTokens = -948
+	child := childRows(renderTierRows(c, tierColumnWidth))
+	if len(child) != 1 {
+		t.Fatalf("want one child row, got %d", len(child))
+	}
+	if !strings.Contains(child[0], emptyCell) {
+		t.Errorf("child row = %q, want the not-known cell for a negative count", child[0])
+	}
+	if strings.Contains(child[0], "-") {
+		t.Errorf("child row = %q carries a negative figure", child[0])
+	}
+}

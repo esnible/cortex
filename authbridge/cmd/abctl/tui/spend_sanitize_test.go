@@ -152,16 +152,26 @@ func assertNoControlChars(t *testing.T, where, s string) {
 // other end of the connection, not just from a wide locale.
 func TestRenderSpendDrawer_AWideErrorMessageStaysInsideTheReservation(t *testing.T) {
 	wide := errors.New("unexpected status 500: " + strings.Repeat("過", 40))
-	for _, width := range []int{20, 40, 72, 120} {
+	// LITERALS, NOT spendDrawerLinesFor(width). The error path pads to
+	// spendDrawerLinesFor(width)-1 and appends one hint line, so comparing against that
+	// same function compares the renderer with its own padding rule and cannot fail —
+	// the constant this used to name was an independent witness and this restores one.
+	//
+	// 6 below spendDrawerTwoColumnMin (85) and 7 at or above it: the tier column, and
+	// with it the reasoning child's row, only exists in two columns. 120 is the only
+	// width here that reaches it.
+	for _, tc := range []struct {
+		width, wantLines int
+	}{{20, 6}, {40, 6}, {72, 6}, {120, 7}} {
+		width := tc.width
 		lines := renderSpendDrawer(nil, wide, usage.GroupModel, "MONTH", width)
-		// Against the reservation FOR THIS WIDTH rather than the constant. The reservation
-		// became width-aware when the tier column grew a fifth row: that row cannot render
-		// in one column, so reserving it there cost a narrow terminal a body row. The
-		// invariant is unchanged — emitted must equal reserved — and is now parameterised
-		// by the one input layout() already knows.
-		if want := spendDrawerLinesFor(width); len(lines) != want {
+		if len(lines) != tc.wantLines {
 			t.Errorf("width %d: %d lines, want %d — the reservation is the height, so an extra "+
-				"line pushes the footer off the bottom", width, len(lines), want)
+				"line pushes the footer off the bottom", width, len(lines), tc.wantLines)
+		}
+		// And the reservation layout() holds back must agree with what was emitted.
+		if got := spendDrawerLinesFor(width); got != tc.wantLines {
+			t.Errorf("width %d: reservation is %d but the render is %d lines", width, got, tc.wantLines)
 		}
 		for i, line := range lines {
 			if n := lipgloss.Width(line); n > width {

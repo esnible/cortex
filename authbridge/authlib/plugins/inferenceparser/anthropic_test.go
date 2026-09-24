@@ -730,3 +730,34 @@ func TestInferenceParser_AnthropicMessages_ThinkingTokensOnMessageStart(t *testi
 		t.Error("KindReasoning is set with a value of 0; presence and value diverged")
 	}
 }
+
+// TestInferenceParser_AnthropicMessages_ThinkingTokensReportedZero pins the wire shape
+// the partially-absent cases above cannot express: the count is PRESENT and it is zero.
+//
+// That is a measurement — the model was asked to think and spent nothing on it, which
+// is the observation that says an effort setting is not reaching the model — so
+// KindReasoning must be SET, unlike every absent shape. A parser that treated zero as
+// absence would pass every other fixture here.
+func TestInferenceParser_AnthropicMessages_ThinkingTokensReportedZero(t *testing.T) {
+	p := NewInferenceParser()
+	pctx := &pipeline.Context{Path: "/v1/messages"}
+	pctx.Extensions.Inference = &pipeline.InferenceExtension{Model: "claude-opus-5", IsAction: true}
+
+	body := []byte(`{
+		"id": "msg_bdrk_6", "type": "message", "role": "assistant", "model": "claude-opus-5",
+		"content": [{"type": "text", "text": "ok"}],
+		"stop_reason": "end_turn",
+		"usage": {"input_tokens": 10, "output_tokens": 400,
+			"output_tokens_details": {"thinking_tokens": 0}}
+	}`)
+	p.OnResponseFrame(context.Background(), pctx, body, true)
+
+	ext := pctx.Extensions.Inference
+	if ext.ReasoningTokens != 0 {
+		t.Errorf("ReasoningTokens = %d, want 0", ext.ReasoningTokens)
+	}
+	if ext.PresentKinds&uint8(parsercommon.KindReasoning) == 0 {
+		t.Errorf("PresentKinds = %#b, want KindReasoning SET — a reported zero is a "+
+			"measurement, not an absence", ext.PresentKinds)
+	}
+}

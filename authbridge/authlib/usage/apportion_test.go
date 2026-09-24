@@ -128,6 +128,14 @@ func TestApportionReasoning_RefusesRatherThanReturningZero(t *testing.T) {
 		{"share truncates below one micro", func(c *Counts) {
 			c.ReasoningTokens, c.OutputTokens = 1, 1000
 		}, 100},
+		// NEGATIVE, which returned (-595103, true) before the guard: the ratio goes
+		// negative, the upper clamp does not fire, and the truncation escape does not
+		// either. plausibleTokenReport screens negatives at ingest, but this is exported
+		// and addSat's argument in this package applies — "unreachable today" is how the
+		// wrap arrived.
+		{"negative reasoning count", func(c *Counts) { c.ReasoningTokens = -948 }, 1_000_000},
+		{"negative output count", func(c *Counts) { c.OutputTokens = -1593 }, 1_000_000},
+		{"negative output money", func(c *Counts) {}, -1_000_000},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			c := base
@@ -138,6 +146,10 @@ func TestApportionReasoning_RefusesRatherThanReturningZero(t *testing.T) {
 			}
 			if got != 0 {
 				t.Errorf("micros = %d, want 0 alongside ok=false", got)
+			}
+			if got < 0 {
+				t.Errorf("micros = %d is NEGATIVE; a caller would publish negative money "+
+					"or hand it to tierBar", got)
 			}
 		})
 	}
