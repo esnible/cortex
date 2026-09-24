@@ -68,6 +68,59 @@ func BenchmarkSessionContextPerEvent(b *testing.B) {
 	}
 }
 
+// ALLOCATION-FREEDOM IS ASSERTED HERE, not just reported. b.ReportAllocs in the benchmarks above
+// PRINTS 0 allocs/op and nothing fails when that becomes 1, and nobody reads a benchmark on a green
+// CI run — so the property the second entry point exists for had no guard at all.
+//
+// THAT PROPERTY IS THE WHOLE REASON TokensMergedWith EXISTS. Merging by publishing the local fold put
+// a 48-byte *PromptContext on the heap per row per rebuild — 356 ns/op and 10 allocs/op on
+// BenchmarkSessionContextPerEvent/folded/10000 against 184 before a server figure existed — and the
+// escape cannot be optimised away, because MergePromptContext is over the inline budget and its
+// parameters flow to its result. See pipeline.PromptContextFold.TokensMergedWith. A change that lets
+// the literal escape again would regress the row loop silently; this fails instead.
+//
+// A TEST RATHER THAN A BENCHMARK, so it runs on every `go test ./...`. testing.AllocsPerRun pins
+// GOMAXPROCS to 1 and warms the closure itself, and the steady state it measures is the one the row
+// loop is in: the run is already folded and the slice has not grown, so localContextFor returns on
+// its length check and writes no map entry.
+func TestSessionContextFor_MergesWithoutAllocating(t *testing.T) {
+	const id = "s"
+	m := &model{events: map[string][]pipeline.SessionEvent{
+		id: conversation("c1", time.Now(), 600, 500_000),
+	}}
+	// Warm, as a running TUI is.
+	want := m.sessionContextFor(id, nil)
+	if want != 500_000 {
+		t.Fatalf("local figure is %d, want 500000 — the fixture is not exercising the fold", want)
+	}
+
+	// A FIGURE THAT TIES ON Msgs AND At AND LOSES ON Tokens, which is the DEEPEST path through
+	// better(): one disagreeing earlier returns after a single int compare and would measure less of
+	// the merge than production does. Derived from the fold so it cannot drift from the fixture, and
+	// one token short of it so the local figure still wins and the assertion below holds.
+	p := m.contextRun[id].Publish()
+	if p == nil {
+		t.Fatal("the warm fold published nothing, so this test is not exercising the merge")
+	}
+	server := &pipeline.PromptContext{Tokens: p.Tokens - 1, Msgs: p.Msgs, At: p.At}
+
+	// Captured rather than asserted inside the closure: a t.Fatalf in there would Goexit mid-run and
+	// abandon AllocsPerRun's own GOMAXPROCS restore.
+	var got int
+	allocs := testing.AllocsPerRun(100, func() {
+		got = m.sessionContextFor(id, server)
+	})
+	if got != want {
+		t.Errorf("merged figure is %d, want %d — the server figure must lose to the fold here, or "+
+			"this is measuring a different branch", got, want)
+	}
+	if allocs != 0 {
+		t.Errorf("sessionContextFor allocated %v times per call with a server figure, want 0 — the "+
+			"48-byte *PromptContext is escaping again; see "+
+			"pipeline.PromptContextFold.TokensMergedWith for why that method exists", allocs)
+	}
+}
+
 // benchFoldedRows is one streamed event's worth of work: ten warm sessions, one of which has a turn
 // to fold, asked for their gauges exactly as the row loop asks.
 //

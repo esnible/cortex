@@ -847,14 +847,25 @@ func TestAppend_RunningTotalsMatchAFullRecomputation(t *testing.T) {
 // promptContextTurn is a request/response pair as the store records one: manifest and message
 // count on both sides, token counts on the response, since the provider is the only party that
 // tokenizes. ntools == 0 makes it a one-shot, which the rule excludes.
+//
+// STATED AS THE MAIN AGENT, which is what a current proxy publishes for the interactive thread.
+// promptContextTurnAs is the same turn under any other role — and it exists because hard-coding the
+// role here meant no store test ever appended an event the rule has to REJECT on it.
 func promptContextTurn(id string, at time.Time, msgs, ntools, context int) []pipeline.SessionEvent {
+	return promptContextTurnAs(id, at, msgs, ntools, context, pipeline.AgentRoleMain)
+}
+
+// promptContextTurnAs is promptContextTurn under a stated role: AgentRoleSubagent for a Task-spawned
+// thread, "" for a client that states nothing at all, which is every client that is not Claude Code.
+func promptContextTurnAs(id string, at time.Time, msgs, ntools, context int,
+	role pipeline.AgentRole) []pipeline.SessionEvent {
 	inf := func() *pipeline.InferenceExtension {
 		tools := make([]pipeline.InferenceTool, ntools)
 		return &pipeline.InferenceExtension{
 			Model:     "claude-opus-5",
 			Messages:  make([]pipeline.InferenceMessage, msgs),
 			Tools:     tools,
-			AgentRole: pipeline.AgentRoleMain,
+			AgentRole: role,
 		}
 	}
 	resp := inf()
@@ -871,9 +882,9 @@ func promptContextTurn(id string, at time.Time, msgs, ntools, context int) []pip
 // TestAppend_RunningTotalsMatchAFullRecomputation holds for cost.
 //
 // cost is a SUM and stays equal to sumCost(Events), shedding whatever a trim evicts — that is
-// what scopes the COST column exactly like the TOKENS column beside it. This is a MAXIMUM, and
-// a maximum over a trimmed slice does not understate, it reports a small conversation when the
-// conversation is large and merely aged out.
+// what scopes the COST column exactly like the TOKENS column beside it. This is an EXTREMUM under
+// a total order, so a trim has nothing to subtract from it; recomputing it over the survivors
+// would report a small conversation when the conversation is large and merely aged out.
 //
 // THE SECOND ASSERTION FORBIDS A FUTURE "FIX". Making this recomputable from Events — the
 // instinct, by analogy to cost — reintroduces exactly the bug this field exists to remove: the
@@ -960,6 +971,116 @@ func TestAppend_MaintainsThePromptContextFigure(t *testing.T) {
 	}
 	if !sawOneshot {
 		t.Error("\"oneshot\" session missing from ListSessions — the assertions above never ran")
+	}
+}
+
+// summaryFor is the saw-flag dance the two tests above write out by hand: a session missing from
+// ListSessions has to fail LOUDLY rather than leave the assertions on it silently unrun.
+func summaryFor(t *testing.T, s *Store, id string) SessionSummary {
+	t.Helper()
+	for _, sum := range s.ListSessions() {
+		if sum.ID == id {
+			return sum
+		}
+	}
+	t.Fatalf("session %q missing from ListSessions — every assertion on it went unrun", id)
+	return SessionSummary{}
+}
+
+// A SUBAGENT'S TURN MUST NOT REACH THE WIRE, asserted at the Append boundary and not only one
+// package down.
+//
+// Until promptContextTurnAs existed every store fixture stated AgentRoleMain, so no test here ever
+// appended an event the rule has to REJECT on its role: the exclusion rested entirely on the pipeline
+// suite, and a store that folded the wrong half of a session would have passed this package.
+//
+// THE SUBAGENT WINS ON EVERY COMPARATOR better() RANKS BY — later, more messages, larger context — so
+// it takes the column under any rule except the one that excludes it outright, and 900,000 against a
+// one-million window is the bar an operator would act on.
+func TestAppend_PromptContextExcludesASubagent(t *testing.T) {
+	s := New(time.Hour, 0, 0)
+	defer s.Close()
+	base := time.Now()
+
+	for _, e := range promptContextTurn("main", base, 600, 27, 500_000) {
+		s.Append("mixed", e)
+	}
+	for _, e := range promptContextTurnAs("sub", base.Add(time.Minute), 900, 11, 900_000,
+		pipeline.AgentRoleSubagent) {
+		s.Append("mixed", e)
+	}
+	// A subagent carries its OWN manifest — 11 tools against the main thread's 27 — which is why the
+	// manifest filter cannot exclude it and the role has to.
+	for _, e := range promptContextTurnAs("only", base, 900, 11, 900_000,
+		pipeline.AgentRoleSubagent) {
+		s.Append("subagent-only", e)
+	}
+
+	got := summaryFor(t, s, "mixed").PromptContext
+	if got == nil {
+		t.Fatal("no figure for a session with a main-agent turn in it")
+	}
+	if got.Tokens != 500_000 {
+		t.Errorf("reported %d, want 500000 — the subagent's turn took the column", got.Tokens)
+	}
+	// A session that is nothing but subagent traffic has no conversation to measure, so the field is
+	// absent rather than zero and the gauge draws an em dash.
+	if got := summaryFor(t, s, "subagent-only").PromptContext; got != nil {
+		t.Errorf("subagent-only session published %+v, want nil", got)
+	}
+}
+
+// THE ORDERING IS APPLIED AT THIS BOUNDARY, on figures chosen so that LATEST and LARGEST disagree.
+//
+// Both turns state the role, so better() takes the stated arm and leads with At: the 12,000-token
+// turn after a compaction REPLACES the 830,000-token turn before it. Picking figures that disagree is
+// the point — a store that took a plain max over token counts would pass an "assert the big one
+// survives" test, and that reading is exactly what SessionSummary.PromptContext's doc used to invite
+// by calling itself the largest request seen.
+//
+// SO THIS FIELD IS NOT MONOTONIC and nothing may treat it as a high-water mark. The reported case is
+// this one: 999,623 held against a one-million window for ten hours after a compaction left the
+// conversation at 400,249 — a bar at 98.6% for a session with 600k of headroom.
+//
+// APPENDED IN BOTH ORDERS, in two sessions, because the rule is a max over a total order rather than
+// a sequential latch: the answer is the ordering's and not the arrival's. Fresh fixtures per session,
+// since Append interns strings in place through the shared InferenceExtension pointer.
+func TestAppend_PromptContextAppliesTheOrderingNotAMax(t *testing.T) {
+	s := New(time.Hour, 0, 0)
+	defer s.Close()
+	base := time.Now()
+	before := func() []pipeline.SessionEvent {
+		return promptContextTurn("before", base, 2468, 27, 830_000)
+	}
+	after := func() []pipeline.SessionEvent {
+		return promptContextTurn("after", base.Add(time.Hour), 40, 27, 12_000)
+	}
+	appendAll := func(id string, turns ...[]pipeline.SessionEvent) {
+		for _, turn := range turns {
+			for _, e := range turn {
+				s.Append(id, e)
+			}
+		}
+	}
+	appendAll("in-order", before(), after())
+	appendAll("reversed", after(), before())
+
+	for _, id := range []string{"in-order", "reversed"} {
+		got := summaryFor(t, s, id).PromptContext
+		if got == nil {
+			t.Fatalf("%s: no figure for a session with two stated turns", id)
+		}
+		if got.Tokens != 12_000 {
+			t.Errorf("%s: reported %d, want 12000 — the stated arm leads with At, so the turn "+
+				"AFTER the compaction holds the column; 830000 would mean a max over tokens",
+				id, got.Tokens)
+		}
+		if !got.Stated {
+			t.Errorf("%s: Stated=false, but both fixtures declare AgentRoleMain", id)
+		}
+		if !got.At.Equal(base.Add(time.Hour).Add(time.Second)) {
+			t.Errorf("%s: At=%v, want the later turn's response timestamp", id, got.At)
+		}
 	}
 }
 
