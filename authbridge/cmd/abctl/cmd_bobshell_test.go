@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -1340,6 +1341,22 @@ func TestBobShellOwnership_HoldsAcrossDamagedFiles(t *testing.T) {
 // alias — a block this command would recognise as its own. Written out here rather
 // than calling ownedLines so the assertion does not inherit the bug it is checking
 // for, the same reason countOurAliases is independent.
+// aliasRoutesThroughAbctl asks the production predicate whether line defines `bob` as
+// an alias routing through some abctl. Round 9's S3 moved it here: it had no production
+// callers left once the pipeline moved to whole-file scanning through commandStarts, and
+// a second predicate answering the same question — maintained only by tests — is exactly
+// how the two-predicate split that caused rounds 6 and 7 got started. It is a test helper
+// now, composed of the same two production pieces the real pipeline uses, so it cannot
+// drift into being a weaker second answer.
+func aliasRoutesThroughAbctl(line string) bool {
+	for _, off := range scanLineStarts(line) {
+		if commandIsOurAlias(line[off:]) {
+			return true
+		}
+	}
+	return false
+}
+
 func ownedMarkerPair(lines []string) (int, int, bool) {
 	for i := range lines {
 		if strings.TrimSpace(lines[i]) != bobShellMarkerStart {
@@ -1426,6 +1443,49 @@ func TestBobShellOwnership_HoldsOverGeneratedDamage(t *testing.T) {
 // TestBobShellStatus_ReportsEveryAlias — a damaged file can hold more than one of our
 // aliases, and reporting only the first describes a file the user does not have. The
 // shell takes the last, so the count is what matters, not which one is shown.
+// Round 9's S2: a file we could not read is a THIRD answer, and status used to fold it
+// into "not enabled" at exit 0 — asserting the alias is absent on the strength of never
+// having looked. enable and disable exit 1 over the same file, so a script that checked
+// status first got a clean answer and then a failure it had been told not to expect.
+//
+// A symlink cycle is the fixture because it is the shape the report used and it needs no
+// privileges: open(2) fails with ELOOP whatever the caller's uid, unlike a chmod 000 file
+// which root reads happily and would make this test pass for the wrong reason under CI.
+func TestBobShellStatus_SignalsUnknownWhenItCannotRead(t *testing.T) {
+	dir := t.TempDir()
+	rc := filepath.Join(dir, "cycle.rc")
+	if err := os.Symlink(rc, rc); err != nil {
+		t.Skipf("cannot build a symlink cycle here: %v", err)
+	}
+
+	var out bytes.Buffer
+	code := bobShellStatus(rc, &out)
+	if code != 2 {
+		t.Errorf("exit = %d, want 2 (distinct from 0 = a read that found no alias)", code)
+	}
+	got := out.String()
+	if !strings.HasPrefix(got, "unknown for ") {
+		t.Errorf("stdout = %q, want it to start with %q", got, "unknown for ")
+	}
+	// The verdict must not read as an answer about the alias. "not enabled" is the exact
+	// wording this test exists to keep out of the unreadable case.
+	if strings.Contains(got, "not enabled") {
+		t.Errorf("stdout still reports a verdict about the alias it never read: %q", got)
+	}
+	if !strings.Contains(got, rc) {
+		t.Errorf("stdout = %q, want it to name the path %q", got, rc)
+	}
+
+	// The distinction only buys a caller anything if the readable cases keep their codes.
+	var okOut bytes.Buffer
+	if c := bobShellStatus(filepath.Join(dir, "absent.rc"), &okOut); c != 0 {
+		t.Errorf("status over a merely-absent file = %d, want 0", c)
+	}
+	if got := okOut.String(); !strings.HasPrefix(got, "not enabled") {
+		t.Errorf("absent file: stdout = %q, want %q prefix", got, "not enabled")
+	}
+}
+
 func TestBobShellStatus_ReportsEveryAlias(t *testing.T) {
 	rc := filepath.Join(t.TempDir(), "rc")
 	ours := bobShellAliasLine(testAbctl)
@@ -2115,6 +2175,648 @@ func TestBobShell_RoundTripUnderAnyBinaryName(t *testing.T) {
 // and exited 0. Round 7's execution had seen the sibling shape and asserted only that
 // bytes changed, which is why the corruption went unnoticed: the assertion has to be
 // about the shell's verdict, not about the diff.
+// bobIsLiveIn asks the shell itself whether sourcing path defines a `bob` alias. It is
+// the only oracle that settles round 9's S6, because the question there is not "is the
+// text present" but "does the alias reach the parent shell" — and a static scan cannot
+// tell those apart. PS1 is set because non-interactive `bash -c` has none, which makes
+// the standard `if [ -n "$PS1" ]` rc guard false and every guarded fixture read as inert.
+// TestBobShellEnable_NamesWhatItRemoves pins round 9's S1, open since round 5.
+//
+// enable reclaims every alias of ours anywhere in the file — deliberately, so a stale one
+// from a moved binary cannot shadow the new block and duplicates cannot accumulate. But the
+// consent prompt said only "Adds", with "Nothing else in the file changes" printed directly
+// under it, so the user agreed to an addition and got a deletion. Executed before the fix:
+// a second alias of ours was removed and never mentioned.
+//
+// Both halves are asserted, because either alone would let the defect back: the removed
+// text must appear, AND the blanket claim must be qualified when there is something to
+// qualify (and must NOT be qualified when there isn't — an unconditional hedge would pass a
+// test that only looked for the qualifier).
+func TestBobShellEnable_NamesWhatItRemoves(t *testing.T) {
+	self, err := abctlPath()
+	if err != nil {
+		t.Fatalf("abctlPath: %v", err)
+	}
+	withSelfPath(t, self)
+	const blanket = "Nothing else in the file changes;"
+	const hedged = "Nothing else in the file changes, beyond the lines listed above;"
+
+	for _, tc := range []struct {
+		name string
+		body string
+		// wantRemoved are alias texts the prompt must name before writing.
+		wantRemoved []string
+	}{
+		{
+			name:        "no alias of ours: claim stays unqualified",
+			body:        "# rc\nexport T=1\n",
+			wantRemoved: nil,
+		},
+		{
+			name:        "stale alias from another abctl",
+			body:        "# rc\n" + bobShellAliasLine("/other/abctl") + "\nexport T=1\n",
+			wantRemoved: []string{bobShellAliasLine("/other/abctl")},
+		},
+		{
+			// The row that matters: the SECOND one was dropped silently before the fix.
+			name: "two of ours, both reported",
+			body: "# rc\n" + bobShellAliasLine("/x/abctl") + "\nexport T=1\n" +
+				bobShellAliasLine("/y/abctl") + "\n",
+			wantRemoved: []string{bobShellAliasLine("/x/abctl"), bobShellAliasLine("/y/abctl")},
+		},
+		{
+			// A user's own alias to the real binary is not ours, so it is neither removed
+			// nor reported — and its survival keeps this from passing by over-claiming.
+			name:        "a foreign bob alias is untouched and unreported",
+			body:        "# rc\nalias bob='/usr/local/bin/bob --fast'\nexport T=1\n",
+			wantRemoved: nil,
+		},
+		{
+			// The surviving set must be OUR ALIASES in the new file, not its raw lines. A
+			// dropped alias whose text also appears as heredoc data looks "kept" to a raw
+			// comparison, so the removal goes unreported and "Nothing else in the file
+			// changes" is printed over a deletion — S1 again. Executed against that mutant:
+			// line 2 vanished with no mention. The heredoc copy is data and survives, which
+			// is what makes the two answers differ.
+			name: "a dropped alias whose text also sits in a heredoc is still reported",
+			body: "# rc\n" + bobShellAliasLine("/y/abctl") + "\ncat <<'EOF'\n" +
+				bobShellAliasLine("/y/abctl") + "\nEOF\nexport T=1\n",
+			wantRemoved: []string{bobShellAliasLine("/y/abctl")},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rc := filepath.Join(t.TempDir(), ".zshrc")
+			if err := os.WriteFile(rc, []byte(tc.body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			var out, errb bytes.Buffer
+			if code := bobShellEnable(rc, self, true, &out, &errb); code != 0 {
+				t.Fatalf("enable: exit = %d, stderr=%s", code, errb.String())
+			}
+			got := out.String()
+
+			for _, want := range tc.wantRemoved {
+				if !strings.Contains(got, want) {
+					t.Errorf("prompt never named the line it removed %q\n--- stdout ---\n%s", want, got)
+				}
+			}
+			if len(tc.wantRemoved) > 0 {
+				if !strings.Contains(got, "Removes from") {
+					t.Errorf("prompt said nothing about removing anything\n--- stdout ---\n%s", got)
+				}
+				// Anchored on the hedged form: the blanket string is a PREFIX of it, so a
+				// Contains check for the blanket alone passes for both and asserts nothing.
+				if !strings.Contains(got, hedged) {
+					t.Errorf("claim was not qualified though lines were removed\n--- stdout ---\n%s", got)
+				}
+			} else {
+				if strings.Contains(got, "Removes from") {
+					t.Errorf("prompt claimed a removal over a file holding none of ours\n--- stdout ---\n%s", got)
+				}
+				if !strings.Contains(got, blanket) || strings.Contains(got, hedged) {
+					t.Errorf("claim should be unqualified when nothing was removed\n--- stdout ---\n%s", got)
+				}
+			}
+
+			// The foreign alias must actually survive the write, not merely go unreported.
+			if tc.name == "a foreign bob alias is untouched and unreported" {
+				if after := readFile(t, rc); !strings.Contains(after, "alias bob='/usr/local/bin/bob --fast'") {
+					t.Errorf("enable removed a user's own alias:\n%s", after)
+				}
+			}
+		})
+	}
+}
+
+// TestResolveRC_HopCapIsReachable answers round 9's S9, which reported the cap as dead
+// code. It is not: both a symlink CYCLE and a chain longer than the cap reach it, and the
+// return value is the ORIGINAL path in each case — deliberately, because every hop of a
+// cycle is a live symlink and handing one back would clobber it, which is the harm
+// resolveRC exists to prevent.
+//
+// EvalSymlinks fails on both shapes (ELOOP / ENOENT), so the loop below it is the code
+// under test rather than a fallback that never runs. Verified by instrumenting the cap's
+// return before writing this: it printed for both fixtures and not for a plain file.
+// TestWriteRC_MissingParentWritesNothing pins round 9's S9 second half: writeRC must
+// refuse a path whose parent directory is absent, and must leave the filesystem exactly
+// as it found it.
+//
+// What this does NOT claim: it is not an ordering test. The guard used to run after the
+// backup block, and the two orders are observably identical — `.bak` lands next to
+// `path`, so a missing parent makes the ReadFile above fail and the backup never fires.
+// Writing a test that "proved" the order would be asserting a difference that does not
+// exist. What is worth pinning is the GUARANTEE the reorder makes independent of where
+// the backup happens to go: nothing is created, under any name, before the refusal.
+// A future change to the backup path cannot quietly break that without failing here.
+// TestRunBobShell_RestoresSelfPath pins round 9's S5. runBobShell sets
+// bobShellSelfPath, and the objection was that it is package-level mutable state; the
+// defect underneath was its LIFETIME — the assignment was permanent, so the value
+// outlived the call and leaked into every later test in the binary.
+//
+// Reproduced before fixing: a test reading the global after an unrelated runBobShell
+// call saw `/…/abctl.test`, meaning whether commandIsOurAlias had a self-path arm
+// depended on `-shuffle` order. The suite passed regardless, which is exactly why this
+// needed a test rather than a comment — order-independent by luck is not a property.
+// TestBobShellShadowedBy covers round 9's S8 at the predicate level: only a LATER
+// foreign definition of bob shadows ours, and only a live one.
+func TestBobShellShadowedBy(t *testing.T) {
+	withSelfPath(t, testAbctl)
+	ours := bobShellAliasLine(testAbctl)
+	foreign := "alias bob=/usr/local/bin/bob"
+
+	cases := []struct {
+		name  string
+		lines []string
+		want  string
+	}{
+		{"nothing of ours means nothing to shadow", []string{"# rc", foreign}, ""},
+		{"ours alone", []string{"# rc", ours}, ""},
+		{"foreign after ours shadows", []string{ours, foreign}, foreign},
+		// The migration case: someone aliased bob themselves, then ran enable. Ours
+		// wins, so warning would make a working file look broken.
+		{"foreign before ours does not", []string{foreign, ours}, ""},
+		{"foreign both sides: the later one is reported", []string{foreign, ours, "alias bob=/late/bob"}, "alias bob=/late/bob"},
+		// Ours twice: the LAST of ours is the reference point, so a foreign line
+		// between them is not a shadow.
+		{"foreign between two of ours", []string{ours, foreign, ours}, ""},
+		// Data, not code. Same gate the rest of the file uses.
+		{"inside a heredoc is data", []string{ours, "cat <<'EOF'", foreign, "EOF"}, ""},
+		{"commented out is inert", []string{ours, "# " + foreign}, ""},
+		// Not a definition of bob at all.
+		{"a different alias name", []string{ours, "alias bobcat=/x"}, ""},
+		{"alias with no assignment prints, does not define", []string{ours, "alias -p"}, ""},
+		// Spellings commandDefinesBob must share with commandIsOurAlias.
+		{"the -- separator", []string{ours, "alias -- bob=/x"}, "alias -- bob=/x"},
+		{"a second name on the same command", []string{ours, "alias foo=1 bob=/x"}, "alias foo=1 bob=/x"},
+		{"indented still shadows", []string{ours, "\t" + foreign}, foreign},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := bobShellShadowedBy(tc.lines); got != tc.want {
+				t.Errorf("bobShellShadowedBy = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestBobShellStatus_ReportsShadowing pins the half of S8 that executing the fixtures
+// turned up: status said "enabled" over a file where bash defines bob as something else
+// entirely. Each row checks the verdict against what the SHELL does, not just against a
+// string, so the assertion cannot drift away from the thing it is about.
+func TestBobShellStatus_ReportsShadowing(t *testing.T) {
+	cases := []struct {
+		name       string
+		after      string // appended below the block
+		wantShadow bool
+	}{
+		{"nothing after the block", "", false},
+		{"a foreign alias after the block", "alias bob=/usr/local/bin/bob\n", true},
+		{"a foreign alias inside a heredoc after the block", "cat <<'EOF'\nalias bob=/usr/local/bin/bob\nEOF\n", false},
+		{"an unrelated line after the block", "export FOO=1\n", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rc := filepath.Join(t.TempDir(), "rc")
+			self := abctlForTest(t)
+			withSelfPath(t, self)
+			if err := os.WriteFile(rc, []byte(bobShellBlock(self)+tc.after), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			var out bytes.Buffer
+			if code := bobShellStatus(rc, &out); code != 0 {
+				t.Fatalf("status exit = %d, want 0 (a shadowed alias is a report, not a failure)", code)
+			}
+			got := out.String()
+			if !strings.Contains(got, "enabled in") {
+				t.Fatalf("status did not report the block as present: %q", got)
+			}
+			saidShadow := strings.Contains(got, "overrides it")
+			if saidShadow != tc.wantShadow {
+				t.Errorf("status reported shadowing = %v, want %v; output %q", saidShadow, tc.wantShadow, got)
+			}
+			// The verdict has to match the shell, which is the whole point.
+			if live, ok := bobAliasValueIn(t, rc); ok {
+				routes := strings.Contains(live, "exec")
+				if routes == tc.wantShadow {
+					t.Errorf("bash defines bob as %q (routes through cortex = %v) but status "+
+						"reported shadowing = %v; the report must agree with the shell",
+						live, routes, tc.wantShadow)
+				}
+			}
+		})
+	}
+}
+
+// TestBobShellEnable_DoesNotClaimSuccessOverADeadAlias is the sharpest S8 case, and the
+// one enable creates itself. A fence holding a foreign alias is not owned, so enable's
+// rewrite lands the block at the start marker and the foreign line comes to rest AFTER
+// the end marker — leaving bash defining bob as the foreign target while enable printed
+// "Enabled — new shells route `bob` through Cortex" at exit 0.
+func TestBobShellEnable_DoesNotClaimSuccessOverADeadAlias(t *testing.T) {
+	rc := filepath.Join(t.TempDir(), "rc")
+	self := abctlForTest(t)
+	withSelfPath(t, self)
+	body := "# rc\n" + bobShellMarkerStart + "\nalias bob=/usr/local/bin/bob\n" + bobShellMarkerEnd + "\n"
+	if err := os.WriteFile(rc, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var out, errb bytes.Buffer
+	if code := bobShellEnable(rc, self, true, &out, &errb); code != 0 {
+		t.Fatalf("enable exit = %d, stderr %q", code, errb.String())
+	}
+	got := out.String()
+
+	// The claim must not be made. Anchored on the unqualified sentence, because the
+	// hedged message legitimately contains neither.
+	if strings.Contains(got, "Enabled — new shells route") {
+		t.Errorf("enable claimed success over a file where bob does not route through "+
+			"Cortex:\n%s", got)
+	}
+	if !strings.Contains(got, "does NOT route through Cortex yet") {
+		t.Errorf("enable did not warn that the alias is overridden:\n%s", got)
+	}
+	// The offending line is named: "something shadows it" is not actionable.
+	if !strings.Contains(got, "alias bob=/usr/local/bin/bob") {
+		t.Errorf("enable did not name the shadowing line:\n%s", got)
+	}
+
+	// And the file really is in that state — the warning is true, not defensive.
+	live, ok := bobAliasValueIn(t, rc)
+	if !ok {
+		t.Fatalf("fixture premise broken: bash defines no bob after enable")
+	}
+	if strings.Contains(live, "exec") {
+		t.Fatalf("premise broken: bash defines bob as %q, which DOES route through cortex; "+
+			"this test's whole subject is the case where it does not", live)
+	}
+	// enable still wrote the block — the warning is about ordering, not a refusal.
+	if n := len(bobShellAliasesIn(strings.Split(string(mustRead(t, rc)), "\n"))); n != 1 {
+		t.Errorf("enable left %d aliases of ours, want 1: it must still install the block", n)
+	}
+}
+
+// TestBobShellStatus_DescribesAnEmptyFence covers S8 as reported: "not enabled" alone
+// could not distinguish a file with no markers from one holding a fence, and the two
+// call for different actions.
+func TestBobShellStatus_DescribesAnEmptyFence(t *testing.T) {
+	cases := []struct {
+		name        string
+		body        string
+		wantFence   bool
+		wantForeign bool
+	}{
+		{"no markers at all", "# rc\nexport FOO=1\n", false, false},
+		{
+			"gutted fence: markers, alias hand-deleted",
+			"# rc\n" + bobShellMarkerStart + "\n" + bobShellMarkerEnd + "\n",
+			true, false,
+		},
+		{
+			"fence holding an alias we do not manage",
+			"# rc\n" + bobShellMarkerStart + "\nalias bob=/usr/local/bin/bob\n" + bobShellMarkerEnd + "\n",
+			true, true,
+		},
+		{
+			// The protection this must not break: a pasted --help transcript inside a
+			// heredoc is data, so there is no fence to describe.
+			"markers inside a heredoc are data",
+			"# rc\ncat <<'EOF'\n" + bobShellMarkerStart + "\n" + bobShellMarkerEnd + "\nEOF\n",
+			false, false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rc := filepath.Join(t.TempDir(), "rc")
+			withSelfPath(t, testAbctl)
+			if err := os.WriteFile(rc, []byte(tc.body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			var out bytes.Buffer
+			if code := bobShellStatus(rc, &out); code != 0 {
+				t.Fatalf("status exit = %d, want 0", code)
+			}
+			got := out.String()
+			// The verdict itself is unchanged in every row — callers parse it.
+			if !strings.Contains(got, "not enabled in") {
+				t.Errorf("status verdict changed; want \"not enabled in\", got %q", got)
+			}
+			if saidFence := strings.Contains(got, "A cortex block is present"); saidFence != tc.wantFence {
+				t.Errorf("described a fence = %v, want %v; output %q", saidFence, tc.wantFence, got)
+			}
+			saidForeign := strings.Contains(got, "an alias we do not manage")
+			if saidForeign != tc.wantForeign {
+				t.Errorf("described a foreign alias = %v, want %v; output %q", saidForeign, tc.wantForeign, got)
+			}
+			if tc.wantForeign && !strings.Contains(got, "alias bob=/usr/local/bin/bob") {
+				t.Errorf("did not name the foreign alias: %q", got)
+			}
+			// A gutted fence is refillable and says so; a fence holding a live foreign
+			// alias is NOT, because enable would leave that line in place.
+			if tc.wantFence {
+				saysRefill := strings.Contains(got, "to fill it back in")
+				if saysRefill == tc.wantForeign {
+					t.Errorf("refill advice = %v with a foreign alias = %v; enable cannot "+
+						"simply refill a fence whose alias it will not remove. Output %q",
+						saysRefill, tc.wantForeign, got)
+				}
+			}
+		})
+	}
+}
+
+func TestRunBobShell_RestoresSelfPath(t *testing.T) {
+	rc := filepath.Join(t.TempDir(), "rc")
+	if err := os.WriteFile(rc, []byte("# untouched\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// From the zero value: the ordinary case a fresh test binary is in.
+	t.Run("leaves the zero value zero", func(t *testing.T) {
+		withSelfPath(t, "")
+		var out, errb bytes.Buffer
+		if code := runBobShell([]string{"status", "--rc", rc}, &out, &errb); code != 0 {
+			t.Fatalf("status exit = %d, stderr %q", code, errb.String())
+		}
+		if bobShellSelfPath != "" {
+			t.Errorf("bobShellSelfPath = %q after runBobShell; want it restored to empty "+
+				"(a permanent assignment leaks the test binary's path to every later test)",
+				bobShellSelfPath)
+		}
+	})
+
+	// From a value a test deliberately installed: runBobShell must not eat it, or
+	// withSelfPath's own Cleanup would restore the wrong thing.
+	t.Run("restores a value a test installed", func(t *testing.T) {
+		const sentinel = "/sentinel/abctl"
+		withSelfPath(t, sentinel)
+		var out, errb bytes.Buffer
+		if code := runBobShell([]string{"status", "--rc", rc}, &out, &errb); code != 0 {
+			t.Fatalf("status exit = %d, stderr %q", code, errb.String())
+		}
+		if bobShellSelfPath != sentinel {
+			t.Errorf("bobShellSelfPath = %q after runBobShell, want %q restored", bobShellSelfPath, sentinel)
+		}
+	})
+
+	// The restore must not cost the call its own value: status still has to SEE the
+	// resolved path while it runs, or the "different abctl" report loses its input.
+	// Asserted through behaviour rather than by reading the global mid-call.
+	t.Run("the call still sees the resolved path", func(t *testing.T) {
+		withSelfPath(t, "")
+		enabled := filepath.Join(t.TempDir(), "rc")
+		// A block naming an abctl that is definitely not the running one. status can
+		// only report that if it resolved its own path during the call.
+		body := bobShellBlock("/definitely/not/this/abctl")
+		if err := os.WriteFile(enabled, []byte(body), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		var out, errb bytes.Buffer
+		if code := runBobShell([]string{"status", "--rc", enabled}, &out, &errb); code != 0 {
+			t.Fatalf("status exit = %d, stderr %q", code, errb.String())
+		}
+		if !strings.Contains(out.String(), "different abctl") {
+			t.Errorf("status said %q; want the different-abctl report, which needs the "+
+				"self path resolved DURING the call (restoring must not mean never setting)",
+				out.String())
+		}
+	})
+}
+
+func TestWriteRC_MissingParentWritesNothing(t *testing.T) {
+	dir := t.TempDir()
+	missing := filepath.Join(dir, "nodir")
+	target := filepath.Join(missing, "zshrc")
+
+	err := writeRC(target, []string{"alias bob='x'"}, true)
+	if err == nil {
+		t.Fatalf("writeRC into a missing directory returned nil error")
+	}
+	// THE MESSAGE is what the guard contributes, and the reason these assertions are
+	// specific rather than just `err != nil`. Deleting the guard still fails the write —
+	// os.WriteFile on the temp file hits the same ENOENT — so a test asserting only "it
+	// errored" passes with the guard gone. Executed with it disabled, the error is
+	// `open /…/nodir/zshrc.tmp: no such file or directory`: it names a `.tmp` path the
+	// user never mentioned, does not name the directory that is actually missing, and
+	// offers no fix. That is the difference being pinned.
+	if !strings.Contains(err.Error(), missing) {
+		t.Errorf("error %q does not name the missing directory %q", err, missing)
+	}
+	if !strings.Contains(err.Error(), "create it first") {
+		t.Errorf("error %q does not say how to proceed", err)
+	}
+	// No internal filename leaks into an error the user reads. `.tmp` appearing means
+	// the bare os.WriteFile failure surfaced instead of the guard's message.
+	if strings.Contains(err.Error(), ".tmp") {
+		t.Errorf("error %q leaks the temp path; the guard's message should have come first", err)
+	}
+
+	if _, serr := os.Stat(missing); serr == nil {
+		t.Errorf("writeRC created %s; a directory nobody asked for is the bug the guard exists to stop", missing)
+	}
+	// Nothing under ANY name: not the file, not .bak, not .tmp. Globbing the parent
+	// catches a stray the three explicit Stat calls would miss.
+	strays, gerr := filepath.Glob(filepath.Join(dir, "*"))
+	if gerr != nil {
+		t.Fatal(gerr)
+	}
+	if len(strays) != 0 {
+		t.Errorf("writeRC left %v behind; it must write nothing before the path is known good", strays)
+	}
+}
+
+func TestResolveRC_HopCapIsReachable(t *testing.T) {
+	dir := t.TempDir()
+
+	t.Run("cycle returns the original path", func(t *testing.T) {
+		a := filepath.Join(dir, "a.rc")
+		b := filepath.Join(dir, "b.rc")
+		if err := os.Symlink(b, a); err != nil {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+		if err := os.Symlink(a, b); err != nil {
+			t.Fatal(err)
+		}
+		// Not merely "some path": returning a HOP here is the clobber bug, so the
+		// identity is the assertion.
+		if got := resolveRC(a); got != a {
+			t.Errorf("resolveRC over a cycle = %q, want the original %q (a hop would be clobbered)", got, a)
+		}
+	})
+
+	t.Run("chain longer than the cap returns the original path", func(t *testing.T) {
+		// 40 hops against a cap of 32, ending at a name that does not exist.
+		const n = 40
+		name := func(i int) string { return filepath.Join(dir, fmt.Sprintf("chain%d", i)) }
+		for i := 0; i < n; i++ {
+			if err := os.Symlink(name(i+1), name(i)); err != nil {
+				t.Skipf("symlinks unavailable: %v", err)
+			}
+		}
+		if got := resolveRC(name(0)); got != name(0) {
+			t.Errorf("resolveRC over a %d-hop chain = %q, want the original %q", n, got, name(0))
+		}
+	})
+
+	t.Run("a chain within the cap still resolves to its end", func(t *testing.T) {
+		// The cap must not swallow the case it exists to bound: a short dangling chain
+		// resolves to the final name, which is the file the shell would create.
+		tail := filepath.Join(dir, "tail.rc")
+		mid := filepath.Join(dir, "mid.rc")
+		head := filepath.Join(dir, "head.rc")
+		if err := os.Symlink(tail, mid); err != nil {
+			t.Skipf("symlinks unavailable: %v", err)
+		}
+		if err := os.Symlink(mid, head); err != nil {
+			t.Fatal(err)
+		}
+		if got := resolveRC(head); got != tail {
+			t.Errorf("resolveRC over head->mid->(absent) tail = %q, want %q", got, tail)
+		}
+	})
+}
+
+// bobAliasValueIn returns what bash actually defines `bob` as after sourcing path, and
+// whether it defines it at all. bobIsLiveIn answers "is there one"; the S8 tests need the
+// VALUE, because the whole question there is which of two definitions the shell keeps.
+//
+// The output is bash's own `alias bob` rendering, which re-quotes the value — so tests
+// check what it CONTAINS (does it route through an `exec`?) rather than comparing it to
+// the rc file's bytes, which would be asserting bash's quoting style.
+func bobAliasValueIn(t *testing.T, path string) (string, bool) {
+	t.Helper()
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("bash not available")
+	}
+	script := "shopt -s expand_aliases; PS1=x; source " + path + " >/dev/null 2>&1; alias bob"
+	out, err := exec.Command(bash, "-c", script).Output()
+	if err != nil {
+		return "", false
+	}
+	return strings.TrimSpace(string(out)), true
+}
+
+// abctlForTest is a path that both looks like a real abctl to commandIsOurAlias's name
+// test and is stable across runs. A fixed value rather than os.Executable(), for the
+// reason testAbctl exists.
+func abctlForTest(t *testing.T) string {
+	t.Helper()
+	return testAbctl
+}
+
+// mustRead reads a file the test has just written; a failure here is a broken fixture,
+// not a finding.
+func mustRead(t *testing.T, path string) []byte {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("reading back %s: %v", path, err)
+	}
+	return b
+}
+
+func bobIsLiveIn(t *testing.T, path string) bool {
+	t.Helper()
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("bash not available")
+	}
+	script := "shopt -s expand_aliases; PS1=x; source " + path + " >/dev/null 2>&1; alias bob >/dev/null 2>&1"
+	return exec.Command(bash, "-c", script).Run() == nil
+}
+
+// TestScanLine_SubshellAliasIsNotOurs pins round 9's S6.
+//
+// `( alias bob=… )` runs in a CHILD shell, so the alias is gone when the subshell exits:
+// it defines nothing in the parent, verified in both bash and zsh. Claiming it was an
+// over-claim, and by MF2's lesson over-claiming is the dangerous direction — disable
+// rewrote the line and left a bare `( `, an unterminated subshell bash refuses to parse.
+// That is MF1's failure mode in a construct the report reached only as a suggestion, so
+// this is tested as the bug it is rather than the note it was filed as.
+func TestScanLine_SubshellAliasIsNotOurs(t *testing.T) {
+	alias := bobShellAliasLine("/usr/local/bin/abctl")
+	for _, tc := range []struct {
+		name string
+		line string
+		want int // how many commands of ours scanLine may claim on this line
+	}{
+		{"plain subshell", "( " + alias + " )", 0},
+		{"nested subshell", "( ( " + alias + " ) )", 0},
+		{"no space after paren", "(" + alias + ")", 0},
+		// The alias keyword has four spellings that all define an alias, and each is
+		// recorded by a DIFFERENT arm of scanLine's switch — so each needs the subshell
+		// gate separately. These three rows exist because the quote-arm mutation survived:
+		// probing it showed the gate there was load-bearing but uncovered, and that the
+		// backslash arm had no gate at all. bash agrees none of them reaches the parent.
+		{"quoted keyword", "( " + `'alias'` + alias[len("alias"):] + " )", 0},
+		{"double-quoted keyword", `( "alias"` + alias[len("alias"):] + " )", 0},
+		{"backslashed keyword", `( \alias` + alias[len("alias"):] + " )", 0},
+		// Depth, not a boolean: the `)` closes the subshell, so what follows is parent
+		// scope again and IS ours. A boolean flag would have kept recording disabled here.
+		{"after the subshell closes", "( echo hi ); " + alias, 1},
+		// ... and the mirror: a command before the subshell opens is ours.
+		{"before the subshell opens", alias + "; ( echo hi )", 1},
+		{"bare parent scope is still ours", alias, 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			starts, _ := scanLine(tc.line, 0)
+			got := 0
+			for _, off := range starts {
+				if commandIsOurAlias(tc.line[off:]) {
+					got++
+				}
+			}
+			if got != tc.want {
+				t.Errorf("scanLine claimed %d of our commands on %q, want %d", got, tc.line, tc.want)
+			}
+		})
+	}
+}
+
+// TestBobShellDisable_LeavesSubshellAliasesAlone is S6 end to end: the claim above must
+// turn into disable not touching the line. Asserted against bash on both counts — the
+// alias was never live to begin with, and the file still parses afterwards, which is what
+// the bare `( ` broke.
+func TestBobShellDisable_LeavesSubshellAliasesAlone(t *testing.T) {
+	alias := bobShellAliasLine("/usr/local/bin/abctl")
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{"plain subshell", "# rc\n( " + alias + " )\nexport T=1\n"},
+		{"nested subshell", "# rc\n( ( " + alias + " ) )\nexport T=1\n"},
+		{"subshell in a guard", "# rc\nif [ -n \"$PS1\" ]; then\n  ( " + alias + " )\nfi\nexport T=1\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rc := filepath.Join(t.TempDir(), ".bashrc")
+			if err := os.WriteFile(rc, []byte(tc.body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			// The premise: this fixture never defined `bob` in the parent shell, so there
+			// is nothing here for disable to remove. If bash disagrees the test is wrong.
+			if bobIsLiveIn(t, rc) {
+				t.Fatalf("fixture premise broken: bash defines bob from\n%s", tc.body)
+			}
+
+			var out, errb bytes.Buffer
+			code := bobShellDisable(rc, true, &out, &errb)
+			if code != 0 {
+				t.Errorf("disable: exit = %d, want 0", code)
+			}
+			if !strings.Contains(out.String(), "Nothing to do") {
+				t.Errorf("disable said %q, want %q (nothing here is ours)", out.String(), "Nothing to do")
+			}
+			if got := readFile(t, rc); got != tc.body {
+				t.Errorf("disable rewrote a subshell alias it does not own\n got: %q\nwant: %q", got, tc.body)
+			}
+			// The failure mode this guards: a rewrite left a bare `( `, which bash rejects.
+			bashSyntaxOK(t, rc)
+		})
+	}
+}
+
 func bashSyntaxOK(t *testing.T, path string) {
 	t.Helper()
 	bash, err := exec.LookPath("bash")
@@ -2163,7 +2865,7 @@ func TestCommandStarts_QuotedDataHoldsNoCommand(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			cmds := commandStarts(tc.lines)
+			cmds, _, _ := commandStarts(tc.lines)
 			for _, i := range tc.dataLines {
 				if len(cmds[i].starts) != 0 {
 					t.Errorf("line %d (%q) reported a command start %v, want none — it is quoted data",
@@ -2231,7 +2933,7 @@ func TestCommandStarts_QuotedHeredocOperatorIsNotAnOpener(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			lines := []string{tc.opener, bobShellAliasLine("/x/abctl"), "export T=1"}
-			cmds := commandStarts(lines)
+			cmds, _, _ := commandStarts(lines)
 			if !cmds[1].holdsOurAlias() {
 				t.Errorf("the alias below %q was not seen; a quoted operator was read as a heredoc opener", tc.opener)
 			}
@@ -2633,6 +3335,824 @@ func TestEndsWithContinuation(t *testing.T) {
 	} {
 		if got := endsWithContinuation(tc.line); got != tc.want {
 			t.Errorf("endsWithContinuation(%q) = %v, want %v", tc.line, got, tc.want)
+		}
+	}
+}
+
+// TestBobShellDisable_KeepsCaseConstructsValid is round 9's MF1. `esac` appeared zero
+// times in this file before it, which is exactly why the defect shipped: round 8 fixed
+// the orphaned-body problem for if/for/while/function and `case` was the one construct
+// the fix did not cover. opensCompound accepts `in` and closesCompound accepts `esac`,
+// so a `:` was substituted — but `:` is not a valid case body, an arm needs a pattern,
+// and `case $TERM in` / `:` / `esac` is a file bash refuses to parse while disable
+// printed "Disabled." and exited 0. `case $TERM in` is a common rc idiom.
+func TestBobShellDisable_KeepsCaseConstructsValid(t *testing.T) {
+	alias := func() string { return bobShellAliasLine("/x/abctl") }
+	cases := []struct {
+		name  string
+		lines []string
+		// keep are substrings that must survive: a case arm's pattern and terminator are
+		// the user's, not ours, and MF2 is that they were deleted with the alias.
+		keep []string
+	}{
+		{
+			name:  "single arm is the whole case body",
+			lines: []string{"case $TERM in", "xterm*) " + alias() + " ;;", "esac", "export KEEP=1"},
+			keep:  []string{"xterm*)", ";;", "esac", "export KEEP=1"},
+		},
+		{
+			name:  "multi arm stays parseable so the loss would be invisible",
+			lines: []string{"case $TERM in", "xterm*) " + alias() + " ;;", "dumb) export SIMPLE=1 ;;", "esac"},
+			keep:  []string{"xterm*)", "dumb) export SIMPLE=1 ;;", "esac"},
+		},
+		{
+			name:  "arm with a sibling command keeps the sibling",
+			lines: []string{"case $TERM in", "xterm*) export A=1; " + alias() + " ;;", "esac"},
+			keep:  []string{"xterm*)", "export A=1", ";;", "esac"},
+		},
+		{
+			name:  "nested in a guard, so both constructs would orphan",
+			lines: []string{`if [ -n "$PS1" ]; then`, "case $TERM in", "xterm*) " + alias() + " ;;", "esac", "fi"},
+			keep:  []string{"xterm*)", "esac", "fi"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			rc := filepath.Join(dir, ".bashrc")
+			body := strings.Join(tc.lines, "\n") + "\n"
+			if err := os.WriteFile(rc, []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			// The fixture must be valid BEFORE, or the assertion after proves nothing.
+			bashSyntaxOK(t, rc)
+
+			var out, errb bytes.Buffer
+			if code := bobShellDisable(rc, true, &out, &errb); code != 0 {
+				t.Fatalf("disable exit %d, stderr %q", code, errb.String())
+			}
+			// The whole point: exit 0 and "Disabled." were already true of the broken file.
+			bashSyntaxOK(t, rc)
+
+			got := readFile(t, rc)
+			for _, want := range tc.keep {
+				if !strings.Contains(got, want) {
+					t.Errorf("disable deleted the user's %q.\ngot:\n%s", want, got)
+				}
+			}
+			if strings.Contains(got, "bob=") {
+				t.Errorf("alias survived disable:\n%s", got)
+			}
+			// A `:` here would mean the no-op path fired on a construct it cannot serve.
+			for _, l := range strings.Split(got, "\n") {
+				if strings.TrimSpace(l) == ":" {
+					t.Errorf("a bare `:` was substituted into a case construct:\n%s", got)
+				}
+			}
+		})
+	}
+}
+
+// TestBobShellDisable_KeepsNonOwnedTextOnTheLine is round 9's MF2, whose root cause is
+// more general than the case construct that exposed it: ownership is per LINE, but a
+// command can be a proper substring of one. Every non-case shape looked safe only
+// because the owned command happened to be the whole line — and the `x=1; alias …; y=2`
+// row below was already in round 8's spelling table, where it asserted the alias count
+// and never noticed that x=1 and y=2 were being destroyed too.
+func TestBobShellDisable_KeepsNonOwnedTextOnTheLine(t *testing.T) {
+	alias := func() string { return bobShellAliasLine("/x/abctl") }
+	cases := []struct {
+		name string
+		line string
+		keep []string
+	}{
+		{"leading and trailing commands", "x=1; " + alias() + "; y=2", []string{"x=1", "y=2"}},
+		{"leading command only", "x=1; " + alias(), []string{"x=1"}},
+		{"trailing command only", alias() + "; y=2", []string{"y=2"}},
+		{"case arm pattern and terminator", "xterm*) " + alias() + " ;;", []string{"xterm*)", ";;"}},
+		{"separated by &&", "x=1 && " + alias(), []string{"x=1"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			rc := filepath.Join(dir, ".bashrc")
+			// Wrapped in a case only for the arm row; otherwise file scope.
+			body := tc.line + "\nexport KEEP=1\n"
+			if strings.Contains(tc.line, ";;") {
+				body = "case $TERM in\n" + tc.line + "\nesac\nexport KEEP=1\n"
+			}
+			if err := os.WriteFile(rc, []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			bashSyntaxOK(t, rc)
+
+			var out, errb bytes.Buffer
+			if code := bobShellDisable(rc, true, &out, &errb); code != 0 {
+				t.Fatalf("disable exit %d: %s", code, errb.String())
+			}
+			bashSyntaxOK(t, rc)
+
+			got := readFile(t, rc)
+			for _, want := range tc.keep {
+				if !strings.Contains(got, want) {
+					t.Errorf("disable deleted non-owned %q from the line.\ngot:\n%s", want, got)
+				}
+			}
+			if strings.Contains(got, "bob=") {
+				t.Errorf("alias survived:\n%s", got)
+			}
+			if !strings.Contains(got, "export KEEP=1") {
+				t.Errorf("unrelated line lost:\n%s", got)
+			}
+		})
+	}
+}
+
+// TestBobShellEnable_RefusesFileEndingInAnOpenConstruct is round 9's MF4. Appending to
+// a file whose last construct is unterminated appends INTO that construct, so the block
+// is data: "Enabled" over zero live aliases, invisible to status, another block appended
+// on every run, and disable can never recover any of it. Refusing is the only honest
+// answer, and it costs a user with a genuinely broken rc file nothing.
+func TestBobShellEnable_RefusesFileEndingInAnOpenConstruct(t *testing.T) {
+	cases := []struct {
+		name, body, wantErr string
+	}{
+		{"unterminated heredoc", "cat <<EOF\nsome text never terminated\n", "unterminated heredoc"},
+		{"unterminated double quote", "MSG=\"line one\nline two never closed\n", "unterminated \" quote"},
+		{"unterminated single quote", "MSG='line one\nline two never closed\n", "unterminated ' quote"},
+		{"quoted heredoc still open", "cat <<'NOTES'\nnotes body\n", "unterminated heredoc"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			rc := filepath.Join(dir, ".bashrc")
+			if err := os.WriteFile(rc, []byte(tc.body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			var out, errb bytes.Buffer
+			code := bobShellEnable(rc, "/x/abctl", true, &out, &errb)
+			if code != 1 {
+				t.Errorf("enable exit = %d, want 1 (refusal)\nstdout: %s", code, out.String())
+			}
+			if !strings.Contains(errb.String(), tc.wantErr) {
+				t.Errorf("stderr does not name the construct.\nwant substring %q\ngot: %s", tc.wantErr, errb.String())
+			}
+			// Refusing means refusing: the file must be untouched, not partly written.
+			if got := readFile(t, rc); got != tc.body {
+				t.Errorf("file changed despite refusal.\ngot:\n%s\nwant:\n%s", got, tc.body)
+			}
+			// And it must not claim success on stdout.
+			if strings.Contains(out.String(), "Enabled") {
+				t.Errorf("stdout claims success on a refusal: %s", out.String())
+			}
+		})
+	}
+}
+
+// TestBobShellEnable_MarkersInDataRegionsAreNotOurs is round 9's MF3 and closes the
+// enable-side gap MF5 named: every heredoc/quote test before this one was a DISABLE
+// test, and `installing=true` is the only caller that claims markers file-wide, so it
+// had no data-region coverage at all. Over the shape `--help` output invites — the block
+// pasted into a heredoc — enable used to print "Enabled" while bash defined no bob,
+// delete the user's closing marker, inject an alias line into their heredoc, and grow
+// the file 138→173→208→243 bytes across three runs, unrecoverably.
+func TestBobShellEnable_MarkersInDataRegionsAreNotOurs(t *testing.T) {
+	paste := []string{bobShellMarkerStart, bobShellAliasLine("/old/abctl"), bobShellMarkerEnd}
+	cases := []struct {
+		name  string
+		lines []string
+	}{
+		{"quoted heredoc body", append(append([]string{"cat <<'NOTES'"}, paste...), "NOTES", "export KEEP=1")},
+		{"unquoted heredoc body", append(append([]string{"cat <<NOTES"}, paste...), "NOTES", "export KEEP=1")},
+		{"double-quoted string body", append(append([]string{`MSG="intro`}, paste...), `outro"`, "export KEEP=1")},
+		{"indented heredoc body", append(append([]string{"\tcat <<-NOTES"}, paste...), "\tNOTES", "export KEEP=1")},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			rc := filepath.Join(dir, ".bashrc")
+			orig := strings.Join(tc.lines, "\n") + "\n"
+			if err := os.WriteFile(rc, []byte(orig), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			// The paste defines nothing: that is what makes claiming it wrong.
+			if live := bobShellAliasesIn(tc.lines); len(live) != 0 {
+				t.Fatalf("fixture is not inert, %d aliases seen: %v", len(live), live)
+			}
+
+			var out, errb bytes.Buffer
+			if code := bobShellEnable(rc, "/x/abctl", true, &out, &errb); code != 0 {
+				t.Fatalf("enable exit %d: %s", code, errb.String())
+			}
+			afterFirst := readFile(t, rc)
+			// The user's data region survives verbatim, every line of it.
+			for _, l := range tc.lines {
+				if !strings.Contains(afterFirst, l) {
+					t.Errorf("enable altered the user's data region: %q is gone.\ngot:\n%s", l, afterFirst)
+				}
+			}
+			// Exactly one live alias, and it is ours — not the /old/abctl one in the paste.
+			live := bobShellAliasesIn(strings.Split(strings.TrimSuffix(afterFirst, "\n"), "\n"))
+			if len(live) != 1 {
+				t.Fatalf("want exactly 1 live alias, got %d: %v\n%s", len(live), live, afterFirst)
+			}
+			if !strings.Contains(live[0], "/x/abctl") {
+				t.Errorf("the live alias is not the one enable installed: %q", live[0])
+			}
+
+			// Idempotence is the property the growth bug violated.
+			var out2, errb2 bytes.Buffer
+			if code := bobShellEnable(rc, "/x/abctl", true, &out2, &errb2); code != 0 {
+				t.Fatalf("second enable exit %d: %s", code, errb2.String())
+			}
+			if got := readFile(t, rc); got != afterFirst {
+				t.Errorf("second enable changed the file (the 138→173→208 growth bug).\ngot:\n%s\nwant:\n%s", got, afterFirst)
+			}
+			if !strings.Contains(out2.String(), "Already enabled") {
+				t.Errorf("second enable did not report Already enabled: %s", out2.String())
+			}
+
+			// And disable must return the file exactly, leaving the paste alone.
+			var out3, errb3 bytes.Buffer
+			if code := bobShellDisable(rc, true, &out3, &errb3); code != 0 {
+				t.Fatalf("disable exit %d: %s", code, errb3.String())
+			}
+			if got := readFile(t, rc); got != orig {
+				t.Errorf("enable+disable is not an identity over a data-region paste.\ngot:\n%s\nwant:\n%s", got, orig)
+			}
+		})
+	}
+}
+
+// TestCommandStarts_ReportsDataRegionsAndTerminalState pins the two things the scanner
+// learned to report in round 9. Both were already known to it and thrown away: the
+// heredoc-body loop `continue`d over data lines, and the terminal quote/heredoc state
+// was a local. The writers could not ask, which is why MF3 and MF4 were possible.
+func TestCommandStarts_ReportsDataRegionsAndTerminalState(t *testing.T) {
+	cases := []struct {
+		name        string
+		lines       []string
+		wantData    []int // indices whose inData must be true
+		wantQuote   byte
+		wantHeredoc string
+	}{
+		{
+			name:     "heredoc body is data, opener and terminator are not",
+			lines:    []string{"cat <<EOF", "body one", "body two", "EOF", "export A=1"},
+			wantData: []int{1, 2},
+		},
+		{
+			name:     "quoted string continuation is data",
+			lines:    []string{`MSG="one`, "two", `three"`, "export A=1"},
+			wantData: []int{1, 2},
+		},
+		{
+			name:        "file ending mid-heredoc reports the awaited delimiter",
+			lines:       []string{"cat <<EOF", "body"},
+			wantData:    []int{1},
+			wantHeredoc: "EOF",
+		},
+		{
+			name:      "file ending mid-quote reports the open quote",
+			lines:     []string{`MSG="one`, "two"},
+			wantData:  []int{1},
+			wantQuote: '"',
+		},
+		{
+			name:     "a well-formed file reports no TERMINAL state, body still data",
+			lines:    []string{"export A=1", "cat <<EOF", "b", "EOF"},
+			wantData: []int{2},
+		},
+		{
+			name:      "single quote is reported as itself",
+			lines:     []string{"MSG='one", "two"},
+			wantData:  []int{1},
+			wantQuote: '\'',
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cmds, q, hd := commandStarts(tc.lines)
+			want := map[int]bool{}
+			for _, i := range tc.wantData {
+				want[i] = true
+			}
+			for i := range tc.lines {
+				if cmds[i].inData != want[i] {
+					t.Errorf("line %d (%q): inData = %v, want %v", i, tc.lines[i], cmds[i].inData, want[i])
+				}
+			}
+			if q != tc.wantQuote {
+				t.Errorf("terminal quote = %q, want %q", q, tc.wantQuote)
+			}
+			if hd != tc.wantHeredoc {
+				t.Errorf("terminal heredoc = %q, want %q", hd, tc.wantHeredoc)
+			}
+		})
+	}
+}
+
+// TestExciseOurAlias is the unit-level half of MF2: the byte range of the owned command
+// is what gets removed, and a case-arm terminator is not part of it.
+func TestExciseOurAlias(t *testing.T) {
+	a := bobShellAliasLine("/x/abctl")
+	cases := []struct {
+		name, line, want string
+		wantSurvives     bool
+	}{
+		{"whole line is ours", a, "", false},
+		{"leading sibling", "x=1; " + a, "x=1; ", true},
+		{"trailing sibling", a + "; y=2", "y=2", true},
+		{"both siblings", "x=1; " + a + "; y=2", "x=1; y=2", true},
+		{"case arm keeps pattern and terminator", "xterm*) " + a + " ;;", "xterm*) ;;", true},
+		{"marker line holds no command of ours", bobShellMarkerStart, "", false},
+		// A line with no command of ours returns false, the same as a marker: there is
+		// nothing to excise. removeBobShellBlock only calls this for OWNED lines, so an
+		// unowned line never reaches it; the row documents the boundary rather than a
+		// behaviour disable depends on.
+		{"a foreign alias holds no command of ours", "alias ls='ls -G'", "", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cmds, _, _ := commandStarts([]string{tc.line})
+			got, survives := exciseOurAlias(cmds[0])
+			if survives != tc.wantSurvives {
+				t.Errorf("survives = %v, want %v (got %q)", survives, tc.wantSurvives, got)
+			}
+			if survives && got != tc.want {
+				t.Errorf("remainder = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestBobShellDisable_ContinuedCommandKeepsNonOwnedText covers the shape that let a
+// wrong guard survive mutation testing. A `through != i` guard was written into
+// removeBobShellBlock on the reasoning that excising within a multi-line span is not
+// meaningful; the mutation that removed it SURVIVED, and probing showed why — the guard
+// is worse than its absence. With it, a continued case arm regressed to the invalid
+// `case $T in` / `:` / `esac` that is this round's MF1, and continued lines carrying a
+// sibling command lost the sibling. cmds[i].text is the whole backslash-joined command,
+// so the remainder belongs on the line the command began at.
+func TestBobShellDisable_ContinuedCommandKeepsNonOwnedText(t *testing.T) {
+	// `alias \` + newline + ` bob=…` is one command spanning two physical lines, and it
+	// is live in bash — round 8's MF3 fifth spelling.
+	cont := "alias \\\n bob='" + "/x/abctl" + " exec -- \\bob'"
+	cases := []struct {
+		name string
+		body string
+		keep []string
+	}{
+		{
+			name: "continuation with a trailing sibling",
+			body: cont + "; y=2\nexport KEEP=1\n",
+			keep: []string{"y=2", "export KEEP=1"},
+		},
+		{
+			name: "leading sibling before the continuation",
+			body: "x=1; " + cont + "\nexport KEEP=1\n",
+			keep: []string{"x=1", "export KEEP=1"},
+		},
+		{
+			name: "continued case arm keeps pattern and terminator",
+			body: "case $T in\na) " + cont + " ;;\nesac\nexport KEEP=1\n",
+			keep: []string{"a)", ";;", "esac", "export KEEP=1"},
+		},
+		{
+			name: "continuation alone inside a guard still gets the no-op",
+			body: "if true; then\n  " + cont + "\nfi\nexport KEEP=1\n",
+			keep: []string{"if true; then", "fi", "export KEEP=1"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			rc := filepath.Join(dir, ".bashrc")
+			if err := os.WriteFile(rc, []byte(tc.body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			bashSyntaxOK(t, rc)
+			// The fixture must really define bob, or removing it proves nothing.
+			lines := strings.Split(strings.TrimSuffix(tc.body, "\n"), "\n")
+			if live := bobShellAliasesIn(lines); len(live) != 1 {
+				t.Fatalf("fixture should hold exactly 1 live alias, got %d: %v", len(live), live)
+			}
+
+			var out, errb bytes.Buffer
+			if code := bobShellDisable(rc, true, &out, &errb); code != 0 {
+				t.Fatalf("disable exit %d: %s", code, errb.String())
+			}
+			bashSyntaxOK(t, rc)
+
+			got := readFile(t, rc)
+			for _, want := range tc.keep {
+				if !strings.Contains(got, want) {
+					t.Errorf("disable deleted %q.\ngot:\n%s", want, got)
+				}
+			}
+			if strings.Contains(got, "bob=") {
+				t.Errorf("alias survived disable:\n%s", got)
+			}
+		})
+	}
+}
+
+// TestBobShellStatus_SameLineShadowing pins the case a mutation survivor turned up while
+// fixing S8: one line holding two definitions of bob. It is the granularity below the one
+// S8 reported, and the reason bobShellShadowedBy iterates commands rather than lines.
+//
+// Every row cross-checks against bash, because the whole defect class here is the tool
+// disagreeing with the shell. The assertion that matters is the last one: whether the
+// report says "overrides" must match whether bash resolved bob to something other than
+// ours. A test that only matched substrings would have passed against the line-granular
+// version that shipped this bug.
+func TestBobShellStatus_SameLineShadowing(t *testing.T) {
+	self := abctlForTest(t)
+	ours := bobShellAliasLine(self)
+
+	for _, tc := range []struct {
+		name string
+		line string
+		// wantShadowed is what the SHELL does, stated independently of the tool; the
+		// test asserts bash agrees before asserting the tool does.
+		wantShadowed bool
+		wantAdvice   string
+	}{
+		{
+			name:         "ours first, foreign second — foreign wins",
+			line:         ours + "; alias bob=/other",
+			wantShadowed: true,
+			// The offender shares our line, so "move it above the block" is not
+			// followable; the advice must be the split-the-line one.
+			wantAdvice: "Both definitions are on that one line",
+		},
+		{
+			name:         "foreign first, ours second — ours wins",
+			line:         "alias bob=/other; " + ours,
+			wantShadowed: false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			rc := filepath.Join(dir, "zshrc")
+			body := bobShellMarkerStart + "\n" + tc.line + "\n" + bobShellMarkerEnd + "\n"
+			if err := os.WriteFile(rc, []byte(body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+
+			// The oracle first: if bash does not behave as the row claims, the row is
+			// wrong and the tool's agreement with it would prove nothing.
+			value, live := bobAliasValueIn(t, rc)
+			if !live {
+				t.Fatalf("bash defined no bob at all for %q", tc.line)
+			}
+			routesThroughCortex := strings.Contains(value, "exec --")
+			if routesThroughCortex == tc.wantShadowed {
+				t.Fatalf("fixture does not do what the row claims: bash resolved bob to %q, "+
+					"routesThroughCortex=%v, wantShadowed=%v", value, routesThroughCortex, tc.wantShadowed)
+			}
+
+			var out strings.Builder
+			prev := bobShellSelfPath
+			bobShellSelfPath = self
+			defer func() { bobShellSelfPath = prev }()
+			if code := bobShellStatus(rc, &out); code != 0 {
+				t.Fatalf("status exit = %d, want 0", code)
+			}
+			got := out.String()
+
+			said := strings.Contains(got, "overrides it")
+			if said != tc.wantShadowed {
+				t.Errorf("reported override = %v, want %v (bash resolved bob to %q)\n%s",
+					said, tc.wantShadowed, value, got)
+			}
+			// The report must agree with the shell — the property, not the wording.
+			if said == routesThroughCortex {
+				t.Errorf("report disagrees with the shell: reported override=%v while bash "+
+					"routes through Cortex=%v\n%s", said, routesThroughCortex, got)
+			}
+			if tc.wantAdvice != "" && !strings.Contains(got, tc.wantAdvice) {
+				t.Errorf("missing advice %q in:\n%s", tc.wantAdvice, got)
+			}
+			if tc.wantShadowed && strings.Contains(got, "move it above the cortex block") {
+				t.Errorf("gave unfollowable advice for a same-line offender:\n%s", got)
+			}
+		})
+	}
+}
+
+// TestBobShellStatus_SeparateLineShadowKeepsItsAdvice is the other arm of that split: when
+// the offending definition is on its own line, moving it above the block IS a real remedy
+// and must still be the advice. Guards against collapsing the two messages into one.
+func TestBobShellStatus_SeparateLineShadowKeepsItsAdvice(t *testing.T) {
+	self := abctlForTest(t)
+	dir := t.TempDir()
+	rc := filepath.Join(dir, "zshrc")
+	body := bobShellMarkerStart + "\n" + bobShellAliasLine(self) + "\n" + bobShellMarkerEnd +
+		"\nalias bob=/usr/local/bin/bob\n"
+	if err := os.WriteFile(rc, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if value, live := bobAliasValueIn(t, rc); !live || strings.Contains(value, "exec --") {
+		t.Fatalf("fixture wrong: bash resolved bob to %q, live=%v", value, live)
+	}
+
+	var out strings.Builder
+	prev := bobShellSelfPath
+	bobShellSelfPath = self
+	defer func() { bobShellSelfPath = prev }()
+	bobShellStatus(rc, &out)
+	got := out.String()
+
+	if !strings.Contains(got, "move it above the cortex block") {
+		t.Errorf("separate-line offender lost its remedy:\n%s", got)
+	}
+	if strings.Contains(got, "Both definitions are on that one line") {
+		t.Errorf("used the same-line advice for a separate-line offender:\n%s", got)
+	}
+}
+
+// TestBobShellStatus_ShadowingOutranksTidiness pins the ORDER of the three qualifications
+// on "enabled". A file that is both shadowed and untidy must report the shadowing: it is
+// the only one of the three where bob does not route through Cortex at all, and each
+// branch returns, so the first one reached is the only one the user sees.
+//
+// Written after building it the other way round, where a same-line fixture printed a note
+// about the line's shape while bash had bob pointing somewhere else entirely.
+func TestBobShellStatus_ShadowingOutranksTidiness(t *testing.T) {
+	self := abctlForTest(t)
+	ours := bobShellAliasLine(self)
+
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{
+			// Trips the multi-alias branch as well: two of ours, then a foreign one.
+			name: "also several of ours",
+			body: bobShellMarkerStart + "\n" + ours + "\n" + ours + "\n" + bobShellMarkerEnd +
+				"\nalias bob=/other\n",
+		},
+		{
+			// Trips the different-abctl branch as well: ours names another path.
+			name: "also a different abctl",
+			body: bobShellMarkerStart + "\n" + bobShellAliasLine("/somewhere/else/abctl") + "\n" +
+				bobShellMarkerEnd + "\nalias bob=/other\n",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			rc := filepath.Join(dir, "zshrc")
+			if err := os.WriteFile(rc, []byte(tc.body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if value, live := bobAliasValueIn(t, rc); !live || strings.Contains(value, "exec --") {
+				t.Fatalf("fixture wrong: bash resolved bob to %q, live=%v", value, live)
+			}
+
+			var out strings.Builder
+			prev := bobShellSelfPath
+			bobShellSelfPath = self
+			defer func() { bobShellSelfPath = prev }()
+			bobShellStatus(rc, &out)
+			got := out.String()
+
+			if !strings.Contains(got, "overrides it") {
+				t.Errorf("shadowing lost to a tidiness branch:\n%s", got)
+			}
+			if strings.Contains(got, "alias lines — the shell uses the last one") {
+				t.Errorf("reported multi-alias tidiness over a shadowed file:\n%s", got)
+			}
+			if strings.Contains(got, "names a different abctl") {
+				t.Errorf("reported a path problem over a shadowed file:\n%s", got)
+			}
+		})
+	}
+}
+
+// TestBobShellStatus_NamesThisAbctlOnACrowdedLine covers the disambiguation added when the
+// same-line fixtures exposed it: the different-abctl check is whole-LINE equality, so a
+// line carrying our alias plus anything else fails it while naming this very abctl. It
+// used to print "names a different abctl than this one (/path)" where /path was correct,
+// which sends the user after a problem they do not have.
+//
+// Ours is LAST on the line here, so nothing shadows it and the shadow branch above does
+// not claim the case — that is what routes it to this check at all.
+func TestBobShellStatus_NamesThisAbctlOnACrowdedLine(t *testing.T) {
+	self := abctlForTest(t)
+	dir := t.TempDir()
+	rc := filepath.Join(dir, "zshrc")
+	body := bobShellMarkerStart + "\nalias bob=/other; " + bobShellAliasLine(self) + "\n" +
+		bobShellMarkerEnd + "\n"
+	if err := os.WriteFile(rc, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// bash must agree ours wins, or this is a shadowing case and not this one.
+	if value, live := bobAliasValueIn(t, rc); !live || !strings.Contains(value, "exec --") {
+		t.Fatalf("fixture wrong: bash resolved bob to %q, live=%v", value, live)
+	}
+
+	var out strings.Builder
+	prev := bobShellSelfPath
+	bobShellSelfPath = self
+	defer func() { bobShellSelfPath = prev }()
+	bobShellStatus(rc, &out)
+	got := out.String()
+
+	if strings.Contains(got, "names a different abctl") {
+		t.Errorf("claimed a different abctl while naming this one (%s):\n%s", self, got)
+	}
+	if !strings.Contains(got, "names this abctl") || !strings.Contains(got, "carries more than the alias") {
+		t.Errorf("did not describe the real problem (a crowded line):\n%s", got)
+	}
+}
+
+// TestCommandLooksLikeOurAliasFor guards the helper that splits those two causes apart. It
+// must not become a looser ownership test: a truncated or altered alias names a different
+// abctl as far as this check is concerned, which is the distinction the whole-line equality
+// was written to preserve.
+func TestCommandLooksLikeOurAliasFor(t *testing.T) {
+	self := "/opt/abctl"
+	ours := bobShellAliasLine(self)
+
+	for _, tc := range []struct {
+		name string
+		line string
+		want bool
+	}{
+		{"exactly ours", ours, true},
+		{"ours plus another command", ours + "; alias bob=/other", true},
+		{"another command then ours", "alias bob=/other; " + ours, true},
+		{"ours with leading indent", "   " + ours, true},
+		{"a different abctl", bobShellAliasLine("/elsewhere/abctl"), false},
+		// The case the "Equality, not Contains" comment exists for: a hand-edit that
+		// cuts our alias short is not ours, because the shell would run something else.
+		//
+		// This row first read `alias bob='/opt/abctl exec --` — an UNTERMINATED quote, so
+		// splitShellWords rejected it and the row passed without ever reaching the
+		// comparison it claims to test. A mutation that loosened that comparison survived,
+		// which is how the bad fixture surfaced. Both spellings are kept, labelled for
+		// what each actually exercises.
+		{"truncated but well formed", "alias bob='/opt/abctl exec'", false},
+		{"truncated mid-quote (unparseable)", "alias bob='/opt/abctl exec --", false},
+		// Ours verbatim plus a trailing word: commandIsOurAlias accepts it, so this pins
+		// that the check is stricter than ownership.
+		{"ours with a trailing assignment", ours + " extra=1", false},
+		// `alias -- bob=…` is our alias to commandIsOurAlias but is not the canonical
+		// spelling, so enable would still rewrite the line.
+		{"ours behind a -- separator", "alias -- bob='" + self + " exec -- \\bob'", false},
+		// Unbalanced trailing quote. splitShellWords FAILS on it but still returns
+		// partial words that reconstruct to exactly the canonical line, so this row is
+		// what keeps the `ok` guard alive — without it, a line bash cannot parse reports
+		// as naming this abctl. A surviving mutation is how the gap was found.
+		{"reconstructs to ours but does not parse", ours + " '", false},
+		{"no alias at all", "export FOO=1", false},
+		{"aliases something else", "alias bobcat='" + self + " exec -- \\bob'", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := commandLooksLikeOurAliasFor(tc.line, self); got != tc.want {
+				t.Errorf("commandLooksLikeOurAliasFor(%q) = %v, want %v", tc.line, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestBobShellShadowedBy_CaseArmsAreConditional pins the round-9 real-shell sweep's only
+// disagreement between the tool and the shell. A `case` arm runs only on a pattern match,
+// so a definition inside one cannot be claimed as the winner — status used to report
+// "a later alias overrides it" over a file where bob still routed through Cortex, telling
+// the user to delete a line that does nothing.
+//
+// Verified in bash AND zsh before the fix; both shells agree, which is why the fix is in
+// the scanner rather than per-shell.
+func TestBobShellShadowedBy_CaseArmsAreConditional(t *testing.T) {
+	ours := bobShellAliasLine("/opt/abctl")
+
+	for _, tc := range []struct {
+		name  string
+		lines []string
+		want  string
+	}{
+		{
+			name:  "an arm that never matches does not shadow",
+			lines: []string{ours, "case x in", "  y) alias bob=/in/case ;;", "esac"},
+			want:  "",
+		},
+		{
+			// Conservative by design: the arm might match, and we do not evaluate the
+			// subject. Not claiming it is the safe direction, because the cost of a false
+			// alarm is telling the user to edit working code.
+			name:  "an arm that WOULD match still does not shadow",
+			lines: []string{ours, "case x in", "  x) alias bob=/matches ;;", "esac"},
+			want:  "",
+		},
+		{
+			name:  "a definition after esac does shadow",
+			lines: []string{ours, "case x in", "  y) alias bob=/in/case ;;", "esac", "alias bob=/after"},
+			want:  "alias bob=/after",
+		},
+		{
+			// Depth, not a boolean: the inner esac must not re-enable claiming while the
+			// outer case is still open.
+			name: "nested case, definition after both",
+			lines: []string{ours, "case x in", "  a) case y in b) alias bob=/nested ;; esac ;;",
+				"esac", "alias bob=/after"},
+			want: "alias bob=/after",
+		},
+		{
+			name:  "nested case, definition inside, nothing after",
+			lines: []string{ours, "case x in", "  a) case y in b) alias bob=/nested ;; esac ;;", "esac"},
+			want:  "",
+		},
+		{
+			// `case` as an ARGUMENT is not the keyword, so it opens no region and the
+			// following definition shadows normally.
+			name:  "case as an argument opens nothing",
+			lines: []string{ours, "echo case", "alias bob=/after"},
+			want:  "alias bob=/after",
+		},
+		{
+			// An unterminated case swallows the rest of the file, so nothing after it can
+			// be claimed. That matches the shell, which is still parsing the construct.
+			name:  "unterminated case claims nothing after it",
+			lines: []string{ours, "case x in", "  y) alias bob=/in/case ;;"},
+			want:  "",
+		},
+		{
+			name:  "esac without case does not open a region",
+			lines: []string{ours, "esac", "alias bob=/after"},
+			want:  "alias bob=/after",
+		},
+		{
+			// The underflow guard's ONLY discriminating shape, and the row above is not
+			// it: with the guard removed, a stray esac drives the counter to -1, and
+			// `caseDepth > 0` is false at -1 exactly as at 0 — so one stray esac alone
+			// looks identical either way. It takes a later REAL `case` to expose the
+			// difference, because -1+1 = 0 leaves its arm unmarked and falsely claimed.
+			//
+			// Written after a surviving mutation; confirmed by running the mutant, which
+			// returns the case arm here where the guarded code returns "".
+			name:  "a stray esac must not cancel a later real case",
+			lines: []string{ours, "esac", "case x in", "  y) alias bob=/in/case ;;", "esac"},
+			want:  "",
+		},
+		{
+			name:  "two stray esacs must not cancel a later real case",
+			lines: []string{ours, "esac", "esac", "case x in", "  y) alias bob=/in/case ;;", "esac"},
+			want:  "",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := bobShellShadowedBy(tc.lines); got != tc.want {
+				t.Errorf("bobShellShadowedBy() = %q, want %q\nlines: %q", got, tc.want, tc.lines)
+			}
+		})
+	}
+}
+
+// TestBobShellDisable_StillOwnsOurAliasInsideACase guards the deliberate asymmetry: the
+// `conditional` flag suppresses the SHADOW claim only. Ownership is unchanged, so if our
+// own alias sits inside a case arm, disable must still remove it — a scanner change that
+// made conditional lines invisible everywhere would silently leave it behind.
+func TestBobShellDisable_StillOwnsOurAliasInsideACase(t *testing.T) {
+	self := abctlForTest(t)
+	dir := t.TempDir()
+	rc := filepath.Join(dir, "zshrc")
+	body := "case x in\n  x) " + bobShellMarkerStart + "\n" + bobShellAliasLine(self) + "\n" +
+		bobShellMarkerEnd + " ;;\nesac\n"
+	if err := os.WriteFile(rc, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out strings.Builder
+	prev := bobShellSelfPath
+	bobShellSelfPath = self
+	defer func() { bobShellSelfPath = prev }()
+	if code := bobShellDisable(rc, true, &out, &out); code != 0 {
+		t.Fatalf("disable exit = %d, want 0:\n%s", code, out.String())
+	}
+	if after := mustRead(t, rc); strings.Contains(string(after), "exec --") {
+		t.Errorf("disable left our alias behind inside a case arm:\n%s", after)
+	}
+}
+
+// TestFirstWord covers the keyword test the case tracking rests on. `case` and `esac` are
+// shell keywords, so they only have that meaning as the first word of a command.
+func TestFirstWord(t *testing.T) {
+	for _, tc := range []struct{ in, want string }{
+		{"case x in", "case"},
+		{"  case x in", "case"},
+		{"\tcase x in", "case"},
+		{"esac", "esac"},
+		{"esac;", "esac"},
+		{"case;", "case"},
+		{"echo case", "echo"},
+		{"# case x in", ""},
+		{"   ", ""},
+		{"", ""},
+		{"alias bob=/x", "alias"},
+	} {
+		if got := firstWord(tc.in); got != tc.want {
+			t.Errorf("firstWord(%q) = %q, want %q", tc.in, got, tc.want)
 		}
 	}
 }

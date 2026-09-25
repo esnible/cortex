@@ -148,7 +148,21 @@ func runBobShell(args []string, stdout, stderr io.Writer) int {
 	// disable and status still work without it, falling back to the name test, so they
 	// carry on rather than refusing to run over a file they can very likely still read.
 	self, selfErr := abctlPath()
+	// Scoped to this call, not to the process — round 9's S5. The assignment used to
+	// be permanent, which is invisible in production (one call per process) and a
+	// latent order-dependence in tests: every test after one that reached runBobShell
+	// saw the test binary's own path still set. Reproduced before fixing — a later
+	// test read `/…/abctl.test` from a call it had nothing to do with, so whether
+	// commandIsOurAlias had a self-path arm at all depended on `-shuffle` order. The
+	// suite passed anyway, which is the problem: order-independent by luck.
+	//
+	// Restoring is the whole fix. The alternative the comment on the declaration
+	// considers — threading the value through ownedLines, bobShellAliasesIn and both
+	// rewriters — buys nothing here, because there is genuinely one value per call;
+	// what was wrong was its LIFETIME, not its being shared.
+	prevSelf := bobShellSelfPath
 	bobShellSelfPath = self
+	defer func() { bobShellSelfPath = prevSelf }()
 
 	switch action {
 	case "enable":
@@ -341,33 +355,35 @@ func unquoteShellWord(s string) (string, bool) {
 	return b.String(), true
 }
 
-// aliasRoutesThroughAbctl reports whether line defines `bob` as an alias that runs
-// some abctl's `exec -- bob` — this feature's mechanism, however it is spelled.
+// ONE QUESTION, ONE ANSWER. Whether a line defines `bob` as an alias running some
+// abctl's `exec -- bob` is answered in exactly one place: scanLine finds the command
+// starts, commandIsOurAlias judges each one. Rounds 5 and 6 left behind TWO predicates
+// for this (an exact-reconstruction one for file scope, a looser one inside a fence),
+// and keeping two was what let a live alias be invisible in one scope and claimed in
+// the other — the defect reported from both directions in rounds 6 and 7. Unquoting is
+// what makes a single answer possible: every spelling of the same alias reduces to the
+// same value before anything is compared.
 //
-// It replaces the two predicates rounds 5 and 6 left behind (an exact-reconstruction
-// one for file scope, a looser one for inside a fence). Keeping two was what let a
-// live alias be invisible in one scope and claimed in the other, which is the same
-// defect the reviewer reported from both directions in rounds 6 and 7. One question
-// deserves one answer, and unquoting makes a single answer possible: every spelling
-// of the same alias now reduces to the same value before anything is compared.
+// Round 9's S3: the `aliasRoutesThroughAbctl` wrapper over those two ended up with zero
+// production callers as the pipeline moved to whole-file scanning via commandStarts, and
+// a second predicate maintained only by its own tests is how the two-predicate split got
+// started. It now lives in the test file, which is where its callers are.
 //
-// It stays narrow in the way round 5 established. The discriminator is what the
-// alias INVOKES, not how it is written: `alias bob='/usr/local/bin/bob --fast'` is
-// the user's own alias to the real binary and is never ours, no matter where in the
-// file it sits, while `/b/abctl exec -- \bob` is this mechanism and nothing else.
+// The judgement stays narrow in the way round 5 established. The discriminator is what
+// the alias INVOKES, not how it is written: `alias bob='/usr/local/bin/bob --fast'` is
+// the user's own alias to the real binary and is never ours, no matter where in the file
+// it sits, while `/b/abctl exec -- \bob` is this mechanism and nothing else.
 // bobShellSelfPath is the absolute path of the running binary, as the alias would
-// spell it. Set once by runBobShell; empty in a context that never resolved it, which
-// only costs the self-path arm of aliasRoutesThroughAbctl.
+// spell it. Empty in a context that never resolved it, which only costs the self-path
+// arm of commandIsOurAlias.
+//
+// LIFETIME: set by runBobShell for the duration of one call and restored on return. It
+// is process-wide storage with call-scoped meaning, which is the narrowest thing that
+// works without threading the value through six call sites (see commandIsOurAlias for
+// why that plumbing is not worth it). Nothing here is safe for concurrent runBobShell
+// calls, and nothing needs to be: it is a CLI verb, invoked once per process, and the
+// restore exists for test isolation rather than for concurrency.
 var bobShellSelfPath string
-
-func aliasRoutesThroughAbctl(line string) bool {
-	for _, off := range scanLineStarts(line) {
-		if commandIsOurAlias(line[off:]) {
-			return true
-		}
-	}
-	return false
-}
 
 // scanLineStarts is scanLine's offsets for a single standalone line, for the callers
 // that have a line and no file context. Callers walking a whole file use
@@ -393,6 +409,21 @@ func scanLineStarts(line string) []int {
 // operand is split on the first `=` after unquoting, so a tab or any other whitespace
 // between words is just a word boundary; and the caller supplies the offset, so a
 // command after `;` is reached at all.
+//
+// WHERE THIS DELIBERATELY STOPS — round 9's S7. `eval "alias bob='…abctl exec -- \bob'"`
+// IS live in bash, and this returns false for it. That is the intended limit, not a gap
+// to close: the alias only exists after the shell expands a string, so recognising it
+// means evaluating the user's strings, and the whole design of this file is PARSE, DON'T
+// EXECUTE — sourcing an rc file to find out what it defines would run arbitrary code on
+// the user's machine. The cost of the limit is bounded and benign: status under-reports
+// an eval-wrapped alias, and enable may then add a second live one. The cost of closing
+// it is executing whatever the rc file says. Anyone tempted to "fix" this should note
+// that the same argument rules out `source`, command substitution, and any other
+// construct whose meaning is only known at run time.
+//
+// The same reasoning is why a subshell alias is NOT ours (see scanLine's subshell depth)
+// and why an eval-wrapped one is not: both are decided by reading, and reading is all
+// this code is allowed to do.
 func commandIsOurAlias(s string) bool {
 	words, ok := splitShellWords(s)
 	if !ok || len(words) < 2 || words[0] != "alias" {
@@ -461,8 +492,14 @@ func aliasValueRoutesThroughAbctl(value string) bool {
 	//
 	// bobShellSelfPath is a package-level value rather than a parameter threaded
 	// through ownedLines, bobShellAliasesIn and the two rewriters. It is genuinely
-	// one value per process, and passing it down six call sites would add exactly the
-	// plumbing this file is already too long for. Tests set it directly.
+	// one value per call, and passing it down six call sites would add exactly the
+	// plumbing this file is already too long for. Tests set it directly, via
+	// withSelfPath.
+	//
+	// Round 9's S5 objected to the package-level mutable. What it correctly identified
+	// was not the sharing but the LIFETIME: runBobShell used to set this and never put
+	// it back, so a test that called runBobShell left the test binary's path visible to
+	// every test after it. That is fixed at the assignment, not here.
 	if strings.Contains(filepath.Base(f[0]), "abctl") {
 		return true
 	}
@@ -633,6 +670,16 @@ func scanLine(line string, quote byte) (starts []int, endQuote byte) {
 	// is over-detection — and by MF2's own lesson over-detection is not the harmless
 	// direction: disable would have deleted a line the user wrote as a comment.
 	atWord := atStart
+	// subshell counts unclosed `(`. A command inside one runs in a CHILD shell, so an
+	// alias it defines is gone when the subshell exits: `( alias bob=… )` defines nothing
+	// in the parent, verified in both bash and zsh. Claiming it was an over-claim, and by
+	// MF2's lesson over-claiming is the dangerous direction — disable rewrote the line and
+	// left a bare `( `, an unterminated subshell that bash refuses to parse. That is
+	// round 9's MF1 failure mode in a construct the report reached only as a suggestion.
+	//
+	// Depth, not a boolean, so `( ( alias bob=… ) )` is handled and so a `)` that closes
+	// a subshell does not re-enable recording one level too early.
+	subshell := 0
 	for i := 0; i < len(line); i++ {
 		c := line[i]
 		switch {
@@ -662,7 +709,9 @@ func scanLine(line string, quote byte) (starts []int, endQuote byte) {
 			// review enumerated, and found by testing beyond them rather than by reading.
 			// shellWordAt already unquotes the word, so recording the start is the whole fix.
 			if atStart {
-				starts = append(starts, i)
+				if subshell == 0 {
+					starts = append(starts, i)
+				}
 				atStart = false
 			}
 			atWord = false
@@ -672,8 +721,16 @@ func scanLine(line string, quote byte) (starts []int, endQuote byte) {
 			// also does not stop a command from starting: bash runs `\alias bob=x`, the
 			// backslash only suppressing alias expansion of the word itself. So a start
 			// already recorded at this offset stands, and the escaped byte is consumed.
+			//
+			// The subshell gate is needed here for the same reason as in the other two
+			// recording arms, and this arm shipped without it: `( \alias bob=… )` was
+			// claimed while bash defines no `bob` in the parent. Found because the
+			// quote-arm mutation SURVIVED, and probing why turned up a fourth spelling
+			// the gate had never been applied to rather than a gate that was dead.
 			if atStart {
-				starts = append(starts, i)
+				if subshell == 0 {
+					starts = append(starts, i)
+				}
 				atStart = false
 			}
 			atWord = false
@@ -683,6 +740,14 @@ func scanLine(line string, quote byte) (starts []int, endQuote byte) {
 			// and it does begin a new word.
 			atWord = true
 		case ';', '&', '|', '(', ')', '{', '}', '\n':
+			switch c {
+			case '(':
+				subshell++
+			case ')':
+				if subshell > 0 {
+					subshell--
+				}
+			}
 			atStart = true
 			atWord = true
 		case '#':
@@ -696,7 +761,11 @@ func scanLine(line string, quote byte) (starts []int, endQuote byte) {
 			atStart = false
 		default:
 			if atStart {
-				starts = append(starts, i)
+				// Inside a subshell the command is real but its alias never reaches the
+				// parent shell, so it is not ours to find or to edit.
+				if subshell == 0 {
+					starts = append(starts, i)
+				}
 				atStart = false
 			}
 			atWord = false
@@ -792,7 +861,28 @@ var heredocDelimRe = regexp.MustCompile(`^-?[ \t]*(?:'([^']*)'|"([^"]*)"|\\?([A-
 // contexts, or `$( )` nesting. It models quoting and heredocs, which are what put
 // non-command text in an rc file, and it errs toward finding a command start (so a
 // construct it does not know cannot hide a live alias from status).
-func commandStarts(lines []string) []lineCommands {
+// The second and third results are the scanner's TERMINAL state: the quote still open
+// at end of file (0 if none) and the heredoc delimiter still awaited (empty if none).
+// A file ending in either is one whose last construct is unterminated, so appending to
+// it appends INTO that construct. That is round 9's MF4: enable appended a block that
+// the open heredoc or quote swallowed, reporting "Enabled" over zero live aliases, and
+// did it again on every run because status could not see what it had written.
+// firstWord returns the line's first whitespace-delimited word with any trailing `;`
+// stripped, or "" for a blank or comment line. Used only to spot `case` / `esac`, which
+// are shell KEYWORDS and so must be the first word of a command to have that meaning —
+// `echo case` opens nothing.
+func firstWord(l string) string {
+	t := strings.TrimSpace(l)
+	if t == "" || strings.HasPrefix(t, "#") {
+		return ""
+	}
+	if idx := strings.IndexAny(t, " \t"); idx >= 0 {
+		t = t[:idx]
+	}
+	return strings.TrimSuffix(t, ";")
+}
+
+func commandStarts(lines []string) (cmds []lineCommands, openQuote byte, openHeredoc string) {
 	out := make([]lineCommands, len(lines))
 	var quote byte
 	delim, dashed := "", false
@@ -805,16 +895,36 @@ func commandStarts(lines []string) []lineCommands {
 	// command BEGAN. That line is the one a rewrite can meaningfully act on, and it is
 	// the one the user reads as "the alias line".
 	carry, carryAt := "", -1
+	// See lineCommands.conditional: depth of `case … esac` nesting.
+	caseDepth := 0
 	for i, l := range lines {
 		if delim != "" {
 			t := l
 			if dashed {
 				t = strings.TrimLeft(t, "\t")
 			}
+			// The body is data; the terminator is a boundary, so only the body is flagged.
+			out[i].inData = strings.TrimRight(t, " \t") != delim
 			if strings.TrimRight(t, " \t") == delim {
-				delim, dashed = "", false // the terminator is a boundary, not body
+				delim, dashed = "", false
 			}
 			continue // heredoc body and its terminator hold no command of ours
+		}
+		// A line reached while a quote from an earlier line is still open is the
+		// continuation of a quoted string: data, not code.
+		out[i].inData = quote != 0
+		// `case` opens a conditional region and `esac` closes it. Depth, not a boolean,
+		// so a nested case does not re-enable claiming one level too early — the same
+		// reasoning `subshell` uses one scope down. The opener line itself is inside the
+		// region, which is why this is set before the word test below rather than after.
+		if caseDepth > 0 {
+			out[i].conditional = true
+		}
+		if w := firstWord(l); w == "case" {
+			caseDepth++
+			out[i].conditional = true
+		} else if w == "esac" && caseDepth > 0 {
+			caseDepth--
 		}
 		text, at := l, i
 		if carry != "" {
@@ -848,7 +958,16 @@ func commandStarts(lines []string) []lineCommands {
 		// shape with single quotes, with `python3 -c "…"` (58→24, collapsing a script to
 		// two quote characters), and with a DOC='…' holding the user's secrets.
 	}
-	return out
+	// A command left dangling by a trailing backslash at EOF never got scanned, so its
+	// text is reported from the carry rather than lost.
+	if carry != "" && carryAt >= 0 {
+		starts, end := scanLine(carry, quote)
+		out[carryAt].text = carry
+		out[carryAt].starts = append(out[carryAt].starts, starts...)
+		out[carryAt].through = len(lines) - 1
+		quote = end
+	}
+	return out, quote, delim
 }
 
 // lineCommands is what commandStarts knows about one physical line: the command text
@@ -858,12 +977,271 @@ func commandStarts(lines []string) []lineCommands {
 type lineCommands struct {
 	text   string
 	starts []int
+	// inData is set when this physical line lies inside a heredoc body or the
+	// continuation of a quoted string — a region the shell reads as DATA rather than
+	// as commands. It is not the same as "no starts": a comment, a blank line and a
+	// bare continuation all hold no command while still being code the user can edit,
+	// whereas a line in a data region must not be touched at all.
+	//
+	// Round 9's MF3 is what this field is for. The marker scan keyed on TrimSpace(l)
+	// alone, so a `# >>> cortex abctl (bobshell) >>>` sitting inside a heredoc body was
+	// claimed as one of our markers; enable's file-wide claim then rewrote it, injecting
+	// an alias line into the user's heredoc. The scanner already knew that line was data
+	// — it `continue`d over it, leaving a zero-valued entry — and threw the knowledge
+	// away. Now it reports it.
+	inData bool
+	// conditional is set when this line lies inside a `case … esac`, where a command runs
+	// only if its pattern matches. Purely for REPORTING: the shadow scan must not claim
+	// that such a definition wins, because usually it does not run at all.
+	//
+	// Found by the round-9 real-shell sweep, in both bash and zsh. `case x in y) alias
+	// bob=/in/case ;; esac` never matches, so bob kept routing through Cortex, while
+	// status reported "a later alias overrides it" and told the user to delete a line that
+	// does nothing. The scanner's `)`-as-separator handling is what exposes the arm as a
+	// command — correct for ownership (disable must cover the text it rewrites) and wrong
+	// for "what does the shell end up with".
+	//
+	// Deliberately NOT modelled like `subshell`, which suppresses recording entirely. A
+	// case arm is real code on a real line that ownership still has to reason about; only
+	// the winner claim is unsafe. Marking the line and letting each caller decide keeps
+	// the ownership behaviour these constructs already had.
+	conditional bool
 	// through is the last physical line this command occupies. It equals the line's own
 	// index except for a backslash-continued command, whose ownership must cover every
 	// line it spans: marking only the line that began it left the continuation — which
 	// is where the `bob=` text actually sits — in the file after disable, so the alias
 	// stayed live. Found by executing MF3's fifth spelling rather than by reading.
 	through int
+}
+
+// commandDefinesBob reports whether a command defines an alias named `bob` AT ALL,
+// ours or anyone's. commandIsOurAlias answers "is this the one we manage"; this answers
+// the prior question "does this line change what `bob` means".
+//
+// They are deliberately NOT one predicate with a flag, and are deliberately not two
+// independent parsers either: this shares commandIsOurAlias's word splitting and its
+// `--` handling by construction, differing only in that it does not look at the value.
+// Two questions, one parse.
+func commandDefinesBob(s string) bool {
+	words, ok := splitShellWords(s)
+	if !ok || len(words) < 2 || words[0] != "alias" {
+		return false
+	}
+	rest := words[1:]
+	for len(rest) > 0 && rest[0] == "--" {
+		rest = rest[1:]
+	}
+	for _, w := range rest {
+		if name, _, found := strings.Cut(w, "="); found && name == "bob" {
+			return true
+		}
+	}
+	return false
+}
+
+// definesBob reports whether any command attributed to this line defines `bob`.
+func (lc lineCommands) definesBob() bool {
+	for _, off := range lc.starts {
+		if commandDefinesBob(lc.text[off:]) {
+			return true
+		}
+	}
+	return false
+}
+
+// bobShellShadowedBy returns the foreign `alias bob=` line that WINS over ours, or ""
+// when nothing does. The shell keeps the last definition it reads, so ours is only in
+// effect if no other definition of `bob` follows it.
+//
+// ROUND 9's S8. The reported symptom was that status cannot tell a gutted fence from a
+// fence holding an alias it does not recognise — both print the same "not enabled". That
+// is true, but executing the fixtures turned up something worse behind it, in the
+// opposite direction: status says ENABLED over a file where `bob` does not route through
+// Cortex at all.
+//
+// Executed. A file whose fence holds a foreign alias:
+//
+//	# >>> cortex abctl (bobshell) >>>
+//	alias bob=/usr/local/bin/bob
+//	# <<< cortex abctl (bobshell) <<<
+//
+// status reported "not enabled", so enable ran. enable owns the two MARKERS file-wide
+// but correctly does not own the user's alias, so the fresh block landed where the start
+// marker was and the foreign alias came to rest AFTER the end marker. enable printed
+// "Enabled — new shells route `bob` through Cortex", exit 0; status then printed
+// "enabled"; and `bash -c 'source rc; alias bob'` printed
+// `alias bob='/usr/local/bin/bob'`. Both commands claimed the feature was on while the
+// shell had it off — enable having created that state itself.
+//
+// The same thing happens with no fence involved, which is why the fix is here and not in
+// the fence handling: a user who writes their own `alias bob=…` anywhere below our block
+// silently overrides it, and status has always called that "enabled".
+//
+// Only LATER definitions shadow. An earlier one is overridden by ours and is not a
+// problem to report — saying so would make the common "I used to alias bob myself"
+// migration look broken when it is exactly what enable is for.
+func bobShellShadowedBy(lines []string) string {
+	cmds, _, _ := commandStarts(lines)
+	// PER COMMAND, not per line. A line-granular version of this was written first and a
+	// mutation survivor exposed it: `alias bob='…abctl exec -- \bob'; alias bob=/other`
+	// is ONE line that both is ours and is shadowed, so testing "is this line ours"
+	// classified it as the last of ours and never looked inside it. bash defines
+	// `bob=/other` for that file, and status called it enabled — the same
+	// tool-disagrees-with-the-shell defect S8 is about, one granularity down. The shell
+	// reads commands in order, so that is the order to ask in.
+	type cmdRef struct {
+		line int
+		text string
+	}
+	var seq []cmdRef
+	for i := range lines {
+		// inData: a definition inside a heredoc body or a quoted string is text, not a
+		// command, and does not shadow anything. Skipping it here for the same reason
+		// ownedLinesFor does.
+		//
+		// REDUNDANT for the loop below, and kept deliberately. commandStarts already
+		// reports no command starts on a data line (`starts=[]` inside a heredoc body),
+		// so removing this gate changes no answer today — a mutation removing it survives,
+		// and probing confirmed the equivalence rather than a weak test. It stays because
+		// it states the invariant the inner loop silently depends on: if starts ever
+		// became non-empty on a data line, every reader of this function would want the
+		// skip, and the cost of keeping it is one comparison per line.
+		if cmds[i].inData {
+			continue
+		}
+		// conditional: a command in a `case` arm runs only on a pattern match, so it
+		// cannot be claimed as the definition that WINS. Skipping it here and not in
+		// commandStarts keeps ownership unchanged — disable still covers such a line if
+		// it is ours. See lineCommands.conditional for the sweep that found this.
+		if cmds[i].conditional {
+			continue
+		}
+		for _, off := range cmds[i].starts {
+			seq = append(seq, cmdRef{line: i, text: cmds[i].text[off:]})
+		}
+	}
+	last := -1
+	for i, c := range seq {
+		if commandIsOurAlias(c.text) {
+			last = i
+		}
+	}
+	if last < 0 {
+		return ""
+	}
+	for _, c := range seq[last+1:] {
+		// No not-ours test here: anything after the LAST of ours is by definition not
+		// ours. (The line-granular version needed one, and it was dead code — which is
+		// how the missing case above was found.)
+		if commandDefinesBob(c.text) {
+			// The whole line, trimmed: the command's own text would show
+			// `alias bob=/other` shorn of the context that explains where it came from,
+			// and the user has to find this line in a file to act on it.
+			return strings.TrimSpace(lines[c.line])
+		}
+	}
+	return ""
+}
+
+// commandLooksLikeOurAliasFor reports whether any command on the line defines bob as
+// exactly the alias `self` would write. It is the per-command form of the whole-line
+// equality status uses, and exists only to tell that check's two failure causes apart:
+// "names a different abctl" versus "names this one, on a line that has more on it".
+//
+// Not a second ownership predicate — it decides nothing and is never consulted about
+// what to write. It compares against bobShellAliasLine(self), the same single source the
+// whole-line test uses, so the two cannot disagree about what our alias looks like.
+func commandLooksLikeOurAliasFor(line, self string) bool {
+	want := strings.TrimSpace(bobShellAliasLine(self))
+	cmds, _, _ := commandStarts([]string{line})
+	if len(cmds) != 1 {
+		return false
+	}
+	for _, off := range cmds[0].starts {
+		// Rebuild what this command spells and compare it to the canonical line. The
+		// equality is the entire predicate: it was written with a commandIsOurAlias
+		// conjunct and two HasPrefix guards in front of it, and probing found all three
+		// dead — reconstructAliasCommand(w) == want was already true only for commands
+		// commandIsOurAlias accepts, so the extra conditions could not change an answer.
+		// Two mutation survivors are what sent me looking (removing the conjunct changed
+		// nothing, which is the signature of a condition that never decides).
+		// The ok guard is load-bearing, not defensive. splitShellWords returns PARTIAL
+		// words when it fails, and for `alias bob='…\bob' '` — a trailing unbalanced
+		// quote — those partial words reconstruct to EXACTLY the canonical line. Dropping
+		// the guard therefore reports a line bash cannot even parse as naming this abctl.
+		// Found by a surviving mutation; probed rather than assumed.
+		if w, ok := splitShellWords(cmds[0].text[off:]); ok {
+			if reconstructAliasCommand(w) == want {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// reconstructAliasCommand renders a split alias command back into the canonical single
+// line form bobShellBlock writes, so it can be compared to it.
+//
+// It always re-adds the closing quote, and that is what makes the caller's exact equality
+// safe against the truncation case: a hand-edit that cuts our alias short reconstructs to
+// `alias bob='/opt/abctl exec'` — which diverges from the canonical line AT the quote and
+// so is not a prefix of it either. Loosening the caller to strings.HasPrefix therefore
+// cannot be killed by a test (it is an equivalent mutant given this function), and the
+// guarantee is here rather than there. Change the quoting and that stops holding.
+func reconstructAliasCommand(words []string) string {
+	if len(words) < 2 {
+		return ""
+	}
+	out := words[0]
+	for _, w := range words[1:] {
+		name, value, found := strings.Cut(w, "=")
+		if !found {
+			out += " " + w
+			continue
+		}
+		out += " " + name + "='" + value + "'"
+	}
+	return out
+}
+
+// findBobShellFence returns the line indexes of the first start marker and the first end
+// marker after it. Reading only — it decides nothing about ownership, which is
+// ownedLinesFor's job and deliberately stricter (a marker is owned only next to a live
+// alias of ours, which is what keeps a pasted --help transcript safe). status uses this
+// to DESCRIBE a fence it will not touch.
+func findBobShellFence(lines []string) (start, end int, found bool) {
+	cmds, _, _ := commandStarts(lines)
+	start = -1
+	for i, l := range lines {
+		// A marker inside a heredoc body is text; same gate as everywhere else.
+		if cmds[i].inData {
+			continue
+		}
+		t := strings.TrimSpace(l)
+		if start < 0 && t == bobShellMarkerStart {
+			start = i
+			continue
+		}
+		if start >= 0 && t == bobShellMarkerEnd {
+			return start, i, true
+		}
+	}
+	return -1, -1, false
+}
+
+// firstBobDefinitionIn returns the first live `alias bob=` between the given lines
+// (inclusive) that is not ours, or "" if there is none.
+func firstBobDefinitionIn(lines []string, from, to int) string {
+	cmds, _, _ := commandStarts(lines)
+	for i := from; i <= to && i < len(lines); i++ {
+		if i < 0 || cmds[i].inData {
+			continue
+		}
+		if cmds[i].definesBob() && !cmds[i].holdsOurAlias() {
+			return strings.TrimSpace(lines[i])
+		}
+	}
+	return ""
 }
 
 // holdsOurAlias reports whether any command attributed to this line is our alias.
@@ -916,7 +1294,7 @@ func bobShellBlock(abctlPath string) string {
 //     applied at file scope and the heredoc was inside the fence's reach either way.
 //
 //   - It is either one of our markers, or an alias that routes bob through an abctl
-//     (aliasRoutesThroughAbctl), anywhere in the file, fenced or not.
+//     (commandIsOurAlias), anywhere in the file, fenced or not.
 //
 // Note what is NOT here: position. Being inside a fence does not make a line ours,
 // and being outside one does not make it safe. Both halves have been learned the
@@ -929,7 +1307,7 @@ func bobShellBlock(abctlPath string) string {
 // Provenance is the only test, and it is per line.
 //
 // That one rule replaced the two-predicate, two-pass, pair-matching arrangement
-// rounds 5 and 6 built up. The reason it can is aliasRoutesThroughAbctl: unquoting
+// rounds 5 and 6 built up. The reason it can is commandIsOurAlias: unquoting
 // before comparing collapses every spelling of an alias onto one value, so the
 // strict-inside / loose-outside split those rounds needed — and the contradiction
 // between them the reviewer reported from both directions — stops existing.
@@ -956,14 +1334,23 @@ func ownedLines(lines []string) []int { return ownedLinesFor(lines, false) }
 //     orphan and the second absorbed it, so two identical calls produced two
 //     different files.
 func ownedLinesFor(lines []string, installing bool) []int {
-	cmds := commandStarts(lines)
+	cmds, _, _ := commandStarts(lines)
 	live := make([]bool, len(lines))
 	marker := make([]bool, len(lines))
 	for i, l := range lines {
 		t := strings.TrimSpace(l)
 		// A marker is recognised whether or not the line holds a command: the markers
-		// are comments, so commandStarts reports no command on them. What it does still
-		// gate is a marker inside a heredoc or a quoted string, which is data.
+		// are comments, so commandStarts reports no command on them. What it must still
+		// gate is a marker inside a heredoc body or a quoted string, which is DATA — and
+		// round 9's MF3 is that this comment described a gate the code did not have. The
+		// branch `continue`d before consulting cmds[i], so a marker pasted inside a
+		// heredoc was recorded; enable's file-wide claim (see `installing` below) then
+		// rewrote it, injecting an alias line INTO the user's heredoc. Executed: three
+		// enables took the file 138→173→208→243 bytes, each reporting "Enabled", with
+		// bash defining no `bob` at any point and disable unable to recover any of it.
+		if cmds[i].inData {
+			continue
+		}
 		if t == bobShellMarkerStart || t == bobShellMarkerEnd {
 			// Unconditionally a marker: t is the TRIMMED line and has to equal a marker
 			// constant exactly to get here, and both constants begin with '#', so this line
@@ -1038,9 +1425,14 @@ func ownedLinesFor(lines []string, installing bool) []int {
 	return out
 }
 
-// isCommentLine reports whether the line's first non-blank character is `#`, making
-// the whole line a comment. Used only to recognise our own markers, which are
-// comments and therefore carry no command start of their own.
+// isCommentLine reports whether the line's first non-blank character is `#`, making the
+// whole line a comment.
+//
+// Round 9's S4: the doc used to say "used only to recognise our own markers". It is not —
+// marker recognition is an exact string match on the trimmed line (see ownedLinesFor), and
+// this helper is used to walk PAST blank lines and comments when deciding whether a marker
+// fence is adjacent to the alias it should contain. Naming the wrong caller is worse than
+// naming none, because it invites a reader to delete the real one as unreachable.
 func isCommentLine(l string) bool {
 	t := strings.TrimLeft(l, " \t")
 	return strings.HasPrefix(t, "#")
@@ -1050,11 +1442,39 @@ func isCommentLine(l string) bool {
 //
 // Plural because a damaged file can hold more than one, and status has to be able to
 // say so rather than reporting the first and implying it is the only one. The filter
-// is aliasRoutesThroughAbctl, not the `alias bob=` prefix the single-valued version
-// used: that prefix would report a user's own alias as though it were ours, the
-// round-4 defect in a different function. Iterating ownedLines rather than the raw
+// is the scanner's own verdict (cmds[i].holdsOurAlias), not the `alias bob=` prefix
+// the single-valued version used: that prefix would report a user's own alias as
+// though it were ours, the round-4 defect in a different function. (Round 9's S4:
+// this sentence still named aliasRoutesThroughAbctl after S3 moved that wrapper out of
+// production — a comment naming a deleted mechanism is how a reader concludes the
+// code has two of them.) Iterating ownedLines rather than the raw
 // file also means heredoc bodies are skipped here, so status no longer reports an
 // alias that exists only as data inside someone's embedded script.
+// bobShellLinesDropped reports the lines of ours that `before` held and `after` does not,
+// in file order. It exists for round 9's S1: enable's consent prompt has to be able to
+// name what the write DELETES, not only what it adds.
+//
+// It compares the two slices the write is actually made of rather than re-deciding
+// ownership, so it cannot disagree with the write it describes — the failure mode rounds 6
+// and 7 each produced by keeping a second predicate. Only aliases of ours are reported:
+// marker comments moving is bookkeeping, not a change to the user's content, and listing a
+// fence the block above already shows would bury the line that matters.
+func bobShellLinesDropped(before, after []string) []string {
+	kept := map[string]int{}
+	for _, l := range bobShellAliasesIn(after) {
+		kept[l]++
+	}
+	var gone []string
+	for _, l := range bobShellAliasesIn(before) {
+		if kept[l] > 0 {
+			kept[l]--
+			continue
+		}
+		gone = append(gone, l)
+	}
+	return gone
+}
+
 func bobShellAliasesIn(lines []string) []string {
 	// The scanner is asked, not re-derived. This function used to re-test each owned
 	// line with `aliasRoutesThroughAbctl(strings.TrimSpace(lines[i]))`, which is a
@@ -1062,7 +1482,7 @@ func bobShellAliasesIn(lines []string) []string {
 	// and 7 each fixed in one place and left in another. It disagreed with ownedLines on
 	// every continued command: enable and disable handled `alias \` + newline + `bob=…`
 	// correctly while status called the same file "not enabled".
-	cmds := commandStarts(lines)
+	cmds, _, _ := commandStarts(lines)
 	owned := map[int]bool{}
 	for _, i := range ownedLines(lines) {
 		owned[i] = true
@@ -1141,6 +1561,71 @@ func replaceBobShellBlock(lines []string, block string) []string {
 //
 // Exactly the block, and nothing adjacent to it: enable appends no separator, so
 // there is none to reclaim, and a blank line before the block is the user's.
+// exciseOurAlias removes only the owned alias command from lc's text, returning the
+// remainder and whether anything else on the line survived. It is the answer to round
+// 9's MF2, whose root cause is general and worth stating plainly: OWNERSHIP IS PER
+// LINE, BUT A COMMAND CAN BE A PROPER SUBSTRING OF ONE. Every non-case shape looked
+// safe only because the owned command happened to be the whole line.
+//
+// A `case` arm is the shape that exposed it — `xterm*) alias bob=… ;;` — but it is not
+// the only one: `x=1; alias bob=…; y=2` lost the user's x=1 and y=2 as well, which was
+// worse than the report and found by executing the round-8 test row that had this exact
+// shape and asserted only the alias count.
+//
+// The extent of a command is from its start offset to the start of the next command on
+// the line (or end of text). The separator that ends it belongs to it — dropping
+// `alias bob=…;` and keeping `y=2` is right, whereas keeping the `;` would leave a
+// leading separator. A trailing `;;` is a case-arm terminator rather than a separator,
+// so it survives: without it the arm runs into the next one.
+func exciseOurAlias(lc lineCommands) (string, bool) {
+	text := lc.text
+	// starts is already ascending, so "the next start" is well defined. A defensive
+	// sort.Ints was written here and mutation testing showed it unobservable; probing
+	// confirmed why rather than leaving it at that. scanLine scans left to right, and the
+	// one way starts accumulate across calls — a continued command appending to the line
+	// it began at — appends higher offsets to lower ones, because the joined text extends
+	// the line rather than preceding it. Verified over five shapes including `x=1; alias \`
+	// + continuation and a continued case arm. Deleted rather than pinned by a test that
+	// would assert nothing.
+	starts := lc.starts
+	keep := ""
+	prev := 0
+	for _, off := range starts {
+		if off > len(text) {
+			continue
+		}
+		if !commandIsOurAlias(text[off:]) {
+			continue
+		}
+		end := len(text)
+		for _, next := range starts {
+			if next > off && next < end {
+				end = next
+			}
+		}
+		// A case-arm terminator is not ours to remove: it closes the arm, not the command.
+		seg := text[off:end]
+		if t := strings.TrimRight(seg, " \t"); strings.HasSuffix(t, ";;") {
+			end = off + strings.LastIndex(seg[:len(t)], ";;")
+		}
+		keep += text[prev:off]
+		prev = end
+	}
+	if prev == 0 {
+		// Nothing of ours was excised. That means this line is owned for a reason other
+		// than carrying the alias — our marker comments, which hold no command at all —
+		// and those are whole-line drops. Returning "survives" here kept the fence behind
+		// after disable, caught by round 8's own round-trip tests.
+		return "", false
+	}
+	keep += text[prev:]
+	// Only whitespace and separators left means the line held nothing but our command.
+	if strings.TrimSpace(strings.Trim(strings.TrimSpace(keep), ";&|")) == "" {
+		return "", false
+	}
+	return keep, true
+}
+
 func removeBobShellBlock(lines []string) ([]string, bool) {
 	owned := ownedLines(lines)
 	if len(owned) == 0 {
@@ -1174,9 +1659,38 @@ func removeBobShellBlock(lines []string) ([]string, bool) {
 	// construct syntactically whole while leaving nothing of ours behind. It is only
 	// done where deletion would actually orphan something, so the common case (a block
 	// at file scope) still round-trips byte-identically, which the header promises.
+	// A line carrying non-owned text keeps it: see exciseOurAlias. Deciding this BEFORE
+	// noopSubstitutions matters, because a line that survives excision is not a dropped
+	// line, so it neither needs nor may have a `:` substituted for it.
+	cmds, _, _ := commandStarts(lines)
+	partial := map[int]string{}
+	for i := range lines {
+		if !drop[i] {
+			continue
+		}
+		// A continued command is handled here too, and deliberately. A `through != i`
+		// guard was written first, reasoning that excising within a multi-line span was
+		// not meaningful — and mutation testing showed the guard SURVIVED, which on
+		// probing was because it is worse than its absence, not because it was untested.
+		// cmds[i].text is the whole backslash-joined command, so the remainder lands on
+		// the line the command began at and the continuation lines drop as they should.
+		// With the guard, `alias \` + `bob=…; y=2` lost the user's y=2, `x=1; alias \`
+		// + `bob=…` lost x=1, and a continued case arm regressed to the invalid
+		// `case $T in` / `:` / `esac` that is this round's MF1 — so the guard
+		// reintroduced the very defect this change exists to fix, in a shape the report
+		// did not reach. All three verified against bash.
+		if rest, survives := exciseOurAlias(cmds[i]); survives {
+			partial[i] = rest
+			delete(drop, i)
+		}
+	}
 	keepAsNoop := noopSubstitutions(lines, drop)
 	out := make([]string, 0, len(lines)-len(owned))
 	for i, l := range lines {
+		if rest, ok := partial[i]; ok {
+			out = append(out, rest)
+			continue
+		}
 		if !drop[i] {
 			out = append(out, l)
 			continue
@@ -1365,6 +1879,26 @@ func writeRC(path string, lines []string, trailingNewline bool) error {
 	// filesystem a second time and could get a different answer if the link moved in
 	// between. Now the path the user was shown and the path written are the same
 	// value, which is a property no test has to defend.
+	// Only the immediate parent, and only if it is already there. MkdirAll would
+	// happily build a whole tree for a dangling link — `ln -s ~/dotfiles/zshrc
+	// ~/.zshrc` with the repo not yet cloned silently created three directories at a
+	// location the "Adds to ~/.zshrc" message never mentions. An rc file's directory
+	// existing is the normal case; conjuring one is a side effect nobody consented to,
+	// and the error names the directory so the fix is obvious.
+	//
+	// Round 9's S9: this ran AFTER the backup write. That was harmless rather than
+	// wrong — `.bak` lands in the same directory as `path`, so a missing parent makes
+	// the ReadFile above fail and the backup block never fires; executed against a link
+	// into a missing directory, enable exits 1 with no directory and no stray `.bak`.
+	// But that safety rests on where the backup happens to be written, which is not a
+	// property anyone changing the backup path would think to preserve. Checking first
+	// makes the guarantee independent of it: nothing is written before the path the
+	// caller asked for is known to be writable at all.
+	if dir := filepath.Dir(path); dir != "" {
+		if _, err := os.Stat(dir); err != nil {
+			return fmt.Errorf("directory %s does not exist: create it first, or point --rc somewhere else", dir)
+		}
+	}
 	// 0644 for a file we are creating, not 0600: the comment above about not
 	// tightening an existing rc file's mode applies just as much to the one we make,
 	// and every shell's own rc file is world-readable. An existing file's mode wins
@@ -1379,17 +1913,6 @@ func writeRC(path string, lines []string, trailingNewline bool) error {
 			if werr := os.WriteFile(bak, cur, mode); werr != nil {
 				return fmt.Errorf("writing backup %s: %w", bak, werr)
 			}
-		}
-	}
-	// Only the immediate parent, and only if it is already there. MkdirAll would
-	// happily build a whole tree for a dangling link — `ln -s ~/dotfiles/zshrc
-	// ~/.zshrc` with the repo not yet cloned silently created three directories at a
-	// location the "Adds to ~/.zshrc" message never mentions. An rc file's directory
-	// existing is the normal case; conjuring one is a side effect nobody consented to,
-	// and the error names the directory so the fix is obvious.
-	if dir := filepath.Dir(path); dir != "" {
-		if _, err := os.Stat(dir); err != nil {
-			return fmt.Errorf("directory %s does not exist: create it first, or point --rc somewhere else", dir)
 		}
 	}
 	tmp := path + ".tmp"
@@ -1411,6 +1934,23 @@ func bobShellEnable(rcPath, abctlPath string, yes bool, stdout, stderr io.Writer
 		fmt.Fprintf(stderr, "abctl: %v\n", err)
 		return 1
 	}
+	// MF4: a file whose last construct is unterminated would SWALLOW an appended block.
+	// The scanner's terminal state is the whole test, and refusing is the only honest
+	// answer — appending is guaranteed inert, and it is inert invisibly: status cannot
+	// see a block that is heredoc data, so enable appends another one on every run and
+	// disable can never recover any of them. Executed before the fix, two enables took
+	// such a file 105→140→175 bytes, each printing "Enabled", with bash defining no
+	// `bob`. Refusing costs a user with a genuinely broken rc file nothing: their shell
+	// is already failing to parse it, and the diagnostic names the construct.
+	if _, openQuote, openHeredoc := commandStarts(lines); openQuote != 0 || openHeredoc != "" {
+		what := fmt.Sprintf("an unterminated %c quote", openQuote)
+		if openHeredoc != "" {
+			what = fmt.Sprintf("an unterminated heredoc (still waiting for %s)", openHeredoc)
+		}
+		fmt.Fprintf(stderr, "abctl: %s ends inside %s, so anything added would land inside it rather than run.\n", rcPath, what)
+		fmt.Fprintf(stderr, "Close the construct (your shell cannot parse this file either) and run enable again.\n")
+		return 1
+	}
 	block := bobShellBlock(abctlPath)
 	updated := replaceBobShellBlock(lines, block)
 	if strings.Join(updated, "\n") == strings.Join(lines, "\n") {
@@ -1422,6 +1962,27 @@ func bobShellEnable(rcPath, abctlPath string, yes bool, stdout, stderr io.Writer
 	}
 
 	fmt.Fprintf(stdout, "Adds to %s:\n%s\n", rcPath, indentBlock(block))
+	// ROUND 9's S1, open since round 5: "Nothing else in the file changes" was false, and
+	// the consent prompt said "Adds" over a write that also DELETES. enable reclaims every
+	// alias of ours in the file, wherever it sits — that is deliberate (it is what stops a
+	// stale alias from a moved binary shadowing the new one, and what keeps the file from
+	// accumulating duplicates), but consenting to an addition and getting a deletion is
+	// not something the user agreed to.
+	//
+	// Executed, before this: a file holding `alias bob='/other/abctl exec -- \bob'` had
+	// that line silently replaced, and one holding TWO of our aliases lost the second
+	// entirely — reported as "Adds", with "Nothing else in the file changes" printed
+	// directly underneath. Two rounds of reviewers read that sentence as covering the
+	// whole write, which is exactly how it reads.
+	//
+	// The removals are not re-derived: they are the owned lines that survive in `lines`
+	// and are gone from `updated`, which is the write itself being described rather than a
+	// second opinion about it. A second predicate here is how rounds 6 and 7 got their
+	// contradictions.
+	if gone := bobShellLinesDropped(lines, updated); len(gone) > 0 {
+		fmt.Fprintf(stdout, "Removes from %s (superseded by the block above):\n%s\n",
+			rcPath, indentBlock(strings.Join(gone, "\n")+"\n"))
+	}
 	// Resolved ONCE, here, and handed to writeRC — so the file this message describes
 	// and the file that gets written cannot be two different files. They could before:
 	// each called resolveRC separately, straddling the prompt, the mode read, the
@@ -1446,7 +2007,14 @@ func bobShellEnable(rcPath, abctlPath string, yes bool, stdout, stderr io.Writer
 	// link too. writeRC only backs up what it could read, so there is nothing to keep
 	// a copy of, and nothing else in the file to leave alone either.
 	if _, serr := os.Stat(target); serr == nil {
-		fmt.Fprintf(stdout, "Nothing else in the file changes; a copy is kept as %s.bak\n\n", written)
+		// "Nothing else" is only true when nothing else went. When our own aliases were
+		// reclaimed from elsewhere in the file, the honest sentence names them as the
+		// exception rather than asserting a blanket that the lines above contradict.
+		what := "Nothing else in the file changes"
+		if len(bobShellLinesDropped(lines, updated)) > 0 {
+			what = "Nothing else in the file changes, beyond the lines listed above"
+		}
+		fmt.Fprintf(stdout, "%s; a copy is kept as %s.bak\n\n", what, written)
 	} else {
 		fmt.Fprintf(stdout, "%s does not exist yet; it will be created with just this block.\n\n", written)
 	}
@@ -1458,6 +2026,21 @@ func bobShellEnable(rcPath, abctlPath string, yes bool, stdout, stderr io.Writer
 	if err := writeRC(target, updated, trailingNewline); err != nil {
 		fmt.Fprintf(stderr, "abctl: %v\n", err)
 		return 1
+	}
+	// S8: do not claim the outcome without checking it. The unqualified sentence below
+	// is a statement about what the shell will do, and enable can produce a file where
+	// it is false — most sharply when a fence held a foreign alias, because enable's
+	// own rewrite is what moves that alias past our block. Checking `updated` means the
+	// claim is made against the bytes just written rather than against the intent.
+	//
+	// Not an error and not a failure to write: the block is installed and correct, and
+	// one line the user owns is in front of it. Exit 0, name the line, say what to do.
+	if shadow := bobShellShadowedBy(updated); shadow != "" {
+		fmt.Fprintf(stdout, "Wrote the block to %s, but `bob` does NOT route through Cortex yet:\n", rcPath)
+		fmt.Fprintf(stdout, "  %s\n", shadow)
+		fmt.Fprintln(stdout, "comes after it, and the shell uses the last definition it reads.")
+		fmt.Fprintln(stdout, "Remove that line, or move it above the cortex block, then re-check with `abctl configure bobshell status`.")
+		return 0
 	}
 	// An alias is read at shell startup, so the edit reaches new shells only. Saying
 	// so, and naming the command for this one, is the difference between "it worked"
@@ -1523,8 +2106,18 @@ func bobShellDisable(rcPath string, yes bool, stdout, stderr io.Writer) int {
 func bobShellStatus(rcPath string, stdout io.Writer) int {
 	lines, _, err := readRC(rcPath)
 	if err != nil {
-		fmt.Fprintf(stdout, "not enabled (%v)\n", err)
-		return 0
+		// "unknown", not "not enabled": those are different answers and a caller has to be
+		// able to tell them apart. Reporting a file we could not read as "not enabled
+		// (…too many levels of symbolic links…)" at exit 0 asserted the alias is absent on
+		// the strength of never having looked, while enable and disable exit 1 over the
+		// same file — so a script checking status before acting got a clean answer and then
+		// a failure. Exit 2 distinguishes it from both "enabled" and "not enabled" without
+		// making the ordinary absent case an error, which callers depend on.
+		//
+		// readRC maps a MISSING file to empty rather than to an error, so the common case
+		// of an rc file that does not exist yet still reads as a plain "not enabled".
+		fmt.Fprintf(stdout, "unknown for %s: %v\n", rcPath, err)
+		return 2
 	}
 	aliases := bobShellAliasesIn(lines)
 	if len(aliases) == 0 {
@@ -1537,11 +2130,67 @@ func bobShellStatus(rcPath string, stdout io.Writer) int {
 		// which round 8 flagged. What makes the claim true now is adjacency, not pairing.
 		// Reporting a marker-only file as enabled would mean claiming a user's `--help`
 		// transcript as our block.
+		//
+		// S8's reported half: "not enabled" alone cannot distinguish a file with no
+		// markers from one holding a fence we found nothing in, and those call for
+		// different actions. It stays "not enabled" — the verdict is correct and callers
+		// parse it — with the fence named underneath when there is one. Ownership is
+		// unchanged: this only READS, it claims nothing, so the --help-transcript
+		// protection above is untouched.
+		//
+		// Two shapes reach it, and the distinction is worth drawing because the second is
+		// the one a user cannot diagnose alone:
+		//   - a gutted fence (markers, alias hand-deleted) — enable refills it;
+		//   - a fence holding an `alias bob=` we do not recognise (someone's own, or a
+		//     mangled copy of ours) — the line is live and enable will NOT remove it,
+		//     so it needs naming or the user re-runs enable and wonders why bob still
+		//     points somewhere else.
+		// Reached most often via `--help`, whose output is this block verbatim: pasting
+		// it and then editing the alias produces exactly the second shape.
 		fmt.Fprintf(stdout, "not enabled in %s\n", rcPath)
+		if start, end, found := findBobShellFence(lines); found {
+			fmt.Fprintf(stdout, "  A cortex block is present (lines %d-%d) but holds no alias of ours.\n", start+1, end+1)
+			if foreign := firstBobDefinitionIn(lines, start, end); foreign != "" {
+				fmt.Fprintf(stdout, "  It holds an alias we do not manage, which enable will leave in place:\n")
+				fmt.Fprintf(stdout, "    %s\n", foreign)
+				fmt.Fprintln(stdout, "  Delete that line first if you want `bob` to route through Cortex.")
+			} else {
+				fmt.Fprintln(stdout, "  Run `abctl configure bobshell enable` to fill it back in.")
+			}
+		}
 		return 0
 	}
 	for _, a := range aliases {
 		fmt.Fprintf(stdout, "  %s\n", a)
+	}
+	// FIRST of the three qualifications on "enabled", and the order is the point.
+	// Each of the three (shadowed, several of ours, a different abctl) returns, so
+	// whichever runs first is the only one a user sees — and on a file that trips two,
+	// the one worth printing is this one. Shadowing is the only case where the tool's
+	// verdict and the SHELL's behaviour disagree: with a later foreign alias, `bob` does
+	// not route through Cortex at all, while the other two describe a block that works
+	// and is merely untidy. Reporting "…but with 2 alias lines" over a file where bob
+	// runs something else entirely answers a question the user did not ask. Found by
+	// building it in the other order, where a same-line fixture printed a tidiness note
+	// about a file whose bob was foreign.
+	//
+	// Exit 0 still — the block IS installed, and this is a report about the file's
+	// contents rather than a failure of this command.
+	if shadow := bobShellShadowedBy(lines); shadow != "" {
+		fmt.Fprintf(stdout, "enabled in %s, but a later alias overrides it — the shell uses the last one:\n", rcPath)
+		fmt.Fprintf(stdout, "  %s\n", shadow)
+		// Two different remedies, because the offender can be on OUR line. When the
+		// shadowing command shares a line with our alias, "move it above the cortex
+		// block" is not an instruction the user can follow — there is no separate line
+		// to move. bobShellShadowedBy returns the whole line either way, so the two are
+		// told apart by asking whether that line also holds ours.
+		if cmds, _, _ := commandStarts([]string{shadow}); len(cmds) == 1 && cmds[0].holdsOurAlias() {
+			fmt.Fprintln(stdout, "  Both definitions are on that one line, and the second wins. Split them, or")
+			fmt.Fprintln(stdout, "  delete the one that does not route through Cortex.")
+		} else {
+			fmt.Fprintln(stdout, "  Remove that line, or move it above the cortex block, so `bob` routes through Cortex.")
+		}
+		return 0
 	}
 	// More than one is a state a hand-edit can reach, and reporting only the first
 	// would describe a file the user does not have. Whichever the shell takes, enable
@@ -1561,6 +2210,20 @@ func bobShellStatus(rcPath string, stdout io.Writer) int {
 		// substring of the correct one, and would have reported as matching while
 		// the shell saw a broken alias.
 		if alias != bobShellAliasLine(self) {
+			// Which of two different things the inequality means. The equality above is
+			// whole-LINE, so a line carrying our alias plus anything else fails it while
+			// naming this very abctl — and the "different abctl" wording then states
+			// something false, pointing the user at a path problem they do not have.
+			// Found while fixing S8's same-line shadow case, where exactly such a line is
+			// the fixture. commandLooksLikeOurAliasFor asks about the COMMAND, so the two
+			// causes get their own sentences; the whole-line test still gates, keeping the
+			// truncated-hand-edit case the comment above describes.
+			if commandLooksLikeOurAliasFor(alias, self) {
+				fmt.Fprintf(stdout, "enabled in %s, and the alias names this abctl, but its line carries more than the alias:\n", rcPath)
+				fmt.Fprintf(stdout, "    %s\n", alias)
+				fmt.Fprintln(stdout, "  Re-run `abctl configure bobshell enable` to put it on a line of its own.")
+				return 0
+			}
 			fmt.Fprintf(stdout, "enabled in %s, but the alias names a different abctl than this one (%s)\n", rcPath, self)
 			fmt.Fprintln(stdout, "  Re-run `abctl configure bobshell enable` to point it here.")
 			return 0
