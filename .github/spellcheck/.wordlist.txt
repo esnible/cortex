@@ -11,8 +11,12 @@ AuthProxy
 AuthTarget
 Autoscaler
 Autoscaling
+bash
+bashrc
+bobshell
 BusyBox
 CallerPod
+chezmoi
 CI
 CipherSuites
 ClientReg
@@ -30,6 +34,7 @@ creds
 DaemonSet
 DefaultMode
 Dockerfile
+dotfiles
 DSA
 ECDSA
 EmptyDir
@@ -479,3 +484,4 @@ x86
 yaml
 yml
 zsh
+zshrc

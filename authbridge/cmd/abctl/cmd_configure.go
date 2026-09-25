@@ -11,13 +11,18 @@ Usage:
   abctl configure claude-code enable  [--yes] [--settings PATH] [--config PATH]
   abctl configure claude-code disable [--yes] [--settings PATH]
   abctl configure claude-code status  [--settings PATH]
-  abctl configure bob | codex | opencode
+  abctl configure bobshell enable     [--yes] [--rc PATH]
+  abctl configure bobshell disable    [--yes] [--rc PATH]
+  abctl configure bobshell status
+  abctl configure codex | opencode
 
 Agents:
   claude-code    writes the proxy and CA variables into ~/.claude/settings.json, so
                  every session on the machine goes through Cortex. Run
                  "abctl configure claude-code --help" for the detail.
-  bob            not yet persistent — use "abctl exec -- bob"
+  bobshell       defines a "bob" shell function in your shell startup file, so plain
+                 "bob" routes through Cortex in every new interactive shell. Run
+                 "abctl configure bobshell --help" for the detail.
   codex          not yet persistent — use "abctl exec -- codex"
   opencode       not yet persistent — use "abctl exec -- opencode"
 
@@ -28,9 +33,13 @@ the ones without. The agents that cannot yet be configured persistently say so a
 name the command that works today, rather than being absent and leaving the reader
 to conclude Cortex cannot drive them.
 
-Only Claude Code persists because only Claude Code reads a settings file. Everything
-else reads the process environment and nothing else, so its routing lasts exactly as
-long as the process — which is what "abctl exec" is for.
+Two agents persist, by different routes. Claude Code reads a settings file, so the
+variables can be written once and reach every session on the machine. Bob Shell has
+no settings file, so "bobshell" configures the shell instead: a "bob" function that
+reaches interactive shells, though not scripts or other programs that run bob
+directly. Codex and OpenCode read the process environment and nothing else, so their
+routing lasts exactly as long as the process — which is what "abctl exec" is for, and
+it remains the answer for any agent in any non-interactive context.
 
 "abctl claude-code" is the old spelling of "abctl configure claude-code". It still
 works, and prints a notice pointing here.
@@ -43,18 +52,22 @@ for a usage error.
 // comingSoon is the message for an agent Cortex can already run but cannot yet
 // configure persistently.
 //
-// A helper rather than three near-identical literals: the value that differs is the
-// name twice over — once display-cased for the sentence, once as the binary — and
-// three hand-written copies is three chances for that pair to disagree. Which is not
-// hypothetical; the request this implements had exactly that slip in two of its three
-// messages.
+// A helper rather than near-identical literals per agent: the value that differs is
+// the name twice over — once display-cased for the sentence, once as the binary — and
+// hand-written copies are that many chances for the pair to disagree. Which is not
+// hypothetical; the request that introduced these messages had exactly that slip in
+// two of its three.
 //
 // Built by concatenation rather than written as a raw string because the message
 // quotes `abctl exec -- <agent>` in backticks, and a backtick is what would end a raw
 // literal. Printed commands are quoted this way elsewhere too (cmd_exec.go:152,
 // main.go's deprecation notices).
-// product is the name in the closing clause, which is not always the configuration
-// name: Bob configures as "Bob" but runs as "IBM Bob".
+//
+// product is the name in the closing clause, which need not equal the configuration
+// name — the case that motivated it was Bob, which configured as "Bob" but ran as
+// "IBM Bob". Bob is now "bobshell" and configures for real, so both remaining callers
+// pass the same value twice; the parameter is kept rather than collapsed, to leave
+// this change a rename plus a new command and nothing else.
 func comingSoon(display, binary, product string) string {
 	return "Persistent " + display + " configuration coming soon.  Until then, use " +
 		"`abctl exec -- " + binary + "` to run " + product + " under Cortex.\n"
@@ -91,9 +104,8 @@ func runConfigure(args []string, stdout, stderr io.Writer) int {
 		// fire here. A user who already typed the current spelling must not be told to
 		// type something else.
 		return runClaudeCode(args[1:], stdout, stderr)
-	case "bob":
-		fmt.Fprint(stdout, comingSoon("Bob", "bob", "IBM Bob"))
-		return 0
+	case "bobshell":
+		return runBobShell(args[1:], stdout, stderr)
 	case "codex":
 		fmt.Fprint(stdout, comingSoon("Codex", "codex", "Codex"))
 		return 0
@@ -104,7 +116,7 @@ func runConfigure(args []string, stdout, stderr io.Writer) int {
 		// The named list is the answer to a typo; the usage block after it is the
 		// answer to "what else can this do", which is what someone who guessed an
 		// agent name wrong most likely wanted. Same pairing as the no-argument case.
-		fmt.Fprintf(stderr, "abctl: unknown agent %q (claude-code, bob, codex, opencode)\n", agent)
+		fmt.Fprintf(stderr, "abctl: unknown agent %q (claude-code, bobshell, codex, opencode)\n", agent)
 		fmt.Fprint(stderr, configureUsage)
 		return 2
 	}

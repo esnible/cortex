@@ -288,6 +288,74 @@ command and says so, but leaves the four replacing variables unset — the child
 keeps its own public roots and only bridged hosts fail, rather than losing all
 trust to a bundle with no bridge CA in it.
 
+## Making `bob` route through Cortex (`abctl configure bobshell`)
+
+`abctl exec -- bob` works but has to be typed every time. Bob Shell has no
+settings file, so there is nothing for `configure` to write the way
+`configure claude-code enable` writes `settings.json`. What it configures instead
+is your shell:
+
+```sh
+abctl configure bobshell enable     # appends to ~/.zshrc or ~/.bashrc
+abctl configure bobshell status     # is bob routed in this shell?
+abctl configure bobshell disable    # removes exactly what enable added
+```
+
+`enable` appends a marker-fenced block defining a `bob` shell function, so plain
+`bob` goes through Cortex in every **new** interactive shell:
+
+```sh
+# >>> cortex abctl (bobshell) >>>
+bob() {
+  p=$(whence -p bob 2>/dev/null || type -P bob 2>/dev/null)
+  if [ -z "$p" ]; then
+    echo "bob: not found in PATH" >&2
+    return 127
+  fi
+  abctl exec -- "$p" "$@"
+}
+export CORTEX_BOBSHELL=1
+# <<< cortex abctl (bobshell) <<<
+```
+
+A **function**, not an alias, and the choice is load-bearing twice over. An alias
+is invisible to child processes, so `status` could never observe one. And inside a
+function `\bob` does not reach the real binary: the backslash suppresses *alias*
+expansion only, so it finds the function again and recurses. Resolving `bob` to an
+absolute path first cannot recurse, because an absolute path never matches a
+function name. `whence -p` is zsh and `type -P` is bash; each is silenced so the
+other shell's unknown-flag error never reaches your prompt.
+
+The scope is interactive shells. A script, a Makefile, or another program that runs
+`bob` directly never reads your startup file and so is unaffected — `abctl exec --
+bob` remains the answer there, and needs no configuration.
+
+`status` reads the `CORTEX_BOBSHELL` variable from its own environment and **never
+reads the startup file**. So it answers "is `bob` routed in *this* shell", which is
+the question worth asking — and it reports `not enabled` in the very shell where
+`enable` just succeeded, until you `source` the file or open a new terminal. What it
+proves is that the startup file *ran*, not that the function is intact: a `bob` you
+define later, or a hand-deleted function body with the `export` line left behind,
+both still read as enabled.
+
+`disable` removes the block only if it is present **exactly once and byte-for-byte
+as written**. Two copies, or a block you have edited, are reported and left alone —
+a startup file is accreted by hand over years, and a `bob()` you wrote yourself is
+neither claimed as ours nor deleted. The first run copies the original to
+`<file>.bak` and never overwrites that copy.
+
+Which file comes from `$SHELL`: zsh gets `~/.zshrc`; bash gets whichever of
+`~/.bash_profile`, `~/.bashrc` or `~/.profile` already exists, since which one bash
+reads depends on the platform and on whether the shell is a login shell. Any other
+shell is refused rather than guessed at — pass `--rc` to name the file yourself. A
+startup file reached through more than one symlink is not edited at all: the block
+is printed for you to add by hand, since guessing which file in a stow or chezmoi
+chain you meant is how a working setup gets silently broken. One link, the usual
+dotfiles-repo case, is followed and the file it points at is the one written.
+
+Cortex need not be running for any of this — the function resolves the proxy
+address when you run `bob`, not when you run `enable`.
+
 ## Panes
 
 The UI has these panes. `Enter` drills in; `Esc` backs out.
