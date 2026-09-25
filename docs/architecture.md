@@ -1,8 +1,8 @@
 # AuthBridge
 
-AuthBridge provides **secure, transparent token management** for Kubernetes workloads. The shared library is at [`authlib/`](./authlib/); the sidecar binaries live under [`cmd/`](./cmd/) (see [`cmd/README.md`](./cmd/README.md) for which pins which mode). Keycloak client registration is handled by the [operator](https://github.com/rossoctl/operator)'s `ClientRegistrationReconciler` (no in-pod registration sidecar). Together with [SPIFFE/SPIRE](https://spiffe.io), this enables zero-trust authentication flows.
+AuthBridge provides **secure, transparent token management** for Kubernetes workloads. The shared library is at [`authlib/`](../authlib/); the sidecar binaries live under [`cmd/`](../cmd/) (see [`cmd/README.md`](../cmd/README.md) for which pins which mode). Keycloak client registration is handled by the [operator](https://github.com/rossoctl/operator)'s `ClientRegistrationReconciler` (no in-pod registration sidecar). Together with [SPIFFE/SPIRE](https://spiffe.io), this enables zero-trust authentication flows.
 
-> **📘 Looking to run the demo?** See the [Weather Agent](./demos/weather-agent/demo-ui.md) or [GitHub Issue Agent](./demos/github-issue/demo.md) demos for step-by-step instructions, and [Token-Exchange Routes](./demos/token-exchange-routes/README.md) for route configuration.
+> **📘 Looking to run the demo?** See the [Weather Agent](../demos/weather-agent/demo-ui.md) or [GitHub Issue Agent](../demos/github-issue/demo.md) demos for step-by-step instructions, and [Token-Exchange Routes](../demos/token-exchange-routes/README.md) for route configuration.
 
 ## Download prebuilt binaries
 
@@ -75,11 +75,11 @@ mode with a trimmed plugin set (see the profile table below).
 
 The operator resolves the mode per workload from `AgentRuntime.Spec.AuthBridgeMode` → namespace ConfigMap → deprecated `rossoctl.io/authbridge-mode` annotation → cluster default (`proxy-sidecar`). See operator#361.
 
-The shared auth library at [`authlib/`](./authlib/) contains the building blocks (JWT validation, token exchange, caching, routing) with no protocol dependencies. See [`authlib/README.md`](./authlib/README.md) for package reference.
+The shared auth library at [`authlib/`](../authlib/) contains the building blocks (JWT validation, token exchange, caching, routing) with no protocol dependencies. See [`authlib/README.md`](../authlib/README.md) for package reference.
 
 ## Plugin Catalog
 
-See [`docs/plugin-catalog.md`](./docs/plugin-catalog.md) for the full list of implemented pipeline plugins, what each does, and its configuration options.
+See [`docs/plugin-catalog.md`](./plugin-catalog.md) for the full list of implemented pipeline plugins, what each does, and its configuration options.
 
 ## Architecture (Operator-Injected)
 
@@ -408,12 +408,12 @@ The easiest way to get all prerequisites is to use the [Rossoctl Quickstart](htt
 
 ### Demos
 
-- **[Weather Agent Demo](./demos/weather-agent/demo-ui.md)** - Recommended starting demo: shows how the [operator](https://github.com/rossoctl/operator) webhook automatically injects the combined AuthBridge sidecar, with inbound JWT validation and outbound passthrough
-- **[GitHub Issue Agent Demo](./demos/github-issue/demo.md)** - End-to-end demo with the real GitHub Issue Agent and GitHub MCP Tool, showing transparent token exchange via AuthBridge
-  - [Manual deployment](./demos/github-issue/demo-manual.md) — deploy everything via `kubectl` and YAML manifests
-  - [UI deployment](./demos/github-issue/demo-ui.md) — import agent and tool via the Rossoctl dashboard
-- **[Token-Exchange Routes](./demos/token-exchange-routes/README.md)** - Configuration reference for the `authproxy-routes` ConfigMap; covers single-target (one route) and multi-target (one agent → many tools) patterns
-- **[Lineage Demo](./demos/lineage/README.md)** - Per-request data lineage from the sidecar on the Weather Agent pair, attached to the running Deployments with the [lineage attach kit](./lineage-attach/README.md); shows the same turn fragmented and then as one trace (no Keycloak involved)
+- **[Weather Agent Demo](../demos/weather-agent/demo-ui.md)** - Recommended starting demo: shows how the [operator](https://github.com/rossoctl/operator) webhook automatically injects the combined AuthBridge sidecar, with inbound JWT validation and outbound passthrough
+- **[GitHub Issue Agent Demo](../demos/github-issue/demo.md)** - End-to-end demo with the real GitHub Issue Agent and GitHub MCP Tool, showing transparent token exchange via AuthBridge
+  - [Manual deployment](../demos/github-issue/demo-manual.md) — deploy everything via `kubectl` and YAML manifests
+  - [UI deployment](../demos/github-issue/demo-ui.md) — import agent and tool via the Rossoctl dashboard
+- **[Token-Exchange Routes](../demos/token-exchange-routes/README.md)** - Configuration reference for the `authproxy-routes` ConfigMap; covers single-target (one route) and multi-target (one agent → many tools) patterns
+- **[Lineage Demo](../demos/lineage/README.md)** - Per-request data lineage from the sidecar on the Weather Agent pair, attached to the running Deployments with the [lineage attach kit](../lineage-attach/README.md); shows the same turn fragmented and then as one trace (no Keycloak involved)
 
 All demos except the Lineage Demo cover configuring Keycloak, deploying, and testing.
 
@@ -520,12 +520,12 @@ when `-tags include_plugin_<name>` is passed.
 
 ## Component Documentation
 
-- [authlib](authlib/README.md) — Shared auth building blocks (Go library)
-- [cmd/authbridge-proxy](cmd/authbridge-proxy/) — proxy-sidecar binary (default mode, full plugin set)
-- [cmd/authbridge-envoy](cmd/authbridge-envoy/) — envoy-sidecar binary (Envoy + ext_proc, full plugin set)
+- [authlib](../authlib/README.md) — Shared auth building blocks (Go library)
+- [cmd/authbridge-proxy](../cmd/authbridge-proxy/) — proxy-sidecar binary (default mode, full plugin set)
+- [cmd/authbridge-envoy](../cmd/authbridge-envoy/) — envoy-sidecar binary (Envoy + ext_proc, full plugin set)
 - `authbridge-lite` image — `cmd/authbridge-proxy` built with the `lite` profile (see `scripts/profile-tags`); a build variant, not a separate binary
-- [proxy-init](proxy-init/README.md) — iptables init container (envoy-sidecar mode only)
-- [docs/](docs/) — framework architecture and plugin author references
+- [proxy-init](../proxy-init/README.md) — iptables init container (envoy-sidecar mode only)
+- [docs/](./) — framework architecture and plugin author references
 
 Keycloak client registration is handled by the [operator](https://github.com/rossoctl/operator)'s `ClientRegistrationReconciler`, not by an in-pod sidecar.
 

@@ -169,5 +169,5 @@ pip install -r requirements.txt
 
 ## Related Documentation
 
-- [AuthBridge Overview](../authbridge/README.md) — Architecture and design
+- [AuthBridge Overview](../docs/architecture.md) — Architecture and design
 - [Rossoctl Operator](https://github.com/rossoctl/operator) — Admission webhook for sidecar injection (migrated from this repo)

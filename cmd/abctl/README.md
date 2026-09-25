@@ -10,7 +10,7 @@ and read individual events as pretty-printed JSON.
 
 Download a prebuilt `abctl` for your platform (linux/macOS, amd64/arm64) from the
 [Releases page](https://github.com/rossoctl/cortex/releases) — see
-[Download prebuilt binaries](../../authbridge/README.md#download-prebuilt-binaries) for the download,
+[Download prebuilt binaries](../../docs/architecture.md#download-prebuilt-binaries) for the download,
 checksum-verify, and macOS quarantine steps — and drop it on your PATH.
 
 Or build from source:

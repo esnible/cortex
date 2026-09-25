@@ -89,4 +89,4 @@ Common names used by both:
 - [All Demos](../README.md) — index of all AuthBridge demos
 - [Weather Agent Demo](../weather-agent/demo-ui.md) — simpler getting-started demo (no token exchange)
 - [Token-Exchange Routes](../token-exchange-routes/README.md) — route-based token exchange to multiple tools
-- [AuthBridge Overview](../../authbridge/README.md) — architecture and design
+- [AuthBridge Overview](../../docs/architecture.md) — architecture and design

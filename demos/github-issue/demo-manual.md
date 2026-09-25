@@ -1201,4 +1201,4 @@ kubectl delete mutatingwebhookconfiguration rossoctl-webhook-authbridge-mutating
   JWT validation and outbound token exchange internals
 - **Token-Exchange Routes**: See the [routes-configuration guide](../token-exchange-routes/README.md) for
   route-based token exchange to multiple tool services
-- **AuthBridge Overview**: See the [AuthBridge README](../../authbridge/README.md) for architecture details
+- **AuthBridge Overview**: See the [AuthBridge README](../../docs/architecture.md) for architecture details

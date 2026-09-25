@@ -79,7 +79,7 @@ platform services agentic workloads need in production, as a sidecar or standalo
 - **Cost controls** — trim the context a workload sends, and cap its spend.
 
 Everything is a plugin in one pipeline; the [plugin catalog](./docs/plugin-catalog.md)
-lists what ships, and the [architecture reference](./authbridge/README.md) explains how
+lists what ships, and the [architecture reference](./docs/architecture.md) explains how
 a request flows through it. Code lives under [`authbridge/`](./authbridge/).
 
 ## License
