@@ -609,6 +609,29 @@ grep -n 'authbridge/install.sh' install.sh
 
 Expected: exactly one hit, line ~485, the fallback probe.
 
+- [ ] **Step 1b: Consolidate the duplicated binaries content in `CLAUDE.md`**
+
+The merge left the binaries enumerated three times and three sections sharing the
+name "AuthBridge Binaries": `### 1. AuthBridge Binaries (Go)` (~L187),
+`## AuthBridge Binaries` (~L254), and
+`### AuthBridge Binaries (cmd/authbridge-{proxy,envoy}/)` (~L312). Two predate this
+series; the merge added the third. Task 4's constraint was "one binaries list", so
+this is a regression against it, not merely inherited clutter.
+
+Keep the table at ~L254 as the single enumeration. Fold the ~L187 bullets into
+prose that points at it, and retitle ~L312 — its current heading names only 2 of
+the 5 binaries, which is actively wrong now that cpex, praxis and abctl exist.
+
+Also at ~L308 and ~L342, two near-verbatim copies of "YAML with `${ENV_VAR}`
+expansion, mode presets, and startup validation." Keep one.
+
+Verify afterwards:
+
+```bash
+grep -c 'AuthBridge Binaries' CLAUDE.md          # expect 1, or 2 with distinct titles
+grep -c 'ENV_VAR}` expansion, mode presets' CLAUDE.md   # expect 1
+```
+
 - [ ] **Step 1c: Add the three demos missing from `demos/README.md`**
 
 PR #1125's body claimed it fixed this and it only fixed `CLAUDE.md`. `context-guru`,
