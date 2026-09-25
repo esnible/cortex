@@ -254,7 +254,7 @@ kubectl port-forward service/keycloak-service -n keycloak 8080:8080
 ### Run the setup script
 
 ```bash
-cd authbridge
+# from the repo root
 
 # Create virtual environment (if not already done)
 uv sync
@@ -308,7 +308,7 @@ configures per-route token exchange (target audience and scopes for the
 inbound audience validation. Apply this **before** deploying the agent.
 
 ```bash
-cd authbridge
+# from the repo root
 
 # Apply demo ConfigMaps (authbridge-config and authproxy-routes)
 kubectl apply -f demos/github-issue/k8s/configmaps.yaml

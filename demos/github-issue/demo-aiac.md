@@ -128,7 +128,7 @@ The Rossoctl installer creates default ConfigMaps.
 Apply the demo-specific ConfigMaps — the `authproxy-routes` ConfigMap configures per-route token exchange (target audience and scopes for the `github-tool` host), and `authbridge-config` sets the agent SPIFFE ID for inbound audience validation. Apply this **before** deploying the agent.
 
 ```bash
-cd cortex/authbridge
+cd cortex
 
 # Create namespace if it doesn't exist
 kubectl create namespace team1 --dry-run=client -o yaml | kubectl apply -f -

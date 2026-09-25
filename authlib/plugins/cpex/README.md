@@ -302,10 +302,10 @@ allowing traffic in that state is rarely intended.
 
 ```sh
 # Unit tests (no cgo) cover every CMF mapping and re-serializer via a fake manager
-cd authlib && CGO_ENABLED=0 go test ./plugins/cpex/...
+CGO_ENABLED=0 go -C authlib test ./plugins/cpex/...
 
 # Build the real backend: links libcpex_ffi.a, -tags cpex, CGO on
-cd authbridge && podman build -f cmd/authbridge-cpex/Dockerfile -t authbridge-cpex:latest .
+podman build -f cmd/authbridge-cpex/Dockerfile -t authbridge-cpex:latest .
 ```
 
 The pinned CPEX FFI ABI version lives in `cmd/authbridge-cpex/CPEX_FFI_VERSION`.

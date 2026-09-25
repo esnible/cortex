@@ -116,7 +116,7 @@ starlark), so the default `authbridge-proxy`/`authbridge-envoy` binaries stay le
 and a deployment that doesn't want compaction never pays for it.
 
 ```bash
-cd authbridge && podman build -f cmd/authbridge-proxy/Dockerfile \
+podman build -f cmd/authbridge-proxy/Dockerfile \
   --build-arg GO_BUILD_TAGS=include_plugin_contextguru -t authbridge-cg:latest .
 ```
 

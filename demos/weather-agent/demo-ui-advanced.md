@@ -44,7 +44,7 @@ Adds the audience scopes and enables `standard.token.exchange.enabled` on the
 agent and tool clients.
 
 ```bash
-cd authbridge
+# from the repo root
 python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
 

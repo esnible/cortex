@@ -150,7 +150,7 @@ kubectl port-forward service/keycloak-service -n keycloak 8080:8080
 ### Run the setup script
 
 ```bash
-cd authbridge
+# from the repo root
 
 # Create virtual environment (if not already done)
 python -m venv venv
@@ -205,7 +205,7 @@ otherwise use Option B or upgrade.
 per-route token exchange (target audience and scopes for the `github-tool` host):
 
 ```bash
-cd authbridge
+# from the repo root
 
 # Apply demo ConfigMaps (authproxy-routes)
 kubectl apply -f demos/github-issue/k8s/configmaps.yaml
@@ -1214,4 +1214,4 @@ kubectl delete namespace team1
   JWT validation and outbound token exchange internals
 - **Token-Exchange Routes**: See the [routes-configuration guide](../token-exchange-routes/README.md) for
   route-based token exchange to multiple tool services
-- **AuthBridge Overview**: See the [AuthBridge README](../../docs/architecture.md) for architecture details
+- **AuthBridge Overview**: See the [AuthBridge architecture](../../docs/architecture.md) for details
