@@ -609,6 +609,22 @@ grep -n 'authbridge/install.sh' install.sh
 
 Expected: exactly one hit, line ~485, the fallback probe.
 
+- [ ] **Step 1c: Add the three demos missing from `demos/README.md`**
+
+PR #1125's body claimed it fixed this and it only fixed `CLAUDE.md`. `context-guru`,
+`echo` and `mtls` are still absent from the demo index — verify with:
+
+```bash
+for d in $(ls -d demos/*/ | xargs -n1 basename); do
+  grep -q "$d" demos/README.md || echo "MISSING $d"
+done
+```
+
+Add one row each, matching the file's existing style. Not strictly part of the
+flatten, folded in because a merged PR asserting a fix it did not make is worse
+than a slightly wider scope here, and the alternative is a separate PR for three
+lines.
+
 - [ ] **Step 2: Replace `install-demo.sh`'s unfalsifiable removal promise**
 
 Its comment says it will go away "once the old URL stops being fetched." `raw.githubusercontent.com` is a CDN and exposes no fetch telemetry, so that condition can never be evaluated. Give it a checkable one:
