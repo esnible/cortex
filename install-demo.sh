@@ -3,8 +3,10 @@
 #
 # This shim exists because the old name was published in release notes and docs,
 # so a command already in someone's shell history or notes would otherwise 404.
-# It forwards every argument to the current script and will be removed once the
-# old URL stops being fetched.
+# It forwards every argument to the current script.
+#
+# Removed at the next major version, not "when fetches stop" — raw.githubusercontent.com
+# exposes no fetch telemetry, so that condition could never be evaluated.
 #
 # Local installs are no longer framed as a "demo" — they are the supported way to
 # run Cortex on a machine — hence the rename.

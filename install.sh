@@ -1,7 +1,7 @@
 #!/bin/sh
 # install.sh — one-line installer for Cortex on a local machine.
 #
-#   curl -fsSL https://raw.githubusercontent.com/rossoctl/cortex/main/authbridge/install.sh | sh
+#   curl -fsSL https://raw.githubusercontent.com/rossoctl/cortex/main/install.sh | sh
 #
 # Detects your OS/arch, downloads the prebuilt `abctl` and `authbridge-proxy`
 # binaries for the newest release, verifies their SHA-256 checksums, installs
@@ -161,7 +161,7 @@ usage() {
 install.sh — install Cortex on a local machine (macOS/Linux, amd64/arm64).
 
 Usage:
-  curl -fsSL https://raw.githubusercontent.com/rossoctl/cortex/main/authbridge/install.sh | sh
+  curl -fsSL https://raw.githubusercontent.com/rossoctl/cortex/main/install.sh | sh
   curl -fsSL ...install.sh | sh -s -- [option]
 
 Installs abctl and authbridge-proxy to ~/.local/bin, starts the proxy with its
@@ -1274,8 +1274,9 @@ if [ -z "${NO_SERVICE}" ]; then
 		case "${version}" in
 			v*)
 				die "the ${version} abctl has no 'service' command, which this installer needs
-  in order to start Cortex. Either use the installer that shipped with it:
-    curl -fsSL https://raw.githubusercontent.com/${REPO}/${version}/authbridge/install.sh | sh
+  in order to start Cortex. Either re-run this installer pinned to that release,
+  which resolves its installer in either layout:
+    --ref=${version}
   or install newer binaries with this script:
     --ref=<newer tag>"
 				;;

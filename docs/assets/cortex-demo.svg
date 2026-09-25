@@ -7,34 +7,34 @@ g.st{opacity:0}
 @keyframes blink{0%,49%{opacity:1}50%,100%{opacity:0.15}}
 @keyframes st0{0.0000%,27.9990%{opacity:1}28.0000%,100%{opacity:0}}
 g.st0{animation:st0 50s linear infinite}
-@keyframes tp0_0{0%,0.0000%{width:0}9.4080%,100%{width:957.6px}}
-#cl0_0 rect{animation:tp0_0 50s steps(114,end) infinite}
-@keyframes cx0_0{0%,0.0000%{x:16.0px}9.4080%,100%{x:973.6px}}
-@keyframes cv0_0{0%,0.0000%{visibility:hidden}0.0000%,9.4080%{visibility:visible}10.0080%,100%{visibility:hidden}}
-.cur0_0{animation:cx0_0 50s steps(114,end) infinite,cv0_0 50s linear infinite,blink 1s steps(1,end) infinite}
-@keyframes rv0_1{0%,10.3470%{visibility:hidden}10.3480%,100%{visibility:visible}}
+@keyframes tp0_0{0%,0.0000%{width:0}8.4840%,100%{width:865.2px}}
+#cl0_0 rect{animation:tp0_0 50s steps(103,end) infinite}
+@keyframes cx0_0{0%,0.0000%{x:16.0px}8.4840%,100%{x:881.2px}}
+@keyframes cv0_0{0%,0.0000%{visibility:hidden}0.0000%,8.4840%{visibility:visible}9.0840%,100%{visibility:hidden}}
+.cur0_0{animation:cx0_0 50s steps(103,end) infinite,cv0_0 50s linear infinite,blink 1s steps(1,end) infinite}
+@keyframes rv0_1{0%,9.4230%{visibility:hidden}9.4240%,100%{visibility:visible}}
 .rv0_1{animation:rv0_1 50s linear infinite}
-@keyframes rv0_2{0%,15.3470%{visibility:hidden}15.3480%,100%{visibility:visible}}
+@keyframes rv0_2{0%,14.4230%{visibility:hidden}14.4240%,100%{visibility:visible}}
 .rv0_2{animation:rv0_2 50s linear infinite}
-@keyframes rv0_3{0%,17.1470%{visibility:hidden}17.1480%,100%{visibility:visible}}
+@keyframes rv0_3{0%,16.2230%{visibility:hidden}16.2240%,100%{visibility:visible}}
 .rv0_3{animation:rv0_3 50s linear infinite}
-@keyframes rv0_4{0%,18.5470%{visibility:hidden}18.5480%,100%{visibility:visible}}
+@keyframes rv0_4{0%,17.6230%{visibility:hidden}17.6240%,100%{visibility:visible}}
 .rv0_4{animation:rv0_4 50s linear infinite}
-@keyframes rv0_5{0%,18.7870%{visibility:hidden}18.7880%,100%{visibility:visible}}
+@keyframes rv0_5{0%,17.8630%{visibility:hidden}17.8640%,100%{visibility:visible}}
 .rv0_5{animation:rv0_5 50s linear infinite}
-@keyframes rv0_6{0%,20.5870%{visibility:hidden}20.5880%,100%{visibility:visible}}
+@keyframes rv0_6{0%,19.6630%{visibility:hidden}19.6640%,100%{visibility:visible}}
 .rv0_6{animation:rv0_6 50s linear infinite}
-@keyframes rv0_7{0%,20.8870%{visibility:hidden}20.8880%,100%{visibility:visible}}
+@keyframes rv0_7{0%,19.9630%{visibility:hidden}19.9640%,100%{visibility:visible}}
 .rv0_7{animation:rv0_7 50s linear infinite}
-@keyframes rv0_8{0%,21.1870%{visibility:hidden}21.1880%,100%{visibility:visible}}
+@keyframes rv0_8{0%,20.2630%{visibility:hidden}20.2640%,100%{visibility:visible}}
 .rv0_8{animation:rv0_8 50s linear infinite}
-@keyframes rv0_9{0%,21.4870%{visibility:hidden}21.4880%,100%{visibility:visible}}
+@keyframes rv0_9{0%,20.5630%{visibility:hidden}20.5640%,100%{visibility:visible}}
 .rv0_9{animation:rv0_9 50s linear infinite}
-@keyframes rv0_10{0%,22.0870%{visibility:hidden}22.0880%,100%{visibility:visible}}
+@keyframes rv0_10{0%,21.1630%{visibility:hidden}21.1640%,100%{visibility:visible}}
 .rv0_10{animation:rv0_10 50s linear infinite}
-@keyframes rv0_11{0%,24.4870%{visibility:hidden}24.4880%,100%{visibility:visible}}
+@keyframes rv0_11{0%,23.5630%{visibility:hidden}23.5640%,100%{visibility:visible}}
 .rv0_11{animation:rv0_11 50s linear infinite}
-@keyframes rv0_12{0%,26.2870%{visibility:hidden}26.2880%,100%{visibility:visible}}
+@keyframes rv0_12{0%,25.3630%{visibility:hidden}25.3640%,100%{visibility:visible}}
 .rv0_12{animation:rv0_12 50s linear infinite}
 @keyframes st1{0%,27.9990%{opacity:0}28.0000%,39.9990%{opacity:1}40.0000%,100%{opacity:0}}
 g.st1{animation:st1 50s linear infinite}
@@ -167,7 +167,7 @@ clipPath rect{width:100000px}
 <text x="520" y="19.0" fill="#6e7681" font-size="12" text-anchor="middle">cortex</text>
 <g class="st st0 lbl-install">
 <clipPath id="cl0_0"><rect x="16.0" y="45.0" width="0" height="18.0"/></clipPath>
-<text clip-path="url(#cl0_0)" y="58.0"><tspan x="16.0" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#3fb950" font-weight="600">$ </tspan><tspan x="32.8" textLength="940.8" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">curl -fsSL https://raw.githubusercontent.com/rossoctl/cortex/main/authbridge/install.sh | sh -s -- --claude-code</tspan></text>
+<text clip-path="url(#cl0_0)" y="58.0"><tspan x="16.0" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#3fb950" font-weight="600">$ </tspan><tspan x="32.8" textLength="848.4" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">curl -fsSL https://raw.githubusercontent.com/rossoctl/cortex/main/install.sh | sh -s -- --claude-code</tspan></text>
 <rect class="cur cur0_0" x="16.0" y="46.0" width="8.4" height="14.0"/>
 <text class="rv rv0_1" y="76.0"><tspan x="16.0" textLength="226.8" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">Resolving newest release...</tspan></text>
 <text class="rv rv0_2" y="94.0"><tspan x="16.0" textLength="319.2" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">Downloading v0.9.3 for darwin/arm64...</tspan></text>
@@ -280,19 +280,19 @@ clipPath rect{width:100000px}
 <text y="112.0"><tspan x="16.0" textLength="1008.0" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">  USAGE — all sessions — 10m0s @ 1m0s — tokens — ungrouped                                                              </tspan></text>
 <text y="130.0"></text>
 <text y="148.0"><tspan x="16.0" textLength="1008.0" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">  tok                                                                                                                   </tspan></text>
-<text y="166.0"><tspan x="16.0" textLength="1008.0" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9"> 209k                                                       ████                                                        </tspan></text>
-<text y="184.0"><tspan x="16.0" textLength="1008.0" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">                                                            ████                                                        </tspan></text>
-<text y="202.0"><tspan x="16.0" textLength="1008.0" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9"> 167k                                                       ████                                                        </tspan></text>
-<text y="220.0"><tspan x="16.0" textLength="1008.0" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">                                                            ████                                                        </tspan></text>
-<text y="238.0"><tspan x="16.0" textLength="1008.0" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9"> 125k             ████                                      ████                                                        </tspan></text>
-<text y="256.0"><tspan x="16.0" textLength="1008.0" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">                  ████                                      ████                                                        </tspan></text>
-<text y="274.0"><tspan x="16.0" textLength="1008.0" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">  83k             ████                                      ████                                                        </tspan></text>
-<text y="292.0"><tspan x="16.0" textLength="1008.0" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">                  ████                                      ████                                                        </tspan></text>
-<text y="310.0"><tspan x="16.0" textLength="1008.0" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">  41k             ████                                      ████                                                        </tspan></text>
-<text y="328.0"><tspan x="16.0" textLength="1008.0" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">                  ████                                      ████                                                        </tspan></text>
+<text y="166.0"><tspan x="16.0" textLength="1008.0" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9"> 209k                                                 ████                                                              </tspan></text>
+<text y="184.0"><tspan x="16.0" textLength="1008.0" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">                                                      ████                                                              </tspan></text>
+<text y="202.0"><tspan x="16.0" textLength="1008.0" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9"> 167k                                                 ████                                                              </tspan></text>
+<text y="220.0"><tspan x="16.0" textLength="1008.0" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">                                                      ████                                                              </tspan></text>
+<text y="238.0"><tspan x="16.0" textLength="1008.0" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9"> 125k       ████                                      ████                                                              </tspan></text>
+<text y="256.0"><tspan x="16.0" textLength="1008.0" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">            ████                                      ████                                                              </tspan></text>
+<text y="274.0"><tspan x="16.0" textLength="1008.0" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">  83k       ████                                      ████                                                              </tspan></text>
+<text y="292.0"><tspan x="16.0" textLength="1008.0" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">            ████                                      ████                                                              </tspan></text>
+<text y="310.0"><tspan x="16.0" textLength="1008.0" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">  41k       ████                                      ████                                                              </tspan></text>
+<text y="328.0"><tspan x="16.0" textLength="1008.0" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">            ████                                      ████                                                              </tspan></text>
 <text y="346.0"><tspan x="16.0" textLength="1008.0" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">   0 ┼────┴─────┴─────┴─────┴─────┴─────┴─────┴─────┴─────┴─────                                                        </tspan></text>
 <text y="364.0"><tspan x="16.0" textLength="1008.0" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">      42:24       :24         :24         :24         :24                                                               </tspan></text>
-<text y="382.0"><tspan x="16.0" textLength="1008.0" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">     0     0     126k  0     0     0     0     0     0     209k                                                         </tspan></text>
+<text y="382.0"><tspan x="16.0" textLength="1008.0" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">     0     126k  0     0     0     0     0     0     209k  0                                                            </tspan></text>
 <text y="400.0"></text>
 <text y="418.0"><tspan x="16.0" textLength="1008.0" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">  REQUESTS 5    ERRORS 0 (0.0%)    TOKENS 335k    LATENCY 2.90s    COST $0.65 [unlabelled]                              </tspan></text>
 <text y="436.0"></text>

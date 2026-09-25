@@ -194,13 +194,8 @@ three self-contained `demos/*` modules are still on 1.24)
 **Deployment shapes:** [`cmd/README.md`](cmd/README.md) — which binary pins which shape
 **Framework internals:** [`docs/framework-architecture.md`](docs/framework-architecture.md), [`docs/plugin-reference.md`](docs/plugin-reference.md), [`docs/architecture.md`](docs/architecture.md)
 
-**Binaries:**
-- `cmd/authbridge-proxy/` — proxy-sidecar mode (default): HTTP forward + reverse proxies, full plugin set (jwt-validation, token-exchange, a2a-parser, mcp-parser, inference-parser, opa, sparc, ibac, token-broker, tool-prune). No Envoy / no gRPC. **Note:** `context-guru` is **opt-IN** (`//go:build include_plugin_contextguru`, not in any default profile) because its embedded engine pulls a large transitive dependency set; build with `-tags include_plugin_contextguru` to link it in.
-- `cmd/authbridge-envoy/` — envoy-sidecar mode: ext_proc gRPC server hooked into Envoy, full plugin set. Built from the `envoy` profile.
-- `cmd/authbridge-cpex/` — proxy-sidecar plus the `cpex` plugin. Built with `-tags cpex` and requires cgo (CGO_ENABLED=1): it links `libcpex_ffi.a` from a pinned CPEX release to route hooks through the CPEX framework (APL DSL + named CPEX policy plugins). The FFI ABI version lives in `cmd/authbridge-cpex/CPEX_FFI_VERSION`. The other binaries are pure-Go (CGO_ENABLED=0) and do not import the cpex package.
-- `cmd/authbridge-praxis/` — proxy-sidecar rendered into a [Praxis](https://github.com/praxis-proxy/praxis) proxy configuration via `authlib/praxis`. **Paused, not abandoned:** it ships in no image, has no demo, no dedicated doc, and defines no `plugins_*.go` files so it registers no plugins — but it is deliberately kept and deliberately kept compiling (it appears in the `ci.yaml` binary matrix for exactly that reason). Do not propose deleting it; it consumes `config.Config`, so shared-config refactors have to keep it building.
-- `cmd/abctl/` — the terminal UI over the session API (`:9094`). Not a sidecar; released as a standalone binary and the component the root README leads with.
-- `authbridge-lite` (image, **not** a separate binary) — `cmd/authbridge-proxy` built with the `lite` profile, a sidecar minimum (jwt-validation, token-exchange, litellm-budget-track, static-inject; parsers and OPA dropped). Every plugin is opt-in: they live in `cmd/*/plugins_<name>.go` files gated by `//go:build include_plugin_<name>`, and profiles are defined in `scripts/profile-tags`.
+See the binary-by-binary table below (image, mode, listeners, plugins) for
+the full enumeration — kept as the single list rather than repeated here.
 
 **Common:**
 - `authlib/` — shared auth library (JWT validation, token exchange, caching, routing, all listener implementations, all plugins).
@@ -309,7 +304,7 @@ self-contained `demos/*` modules are outside the workspace. `go-tidy-check` in
 
 ## Component Details
 
-### AuthBridge Binaries (cmd/authbridge-{proxy,envoy}/)
+### Sidecar Runtime Behavior
 
 The mode-specific authbridge binaries handle both traffic directions. Auth logic
 and all listener implementations live in `authlib/` (under `authlib/listener/`);
@@ -338,8 +333,7 @@ wants to register.
 - Most commonly, `host` is a plain Kubernetes service name (e.g., `github-tool-mcp`) because the HTTP client sets the Host header from the URL hostname
 - Routes file is loaded once at startup; restart the pod to pick up changes
 
-**Configuration loading:**
-- YAML config with `${ENV_VAR}` expansion, mode presets, and startup validation.
+**Configuration loading:** (config format is covered above, in the binaries section.)
 - Plugin settings are local to each plugin under `pipeline.*.plugins[].config`; the runtime YAML itself only carries `mode`, `listener`, `session`, `stats`, and the pipeline composition. See [`docs/plugin-reference.md`](docs/plugin-reference.md) for the per-plugin decode pattern.
 - The operator-supplied env vars (`KEYCLOAK_URL`, `KEYCLOAK_REALM`, `TOKEN_URL`, `ISSUER`, `DEFAULT_OUTBOUND_POLICY`, `CLIENT_ID`) are consumed by the default `authbridge-runtime-config` via `${VAR}` expansion — they land inside the appropriate plugin's `config:` block rather than a top-level section.
 - `jwt-validation` derives `jwks_url` from `issuer` when omitted (appends `/protocol/openid-connect/certs`).
