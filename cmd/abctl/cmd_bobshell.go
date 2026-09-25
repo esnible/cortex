@@ -367,11 +367,6 @@ func bobShellDisable(path string, stdout, stderr io.Writer) int {
 	}
 }
 
-// bobShellStatus reports whether this shell routes bob through Cortex.
-//
-// The environment, and nothing else. Exits 0 either way: "not enabled" is a
-// successful report, not a failure, which is how claudeCodeStatus behaves and
-// what makes this usable in a script that only wants the text.
 // bobShellAdviseManual prints what the user has to do by hand when abctl will not
 // touch the file itself — an unrecognised $SHELL, a dangling rc symlink, or a chain
 // past the hop limit. Returns 0: we could not do it for them, but we answered the
@@ -403,6 +398,11 @@ func bobShellAdviseManual(action, where string, stdout io.Writer) int {
 	return 0
 }
 
+// bobShellStatus reports whether this shell routes bob through Cortex.
+//
+// The environment, and nothing else. Exits 0 either way: "not enabled" is a
+// successful report, not a failure, which is how claudeCodeStatus behaves and
+// what makes this usable in a script that only wants the text.
 func bobShellStatus(stdout io.Writer) int {
 	if v, ok := os.LookupEnv(bobShellEnvVar); ok {
 		fmt.Fprintf(stdout, "  %s=%s\n", bobShellEnvVar, v)
