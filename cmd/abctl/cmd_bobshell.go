@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -58,17 +59,26 @@ const (
 // non-interactive shells unless expand_aliases is set, and "$@" forwards
 // arguments explicitly rather than relying on textual substitution.
 //
-// It needs no guard against recursing into itself. "abctl exec" replaces its
-// child process image via execve, and that process does not read this file, so
-// the function does not exist on the other side of the exec — the "bob" inside
-// the body resolves to the PATH binary. Deliberately no "whence -p" / "type -P"
-// to find that binary past the function: those are shell-specific builtins, the
+// It needs no guard against recursing into itself. "abctl exec" runs the bob
+// binary as a child process, and that process does not read this file, so the
+// function does not exist on the other side of it — the "bob" inside the body
+// resolves to the PATH binary. Verified by hand under zsh, bash and dash: the
+// binary is reached exactly once. Deliberately no "whence -p" / "type -P" to
+// find that binary past the function: those are shell-specific builtins, the
 // portable-looking fallbacks are not portable, and the whole apparatus guards a
 // loop that cannot happen.
 //
 // Every byte here is fixed — no interpolation, nothing machine-specific — which
 // is what lets disable be a string comparison rather than a parser.
-const bobShellBlock = bobShellMarkerStart + `
+//
+// It OPENS with a newline, so the block is self-separating: appended to a file
+// whose last line has no newline of its own, it still starts on a line of its
+// own, and the separator is inside the one string disable removes. Keeping the
+// separator outside — appending it to the user's content — is what made the round
+// trip lossy: once written, "vim\n" + block and "vim" + "\n" + block are the same
+// bytes, so disable could not tell whose newline it was, and either left ours
+// behind or ate theirs. Inside the constant there is nothing to tell apart.
+const bobShellBlock = "\n" + bobShellMarkerStart + `
 bob() {
   abctl exec -- bob "$@"
 }
@@ -118,6 +128,34 @@ func runBobShell(args []string, stdout, stderr io.Writer) int {
 	case "enable", "disable", "status":
 	default:
 		fmt.Fprintf(stderr, "abctl: unknown bobshell action %q (enable, disable, status)\n", action)
+		return 2
+	}
+
+	// These verbs take no flags and no operands, and anything after them is a
+	// misunderstanding that must not be silently dropped. An empty FlagSet, the
+	// same shape claude-code builds with ContinueOnError, both rejects an
+	// unrecognised flag and gives -h its own usage — so `disable --help` prints
+	// help instead of deleting the block, and `enable --dry-run` is refused
+	// instead of enabling for real.
+	fs := flag.NewFlagSet("configure bobshell "+action, flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	// The FlagSet has no flags, so its own usage would print a bare header and an
+	// empty list. Printing this command's usage instead is the useful answer, and
+	// suppressing it here keeps -h's single copy on stdout below.
+	fs.Usage = func() {}
+	if err := fs.Parse(args[1:]); err != nil {
+		// -h and --help arrive here as flag.ErrHelp, and asking for help is not a
+		// usage error: answer on stdout and exit 0, the same split the action-level
+		// help above uses. Any other parse failure is a real usage error, and
+		// Parse has already named it on stderr.
+		if errors.Is(err, flag.ErrHelp) {
+			fmt.Fprint(stdout, bobShellUsage)
+			return 0
+		}
+		return 2
+	}
+	if fs.NArg() > 0 {
+		fmt.Fprintf(stderr, "abctl: bobshell %s takes no arguments (got %q)\n", action, fs.Arg(0))
 		return 2
 	}
 
@@ -266,14 +304,13 @@ func bobShellEnable(path string, stdout, stderr io.Writer) int {
 		return 0
 	}
 
-	out := string(content)
-	// Without this the block's first line fuses onto the user's last line — both
-	// breaking that line and making the block unmatchable, so disable could never
-	// remove it again.
-	if out != "" && !strings.HasSuffix(out, "\n") {
-		out += "\n"
-	}
-	out += bobShellBlock
+	// A plain append, with no newline fix-up of the user's content: the block opens
+	// with its own newline, so it separates itself from whatever precedes it and
+	// disable removes that byte along with the rest. Adjusting `out` here instead
+	// put the separator outside the string disable searches for, and it survived
+	// every disable — see bobShellBlock's comment and
+	// TestBobShellRoundTripIsByteIdentical's no-trailing-newline rows.
+	out := string(content) + bobShellBlock
 
 	if err := writeRCFile(path, out); err != nil {
 		fmt.Fprintf(stderr, "abctl: %v\n", err)
@@ -301,6 +338,8 @@ func bobShellDisable(path string, stdout, stderr io.Writer) int {
 	// removing one copy would leave the file in a state nobody chose.
 	switch n := strings.Count(string(content), bobShellBlock); {
 	case n == 1:
+		// One Replace of the whole block, leading newline included, so it is the
+		// exact inverse of enable's append and the file comes back byte-identical.
 		out := strings.Replace(string(content), bobShellBlock, "", 1)
 		if err := writeRCFile(path, out); err != nil {
 			fmt.Fprintf(stderr, "abctl: %v\n", err)

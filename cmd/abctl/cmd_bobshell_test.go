@@ -215,12 +215,22 @@ func TestBobShellEnableIsIdempotent(t *testing.T) {
 // else. It is also what makes drift between the two unmergeable: any change to
 // what enable writes that disable does not match fails here.
 func TestBobShellRoundTripIsByteIdentical(t *testing.T) {
-	for _, original := range []string{
-		"",
-		"export EDITOR=vim\n",
-		"# leading comment\n\nexport PATH=$PATH:/opt/bin\nalias g=git\n",
+	// Every input that used to be here ended in a newline or was empty, which is
+	// exactly why the table missed a real defect: enable appended a newline to a
+	// file that lacked one and disable removed only the block, so that byte was
+	// never removed and the round trip lost. The no-trailing-newline rows are the
+	// point of the table now, not an edge case beside it.
+	for _, tc := range []struct{ name, original string }{
+		{"empty", ""},
+		{"trailing newline", "export EDITOR=vim\n"},
+		{"no trailing newline", "export EDITOR=vim"},
+		{"no trailing newline, multi-line", "# leading comment\nalias g=git"},
+		{"several trailing newlines", "export EDITOR=vim\n\n\n"},
+		{"only a newline", "\n"},
+		{"multi-line", "# leading comment\n\nexport PATH=$PATH:/opt/bin\nalias g=git\n"},
 	} {
-		t.Run("len"+string(rune('0'+len(original)%10)), func(t *testing.T) {
+		original := tc.original
+		t.Run(tc.name, func(t *testing.T) {
 			home := fakeHome(t)
 			t.Setenv("SHELL", "/bin/zsh")
 			rc := filepath.Join(home, ".zshrc")
@@ -468,8 +478,14 @@ func TestBobShellBlockShape(t *testing.T) {
 	}
 
 	// The properties disable depends on.
-	if !strings.HasPrefix(bobShellBlock, bobShellMarkerStart) {
-		t.Errorf("block does not start with the start marker:\n%s", bobShellBlock)
+	//
+	// A leading newline, then the marker: the block separates itself from whatever
+	// it is appended to, which is what lets enable append it unchanged and disable
+	// remove it with one Replace. A separator kept outside the constant is not
+	// invertible — disable cannot tell our newline from the user's — so this
+	// assertion is load-bearing, not cosmetic.
+	if !strings.HasPrefix(bobShellBlock, "\n"+bobShellMarkerStart) {
+		t.Errorf("block does not start with a newline and the start marker:\n%q", bobShellBlock)
 	}
 	if !strings.HasSuffix(bobShellBlock, bobShellMarkerEnd+"\n") {
 		t.Errorf("block does not end with the end marker and a newline:\n%q", bobShellBlock)
@@ -531,6 +547,80 @@ func TestBobShellUnknownShell(t *testing.T) {
 // (stderr, 2). Same shape as TestClaudeCodeHelp_PrintsUsageOnStdout, and for the
 // same reason — `--help` read as an action name sends someone looking for the
 // command list to the one branch that refuses to print it.
+// Nothing follows the verb, and anything that does is a misunderstanding that
+// must not be silently dropped.
+//
+// Both of these did real damage before the verbs went through a FlagSet:
+// runBobShell read args[0] and never looked at the rest, so `disable --help`
+// DELETED the block instead of printing help, and `enable --dry-run` enabled for
+// real. Each row therefore asserts the file too, not just the exit code — a
+// refusal that still wrote is the failure this is guarding.
+func TestBobShellRejectsStrayArguments(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args []string
+	}{
+		{"disable --help", []string{"disable", "--help"}},
+		{"enable --dry-run", []string{"enable", "--dry-run"}},
+		{"enable -n", []string{"enable", "-n"}},
+		{"status extra", []string{"status", "extra"}},
+		{"enable operand", []string{"enable", "~/.bashrc"}},
+		{"disable operand", []string{"disable", "~/.bashrc"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := fakeHome(t)
+			t.Setenv("SHELL", "/bin/zsh")
+			rc := filepath.Join(home, ".zshrc")
+			const original = "export EDITOR=vim\n"
+			if err := os.WriteFile(rc, []byte(original), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			// Enabled first, so a `disable` that wrongly went ahead has something to
+			// remove and shows up as a changed file rather than a no-op.
+			var out, errb bytes.Buffer
+			if code := runBobShell([]string{"enable"}, &out, &errb); code != 0 {
+				t.Fatalf("setup enable: exit = %d; stderr: %s", code, errb.String())
+			}
+			before, err := os.ReadFile(rc)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			out.Reset()
+			errb.Reset()
+			code := runBobShell(tc.args, &out, &errb)
+
+			// --help is a successful answer even here: the FlagSet reports it as
+			// flag.ErrHelp, and the usage goes to stdout with exit 0. Every other
+			// row is a usage error on stderr with exit 2. What both share, and what
+			// this test exists for, is that neither touches the file.
+			if tc.args[1] == "--help" {
+				if code != 0 {
+					t.Errorf("exit = %d, want 0; stderr: %s", code, errb.String())
+				}
+				if !strings.Contains(out.String(), "abctl configure bobshell —") {
+					t.Errorf("usage not on stdout:\n%s", out.String())
+				}
+			} else {
+				if code != 2 {
+					t.Errorf("exit = %d, want 2; stdout: %s", code, out.String())
+				}
+				if errb.Len() == 0 {
+					t.Errorf("nothing on stderr to say what was wrong")
+				}
+			}
+
+			after, err := os.ReadFile(rc)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(after) != string(before) {
+				t.Errorf("the rc file was written anyway:\ngot  %q\nwant %q", after, before)
+			}
+		})
+	}
+}
+
 func TestBobShellHelpAndUsageErrors(t *testing.T) {
 	for _, arg := range []string{"-h", "--help", "help"} {
 		t.Run("help "+arg, func(t *testing.T) {

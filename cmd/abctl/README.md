@@ -309,8 +309,12 @@ abctl configure bobshell disable   # remove exactly that block
 abctl configure bobshell status    # is bob routed in THIS shell?
 ```
 
-Nothing else in the file is touched, and `disable` restores it byte-for-byte —
-a round-trip test asserts exactly that, so the two halves cannot drift apart.
+The block opens with a blank line, so it lands on a line of its own even after a
+file whose last line has no newline. That newline is part of the block, removed
+with the rest of it, which is why nothing else in the file is touched and the
+file comes back byte-for-byte — a round-trip test asserts exactly that,
+including on a file with no trailing newline, so the two halves cannot drift
+apart.
 Run `enable` twice and the second run is a no-op. If the block is there but
 hand-edited, or there twice over, both verbs decline and say so rather than
 guess which copy you meant.
@@ -320,8 +324,8 @@ non-interactive shells unless `expand_aliases` is set, and `"$@"` forwards
 arguments explicitly, so `bob "two words"` stays one argument.
 
 It cannot recurse into itself, which is why there is no machinery to resolve
-the real binary past the function. `abctl exec` replaces its child's process
-image, and that process never reads your rc file, so the `bob` inside the body
+the real binary past the function. `abctl exec` runs the `bob` binary as a child
+process, and that process never reads your rc file, so the `bob` inside the body
 is always the one on `PATH`.
 
 ### Which file it writes
