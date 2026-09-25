@@ -120,6 +120,30 @@ cannot match the URL. That distinction is what lets one mechanical pass rewrite
 1,019 import occurrences without touching the compatibility surface, and it was
 checked against both real strings before being relied on.
 
+### The exception: fixed-depth upward paths
+
+§4's "relative paths survive" holds only for paths pointing *within* the moving
+subtree. A path that climbs *out* of it counts levels from the repo root and
+breaks, and no substitution on `authbridge/` can see it. There are seven, in
+three files, all of which lose exactly one `../`:
+
+| File | Site | Now | After |
+|---|---|---|---|
+| `scripts/readme-demo/main.go:22` | default `-out` | `../../../docs/assets/` | `../../docs/assets/` |
+| `scripts/readme-demo/staleness_test.go:12` | `assetPath` | `../../../docs/assets/` | `../../docs/assets/` |
+| `demos/github-issue/rbac/Makefile:59` | `AGENT_EXAMPLES_DIR` | `../../../../../agent-examples` | `../../../../agent-examples` |
+| `demos/github-issue/rbac/Makefile:63` | `VENV` | `../../../../.venv` | `../../../.venv` |
+| `demos/github-issue/rbac/Makefile:85` | hint string | `-r ../../../requirements.txt` | `-r ../../requirements.txt` |
+| `demos/github-issue/aiac/Makefile:43` | `VENV` | `../../../../.venv` | `../../../.venv` |
+| `demos/github-issue/aiac/Makefile:71` | hint string | `-r ../../../requirements.txt` | `-r ../../requirements.txt` |
+
+The `readme-demo` two matter most: CI's `go-ci-readme-demo` job runs a staleness
+test that regenerates the demo SVG and compares it against the committed
+`docs/assets/cortex-demo.svg`. Left unfixed, the generator writes above the
+repository root and the job fails. That job is also why the SVG **must** be
+regenerated in this change rather than after it: the committed asset shows the
+install one-liner, and changing the one-liner makes the asset stale.
+
 ## 6. Install compatibility
 
 The canonical URL becomes
@@ -267,6 +291,7 @@ main for unrelated `tlsbridge` drift.
 | Risk | Mitigation |
 |---|---|
 | A missed path reference breaks CI after merge | Every workflow and dependabot entry enumerated in §3/§9; `grep` gate in §10 |
+| A fixed-depth `../../../` path silently resolves outside the repo | All seven enumerated in §5; invisible to a string sweep, so they are a named task rather than a side effect. The `readme-demo` pair is caught by CI's staleness job. |
 | `--ref=<old tag>` stops resolving | Two-path lookup (§6), `install_test.sh` cases for both eras, gated by the existing `install-script` job |
 | A reader of archived v0.7/v0.8 docs gets a 404 | **Accepted, not mitigated** (§6). Curl exits 56 visibly, but the pipeline exits 0 having installed nothing. Current docs in `rossoctl/rossoctl` get a coordinated PR; the archives do not. |
 | Docker context bloat | Root `.dockerignore` in the same commit; real `docker build` in §10 |
