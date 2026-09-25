@@ -350,8 +350,8 @@ exist for external readers (e2e probes,
 debugging, future Envoy filesystem SDS) and are kept fresh on every
 rotation. The listener itself reads SVIDs in-memory via
 `spiffe.X509Source` and never re-reads the files. authbridge enables
-mTLS only when `mtls:` is configured at the top level of
-`authbridge-runtime-config`; absent that block, today's plaintext behavior is
+mTLS only when `mtls:` is configured at the top level of the
+runtime config; absent that block, today's plaintext behavior is
 preserved.
 
 ## Top-level `mtls:` configuration
