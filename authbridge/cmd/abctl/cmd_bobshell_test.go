@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -1793,7 +1794,7 @@ func TestHeredocDelim(t *testing.T) {
 		{"alias bob='/b/abctl exec -- \\bob'", "", false},
 		{"", "", false},
 	} {
-		d, dash := heredocDelim(tc.line)
+		d, dash := heredocDelim(tc.line, 0)
 		if d != tc.delim || dash != tc.dashed {
 			t.Errorf("heredocDelim(%q) = (%q, %v), want (%q, %v)", tc.line, d, dash, tc.delim, tc.dashed)
 		}
@@ -2100,5 +2101,538 @@ func TestBobShell_RoundTripUnderAnyBinaryName(t *testing.T) {
 				t.Errorf("disable did not round-trip to the original:\n%q\nwant:\n%q", got, orig)
 			}
 		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Round 8: quoted data, quoted operators, command spellings, shell validity,
+// and pasted transcripts.
+// ---------------------------------------------------------------------------
+
+// bashSyntaxOK reports whether bash accepts the file, skipping if bash is absent.
+//
+// Round 8's MF4 was a file that `bash -n` rejects while disable printed "Disabled."
+// and exited 0. Round 7's execution had seen the sibling shape and asserted only that
+// bytes changed, which is why the corruption went unnoticed: the assertion has to be
+// about the shell's verdict, not about the diff.
+func bashSyntaxOK(t *testing.T, path string) {
+	t.Helper()
+	bash, err := exec.LookPath("bash")
+	if err != nil {
+		t.Skip("bash not available")
+	}
+	cmd := exec.Command(bash, "-n", path)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Errorf("bash -n rejected the file after the command ran: %v\n%s\n--- file ---\n%s",
+			err, out, readFile(t, path))
+	}
+}
+
+// TestCommandStarts_QuotedDataHoldsNoCommand is round 8's MF1 at the unit level.
+//
+// A line inside an unterminated quoted string is data, exactly as heredoc body is.
+// Before this, heredocBody modelled only the heredoc, so `MSG="<START>\nalias bob=…\n
+// <END>"` had its middle line surgically deleted: bash defined nothing, status claimed
+// enabled, and disable reported success while taking the file 122→88 bytes.
+func TestCommandStarts_QuotedDataHoldsNoCommand(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		lines []string
+		// dataLines are indexes that must hold no command at all.
+		dataLines []int
+	}{
+		{
+			name:      "double quoted",
+			lines:     []string{`MSG="` + bobShellMarkerStart, bobShellAliasLine("/x/abctl"), bobShellMarkerEnd + `"`, "export T=1"},
+			dataLines: []int{1, 2},
+		},
+		{
+			name:      "single quoted",
+			lines:     []string{`MSG='` + bobShellMarkerStart, bobShellAliasLine("/x/abctl"), bobShellMarkerEnd + `'`, "export T=1"},
+			dataLines: []int{1, 2},
+		},
+		{
+			name:      "python -c script",
+			lines:     []string{`python3 -c "`, bobShellAliasLine("/x/abctl"), "print(1)", `"`},
+			dataLines: []int{1, 2},
+		},
+		{
+			name:      "doc string with secrets",
+			lines:     []string{`DOC='line1 secret=hunter2`, bobShellAliasLine("/x/abctl"), `line3 token=abc123'`, "export T=1"},
+			dataLines: []int{1, 2},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cmds := commandStarts(tc.lines)
+			for _, i := range tc.dataLines {
+				if len(cmds[i].starts) != 0 {
+					t.Errorf("line %d (%q) reported a command start %v, want none — it is quoted data",
+						i, tc.lines[i], cmds[i].starts)
+				}
+				if cmds[i].holdsOurAlias() {
+					t.Errorf("line %d (%q) claimed as our alias, but it is quoted data", i, tc.lines[i])
+				}
+			}
+			// And the whole-file view agrees: nothing here is owned.
+			if got := ownedLines(tc.lines); len(got) != 0 {
+				t.Errorf("ownedLines = %v, want none — every candidate line is quoted data", got)
+			}
+		})
+	}
+}
+
+// TestBobShell_QuotedDataSurvivesEveryVerb is MF1 end to end, over the real files.
+func TestBobShell_QuotedDataSurvivesEveryVerb(t *testing.T) {
+	for _, tc := range []struct{ name, body string }{
+		{"double quoted", `MSG="` + bobShellMarkerStart + "\n" + bobShellAliasLine("/x/abctl") + "\n" + bobShellMarkerEnd + "\"\nexport T=1\n"},
+		{"single quoted", `MSG='` + bobShellMarkerStart + "\n" + bobShellAliasLine("/x/abctl") + "\n" + bobShellMarkerEnd + "'\nexport T=1\n"},
+		{"python -c", "python3 -c \"\n" + bobShellAliasLine("/x/abctl") + "\nprint(1)\n\"\n"},
+		{"doc with secrets", "DOC='line1 secret=hunter2\n" + bobShellAliasLine("/x/abctl") + "\nline3 token=abc123'\nexport T=1\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			withSelfPath(t, "/tmp/abctl")
+			rc := filepath.Join(t.TempDir(), ".bashrc")
+			if err := os.WriteFile(rc, []byte(tc.body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			var out, errb bytes.Buffer
+			if code := bobShellStatus(rc, &out); code != 0 {
+				t.Fatalf("status: exit = %d", code)
+			}
+			if !strings.Contains(out.String(), "not enabled") {
+				t.Errorf("status = %q, want not-enabled: the alias exists only as quoted data", out.String())
+			}
+			out.Reset()
+			if code := bobShellDisable(rc, true, &out, &errb); code != 0 {
+				t.Fatalf("disable: exit = %d (stderr: %s)", code, errb.String())
+			}
+			if !strings.Contains(out.String(), "Nothing to do") {
+				t.Errorf("disable said %q, want Nothing to do", out.String())
+			}
+			if got := readFile(t, rc); got != tc.body {
+				t.Errorf("disable edited quoted data.\n got:\n%s\nwant:\n%s", got, tc.body)
+			}
+		})
+	}
+}
+
+// TestCommandStarts_QuotedHeredocOperatorIsNotAnOpener is round 8's MF2.
+//
+// `echo '<<EOF'` was read as an opener, so every following line was classified as
+// heredoc body forever: a live alias below it was invisible to status, disable
+// reported nothing to do, and enable then wrote a SECOND live alias that status still
+// could not see. That refuted the old comment claiming over-detection is "the
+// recoverable error" — a suppressed observation propagates into the next write.
+func TestCommandStarts_QuotedHeredocOperatorIsNotAnOpener(t *testing.T) {
+	for _, tc := range []struct{ name, opener string }{
+		{"single quoted", `echo '<<EOF'`},
+		{"double quoted", `echo "<<EOF"`},
+		{"escaped", `echo \<\<EOF`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			lines := []string{tc.opener, bobShellAliasLine("/x/abctl"), "export T=1"}
+			cmds := commandStarts(lines)
+			if !cmds[1].holdsOurAlias() {
+				t.Errorf("the alias below %q was not seen; a quoted operator was read as a heredoc opener", tc.opener)
+			}
+			if got := ownedLines(lines); len(got) != 1 || got[0] != 1 {
+				t.Errorf("ownedLines = %v, want exactly [1]", got)
+			}
+		})
+	}
+	// The two findings compose, and this is the case that needs BOTH halves. A line
+	// that begins inside a quote carried from the line above can contain `<<`: it is
+	// data, but heredocDelim only knows that if commandStarts passes it the carried
+	// quote state. Without it, that `<<` reads as a real opener and every line below —
+	// including a live alias bash does define — is suppressed forever. Found by
+	// mutation: dropping the quote argument to heredocDelim survived the MF1 and MF2
+	// tables, because neither builds a quoted string that mentions a heredoc operator.
+	// Two shapes, and only the second reaches heredocDelim's quote argument — worth
+	// keeping both, because getting that distinction wrong is what made the first
+	// mutation survive a table that looked like it covered this.
+	//
+	// (a) The quote is still open at end of line, so commandStarts never asks about
+	// heredocs at all: the `end == 0` guard carries it.
+	stillOpen := []string{
+		`MSG="line one`,
+		"this line is data and mentions <<EOF",
+		`line three"`,
+		bobShellAliasLine("/x/abctl"),
+		"export T=1",
+	}
+	if got := ownedLines(stillOpen); len(got) != 1 || got[0] != 3 {
+		t.Errorf("ownedLines = %v, want exactly [3]: the `<<EOF` inside a carried quote is data,\nso the live alias below it must still be seen", got)
+	}
+	// (b) The carried quote CLOSES on the same line, so heredocDelim does run — and it
+	// only knows the `<<EOF` was quoted because commandStarts hands it the carried
+	// state. Pass 0 there and this `<<EOF` reads as a real opener, swallowing every
+	// line below including an alias bash does define.
+	closesSameLine := []string{
+		`MSG="line one`,
+		`still data <<EOF and now the quote closes"`,
+		bobShellAliasLine("/x/abctl"),
+		"export T=1",
+	}
+	if got := ownedLines(closesSameLine); len(got) != 1 || got[0] != 2 {
+		t.Errorf("ownedLines = %v, want exactly [2]: the `<<EOF` sits inside the carried quote,\nso it opens no heredoc and the live alias below it stands", got)
+	}
+
+	// A REAL heredoc still suppresses its body, so the fix did not simply stop
+	// tracking heredocs.
+	real := []string{"cat <<EOF", bobShellAliasLine("/x/abctl"), "EOF", "export T=1"}
+	if got := ownedLines(real); len(got) != 0 {
+		t.Errorf("ownedLines over a real heredoc = %v, want none", got)
+	}
+}
+
+// TestBobShell_QuotedOperatorThenEnableLeavesOneAlias is MF2's consequence: the
+// suppressed claim used to propagate into enable, which wrote a second live alias.
+func TestBobShell_QuotedOperatorThenEnableLeavesOneAlias(t *testing.T) {
+	withSelfPath(t, "/tmp/abctl")
+	rc := filepath.Join(t.TempDir(), ".bashrc")
+	body := "echo '<<EOF'\n" + bobShellAliasLine("/x/abctl") + "\nexport T=1\n"
+	if err := os.WriteFile(rc, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var out, errb bytes.Buffer
+	if code := bobShellEnable(rc, "/tmp/abctl", true, &out, &errb); code != 0 {
+		t.Fatalf("enable: exit = %d (stderr: %s)", code, errb.String())
+	}
+	if n := strings.Count(readFile(t, rc), "alias bob="); n != 1 {
+		t.Errorf("after enable the file has %d alias lines, want 1:\n%s", n, readFile(t, rc))
+	}
+	// And status can see what enable just wrote — the self-check MF2 said was missing.
+	out.Reset()
+	if code := bobShellStatus(rc, &out); code != 0 {
+		t.Fatalf("status: exit = %d", code)
+	}
+	if strings.Contains(out.String(), "not enabled") {
+		t.Errorf("status cannot see the block enable just wrote: %q", out.String())
+	}
+	bashSyntaxOK(t, rc)
+}
+
+// TestCommandIsOurAlias_EverySpelling is round 8's MF3.
+//
+// Ownership used to pivot on strings.HasPrefix(t, "alias bob="), which is text
+// matching in the one place round 7's commit title said it had been removed. Each of
+// these is live per bash and was invisible, and each ended with TWO live aliases after
+// enable.
+func TestCommandIsOurAlias_EverySpelling(t *testing.T) {
+	withSelfPath(t, "")
+	for _, tc := range []struct {
+		name string
+		line string
+		want bool
+	}{
+		{"plain", `alias bob='/b/abctl exec -- \bob'`, true},
+		{"tab between words", "alias\tbob='/b/abctl exec -- \\bob'", true},
+		{"backslash escaped keyword", `\alias bob='/b/abctl exec -- \bob'`, true},
+		{"after a separator", `x=1; alias bob='/b/abctl exec -- \bob'`, true},
+		{"ansi-c quoting", `alias bob=$'/b/abctl exec -- \\bob'`, true},
+		{"quoted keyword", `'alias' bob='/b/abctl exec -- \bob'`, true},
+		{"double separator", `alias -- bob='/b/abctl exec -- \bob'`, true},
+		{"several aliases in one command", `alias x=1 bob='/b/abctl exec -- \bob'`, true},
+		// Still narrow: the discriminator is what the alias INVOKES.
+		{"user's own alias", `alias bob='/usr/local/bin/bob --fast'`, false},
+		{"a different name", `alias bobby='/b/abctl exec -- \bob'`, false},
+		{"proxying something else", `alias bob='/b/abctl exec -- other'`, false},
+		{"not an alias command", `echo alias bob='/b/abctl exec -- \bob'`, false},
+		{"commented out", `# alias bob='/b/abctl exec -- \bob'`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := aliasRoutesThroughAbctl(tc.line); got != tc.want {
+				t.Errorf("aliasRoutesThroughAbctl(%q) = %v, want %v", tc.line, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestBobShell_EverySpellingRoundTrips is MF3 end to end: each spelling must be seen
+// by status, collapsed to ONE alias by enable, and fully removed by disable.
+func TestBobShell_EverySpellingRoundTrips(t *testing.T) {
+	for _, tc := range []struct{ name, alias string }{
+		{"tab", "alias\tbob='/x/abctl exec -- \\bob'"},
+		{"escaped keyword", `\alias bob='/x/abctl exec -- \bob'`},
+		{"after separator", `x=1; alias bob='/x/abctl exec -- \bob'`},
+		{"ansi-c", `alias bob=$'/x/abctl exec -- \\bob'`},
+		{"quoted keyword", `'alias' bob='/x/abctl exec -- \bob'`},
+		{"double quoted keyword", `"alias" bob='/x/abctl exec -- \bob'`},
+		{"line continuation", "alias \\\n bob='/x/abctl exec -- \\bob'"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			withSelfPath(t, "/tmp/abctl")
+			rc := filepath.Join(t.TempDir(), ".bashrc")
+			body := "# rc\n" + tc.alias + "\nexport T=1\n"
+			if err := os.WriteFile(rc, []byte(body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			var out, errb bytes.Buffer
+			if code := bobShellStatus(rc, &out); code != 0 {
+				t.Fatalf("status: exit = %d", code)
+			}
+			if strings.Contains(out.String(), "not enabled") {
+				t.Errorf("status = %q, want enabled: this spelling is live per bash", out.String())
+			}
+			out.Reset()
+			if code := bobShellEnable(rc, "/tmp/abctl", true, &out, &errb); code != 0 {
+				t.Fatalf("enable: exit = %d (stderr: %s)", code, errb.String())
+			}
+			if n := strings.Count(readFile(t, rc), "bob="); n != 1 {
+				t.Errorf("after enable, %d bob= lines, want 1:\n%s", n, readFile(t, rc))
+			}
+			out.Reset()
+			if code := bobShellDisable(rc, true, &out, &errb); code != 0 {
+				t.Fatalf("disable: exit = %d (stderr: %s)", code, errb.String())
+			}
+			if got := readFile(t, rc); strings.Contains(got, "bob=") {
+				t.Errorf("disable left an alias behind:\n%s", got)
+			}
+			bashSyntaxOK(t, rc)
+		})
+	}
+}
+
+// TestBobShellDisable_KeepsCompoundCommandsValid is round 8's MF4.
+//
+// The guarded-rc idiom puts our alias inside `if [ -n "$PS1" ]; then` / `fi`. Deleting
+// the line left `then` immediately followed by `fi` — a file bash refuses to parse,
+// while disable printed "Disabled." and exited 0. Every later line in the rc silently
+// stops running, surfacing at the next login with nothing tying it to the abctl
+// command. Function bodies and loops break identically.
+func TestBobShellDisable_KeepsCompoundCommandsValid(t *testing.T) {
+	alias := "  " + bobShellAliasLine("/x/abctl")
+	for _, tc := range []struct {
+		name string
+		body string
+		// noopNeeded is true when our alias is the construct's ONLY statement, so
+		// something has to stay behind to keep it syntactically whole.
+		noopNeeded bool
+	}{
+		{"if/then/fi", "# rc\nif [ -n \"$PS1\" ]; then\n" + alias + "\nfi\nexport T=1\n", true},
+		{"function body", "# rc\nmyfn() {\n" + alias + "\n}\nexport T=1\n", true},
+		{"for loop", "# rc\nfor i in 1 2; do\n" + alias + "\ndone\nexport T=1\n", true},
+		{"while loop", "# rc\nwhile true; do\n" + alias + "\nbreak\ndone\nexport T=1\n", false},
+		{"if with a sibling statement", "# rc\nif true; then\n  export INNER=1\n" + alias + "\nfi\nexport T=1\n", false},
+		{"file scope needs no noop", "# rc\n" + bobShellAliasLine("/x/abctl") + "\nexport T=1\n", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			withSelfPath(t, "/tmp/abctl")
+			rc := filepath.Join(t.TempDir(), ".bashrc")
+			if err := os.WriteFile(rc, []byte(tc.body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			bashSyntaxOK(t, rc) // the fixture itself must be valid, or the test proves nothing
+			var out, errb bytes.Buffer
+			if code := bobShellDisable(rc, true, &out, &errb); code != 0 {
+				t.Fatalf("disable: exit = %d (stderr: %s)", code, errb.String())
+			}
+			got := readFile(t, rc)
+			if strings.Contains(got, "alias bob") {
+				t.Errorf("disable left the alias behind:\n%s", got)
+			}
+			// The whole point: the result is still a file the shell will read.
+			bashSyntaxOK(t, rc)
+			if gotNoop := strings.Contains(got, ":"); gotNoop != tc.noopNeeded {
+				t.Errorf("no-op substitution present = %v, want %v — it must appear only where\ndeletion would empty a construct, or the byte-identical round trip breaks:\n%s",
+					gotNoop, tc.noopNeeded, got)
+			}
+			// And the construct's own lines survive verbatim.
+			for _, l := range strings.Split(tc.body, "\n") {
+				if l == "" || strings.Contains(l, "alias bob") {
+					continue
+				}
+				if !strings.Contains(got, strings.TrimSpace(l)) {
+					t.Errorf("disable lost the user's line %q:\n%s", l, got)
+				}
+			}
+		})
+	}
+}
+
+// TestBobShell_EnableDisableIsNotACorruptionRoundTrip is MF4's asymmetry: enable
+// appends at file scope and stays valid, so a file where enable then disable ran must
+// come back byte-identical rather than syntactically broken.
+func TestBobShell_EnableDisableIsNotACorruptionRoundTrip(t *testing.T) {
+	withSelfPath(t, "/tmp/abctl")
+	rc := filepath.Join(t.TempDir(), ".bashrc")
+	body := "# rc\nif [ -n \"$PS1\" ]; then\n  export INNER=1\nfi\nexport T=1\n"
+	if err := os.WriteFile(rc, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var out, errb bytes.Buffer
+	if code := bobShellEnable(rc, "/tmp/abctl", true, &out, &errb); code != 0 {
+		t.Fatalf("enable: exit = %d (stderr: %s)", code, errb.String())
+	}
+	bashSyntaxOK(t, rc)
+	out.Reset()
+	if code := bobShellDisable(rc, true, &out, &errb); code != 0 {
+		t.Fatalf("disable: exit = %d (stderr: %s)", code, errb.String())
+	}
+	bashSyntaxOK(t, rc)
+	if got := readFile(t, rc); got != body {
+		t.Errorf("enable then disable is not an identity.\n got:\n%s\nwant:\n%s", got, body)
+	}
+}
+
+// TestBobShell_InertPastedTranscriptSurvives is round 8's MF5, and the finding needs
+// splitting to state it correctly.
+//
+// An INDENTED `alias bob=…` is not inert: both bash and zsh define it, so a tool that
+// promises exactly one live alias must claim and rewrite it — leaving it would leave
+// two. What must survive is a copy the shell genuinely never runs: inside a heredoc,
+// commented out, or markers with no alias between them at all. Those are the cases a
+// `--help` paste actually produces when it is documentation rather than configuration.
+func TestBobShell_InertPastedTranscriptSurvives(t *testing.T) {
+	alias := bobShellAliasLine("/x/abctl")
+	realAlias := bobShellAliasLine("/real/abctl")
+	for _, tc := range []struct {
+		name string
+		body string
+		// hasReal is true when a genuinely live alias sits elsewhere in the file, so
+		// the file-wide `any` gate round 7 used would have claimed the paste.
+		hasReal bool
+	}{
+		{
+			name:    "paste inside a heredoc",
+			body:    "cat <<'EOF'\n" + bobShellMarkerStart + "\n" + alias + "\n" + bobShellMarkerEnd + "\nEOF\n" + realAlias + "\nexport T=1\n",
+			hasReal: true,
+		},
+		{
+			name:    "paste commented out",
+			body:    "# " + bobShellMarkerStart + "\n# " + alias + "\n# " + bobShellMarkerEnd + "\n" + realAlias + "\nexport T=1\n",
+			hasReal: true,
+		},
+		{
+			name: "markers with no alias between them",
+			body: "# docs:\n" + bobShellMarkerStart + "\n" + bobShellMarkerEnd + "\nexport T=1\n",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			withSelfPath(t, "/tmp/abctl")
+			rc := filepath.Join(t.TempDir(), ".bashrc")
+			if err := os.WriteFile(rc, []byte(tc.body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			var out, errb bytes.Buffer
+			if code := bobShellDisable(rc, true, &out, &errb); code != 0 {
+				t.Fatalf("disable: exit = %d (stderr: %s)", code, errb.String())
+			}
+			got := readFile(t, rc)
+			// Every line of the paste is still there, verbatim.
+			for _, l := range strings.Split(tc.body, "\n") {
+				if l == "" || l == realAlias {
+					continue
+				}
+				if !strings.Contains(got, l) {
+					t.Errorf("disable destroyed an inert pasted line %q:\n%s", l, got)
+				}
+			}
+			if tc.hasReal && strings.Contains(got, realAlias) {
+				t.Errorf("disable left the genuinely live alias behind:\n%s", got)
+			}
+			if !tc.hasReal && !strings.Contains(out.String(), "Nothing to do") {
+				t.Errorf("disable over a documentation-only file said %q, want Nothing to do", out.String())
+			}
+		})
+	}
+}
+
+// TestBobShellEnable_PreservesIndentation is the part of MF5 that was a real defect:
+// rewriting an indented block flush-left changed lines the user had aligned.
+func TestBobShellEnable_PreservesIndentation(t *testing.T) {
+	withSelfPath(t, "/tmp/abctl")
+	rc := filepath.Join(t.TempDir(), ".bashrc")
+	body := "# notes:\n    " + bobShellMarkerStart + "\n    " + bobShellAliasLine("/x/abctl") +
+		"\n    " + bobShellMarkerEnd + "\nexport T=1\n"
+	if err := os.WriteFile(rc, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var out, errb bytes.Buffer
+	if code := bobShellEnable(rc, "/tmp/abctl", true, &out, &errb); code != 0 {
+		t.Fatalf("enable: exit = %d (stderr: %s)", code, errb.String())
+	}
+	got := readFile(t, rc)
+	for _, want := range []string{
+		"    " + bobShellMarkerStart,
+		"    " + bobShellAliasLine("/tmp/abctl"),
+		"    " + bobShellMarkerEnd,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("enable de-indented the block (missing %q):\n%s", want, got)
+		}
+	}
+	if n := strings.Count(got, "alias bob="); n != 1 {
+		t.Errorf("after enable, %d alias lines, want 1:\n%s", n, got)
+	}
+}
+
+// TestScanLine_CommentTerminatesTheLine pins the `#` handling at the level where it is
+// actually observable: the command starts themselves.
+//
+// The MF3 table's "commented out" row does NOT prove this. Mutation testing showed that
+// removing scanLine's `#` case leaves that row passing, and so does removing
+// splitShellWords' `#` terminator, and so does removing BOTH — because
+// commandIsOurAlias independently requires words[0] == "alias", and a consumed `#`
+// makes the first word `#` or `#alias`. Three mechanisms answer one question, which is
+// the two-predicates shape every round of this review has found. The two scanner-level
+// ones are kept because they are correct and cheap, but they are pinned here, where a
+// change to them shows up, rather than left looking covered by an end-to-end row that
+// would pass without them.
+func TestScanLine_CommentTerminatesTheLine(t *testing.T) {
+	for _, tc := range []struct {
+		line string
+		want []int
+	}{
+		{`# alias bob=x`, nil},
+		{`   # alias bob=x`, nil},
+		{`echo hi; # alias bob=x`, []int{0}},
+		// Mid-word `#` is an ordinary byte in both shells, so the word continues and
+		// nothing after it on that word is a new start. bash: `echo a#b; alias bob=…`
+		// DOES define the alias, and `echo hi #note; alias bob=…` does not.
+		{`x=a#b`, []int{0}},
+		{`echo a#b; alias bob=x`, []int{0, 10}},
+		// The cases that distinguish word-boundary from command-start. A separator INSIDE
+		// a comment must not resurrect scanning: keying the comment on atStart reported a
+		// start at the `alias` here, claiming a line bash leaves inert — over-detection,
+		// which by MF2's lesson is not the safe direction, since disable would then delete
+		// a line the user wrote as a comment. Every expectation below was checked against
+		// bash directly.
+		{`# note; alias bob=x`, nil},
+		{`# a && alias bob=x`, nil},
+		{`echo hi # note; alias bob=x`, []int{0}},
+		{`echo hi #note; alias bob=x`, []int{0}},
+		// And a real separator still starts a real command.
+		{`echo hi; alias bob=x`, []int{0, 9}},
+		// A `#` immediately after a separator, with no space, still opens a comment —
+		// bash leaves all three of these inert — so a separator has to set the
+		// word boundary as well as the command boundary.
+		{`echo hi;# note; alias bob=x`, []int{0}},
+		{`echo hi&&# note; alias bob=x`, []int{0}},
+		{`(#note; alias bob=x`, nil},
+	} {
+		got, _ := scanLine(tc.line, 0)
+		if !slices.Equal(got, tc.want) {
+			t.Errorf("scanLine(%q) starts = %v, want %v", tc.line, got, tc.want)
+		}
+	}
+}
+
+// TestEndsWithContinuation pins the odd/even backslash rule: an even run escapes
+// itself and does not join the next line.
+func TestEndsWithContinuation(t *testing.T) {
+	for _, tc := range []struct {
+		line string
+		want bool
+	}{
+		{`alias \`, true},
+		{`alias \\`, false},
+		{`alias \\\`, true},
+		{`alias`, false},
+		{``, false},
+	} {
+		if got := endsWithContinuation(tc.line); got != tc.want {
+			t.Errorf("endsWithContinuation(%q) = %v, want %v", tc.line, got, tc.want)
+		}
 	}
 }
