@@ -1,6 +1,6 @@
 # Flattening `authbridge/` into the repo root
 
-Status: design · 2026-09-24 · targets the whole repository layout
+Status: implemented · 2026-09-24 · targets the whole repository layout
 
 ## 1. Problem
 
@@ -301,5 +301,5 @@ main for unrelated `tlsbridge` drift.
 
 ## 14. Note on this document
 
-This spec lives at `authbridge/docs/superpowers/specs/` and will itself be moved
-to `docs/superpowers/specs/` by the change it describes.
+This spec lived at `authbridge/docs/superpowers/specs/` and has itself been
+moved to `docs/superpowers/specs/` by the change it describes.
