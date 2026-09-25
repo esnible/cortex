@@ -280,6 +280,47 @@ func isOurAliasLine(line string) bool {
 	return path != "" && strings.HasPrefix(path, "/") && !strings.Contains(path, "'")
 }
 
+// looksLikeOurMechanism reports whether line is an alias that routes bob through an
+// abctl — this tool's mechanism, spelled some other way.
+//
+// It is deliberately looser than isOurAliasLine and is used ONLY for the interior of
+// a matched marker pair. The two predicates answer different questions, and the
+// difference is what round 6 turned on. isOurAliasLine asks "would THIS code have
+// emitted this exact line" and governs ownership anywhere in the file, where being
+// wrong means editing a line we cannot prove is ours. Inside a fence we ourselves
+// wrote, the burden is the other way round: a line there is presumptively ours, and
+// the only ones to leave alone are those that are recognisably NOT this mechanism.
+//
+// That distinction resolves a real conflict between two review rounds. Round 5
+// established that a fence must not swallow `alias bob='/usr/local/bin/bob --fast'`
+// — a user's own alias to the real binary, which happens to sit in our region. Round 6
+// found that a fence MUST claim `alias bob="/b/abctl exec -- \bob"` — our own
+// mechanism with double quotes instead of single, from another abctl build or a
+// hand-edit — because leaving it behind meant disable printed "Disabled.", exited 0,
+// and left the shell still routing bob through the proxy. Both are `alias bob=` inside
+// a matched pair; what separates them is what they invoke. The first runs the real bob
+// with the user's flags. The second runs an abctl's `exec -- bob`, which is this
+// feature and nothing else.
+//
+// Anything it cannot recognise stays unclaimed, which is the safe direction: a
+// leftover line is cosmetic, and deleting a line of someone else's rc file is not.
+func looksLikeOurMechanism(line string) bool {
+	t := strings.TrimSpace(line)
+	if !strings.HasPrefix(t, "alias bob=") {
+		return false
+	}
+	// Tolerate either quoting style — the point of this predicate is that the quoting
+	// is exactly what differs.
+	body := strings.Trim(strings.TrimPrefix(t, "alias bob="), `"'`)
+	fields := strings.Fields(body)
+	if len(fields) < 3 || !strings.HasSuffix(fields[0], "abctl") {
+		return false
+	}
+	rest := strings.Join(fields[1:], " ")
+	return strings.HasPrefix(rest, "exec ") &&
+		(strings.HasSuffix(rest, " -- \\bob") || strings.HasSuffix(rest, " -- bob"))
+}
+
 // bobShellBlock renders the managed block, newline-terminated.
 //
 // The alias body is single-quoted so nothing in it is expanded when the rc file is
@@ -335,14 +376,107 @@ func bobShellBlock(abctlPath string) string {
 // The invariants the callers need, which a span could not deliver: after enable the
 // file holds exactly one live alias, and after disable exactly zero.
 func ownedLines(lines []string) []int {
-	var owned []int
+	owned := map[int]bool{}
+
+	// Pass 1: aliases we can prove we emitted, anywhere in the file, fenced or not.
+	// This is what guarantees no live alias of ours survives disable, and it is
+	// position-independent for the reason the comment above gives.
 	for i, l := range lines {
-		switch t := strings.TrimSpace(l); {
-		case t == bobShellMarkerStart, t == bobShellMarkerEnd, isOurAliasLine(t):
-			owned = append(owned, i)
+		if isOurAliasLine(l) {
+			owned[i] = true
 		}
 	}
-	return owned
+
+	// Pass 2: MATCHED marker pairs, and their interiors.
+	//
+	// A marker is claimed only as half of a pair, which is the round-6 correction. On
+	// its own a marker is just a line of text that happens to read like ours, and the
+	// most likely way one gets into a file alone is the user copying the block out of
+	// `--help` into a comment for reference. Claiming those deleted two lines from the
+	// middle of a documentation comment, silently, while reporting "Disabled." — a
+	// direct breach of the file header's promise that everything outside our lines
+	// stays byte-identical.
+	//
+	// A matched pair is different in kind: the odds of a user reproducing both halves,
+	// in order, around their own content are negligible, so a pair really is a region
+	// we wrote. That is what lets the interior be claimed, and the interior is what
+	// round 6's second finding needed — an alias inside our fence whose quoting differs
+	// from ours is our mechanism, and leaving it behind meant disable reported success
+	// over a still-live alias.
+	//
+	// Scanning for the NEAREST enclosing pair (a START, then the first END after it)
+	// keeps an unterminated START from reaching the end of the file: without a closing
+	// marker there is no pair, so nothing is claimed by position at all, and only
+	// pass 1's proven aliases go.
+	for i := 0; i < len(lines); i++ {
+		if strings.TrimSpace(lines[i]) != bobShellMarkerStart {
+			continue
+		}
+		end := -1
+		for j := i + 1; j < len(lines); j++ {
+			t := strings.TrimSpace(lines[j])
+			if t == bobShellMarkerEnd {
+				end = j
+				break
+			}
+			// A second START before any END means the first was never closed; the pair
+			// begins at the later one. Stopping here rather than spanning both keeps an
+			// abandoned START from donating its interior to the next block.
+			if t == bobShellMarkerStart {
+				break
+			}
+		}
+		if end < 0 {
+			continue
+		}
+		// A pair is only ours if it actually FENCES OUR MECHANISM. This is the second
+		// half of the round-6 correction, and pairing alone was not enough to get it.
+		//
+		// The trigger is `--help`, which prints the block verbatim, markers included.
+		// A user who copies it into their rc as a note ends up with a genuine matched
+		// pair — byte-identical to ours, because they copied it — wrapped around a
+		// COMMENTED-OUT illustration like `#   alias bob='...abctl exec -- \bob'`.
+		// There is no textual signal separating those markers from ones we wrote, so
+		// pairing claimed them and disable deleted two lines out of the middle of a
+		// comment, silently, while reporting success.
+		//
+		// What a block we wrote always has, and a note about one never does, is a LIVE
+		// alias inside it: bobShellBlock emits exactly marker / alias / marker. A
+		// commented-out alias is a comment, not an alias, so requiring a live one
+		// inside the pair separates the two without having to guess at intent. An
+		// emptied-out fence is left alone as a result — inert text, and the safe error.
+		hasLive := false
+		for j := i + 1; j < end; j++ {
+			if t := strings.TrimSpace(lines[j]); isOurAliasLine(t) || looksLikeOurMechanism(t) {
+				hasLive = true
+				break
+			}
+		}
+		if !hasLive {
+			continue
+		}
+		owned[i] = true
+		owned[end] = true
+		for j := i + 1; j < end; j++ {
+			// Interior lines are presumptively ours, but only those that are
+			// recognisably this mechanism. A user's own alias to the real bob binary,
+			// or any unrelated line they parked in here, stays: see
+			// looksLikeOurMechanism for why the burden of proof inverts inside a pair
+			// but does not vanish.
+			if t := strings.TrimSpace(lines[j]); t == "" || looksLikeOurMechanism(t) {
+				owned[j] = true
+			}
+		}
+		i = end
+	}
+
+	out := make([]int, 0, len(owned))
+	for i := range lines {
+		if owned[i] {
+			out = append(out, i)
+		}
+	}
+	return out
 }
 
 // findBobShellBlock reports the span of what we own, markers included, for the
@@ -667,11 +801,24 @@ func bobShellDisable(rcPath string, yes bool, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "Nothing to do: no Cortex bob alias in %s.\n", rcPath)
 		return 0
 	}
-	// The removed lines verbatim, not bobShellAliasIn: on a block whose markers were
-	// hand-damaged that helper finds no alias and printed an EMPTY body, so the
-	// confirmation prompt showed nothing while the write removed real lines.
-	start, end, _ := findBobShellBlock(lines)
-	fmt.Fprintf(stdout, "Removes from %s:\n%s\n", rcPath, indentBlock(strings.Join(lines[start:end], "\n")+"\n"))
+	// Exactly the lines the write removes — the OWNED SET, not findBobShellBlock's
+	// hull. This is a consent prompt for a destructive edit, so the one property it
+	// must have is that it describes the edit. The hull does not: on a file whose
+	// owned lines are non-contiguous it spans the user's lines between ours, so the
+	// prompt listed `export SECRET_TOKEN=...` and `source ~/.work_secrets` as being
+	// removed while the write left them untouched. Ten lines shown, two removed. Both
+	// ways of misreading that prompt are bad — declining a safe operation, or
+	// believing secrets were just destroyed — and neither is recoverable by reading
+	// the code.
+	//
+	// (Printing the removed lines rather than bobShellAliasesIn is still right, for
+	// the earlier reason: on a marker-damaged block that helper finds no alias and
+	// printed an empty body while the write removed real lines.)
+	var removed []string
+	for _, i := range ownedLines(lines) {
+		removed = append(removed, lines[i])
+	}
+	fmt.Fprintf(stdout, "Removes from %s:\n%s\n", rcPath, indentBlock(strings.Join(removed, "\n")+"\n"))
 	// Resolved once and passed to writeRC, for the reason enable states: the path
 	// described and the path written are then the same value.
 	target := resolveRC(rcPath)
@@ -704,11 +851,11 @@ func bobShellStatus(rcPath string, stdout io.Writer) int {
 	}
 	aliases := bobShellAliasesIn(lines)
 	if len(aliases) == 0 {
-		if bobShellOwnsAnything(lines) {
-			// Markers but no alias: a hand-edit gutted the block. Enable repairs it.
-			fmt.Fprintf(stdout, "not enabled in %s (the Cortex block is there but has no alias line)\n", rcPath)
-			return 0
-		}
+		// No "the block is there but has no alias line" case any more: as of round 6 a
+		// marker pair with nothing live inside it is not something this command owns,
+		// so there is no state where we hold markers and no alias. Reporting one would
+		// mean claiming a user's `--help` transcript as our block, which is the
+		// deletion MF3 found.
 		fmt.Fprintf(stdout, "not enabled in %s\n", rcPath)
 		return 0
 	}

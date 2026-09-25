@@ -371,7 +371,12 @@ func TestBobShellStatus(t *testing.T) {
 		if code := bobShellStatus(rc, &out); code != 0 {
 			t.Errorf("exit = %d, want 0", code)
 		}
-		if !strings.Contains(out.String(), "not enabled") || !strings.Contains(out.String(), "no alias line") {
+		// "not enabled" is the verdict; the "no alias line" elaboration is gone with
+		// round 6. An empty marker pair is no longer something this command claims —
+		// a pair fences nothing live, so there is no way to tell it from a user's note
+		// pasted out of `--help`, which is the deletion MF3 reported. Status describes
+		// a file it owns nothing in, and "not enabled" is the whole truth about it.
+		if !strings.Contains(out.String(), "not enabled") {
 			t.Errorf("stdout: %s", out.String())
 		}
 	})
@@ -389,11 +394,29 @@ func TestBobShellEnable_RepairsUnterminatedBlock(t *testing.T) {
 		t.Fatalf("exit = %d, want 0 (stderr: %s)", code, errb.String())
 	}
 	got := readFile(t, rc)
-	if n := strings.Count(got, bobShellMarkerStart); n != 1 {
-		t.Errorf("start marker appears %d times, want 1:\n%s", n, got)
-	}
+	// One alias, and one MATCHED pair. The orphaned START is left where it was: an
+	// unpaired marker is inert text this command no longer claims (round 6 / MF3 —
+	// claiming bare markers deleted lines out of a user's documentation comment). So
+	// the count of marker-shaped lines is 2 here, and that is deliberate.
 	if n := strings.Count(got, "alias bob="); n != 1 {
 		t.Errorf("alias appears %d times, want 1:\n%s", n, got)
+	}
+	if _, _, ok := ownedMarkerPair(strings.Split(got, "\n")); !ok {
+		t.Errorf("no matched marker pair around the alias:\n%s", got)
+	}
+	// The property the test was written for — repeated enables must not pile up — is
+	// what actually matters, and it still holds: the second enable finds the pair from
+	// the first and replaces it in place.
+	var out2, errb2 bytes.Buffer
+	if code := bobShellEnable(rc, testAbctl, true, &out2, &errb2); code != 0 {
+		t.Fatalf("second enable: exit = %d (stderr: %s)", code, errb2.String())
+	}
+	again := readFile(t, rc)
+	if n := strings.Count(again, "alias bob="); n != 1 {
+		t.Errorf("after a second enable the alias appears %d times, want 1:\n%s", n, again)
+	}
+	if again != got {
+		t.Errorf("a second enable changed the file:\n%s\n--- vs ---\n%s", got, again)
 	}
 }
 
@@ -812,18 +835,21 @@ func TestBobShellBlock_SurvivesADamagedEndMarker(t *testing.T) {
 			if strings.Contains(got, "alias bob") {
 				t.Errorf("disable exited 0 but left the live alias:\n%s", got)
 			}
-			// A marker we WROTE must be gone. A hand-MANGLED one is no longer a line
-			// this command emits, so ownership by exact match leaves it — inert text,
-			// and the alternative is the prefix matching that let a recovered block
-			// claim a user's own alias (round-4 MUST FIX 2). Round 4's suggestion 4
-			// asked about exactly this residue; the answer then was "already removed",
-			// which was true only as a side effect of that unsafe prefix.
-			if strings.Contains(got, bobShellMarkerStart) || strings.Contains(got, bobShellMarkerEnd) {
-				t.Errorf("disable left one of our own markers behind:\n%s", got)
+			// No marker PAIR of ours may survive. A lone marker does, and here that is
+			// the START whose partner this test just damaged — an unpaired marker is
+			// inert text we no longer claim, because nothing distinguishes it from a
+			// user's note (round 6 / MF3: claiming them deleted lines out of a
+			// documentation comment). Round 4's suggestion 4 asked about this residue
+			// and I answered "already removed"; that was true then only as a side
+			// effect of prefix matching, and it could not survive fixing that.
+			if _, _, ok := ownedMarkerPair(strings.Split(got, "\n")); ok {
+				t.Errorf("disable left a marker pair of ours behind:\n%s", got)
 			}
-			if tc.damage == "" && strings.Contains(got, "cortex abctl") {
-				t.Errorf("disable left a marker behind:\n%s", got)
-			}
+			// There is no undamaged row here — both rows destroy the END marker, so the
+			// surviving START is expected in both. An earlier "if tc.damage == ''"
+			// clause read as "the undamaged case" but selected the DELETED one, where a
+			// residual marker is correct; it passed only while bare markers were
+			// claimed. TestBobShellEnable_BackupWrittenOnce covers the clean round trip.
 			if !strings.Contains(got, "export AFTER=1") {
 				t.Errorf("disable ate the user's line below the block:\n%s", got)
 			}
@@ -1224,10 +1250,18 @@ func TestBobShellOwnership_HoldsAcrossDamagedFiles(t *testing.T) {
 			if n := countOurAliases(disabled); n != 0 {
 				t.Errorf("after disable: %d of our alias lines left live:\n%v", n, disabled)
 			}
-			for _, l := range disabled {
-				if t2 := strings.TrimSpace(l); t2 == bobShellMarkerStart || t2 == bobShellMarkerEnd {
-					t.Errorf("disable left one of our markers behind:\n%v", disabled)
-				}
+			// No marker PAIR may survive — a pair fencing a live alias is a block we
+			// wrote, and leaving one would let the next enable nest inside it.
+			//
+			// An UNPAIRED marker is deliberately left, which is round 6's third finding
+			// and a change from what this assertion demanded before. Ownership by bare
+			// marker text deleted lines 3 and 5 out of a user's documentation comment —
+			// the `--help` output pasted in as a note, so byte-identical to ours — while
+			// reporting "Disabled." Since nothing textual distinguishes those markers
+			// from real ones, the only safe rule is that a lone marker is inert text.
+			// The residue is cosmetic; the deletion was not.
+			if _, _, paired := ownedMarkerPair(disabled); paired {
+				t.Errorf("disable left a marker pair of ours behind:\n%v", disabled)
 			}
 			if theirs && !slices.Contains(disabled, theirAlias) {
 				t.Errorf("disable removed the user's own alias:\n%v", disabled)
@@ -1244,6 +1278,33 @@ func TestBobShellOwnership_HoldsAcrossDamagedFiles(t *testing.T) {
 			}
 		})
 	}
+}
+
+// ownedMarkerPair reports whether lines still hold a START/END pair fencing a live
+// alias — a block this command would recognise as its own. Written out here rather
+// than calling ownedLines so the assertion does not inherit the bug it is checking
+// for, the same reason countOurAliases is independent.
+func ownedMarkerPair(lines []string) (int, int, bool) {
+	for i := range lines {
+		if strings.TrimSpace(lines[i]) != bobShellMarkerStart {
+			continue
+		}
+		for j := i + 1; j < len(lines); j++ {
+			t := strings.TrimSpace(lines[j])
+			if t == bobShellMarkerStart {
+				break
+			}
+			if t == bobShellMarkerEnd {
+				for k := i + 1; k < j; k++ {
+					if kt := strings.TrimSpace(lines[k]); isOurAliasLine(kt) || looksLikeOurMechanism(kt) {
+						return i, j, true
+					}
+				}
+				break
+			}
+		}
+	}
+	return -1, -1, false
 }
 
 // countOurAliases counts lines the shell would take as an alias WE wrote. Independent
@@ -1331,5 +1392,201 @@ func TestBobShellStatus_ReportsEveryAlias(t *testing.T) {
 	}
 	if n := countOurAliases(strings.Split(readFile(t, rc), "\n")); n != 1 {
 		t.Errorf("enable left %d aliases, want 1:\n%s", n, readFile(t, rc))
+	}
+}
+
+// TestBobShellDisable_PromptMatchesTheWrite is the round-6 MUST FIX 1 regression: the
+// confirmation prompt must list exactly the lines the write removes.
+//
+// It printed findBobShellBlock's hull instead, which on a file whose owned lines are
+// non-contiguous spans the user's own lines between ours. The reviewer's fixture is
+// the one that shows why it is not cosmetic: the prompt claimed
+// `export SECRET_TOKEN=...` and `source ~/.work_secrets` were being removed, and they
+// were not. A consent prompt that overstates a destructive edit is as broken as one
+// that understates it — a user either declines a safe operation or believes their
+// secrets are gone.
+func TestBobShellDisable_PromptMatchesTheWrite(t *testing.T) {
+	rc := filepath.Join(t.TempDir(), ".zshrc")
+	// The fixture needs TWO owned lines with the user's content BETWEEN them, or the
+	// bug is unreachable: the hull of a single owned line is that same line, so a
+	// fixture owning only the alias cannot tell the hull from the owned set, and the
+	// mutation that reverts this fix passes it. Here a complete marker PAIR is owned
+	// while the three lines it fences are not, so hull and owned set differ by exactly
+	// the user's content — which is the reviewer's fixture and the real-world shape.
+	body := strings.Join([]string{
+		"# my rc",
+		bobShellMarkerStart,
+		"export SECRET_TOKEN=hunter2",
+		"source ~/.work_secrets",
+		"alias deploy='make deploy-prod'",
+		bobShellAliasLine(testAbctl),
+		bobShellMarkerEnd,
+		"# tail",
+	}, "\n") + "\n"
+	if err := os.WriteFile(rc, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	before := readFile(t, rc)
+
+	var out, errb bytes.Buffer
+	if code := bobShellDisable(rc, true, &out, &errb); code != 0 {
+		t.Fatalf("disable: exit = %d (stderr: %s)", code, errb.String())
+	}
+	prompt := out.String()
+
+	// Every line the prompt claims to remove must actually be gone, and every line it
+	// does not mention must still be there. Stated as two directions because only the
+	// pair pins "the prompt describes the write" — one alone permits a prompt that
+	// lists everything, or nothing.
+	after := readFile(t, rc)
+	for _, l := range []string{"export SECRET_TOKEN=hunter2", "source ~/.work_secrets", "alias deploy='make deploy-prod'"} {
+		if strings.Contains(prompt, l) {
+			t.Errorf("prompt claims to remove a line it does not touch: %q\n%s", l, prompt)
+		}
+		if !strings.Contains(after, l) {
+			t.Errorf("the write removed %q, which the prompt did not mention", l)
+		}
+	}
+	if !strings.Contains(prompt, bobShellAliasLine(testAbctl)) {
+		t.Errorf("prompt does not mention the alias it removes:\n%s", prompt)
+	}
+	if strings.Contains(after, "exec -- ") {
+		t.Errorf("disable left our alias live:\n%s", after)
+	}
+	if before == after {
+		t.Error("disable changed nothing")
+	}
+}
+
+// TestBobShellDisable_ClaimsOurMechanismInsideOurFence is round-6 MUST FIX 2: an alias
+// inside a fence we wrote, spelled with different quoting (another abctl build, or a
+// hand-edit), is still our mechanism and must go.
+//
+// Leaving it produced the worst outcome in this feature: disable printed the alias as
+// removed, said "Disabled.", exited 0 — and a shell sourcing the file still routed bob
+// through the proxy, with status reporting "not enabled". See looksLikeOurMechanism for
+// why a fence's interior inverts the burden of proof without abandoning it.
+func TestBobShellDisable_ClaimsOurMechanismInsideOurFence(t *testing.T) {
+	for _, tc := range []struct{ name, alias string }{
+		{"double quoted", `alias bob="` + testAbctl + ` exec -- \bob"`},
+		{"extra flag", `alias bob='` + testAbctl + ` exec --profile x -- \bob'`},
+		{"no backslash", `alias bob='` + testAbctl + ` exec -- bob'`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rc := filepath.Join(t.TempDir(), ".zshrc")
+			body := "# my rc\n" + bobShellMarkerStart + "\n" + tc.alias + "\n" + bobShellMarkerEnd + "\n"
+			if err := os.WriteFile(rc, []byte(body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			var out, errb bytes.Buffer
+			if code := bobShellDisable(rc, true, &out, &errb); code != 0 {
+				t.Fatalf("disable: exit = %d (stderr: %s)", code, errb.String())
+			}
+			got := readFile(t, rc)
+			if strings.Contains(got, "alias bob") {
+				t.Errorf("disable reported success but left a live alias:\n%s", got)
+			}
+			if !strings.Contains(got, "# my rc") {
+				t.Errorf("disable ate the user's line:\n%s", got)
+			}
+			// And status must agree with the file, which is the half that made the bug
+			// invisible: it said "not enabled" over a live alias.
+			out.Reset()
+			if code := bobShellStatus(rc, &out); code != 0 {
+				t.Fatalf("status: exit = %d, want 0", code)
+			}
+			if !strings.Contains(out.String(), "not enabled") {
+				t.Errorf("status = %q, want not enabled", out.String())
+			}
+		})
+	}
+}
+
+// TestBobShellDisable_LeavesMarkersInUserDocumentation is round-6 MUST FIX 3: marker
+// lines this command did not write must survive byte-for-byte.
+//
+// `--help` prints the block verbatim, so a user copying it into their rc as a note is
+// the expected path to a file containing our exact marker text. Ownership by bare
+// marker deleted two lines out of the middle of such a comment, silently, while
+// reporting "Disabled." Nothing textual separates those markers from real ones — the
+// user copied them — so the discriminator is whether the pair fences a LIVE alias.
+func TestBobShellDisable_LeavesMarkersInUserDocumentation(t *testing.T) {
+	rc := filepath.Join(t.TempDir(), ".zshrc")
+	body := strings.Join([]string{
+		"# my rc",
+		"# Notes on the cortex alias. The block abctl writes looks like:",
+		bobShellMarkerStart,
+		`#   alias bob='...abctl exec -- \bob'`,
+		bobShellMarkerEnd,
+		"# ...which I keep here for reference.",
+		"export FOO=1",
+	}, "\n") + "\n"
+	if err := os.WriteFile(rc, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var out, errb bytes.Buffer
+	if code := bobShellDisable(rc, true, &out, &errb); code != 0 {
+		t.Fatalf("disable: exit = %d (stderr: %s)", code, errb.String())
+	}
+	if got := readFile(t, rc); got != body {
+		t.Errorf("disable edited a file it owns nothing in:\n%s\n--- want ---\n%s", got, body)
+	}
+	// Status must agree that there is nothing here of ours.
+	out.Reset()
+	if code := bobShellStatus(rc, &out); code != 0 {
+		t.Fatalf("status: exit = %d, want 0", code)
+	}
+	if !strings.Contains(out.String(), "not enabled") {
+		t.Errorf("status = %q, want not enabled", out.String())
+	}
+	// An empty pair is the same case: nothing live inside, so nothing to claim.
+	rc2 := filepath.Join(t.TempDir(), ".zshrc")
+	empty := bobShellMarkerStart + "\n" + bobShellMarkerEnd + "\n"
+	if err := os.WriteFile(rc2, []byte(empty), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	if code := bobShellDisable(rc2, true, &out, &errb); code != 0 {
+		t.Fatalf("disable on empty pair: exit = %d", code)
+	}
+	if got := readFile(t, rc2); got != empty {
+		t.Errorf("disable edited an empty marker pair:\n%s", got)
+	}
+}
+
+// TestLooksLikeOurMechanism pins the predicate that separates round 5's constraint from
+// round 6's. Both are `alias bob=` lines inside a matched pair; what decides ownership
+// is whether the body invokes an abctl's `exec -- bob` (this feature) or the real bob
+// binary (the user's own intent).
+func TestLooksLikeOurMechanism(t *testing.T) {
+	for _, tc := range []struct {
+		line string
+		want bool
+	}{
+		{`alias bob='/b/abctl exec -- \bob'`, true},
+		{`alias bob="/b/abctl exec -- \bob"`, true},
+		{`alias bob='/b/abctl exec --profile x -- \bob'`, true},
+		{`alias bob='/b/abctl exec -- bob'`, true},
+		// Round 5's constraint: the user's own alias to the real binary.
+		{`alias bob='/usr/local/bin/bob --fast'`, false},
+		{`alias bob='bob --fast'`, false},
+		// An abctl, but not this mechanism.
+		{`alias bob='/b/abctl service status'`, false},
+		// Our mechanism's SHAPE around a binary that is not an abctl. Claiming this
+		// would mean disable silently deleting an alias to someone else's program that
+		// happens to take `exec -- bob` arguments, so the first field must be checked
+		// and not just the tail.
+		{`alias bob='/usr/bin/evil exec -- \bob'`, false},
+		{`alias bob='/usr/bin/sudo exec -- bob'`, false},
+		// Unrecognised shapes stay unclaimed — the safe direction.
+		{`alias bob='/b/abctl exec -- \bob' # note`, false},
+		{`alias bobby='/b/abctl exec -- \bob'`, false},
+		{`# alias bob='/b/abctl exec -- \bob'`, false},
+		{"", false},
+	} {
+		if got := looksLikeOurMechanism(tc.line); got != tc.want {
+			t.Errorf("looksLikeOurMechanism(%q) = %v, want %v", tc.line, got, tc.want)
+		}
 	}
 }
