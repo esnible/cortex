@@ -54,5 +54,5 @@ named profiles in `scripts/profile-tags`:
 | `lite` | jwt-validation, token-exchange, litellm-budget-track, static-inject |
 | `envoy`, `cpex` | the sets those binaries shipped historically |
 
-See the [authbridge README](../../README.md#build-tag-plugin-selection)
+See the [authbridge README](../../authbridge/README.md#build-tag-plugin-selection)
 for usage examples and instructions for tagging additional plugins.

@@ -41,8 +41,8 @@ Then, in rough order of how often people need them:
 | Topic | Where |
 |---|---|
 | All the demos, with a recommended order | [demos index](../demos/README.md) |
-| Deployment modes (proxy-sidecar, envoy-sidecar, lite) | [architecture reference](../README.md#deployment-modes) |
-| Full request flow, what gets verified | [architecture reference](../README.md) |
+| Deployment modes (proxy-sidecar, envoy-sidecar, lite) | [architecture reference](../authbridge/README.md#deployment-modes) |
+| Full request flow, what gets verified | [architecture reference](../authbridge/README.md) |
 | Token exchange per destination | [token-exchange routes](../demos/token-exchange-routes/README.md) |
 | Writing or configuring a plugin | [plugin reference](./plugin-reference.md) |
 | mTLS between workloads | [AuthBridge CLAUDE.md](../CLAUDE.md) |

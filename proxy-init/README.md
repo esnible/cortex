@@ -186,7 +186,7 @@ make load-image          # load into a kind cluster
 
 The image is published from CI as
 `ghcr.io/rossoctl/cortex/proxy-init:<tag>` (build defined
-in [`.github/workflows/build.yaml`](../../.github/workflows/build.yaml)).
+in [`.github/workflows/build.yaml`](../.github/workflows/build.yaml)).
 
 ## Testing
 

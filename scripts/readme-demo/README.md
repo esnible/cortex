@@ -39,7 +39,7 @@ shares one absolute timeline, so this seeks all of them at once:
 ```sh
 python3 - <<'EOF'
 import pathlib
-p = pathlib.Path('../../../docs/assets/cortex-demo.svg')
+p = pathlib.Path('../../docs/assets/cortex-demo.svg')
 pathlib.Path('/tmp/t30.svg').write_text(
     p.read_text().replace('</style>', '*{animation-delay:-30s!important}\n</style>'))
 EOF
