@@ -50,8 +50,8 @@ providing end-to-end security:
 │  │                       │      → aud: github-tool                      │   │   │
 │  │                       │    - HTTPS: TLS passthrough                  │   │   │
 │  │                       │                                              │   │   │
-│  │                       │  spiffe-helper bundled inside the image     │   │   │
-│  │                       │  (gated by SPIRE_ENABLED).                   │   │   │
+│  │                       │  SVIDs fetched in-process over the          │   │   │
+│  │                       │  SPIRE Workload API.                         │   │   │
 │  │                       │  Keycloak client registration is             │   │   │
 │  │                       │  operator-managed; the resulting Secret      │   │   │
 │  │                       │  is mounted at /shared/client-{id,secret}.txt│   │   │
@@ -1210,7 +1210,7 @@ kubectl delete namespace team1
 ## Next Steps
 
 - **Manual Deployment**: See [demo-manual.md](demo-manual.md) for deploying everything via `kubectl`
-- **AuthBridge Binary**: See the [AuthBridge README](../../cmd/authbridge/README.md) for inbound
+- **AuthBridge Binary**: See the [AuthBridge Binaries README](../../cmd/README.md) for inbound
   JWT validation and outbound token exchange internals
 - **Token-Exchange Routes**: See the [routes-configuration guide](../token-exchange-routes/README.md) for
   route-based token exchange to multiple tool services

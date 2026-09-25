@@ -47,8 +47,8 @@ providing end-to-end security:
 │  │                        │      → aud: github-tool                      │   │   │
 │  │                        │    - HTTPS: TLS passthrough                  │   │   │
 │  │                        │                                              │   │   │
-│  │                        │  spiffe-helper bundled inside the image      │   │   │
-│  │                        │  (gated by SPIRE_ENABLED).                   │   │   │
+│  │                        │  SVIDs fetched in-process over the           │   │   │
+│  │                        │  SPIRE Workload API.                         │   │   │
 │  │                        │  Keycloak client registration is             │   │   │
 │  │                        │  operator-managed; the resulting Secret      │   │   │
 │  │                        │  is mounted at /shared/client-{id,secret}.txt│   │   │
@@ -229,7 +229,7 @@ Once the webhook is deployed, create the namespace and apply the ConfigMaps:
 
 ```bash
 kubectl create namespace team1
-kubectl apply -f authbridge/demos/github-issue/k8s/configmaps-webhook.yaml -n team1
+kubectl apply -f authbridge/demos/github-issue/k8s/configmaps.yaml -n team1
 ```
 
 > **Note:** If you want to use a different namespace, set `AUTHBRIDGE_NAMESPACE=<your-namespace>` and update all subsequent commands accordingly.

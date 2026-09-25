@@ -80,9 +80,9 @@ The sidecar injection webhook lives in a separate repo: [rossoctl/operator](http
 cortex/
 ├── authbridge/               # Authentication bridge components
 │   ├── authlib/              #   Shared auth building blocks (Go module)
-│   │   ├── validation/       #     JWKS-backed JWT verifier
-│   │   ├── exchange/         #     RFC 8693 token exchange client
-│   │   ├── cache/            #     SHA-256 keyed token cache
+│   │   ├── plugins/          #     Every plugin; each owns its own config
+│   │   │   ├── jwtvalidation/#       JWKS-backed JWT verifier (validation/)
+│   │   │   └── tokenexchange/#       RFC 8693 exchange client + token cache
 │   │   ├── bypass/           #     Path pattern matcher
 │   │   ├── spiffe/           #     SPIFFE credential sources
 │   │   ├── routing/          #     Host-to-audience router
@@ -97,20 +97,32 @@ cortex/
 │   │   ├── main.go
 │   │   ├── Dockerfile        #     envoy-sidecar combined image
 │   │   └── entrypoint.sh
-│   │                        #   (the authbridge-lite image is this proxy
-│   │                        #    binary built with the `lite` profile's tags)
+│   │                         #   (the authbridge-lite image is this proxy
+│   │                         #    binary built with the `lite` profile's tags)
+│   ├── cmd/authbridge-cpex/  #   proxy-sidecar + cpex plugin (cgo, links libcpex_ffi.a)
+│   ├── cmd/authbridge-praxis/#   proxy-sidecar behind a Praxis proxy config. PAUSED —
+│   │                         #   kept and kept compiling, but ships in no image
+│   │                         #   and registers no plugins. Do not delete.
+│   ├── cmd/abctl/            #   Terminal UI over the session API (the largest
+│   │                         #   component after authlib). Released as a binary.
 │   ├── proxy-init/           #   iptables init container (envoy-sidecar + proxy-sidecar enforce-redirect modes)
 │   │   ├── init-iptables.sh
 │   │   ├── Dockerfile.init
 │   │   ├── Makefile
 │   │   └── README.md
-│   ├── demos/                #   Demo scenarios (weather-agent, github-issue, token-exchange-routes, mcp-parser)
+│   ├── docs/                 #   Plugin + framework reference; superpowers/{plans,specs}
+│   ├── scripts/              #   profile-tags (build-tag resolver), readme-demo
+│   ├── storage/redis/        #   Redis driver for the storage.Store interface
+│   ├── sparc-service/        #   Python SPARC reflection service (own image)
+│   ├── lineage-attach/       #   OTel shim + scripts for lineage propagation
+│   ├── demos/                #   12 demo scenarios — see authbridge/demos/README.md
 │   └── keycloak_sync.py      #   Declarative Keycloak sync tool
+├── docs/                     # Repo-level proposals + assets
 ├── tests/                    # Python tests (keycloak_sync)
 ├── .github/
 │   ├── workflows/            # CI/CD (ci.yaml, build.yaml, security-scans, scorecard, spellcheck)
 │   └── ISSUE_TEMPLATE/       # Bug report, feature request, epic templates
-├── .pre-commit-config.yaml   # Pre-commit hooks (trailing whitespace, go fmt/vet, ruff)
+├── .pre-commit-config.yaml   # Pre-commit hooks (whitespace, yaml/json, ruff; no Go hooks)
 └── CLAUDE.md                 # This file
 ```
 
@@ -118,15 +130,19 @@ cortex/
 
 ### 1. AuthBridge Binaries (Go)
 
-**Two mode-specific binaries** (proxy-sidecar and envoy-sidecar) providing transparent traffic interception for both inbound JWT validation and outbound OAuth 2.0 token exchange (RFC 8693). Each binary is hardcoded to its deployment shape; mode is no longer selected at runtime. The `authbridge-lite` **image** is a build variant of the proxy binary (not a third binary) — see below.
+**Sidecar binaries** providing transparent traffic interception for both inbound JWT validation and outbound OAuth 2.0 token exchange (RFC 8693). All sidecar binaries but `authbridge-praxis` pin one deployment shape and refuse a mismatching `mode:` at boot; mode is no longer selected at runtime. The `authbridge-lite` **image** is a build variant of the proxy binary (not a separate binary) — see below.
 
 **Library:** `authbridge/authlib/` (shared)
-**Language:** Go 1.25
+**Language:** Go 1.26.5 (`authbridge/go.work` and the nine workspace modules; the
+three self-contained `demos/*` modules are still on 1.24)
 **Detailed guide:** [`authbridge/CLAUDE.md`](authbridge/CLAUDE.md)
 
 **Binaries:**
 - `cmd/authbridge-proxy/` — proxy-sidecar mode (default): HTTP forward + reverse proxies, full plugin set (jwt-validation, token-exchange, a2a-parser, mcp-parser, inference-parser). No Envoy / no gRPC.
 - `cmd/authbridge-envoy/` — envoy-sidecar mode: ext_proc gRPC server hooked into Envoy, full plugin set.
+- `cmd/authbridge-cpex/` — proxy-sidecar plus the `cpex` plugin. Needs cgo; links `libcpex_ffi.a` from a pinned CPEX release.
+- `cmd/authbridge-praxis/` — proxy-sidecar rendered into a Praxis proxy config. **Paused, not abandoned:** it ships in no image, has no demo, and registers no plugins, but it is deliberately kept and deliberately kept compiling (it appears in the `ci.yaml` binary matrix for exactly that reason). Do not propose deleting it; it consumes `config.Config`, so shared-config refactors have to keep it building.
+- `cmd/abctl/` — the terminal UI over the session API (`:9094`). Not a sidecar; released as a standalone binary and the component the root README leads with.
 - `authbridge-lite` (image, **not** a separate binary) — `cmd/authbridge-proxy` built with the `lite` profile, a sidecar minimum (jwt-validation, token-exchange, litellm-budget-track, static-inject; parsers and OPA dropped). Every plugin is opt-in: they live in `cmd/*/plugins_<name>.go` files gated by `//go:build include_plugin_<name>`, and profiles are defined in `authbridge/scripts/profile-tags`.
 
 **Common:**
@@ -155,11 +171,11 @@ into workload pods. Default deployment shape (proxy-sidecar mode):
          ┌────────────────────────────────────┐
          │            WORKLOAD POD            │
          │                                    │
-         │  spiffe-helper ──► SPIRE Agent     │  (in-container,
-         │       │ writes JWT SVID            │   conditional on
-         │       ▼                            │   SPIRE_ENABLED)
-         │  authbridge-proxy                  │
-         │    - Reverse proxy: inbound JWT    │
+         │  authbridge-proxy ──► SPIRE Agent  │  (in-process
+         │    - spiffe.Provider reads SVIDs   │   Workload API
+         │      over the Workload API and     │   client; shaped
+         │      mirrors them under /opt/      │   by the `spiffe:`
+         │    - Reverse proxy: inbound JWT    │   config block)
          │    - Forward proxy: outbound       │
          │      token exchange                │
          │       │                            │
@@ -171,33 +187,44 @@ into workload pods. Default deployment shape (proxy-sidecar mode):
          client-secret and mounts it at /shared/.
 
          For envoy-sidecar mode, replace authbridge-proxy with
-         the authbridge-envoy image (Envoy + ext_proc + spiffe-helper)
-         and add a proxy-init container for iptables.
+         the authbridge-envoy image (Envoy + ext_proc) and add a
+         proxy-init container for iptables.
 ```
+
+There is no `spiffe-helper` sidecar and no `SPIRE_ENABLED` gate. SPIRE
+credentials are fetched in-process by `authlib/spiffe`'s Provider.
 
 ## AuthBridge Binaries
 
-Two mode-specific binaries (proxy, envoy), one Dockerfile each; the `authbridge-lite` image is a build variant of the proxy binary (proxy Dockerfile + the `lite` profile's tags):
+Sidecar binaries, one Dockerfile each; the `authbridge-lite` image is a build variant of the proxy binary (proxy Dockerfile + the `lite` profile's tags):
 
 | Binary | Mode | Listeners | Plugins |
 |--------|------|-----------|---------|
 | `cmd/authbridge-proxy/` | proxy-sidecar (default) | HTTP forward + reverse proxies | full (incl. parsers) |
 | `cmd/authbridge-envoy/` | envoy-sidecar | gRPC ext_proc on :9090 | full (incl. parsers) |
+| `cmd/authbridge-cpex/` | proxy-sidecar | HTTP forward + reverse proxies | full + `cpex` (cgo) |
+| `cmd/authbridge-praxis/` | proxy-sidecar | HTTP (Praxis-rendered) | **none** — paused, see above |
 | `authbridge-lite` _(image: proxy + `lite` profile)_ | proxy-sidecar | HTTP forward + reverse proxies | sidecar-minimum plugin set (see `authbridge/scripts/profile-tags`) |
 
-**Go modules:**
-- `authbridge/authlib/` — pure library: validation, exchange, cache, bypass, spiffe, routing, auth, config, all listener implementations, all plugins.
-- `authbridge/cmd/authbridge-{proxy,envoy}/` — thin main packages that import authlib and start the listeners they need; they import no plugin package directly. (The `authbridge-lite` image is `authbridge-proxy` built with the `lite` profile.)
+`cmd/abctl/` is also a Go module here but is not a sidecar — it is the operator-facing TUI over the session API.
+
+**Go modules** (12 in total; `authbridge/go.work` links 9 of them — the three
+self-contained `demos/*` modules are outside the workspace. `go-tidy-check` in
+`ci.yaml` does cover all 12: it discovers them with `find`, not from `go.work`):
+- `authbridge/authlib/` — pure library: validation, exchange, cache, bypass, spiffe, routing, auth, config, all listener implementations, all plugins. **Consumed outside this repo**, so removing exported API here is a cross-repo change.
+- `authbridge/cmd/authbridge-{proxy,envoy,cpex,praxis}/` — thin main packages that import authlib and start the listeners they need; they import no plugin package directly. (The `authbridge-lite` image is `authbridge-proxy` built with the `lite` profile.)
+- `authbridge/cmd/abctl/` — the TUI; also released as a standalone binary.
+- `authbridge/storage/redis/`, `authbridge/scripts/{profile-tags,readme-demo}/`, and the self-contained `authbridge/demos/{echo,finance-sparc,ibac}/`.
 - `authbridge/go.work` — workspace linking authlib + the binaries for local development.
 
-**Config format:** YAML with `${ENV_VAR}` expansion, mode presets, and startup validation. Supports `keycloak_url` + `keycloak_realm` derivation for operator compatibility. The `mode` field in YAML must match the binary (each binary rejects mismatched modes at boot).
+**Config format:** YAML with `${ENV_VAR}` expansion, mode presets, and startup validation. The `mode` field must match the binary for all but `authbridge-praxis`, which pins no mode.
 
 ## CI/CD Workflows
 
 | Workflow | Trigger | Purpose |
 |----------|---------|---------|
-| `ci.yaml` | PR to main/release-* | Pre-commit, Go fmt/vet/build/test for authlib and the cmd/authbridge-* binaries; Python tests |
-| `build.yaml` | Tag push (`v*`) or manual | Multi-arch Docker builds for: proxy-init, authbridge (proxy-sidecar combined), authbridge-envoy (envoy-sidecar combined), authbridge-lite (proxy Dockerfile built with the `lite` profile from `authbridge/scripts/profile-tags`). Every Go image passes `GO_BUILD_TAGS` naming a profile — plugins are all opt-in, so an image built without tags registers none |
+| `ci.yaml` | PR to main/release-* | Pre-commit; `go fmt`/`go vet`/build/test for authlib, both `scripts/*` and the `cmd/*` matrix; `go mod tidy -diff` for all 12 modules; Python tests. Note `go fmt` rewrites rather than fails, so it does not gate |
+| `build.yaml` | Tag push (`v*`) or manual | Multi-arch Docker builds for all six matrix images: proxy-init, authbridge (proxy-sidecar combined), authbridge-envoy (envoy-sidecar combined), authbridge-lite (proxy Dockerfile built with the `lite` profile from `authbridge/scripts/profile-tags`), authbridge-cpex, and sparc-service (Python). Every Go image passes `GO_BUILD_TAGS` naming a profile — plugins are all opt-in, so an image built without tags registers none |
 | `security-scans.yaml` | PR to main | Dependency review, shellcheck, YAML lint, Hadolint, Bandit, Trivy, CodeQL |
 | `scorecard.yaml` | Weekly / push to main | OpenSSF Scorecard security health metrics |
 | `spellcheck_action.yml` | PR | Spellcheck on markdown files |
@@ -226,15 +253,16 @@ All images are pushed to `ghcr.io/rossoctl/cortex/` from
 
 | Image | Source | Description |
 |-------|--------|-------------|
-| **`authbridge`** | **`authbridge/cmd/authbridge-proxy/Dockerfile`** | **proxy-sidecar combined image (default mode): authbridge-proxy (full plugin set incl. parsers) + spiffe-helper. No Envoy.** |
-| `authbridge-envoy` | `authbridge/cmd/authbridge-envoy/Dockerfile` | envoy-sidecar combined image: Envoy + authbridge-envoy (ext_proc, full plugin set) + spiffe-helper |
-| `authbridge-lite` | `authbridge/cmd/authbridge-proxy/Dockerfile` (+ `GO_BUILD_TAGS` from the `lite` profile) | proxy-sidecar combined image with a sidecar-minimum plugin set (see `authbridge/scripts/profile-tags`), plus spiffe-helper. A build variant of `authbridge`, not a separate binary; not yet referenced by the operator's default config |
+| **`authbridge`** | **`authbridge/cmd/authbridge-proxy/Dockerfile`** | **proxy-sidecar image (default mode): authbridge-proxy, full plugin set incl. parsers. No Envoy.** |
+| `authbridge-envoy` | `authbridge/cmd/authbridge-envoy/Dockerfile` | envoy-sidecar combined image: Envoy + authbridge-envoy (ext_proc, full plugin set) |
+| `authbridge-lite` | `authbridge/cmd/authbridge-proxy/Dockerfile` (+ `GO_BUILD_TAGS` from the `lite` profile) | proxy-sidecar image with a sidecar-minimum plugin set (see `authbridge/scripts/profile-tags`). A build variant of `authbridge`, not a separate binary; not yet referenced by the operator's default config |
 | `authbridge-cpex` | `authbridge/cmd/authbridge-cpex/Dockerfile` | proxy-sidecar build with the CPEX plugin. Two tag sources: the literal `cpex` tag, always required because it gates `cmd/authbridge-cpex/main.go`, plus the plugin tags its Dockerfile appends from `GO_BUILD_TAGS` (resolved from the `cpex` profile in `build.yaml`) — `cpex` alone registers no plugins. Links `libcpex_ffi.a` from a pinned CPEX release (CGO_ENABLED=1). Routes hooks through the CPEX framework (APL DSL + named CPEX policy plugins). FFI ABI version is read from `authbridge/cmd/authbridge-cpex/CPEX_FFI_VERSION` |
 | `proxy-init` | `authbridge/proxy-init/Dockerfile.init` | Alpine + iptables init container (envoy-sidecar + proxy-sidecar enforce-redirect modes) |
+| `sparc-service` | `authbridge/sparc-service/Dockerfile` | Python SPARC reflection service (FastAPI wrapper around the ALTK pre-tool reflection component), called by the `sparc` plugin |
 
-In all three combined images, `spiffe-helper` is started conditionally
-based on the `SPIRE_ENABLED` env var (set by the operator when SPIRE
-identity is enabled for the workload).
+None of these images bundle `spiffe-helper`, and `SPIRE_ENABLED` no
+longer gates anything. SPIRE credentials are fetched in-process by
+`authlib/spiffe`'s Provider.
 
 The legacy `authbridge-unified`, `authbridge-light`, `client-registration`,
 `spiffe-helper`, `auth-proxy`, and `demo-app` standalone images have
@@ -250,15 +278,32 @@ Hooks:
 - `trailing-whitespace`, `end-of-file-fixer`, `check-added-large-files` (max 1024KB), `check-yaml`, `check-json`, `check-merge-conflict`, `mixed-line-ending`
 - `ai-assisted-by-trailer` — Rewrites `Co-Authored-By` to `Assisted-By` (commit-msg stage)
 - `ruff`, `ruff-format` — Python linting/formatting on `authbridge/` files
-- `go-fmt`, `go-vet` — Runs on `authbridge/proxy-init/` Go files
+
+**There are no Go hooks** — `gofmt` and `go vet` run nowhere in pre-commit. In
+`ci.yaml` both run, but only one of them can fail:
+
+- `go vet ./...` **is** a gate, on 7 of the 12 modules: `authlib`, both
+  `scripts/*`, and the `cmd/{authbridge-proxy,authbridge-envoy,abctl,authbridge-praxis}`
+  matrix. Not vetted anywhere: `cmd/authbridge-cpex` (deliberately excluded — it
+  needs CGO and a pinned `libcpex_ffi.a`, so `build.yaml` covers it via the image
+  build), `storage/redis`, and the three `demos/*` modules.
+- `go fmt ./...` is **not** a gate. `go fmt` is `gofmt -l -w`: it rewrites the
+  checkout and exits 0, so formatting drift cannot fail a build.
+
+Formatting drift therefore reaches main — a few files are gofmt-dirty there
+today, including three under `authlib`, where `go fmt` demonstrably runs on
+every PR. Run `gofmt -l` yourself before pushing, and `go vet` too if you
+touched one of the five unvetted modules.
 
 ## Languages and Tech Stack
 
 | Area | Technology |
 |------|------------|
-| AuthBridge unified binary | Go 1.25, envoy-control-plane, lestrrat-go/jwx |
-| Client Registration | Python 3.12, python-keycloak, PyJWT |
-| Proxy | Envoy 1.28 |
+| AuthBridge sidecar binaries | Go 1.26.5, envoy-control-plane, lestrrat-go/jwx |
+| abctl (TUI) | Go 1.26.5, bubbletea |
+| keycloak_sync.py / setup scripts | Python 3.12, python-keycloak (`>=7.1.1,<8`) |
+| sparc-service | Python 3.10+, FastAPI, agent-lifecycle-toolkit |
+| Proxy | Envoy v1.37.1 (pinned by digest in `cmd/authbridge-envoy/Dockerfile`) |
 | Traffic interception | iptables (via init container) |
 | Identity | SPIFFE/SPIRE (JWT-SVIDs) |
 | Auth provider | Keycloak (OAuth2/OIDC, token exchange RFC 8693) |
@@ -280,10 +325,10 @@ When the operator injects sidecars, the target namespace needs these resources:
 
 | Resource | Kind | Used by | Keys |
 |----------|------|---------|------|
-| `authbridge-config` | ConfigMap | client-registration, authbridge | `KEYCLOAK_URL`, `KEYCLOAK_REALM`, `PLATFORM_CLIENT_IDS` (optional), `TOKEN_URL` (optional, derived from KEYCLOAK_URL+KEYCLOAK_REALM), `ISSUER` (optional, derived or explicit for split-horizon DNS), `DEFAULT_OUTBOUND_POLICY` (optional, defaults to `passthrough`). Inbound audience validation uses `CLIENT_ID` from `/shared/client-id.txt`. Target audience and scopes are configured per-route in `authproxy-routes`. |
-| `keycloak-admin-secret` | Secret | client-registration | `KEYCLOAK_ADMIN_USERNAME`, `KEYCLOAK_ADMIN_PASSWORD` |
+| `authbridge-config` | ConfigMap | authbridge | `KEYCLOAK_URL`, `KEYCLOAK_REALM`, `PLATFORM_CLIENT_IDS` (optional), `TOKEN_URL` (optional, derived from KEYCLOAK_URL+KEYCLOAK_REALM), `ISSUER` (optional, derived or explicit for split-horizon DNS), `DEFAULT_OUTBOUND_POLICY` (optional, defaults to `passthrough`). Inbound audience validation uses `CLIENT_ID` from `/shared/client-id.txt`. Target audience and scopes are configured per-route in `authproxy-routes`. |
+| `keycloak-admin-secret` | Secret | operator (ClientRegistrationReconciler) | `KEYCLOAK_ADMIN_USERNAME`, `KEYCLOAK_ADMIN_PASSWORD` |
 | `authproxy-routes` | ConfigMap (optional) | authbridge | `routes.yaml` -- per-host token exchange rules (see authbridge/CLAUDE.md for format) |
-| `spiffe-helper-config` | ConfigMap | spiffe-helper | SPIFFE helper configuration file |
+| `spiffe-helper-config` | ConfigMap (legacy, unused) | (none) | Retained only for older deployments; authbridge does not read it |
 | `envoy-config` | ConfigMap | envoy-proxy | Envoy YAML configuration |
 
 **Note:** `authproxy-routes` is optional. Without it, all outbound traffic passes through unchanged (the default policy is `passthrough`). Only create it when the agent needs to call services that require token exchange. Set `DEFAULT_OUTBOUND_POLICY: "exchange"` in `authbridge-config` to restore the legacy behavior.
@@ -335,13 +380,23 @@ cd authbridge && podman build -f cmd/authbridge-proxy/Dockerfile \
 
 ## Code Style and Conventions
 
-### Go Code (AuthProxy)
-- Use `go fmt` (enforced by pre-commit and CI)
-- Use `go vet` (enforced by pre-commit and CI)
+### Go Code
+- Run `gofmt -l` before pushing. **It is not enforced anywhere:** pre-commit has
+  no Go hooks, and `ci.yaml`'s `go fmt ./...` is `gofmt -l -w`, which rewrites and
+  exits 0. `go vet` *is* gated, but only on 7 of the 12 modules — see the
+  Pre-commit Hooks section for which five are uncovered.
+- Run per-module with `GOWORK=off`, as every CI Go job except the `authlib` one
+  does, so each module resolves its own `replace` directives instead of pulling in
+  workspace siblings.
+- If a change deletes a package or its last import of a dependency, also run
+  `go mod tidy -diff` in every module — `ci.yaml`'s `go-tidy-check` gates on it,
+  and `build`/`vet`/`test` all pass while it fails.
 
-### Python Code (client-registration)
+### Python Code (keycloak_sync.py, demo setup scripts)
 - Python 3.12+ syntax (type hints with `str | None`)
-- Dependencies in `requirements.txt` (version-pinned, e.g. `python-keycloak==5.3.1`)
+- Dependencies in `authbridge/requirements.txt` — `python-keycloak>=7.1.1,<8`.
+  Note `ci.yaml`'s Python job still pip-installs `python-keycloak==5.3.1`, two
+  majors behind, so CI is not testing the version the project declares.
 
 ### Kubernetes Manifests
 - Example deployment YAMLs in `authbridge/demos/*/k8s/`
@@ -352,20 +407,19 @@ cd authbridge && podman build -f cmd/authbridge-proxy/Dockerfile \
 
 ## Important Cross-Component Relationships
 
-1. **UID/GID Sync:** The `client-registration` Dockerfile creates a user with UID/GID 1000. The operator's webhook sets `runAsUser: 1000` / `runAsGroup: 1000` when injecting the client-registration container. These MUST match. In combined mode (`authbridge` container), everything runs as UID 1337 instead.
+1. **Envoy Proxy UID:** Envoy runs as UID 1337. The `proxy-init` iptables rules exclude this UID from redirection to prevent loops. The `authbridge` container also runs as UID 1337.
 
-2. **Envoy Proxy UID:** Envoy runs as UID 1337. The `proxy-init` iptables rules exclude this UID from redirection to prevent loops. The combined `authbridge` container also runs as UID 1337.
+2. **Shared Volume Contract:** The sidecar and the operator communicate through files:
+   - `/opt/svid.pem`, `/opt/svid_key.pem`, `/opt/svid_bundle.pem` — written by authbridge's in-process `spiffe.Provider` mirror when `spiffe.mirror_files` is on (the default), for external readers (e2e probes, debugging). The hot path reads SVIDs from memory, not these files.
+   - `/opt/jwt_svid.token` — same mirror, but written only when a plugin requests a JWT-SVID for an audience (today: `token-exchange` with `identity.type: spiffe`). An X.509-only workload never produces it.
+   - `/shared/client-id.txt` — operator-created Secret mount, read by authbridge (`jwt-validation`'s `audience_file`)
+   - `/shared/client-secret.txt` — operator-created Secret mount, read by authbridge (`token-exchange`)
 
-3. **Shared Volume Contract:** The sidecars communicate through shared volumes:
-   - `/opt/jwt_svid.token` — spiffe-helper writes, client-registration reads
-   - `/shared/client-id.txt` — client-registration writes, envoy-proxy reads
-   - `/shared/client-secret.txt` — client-registration writes, envoy-proxy reads
-
-4. **Port Coordination:** Envoy listens on 15123 (outbound) and 15124 (inbound). The ext-proc listens on 9090. The `proxy-init` iptables rules redirect to these ports.
+3. **Port Coordination:** Envoy listens on 15123 (outbound) and 15124 (inbound). The ext-proc listens on 9090. The `proxy-init` iptables rules redirect to these ports.
 
 ## Gotchas and Known Issues
 
-1. **Multiple Go modules:** The repo has several Go modules under `authbridge/` — `authlib/`, each `cmd/*/`, `storage/redis/`, `scripts/profile-tags/`, and the `demos/*/` self-contained ones — linked by `authbridge/go.work`. Local commands from a specific module directory should typically set `GOWORK=off` (as CI does) so the module resolves its own `replace` directives instead of pulling in workspace siblings.
+1. **Multiple Go modules:** The repo has 12 Go modules under `authbridge/` — `authlib/`, each `cmd/*/`, `storage/redis/`, both `scripts/*/`, and the three self-contained `demos/*/` ones. `authbridge/go.work` links the first nine; the `demos/*` modules are deliberately outside the workspace. Local commands from a specific module directory should typically set `GOWORK=off` (as every CI Go job but `authlib`'s does) so the module resolves its own `replace` directives instead of pulling in workspace siblings.
 
 2. **Avoid committing venvs:** Virtual environment directories (e.g. `authbridge/proxy-init/quickstart/venv/`) should be gitignored (the repo's `.gitignore` has a `venv` pattern). Do not create and commit new virtual environments under version control.
 

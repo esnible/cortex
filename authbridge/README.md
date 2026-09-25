@@ -1,6 +1,6 @@
 # AuthBridge
 
-AuthBridge provides **secure, transparent token management** for Kubernetes workloads. The shared library is at [`authlib/`](./authlib/); the mode-specific binaries (proxy-sidecar default, envoy-sidecar, lite) live under [`cmd/`](./cmd/). Keycloak client registration is handled by the [operator](https://github.com/rossoctl/operator)'s `ClientRegistrationReconciler` (no in-pod registration sidecar). Together with [SPIFFE/SPIRE](https://spiffe.io), this enables zero-trust authentication flows.
+AuthBridge provides **secure, transparent token management** for Kubernetes workloads. The shared library is at [`authlib/`](./authlib/); the sidecar binaries live under [`cmd/`](./cmd/) (see [`cmd/README.md`](./cmd/README.md) for which pins which mode). Keycloak client registration is handled by the [operator](https://github.com/rossoctl/operator)'s `ClientRegistrationReconciler` (no in-pod registration sidecar). Together with [SPIFFE/SPIRE](https://spiffe.io), this enables zero-trust authentication flows.
 
 > **📘 Looking to run the demo?** See the [Weather Agent](./demos/weather-agent/demo-ui.md) or [GitHub Issue Agent](./demos/github-issue/demo.md) demos for step-by-step instructions, and [Token-Exchange Routes](./demos/token-exchange-routes/README.md) for route configuration.
 
@@ -56,19 +56,22 @@ lines; the default `full` avoids the question.
 
 ## Deployment Modes
 
-Two container images are published:
+Sidecar container images:
 
 | Image | Contents |
 |-------|----------|
-| `authbridge` | proxy-sidecar combined: authbridge-proxy binary + bundled spiffe-helper |
-| `authbridge-envoy` | envoy-sidecar combined: Envoy + ext_proc + bundled spiffe-helper |
+| `authbridge` | proxy-sidecar: the authbridge-proxy binary |
+| `authbridge-envoy` | envoy-sidecar combined: Envoy + ext_proc |
 | `authbridge-lite` | `authbridge-proxy` built with the `lite` profile (see `authbridge/scripts/profile-tags`), a sidecar minimum. A build variant, not a separate binary |
 
 | Mode | Image | Use Case | How It Works |
 |------|-------|----------|-------------|
 | `proxy-sidecar` (default) | `authbridge` | HTTP_PROXY-based forward + reverse proxies | Agent routes outbound traffic through forward proxy; reverse proxy validates inbound JWTs |
 | `envoy-sidecar` | `authbridge-envoy` | Transparent interception via iptables | Envoy intercepts all traffic, delegates auth to authbridge via ext_proc gRPC |
-| `lite` | `authbridge-lite` | The `authbridge-proxy` binary built with the `lite` profile (see `authbridge/scripts/profile-tags`) | For size-constrained deployments that don't need protocol-aware session events |
+
+There are only these two modes. `lite` is a build *profile*, not a mode: the
+`authbridge-lite` image runs the `authbridge-proxy` binary in `proxy-sidecar`
+mode with a trimmed plugin set (see the profile table below).
 
 The operator resolves the mode per workload from `AgentRuntime.Spec.AuthBridgeMode` → namespace ConfigMap → deprecated `rossoctl.io/authbridge-mode` annotation → cluster default (`proxy-sidecar`). See operator#361.
 
@@ -80,7 +83,7 @@ See [`docs/plugin-catalog.md`](./docs/plugin-catalog.md) for the full list of im
 
 ## Architecture (Operator-Injected)
 
-The following describes the operator-injected sidecar deployment. After cortex#411 each mode is served by its own combined image (one container per pod, with `spiffe-helper` bundled inside and gated by `SPIRE_ENABLED`). The legacy `authbridge-unified`, `authbridge-light`, `envoy-with-processor`, and standalone `client-registration` / `spiffe-helper` sidecars are gone.
+The following describes the operator-injected sidecar deployment. After cortex#411 each mode is served by its own image (one container per pod). SPIRE credentials are fetched **in-process** by `authlib/spiffe`'s Provider over the Workload API. The legacy `authbridge-unified`, `authbridge-light`, `envoy-with-processor`, and standalone `client-registration` / `spiffe-helper` sidecars are gone — there is no bundled `spiffe-helper` binary and `SPIRE_ENABLED` no longer gates anything.
 
 ### What AuthBridge Does
 
@@ -126,8 +129,8 @@ AuthBridge solves the challenge of **secure service-to-service authentication** 
 │            │            ▼                                             │
 │  ┌─────────┴───────────────────────────────────────────────────────┐  │
 │  │  Your App                                                       │  │
-│  │  (spiffe-helper bundled inside the AuthBridge sidecar above,    │  │
-│  │   gated per-workload by SPIRE_ENABLED)                          │  │
+│  │  (SVIDs are fetched in-process by the sidecar above over the    │  │
+│  │   SPIRE Workload API; no spiffe-helper container)               │  │
 │  └─────────────────────────────────────────────────────────────────┘  │
 └───────────────────────────────────────────────────────────────────────┘
    ▲
@@ -158,7 +161,7 @@ flowchart TB
         end
         subgraph Containers["Containers"]
             App["Your Application"]
-            Sidecar["AuthBridge sidecar (combined image)<br/>name = mode-dependent:<br/>proxy-sidecar: authbridge-proxy<br/>envoy-sidecar: envoy-proxy<br/><br/>(spiffe-helper bundled inside,<br/>gated by SPIRE_ENABLED)"]
+            Sidecar["AuthBridge sidecar<br/>name = mode-dependent:<br/>proxy-sidecar: authbridge-proxy<br/>envoy-sidecar: envoy-proxy<br/><br/>(SVIDs fetched in-process via<br/>the SPIRE Workload API)"]
         end
     end
 
@@ -207,15 +210,16 @@ After cortex#411 a workload pod has the application
 container plus a single combined AuthBridge sidecar. In
 envoy-sidecar mode it also has a one-shot `proxy-init` init
 container; in proxy-sidecar mode (the cluster default) it does
-not. `spiffe-helper` is bundled inside the sidecar image; client
+not. SVIDs are fetched in-process by the sidecar over the SPIRE
+Workload API — there is no `spiffe-helper` container — and client
 registration runs in the operator, not the pod.
 
 | Component | Type | Mode | Purpose |
 |-----------|------|------|---------|
 | `proxy-init` | init | envoy-sidecar only | Sets up iptables to intercept inbound and outbound traffic (excludes Keycloak port to avoid token-exchange loops) |
 | `Your App` | container | both | Your application |
-| `authbridge-proxy` | container | proxy-sidecar (default) | Combined sidecar from the `authbridge` image: HTTP forward + reverse proxies, full plugin set (jwt-validation + token-exchange + a2a/mcp/inference parsers), bundled spiffe-helper gated by `SPIRE_ENABLED`. |
-| `envoy-proxy` | container | envoy-sidecar | Combined sidecar from the `authbridge-envoy` image: Envoy + ext_proc + bundled spiffe-helper. Validates inbound JWTs (signature + issuer via JWKS) and exchanges outbound tokens; HTTPS is TLS-passthrough. |
+| `authbridge-proxy` | container | proxy-sidecar (default) | Sidecar from the `authbridge` image: HTTP forward + reverse proxies, full plugin set (jwt-validation + token-exchange + a2a/mcp/inference parsers). Fetches SVIDs in-process. |
+| `envoy-proxy` | container | envoy-sidecar | Combined sidecar from the `authbridge-envoy` image: Envoy + ext_proc. Validates inbound JWTs (signature + issuer via JWKS) and exchanges outbound tokens; HTTPS is TLS-passthrough. |
 
 ### Target Service Pod
 

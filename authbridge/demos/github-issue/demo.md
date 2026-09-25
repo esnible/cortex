@@ -47,8 +47,9 @@ The agent pod has two containers (after cortex#411):
   - envoy-sidecar: `envoy-proxy` (image: `authbridge-envoy`, plus a
     `proxy-init` init container for iptables setup)
 
-`spiffe-helper` is bundled inside the combined image and gated
-per-workload by `SPIRE_ENABLED`. Keycloak client registration is
+There is no bundled `spiffe-helper` binary and no `SPIRE_ENABLED` gate:
+SVIDs are fetched in-process by `authlib/spiffe`'s Provider over the SPIRE
+Workload API. Keycloak client registration is
 operator-managed (no in-pod sidecar); the operator's
 `ClientRegistrationReconciler` creates a
 `rossoctl-keycloak-client-credentials-<hash>` Secret that the
@@ -88,5 +89,4 @@ Common names used by both:
 - [All Demos](../README.md) — index of all AuthBridge demos
 - [Weather Agent Demo](../weather-agent/demo-ui.md) — simpler getting-started demo (no token exchange)
 - [Token-Exchange Routes](../token-exchange-routes/README.md) — route-based token exchange to multiple tools
-- [Access Policies Proposal](../../PROPOSAL-access-policies.md) — role-based delegation control
 - [AuthBridge Overview](../../README.md) — architecture and design

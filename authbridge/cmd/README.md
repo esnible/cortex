@@ -1,9 +1,11 @@
 # AuthBridge Binaries
 
-Two mode-specific authbridge binaries (proxy, envoy) plus the `abctl` TUI.
-Each binary is hardcoded to a single deployment shape; the YAML `mode:`
-field must match the binary or boot fails. Mode is selected at build time
-by which binary you run, not at runtime via a flag. The `authbridge-lite`
+Four authbridge binaries (proxy, envoy, cpex, praxis) plus the
+`abctl` TUI — see the table below for which are published and which are paused.
+Proxy, envoy and cpex each pin one deployment shape and refuse a mismatching
+`mode:` at boot; praxis pins none. Note proxy and cpex both pin
+`proxy-sidecar`, so `mode:` names a shape, not a binary. Mode is selected at
+build time by which binary you run, not at runtime via a flag. The `authbridge-lite`
 image is a build variant of the proxy binary (proxy Dockerfile +
 the `lite` profile's tags), not a separate binary.
 
@@ -14,18 +16,21 @@ the `lite` profile's tags), not a separate binary.
 | [`authbridge-proxy/`](authbridge-proxy/) | `proxy-sidecar` (default) | HTTP forward + reverse proxies | full (jwt-validation, token-exchange, a2a-parser, mcp-parser, inference-parser) | `ghcr.io/rossoctl/cortex/authbridge` |
 | [`authbridge-envoy/`](authbridge-envoy/) | `envoy-sidecar` | gRPC ext_proc on `:9090` (hooked into Envoy) | full | `ghcr.io/rossoctl/cortex/authbridge-envoy` |
 | `authbridge-lite` _(build variant of `authbridge-proxy`)_ | `proxy-sidecar` | HTTP forward + reverse proxies | lite — `authbridge-proxy` built with the `lite` profile, a sidecar minimum (see [`../scripts/profile-tags`](../scripts/profile-tags)) | `ghcr.io/rossoctl/cortex/authbridge-lite` |
-| [`abctl/`](abctl/) | n/a | n/a | n/a | not published — local TUI for the Session Events API |
+| [`authbridge-cpex/`](authbridge-cpex/) | `proxy-sidecar` | HTTP forward + reverse proxies | full + `cpex` (needs cgo; links `libcpex_ffi.a`) | `ghcr.io/rossoctl/cortex/authbridge-cpex` |
+| [`authbridge-praxis/`](authbridge-praxis/) | `proxy-sidecar` _(output shape; pins no input mode)_ | HTTP, from a rendered Praxis config | **none** — defines no `plugins_*.go`. **Paused, not abandoned:** kept and kept compiling (it is in the `ci.yaml` matrix for that reason). Do not delete. | not published |
+| [`abctl/`](abctl/) | n/a | n/a | n/a | not published as an image; released as a standalone binary by `release-binaries.yaml` |
 
-Each binary directory contains `main.go`, `go.mod`/`go.sum`,
-`Dockerfile`, and `entrypoint.sh`. The Dockerfiles produce
-combined images that bundle the authbridge binary, the
-[`spiffe-helper`](https://github.com/spiffe/spiffe-helper) daemon
-(started conditionally on `SPIRE_ENABLED=true`), and — for the envoy
-variant — the Envoy proxy itself.
+Each sidecar binary directory contains `main.go`, `go.mod`/`go.sum`,
+`Dockerfile`, and `entrypoint.sh`; `abctl/` has neither a Dockerfile nor an
+entrypoint, since it ships as a binary rather than an image. The images carry the authbridge
+binary and — for the envoy variant — the Envoy proxy itself. There is
+no bundled `spiffe-helper` daemon and no `SPIRE_ENABLED` gate: SVIDs
+are fetched in-process by `authlib/spiffe`'s Provider over the SPIRE
+Workload API.
 
 ## Configuration
 
-Both binaries accept a single flag, `--config <path>`, pointing
+Every sidecar binary accepts `--config <path>`, pointing
 at the YAML config file the operator mounts at
 `/etc/authbridge/config.yaml`. The config schema and per-plugin
 options are documented in

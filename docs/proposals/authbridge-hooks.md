@@ -1,6 +1,13 @@
 # AuthBridge Hook System and CPEX Integration
 
-**Status**: Draft
+**Status**: Implemented — kept as the design record, not a live proposal.
+The plugin pipeline shipped in `authbridge/authlib/pipeline`, and the CPEX
+integration in `authbridge/authlib/plugins/cpex` + `cmd/authbridge-cpex`. Read
+[`framework-architecture.md`](../../authbridge/docs/framework-architecture.md),
+[`plugin-reference.md`](../../authbridge/docs/plugin-reference.md) and
+[`cpex-plugin.md`](../../authbridge/docs/cpex-plugin.md) for current behaviour;
+this document has drifted in places (it still discusses a `waypoint` mode, which
+no longer exists).
 **Date**: April 2026
 
 This document specifies the hook system and plugin runtime for AuthBridge. Hooks provide typed, capability-gated extension points at well-defined stages of the inbound JWT validation and outbound token exchange pipelines. The plugin runtime is built on [CPEX](https://github.com/contextforge-org/cpex/), embedded in-process via Go bindings to the Rust core.

@@ -1,6 +1,18 @@
+---
+name: demo
+description: Use when building, debugging, or running an AuthBridge demo end-to-end on a Kind cluster with SPIFFE/SPIRE, Keycloak, and Istio ambient mesh — covers the demo directory layout, the Keycloak setup scripts, and the recurring failure modes (ext_proc header ordering, ambient-mesh inbound path, Keycloak scope assignment).
+---
+
 # Skill: AuthBridge Demo Development
 
 This skill captures knowledge from building, debugging, and running AuthBridge demos end-to-end on Kind clusters with SPIFFE/SPIRE, Keycloak, and Istio ambient mesh.
+
+> **Some entries below are historical.** They describe failures from the
+> pre-cortex#411 multi-sidecar shape, when `spiffe-helper` and
+> `client-registration` were separate containers. Neither exists now — SVIDs are
+> fetched in-process by `authlib/spiffe` and registration runs in the operator —
+> but the diagnoses are kept because the same *symptoms* still appear in older
+> clusters. Such entries are marked HISTORICAL.
 
 ## Repository Context
 
@@ -16,7 +28,9 @@ Each demo lives under `authbridge/demos/<demo-name>/`:
 ```
 demos/<demo-name>/
 ├── k8s/
-│   ├── configmaps.yaml              # All 4 required ConfigMaps (environments, authbridge-config, spiffe-helper-config, envoy-config)
+│   ├── configmaps.yaml              # Per-demo ConfigMap *overrides* — typically
+│   │                                #   authbridge-config and authproxy-routes;
+│   │                                #   the installer supplies the defaults
 │   ├── <agent>-deployment.yaml      # Agent Deployment + Service
 │   └── <tool>-deployment.yaml       # Tool Deployment + Service (if applicable)
 ├── setup_keycloak.py                # Keycloak realm/client/scope/user setup
@@ -34,26 +48,44 @@ Agent/tool images from `rossoctl/examples` must be built locally and loaded into
 docker build -t ghcr.io/rossoctl/examples/<agent>:latest ./a2a/<agent>/
 docker build -t ghcr.io/rossoctl/examples/<tool>:latest ./mcp/<tool>/
 
-# Build AuthBridge sidecar images
-cd cortex/authbridge/authproxy
+# Build AuthBridge sidecar images. Every plugin is opt-in, so GO_BUILD_TAGS must
+# name a profile: a build without it registers no plugins and rejects every
+# config it is handed.
+cd cortex/authbridge
+docker build -f cmd/authbridge-proxy/Dockerfile \
+  --build-arg GO_BUILD_TAGS="$(go -C scripts/profile-tags run . full)" \
+  -t ghcr.io/rossoctl/cortex/authbridge:latest .
+docker build -f cmd/authbridge-envoy/Dockerfile \
+  --build-arg GO_BUILD_TAGS="$(go -C scripts/profile-tags run . envoy)" \
+  -t ghcr.io/rossoctl/cortex/authbridge-envoy:latest .
+
+cd proxy-init
 docker build -f Dockerfile.init -t ghcr.io/rossoctl/cortex/proxy-init:latest .
-docker build -f Dockerfile.envoy -t ghcr.io/rossoctl/cortex/envoy-with-processor:latest .
 
 # Load into Kind
 kind load docker-image <image> --name rossoctl
 ```
 
-Use fully qualified image names in Dockerfiles (e.g., `docker.io/library/golang:1.24.9-bookworm`) to avoid Podman/Buildah "short-name resolution enforced" errors in Shipwright builds.
+`local-build-and-test.sh` at the repo root builds and Kind-loads `authbridge`,
+`authbridge-envoy`, `authbridge-lite` and `proxy-init` (plus `spiffe-idp-setup`
+from the rossoctl repo) — prefer it over building by hand. Note it does not build
+`authbridge-cpex` or `authbridge-praxis`.
 
-## Envoy Config: Five Files with Inbound Listener
+Use fully qualified image names in Dockerfiles (e.g., `docker.io/library/golang:1.26-alpine`) to avoid Podman/Buildah "short-name resolution enforced" errors in Shipwright builds.
 
-All five envoy configs in the repo share the same inbound listener pattern. When modifying the inbound listener, update ALL of them:
+## Envoy Config: No Longer Hand-Maintained Per Demo (HISTORICAL)
 
-1. `authbridge/demos/github-issue/k8s/configmaps.yaml`
-2. `authbridge/demos/single-target/k8s/configmaps-webhook.yaml`
-3. `authbridge/demos/single-target/k8s/authbridge-deployment.yaml`
-4. `authbridge/demos/single-target/k8s/authbridge-deployment-no-spiffe.yaml`
-5. `authbridge/authproxy/k8s/auth-proxy-deployment.yaml`
+This section used to list five demo files that each carried a copy of the same
+inbound listener, to be edited in lockstep. **None of them does now** — four of
+the five files no longer exist (`demos/single-target/` and `authproxy/` are both
+gone), and `demos/github-issue/k8s/configmaps.yaml` has shrunk to
+`authbridge-config` + `authproxy-routes` with no listener in it at all.
+
+Inbound interception is configured through `authbridge-config` and rendered by
+the operator, not hand-written into demo ConfigMaps. The one hand-maintained
+Envoy filter chain left in the repo is
+`authbridge/demos/mtls/k8s/envoy-config-mtls.yaml`; nothing needs lockstep edits
+any more.
 
 ## Critical Bugs and Fixes
 
@@ -100,13 +132,20 @@ http_filters:
 
 **Key lesson:** Envoy HTTP filter execution order is: Lua → ext_proc → router. Route-level `request_headers_to_add` only takes effect during routing. Always use a filter to inject headers ext_proc needs.
 
-### 3. SPIFFE File Permission Denied
+### 3. SPIFFE File Permission Denied (HISTORICAL)
 
-**Symptom:** `cat: /opt/jwt_svid.token: Permission denied` in client-registration.
+**Symptom:** `cat: /opt/jwt_svid.token: Permission denied` from a second container.
 
-**Root cause:** spiffe-helper ran as root, wrote file with `0600`. client-registration runs as UID 1000.
+**Root cause:** spiffe-helper ran as root and wrote the file `0600`, while the
+reader (client-registration) ran as UID 1000.
 
-**Fix:** Set `RunAsUser: 1000`, `RunAsGroup: 1000` on spiffe-helper's SecurityContext in `container_builder.go`.
+**Fix at the time:** align `RunAsUser` / `RunAsGroup` across both containers.
+
+**Today this symptom cannot recur:** the in-process mirror writes
+`/opt/jwt_svid.token` mode `0644` (`authlib/spiffe/mirror.go`), not `0600`, and the
+`client-registration` reader is gone. `svid_key.pem` is still `0600`, so a
+different-UID reader of *the key* would be denied — that is a different symptom
+from the one above.
 
 ### 4. Istio Ambient Mesh Inbound Path
 
@@ -149,9 +188,12 @@ kubectl logs deployment/<agent> -n <ns> -c envoy-proxy 2>&1 | grep "\[Token Exch
 
 ### Client Registration
 
-```bash
-kubectl logs deployment/<agent> -n <ns> -c rossoctl-client-registration
+There is no `rossoctl-client-registration` container to read logs from — after
+cortex#411 registration runs in the operator's `ClientRegistrationReconciler`.
+For the registration side, read the operator's controller logs in its own
+namespace; only the Keycloak query below still applies here.
 
+```bash
 # Query Keycloak (use --data-urlencode for SPIFFE IDs)
 curl -s -H "Authorization: Bearer $ADMIN_TOKEN" \
   --data-urlencode "clientId=spiffe://localtest.me/ns/<ns>/sa/<sa>" \
@@ -168,7 +210,7 @@ curl -s -H "Authorization: Bearer $ADMIN_TOKEN" \
 6. **Ollama** — Must be running (`ollama serve`) before end-to-end queries with local LLM.
 7. **A2A protocol** — git-issue-agent uses v0.3.0 with method `message/send` (NOT `tasks/send`). Requires `messageId` field.
 8. **Keycloak client ID with SPIRE** — Full SPIFFE ID (e.g., `spiffe://localtest.me/ns/team1/sa/git-issue-agent`), not a short name.
-9. **webhook-rollout.sh** — Set `AUTHBRIDGE_K8S_DIR=authbridge/demos/<demo-name>/k8s`.
+9. **Sidecar injection** — there is no `webhook-rollout.sh` in this repo any more; injection is the operator's webhook, so roll pods rather than re-running a script.
 10. **Keycloak scopes** — `github-full-access` is OPTIONAL; must be explicitly requested in token requests.
 11. **ISSUER vs TOKEN_URL** — `ISSUER` = Keycloak frontend URL (in token `iss` claim). `TOKEN_URL` = internal service URL. They differ in K8s.
 12. **Keycloak port 8080** — Must be in `OUTBOUND_PORTS_EXCLUDE` to prevent ext_proc token exchange redirect loop.
@@ -185,9 +227,9 @@ curl -s -H "Authorization: Bearer $ADMIN_TOKEN" \
 | Change | Action |
 |--------|--------|
 | `init-iptables.sh` or `Dockerfile.init` | Rebuild proxy-init image, `kind load`, delete pod |
-| `authlib/` or `cmd/authbridge/` | Rebuild authbridge-unified image, `kind load`, delete pod |
-| `configmaps.yaml` (envoy-config section) | `kubectl apply -f configmaps.yaml`, delete pod |
-| `configmaps.yaml` (other sections) | `kubectl apply -f configmaps.yaml`, delete pod |
+| `authlib/` or `cmd/authbridge-proxy/` | Rebuild the `authbridge` image, `kind load`, delete pod |
+| `authlib/` or `cmd/authbridge-envoy/` | Rebuild the `authbridge-envoy` image, `kind load`, delete pod |
+| `configmaps.yaml` (any section) | `kubectl apply -f configmaps.yaml`, delete pod |
 | `*-deployment.yaml` | `kubectl apply -f <file>` (rolling update) |
 | `setup_keycloak.py` | Re-run `python setup_keycloak.py` |
-| `container_builder.go` (webhook) | Rebuild webhook, redeploy, then delete agent pod for re-injection |
+| Sidecar injection behaviour | Lives in `rossoctl/operator`, not here — rebuild and redeploy the operator there, then delete the agent pod for re-injection |
