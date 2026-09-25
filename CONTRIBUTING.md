@@ -16,9 +16,9 @@ Comment `/claim` on an issue to have it automatically assigned to you. Issues la
 
 ## Prerequisites
 
-- **Go 1.24+** (for authbridge and authlib)
-- **Python 3.12+** (for client-registration and Keycloak sync)
-- **Docker** (for building container images)
+- **Go 1.26.5+** (matches `authbridge/go.work`)
+- **Python 3.12+** (for `keycloak_sync.py` and the demo setup scripts)
+- **Docker or Podman** (for building container images)
 - **pre-commit** (for local hooks)
 
 ## Development Setup
@@ -32,10 +32,78 @@ cd cortex
 pre-commit install
 
 # Build the proxy-init image (one-target Makefile in proxy-init/).
-# For the four combined-sidecar images plus this one, use the
-# repo-root local-build-and-test.sh.
+# For every image at once, use the repo-root local-build-and-test.sh —
+# see "Testing against a local cluster" below.
 cd authbridge/proxy-init && make docker-build-init
 ```
+
+Most day-to-day work needs no cluster: `make abctl` / `make authbridge-proxy`
+build to `./bin/`, and `make dev-install` puts them on your PATH. Note that
+`dev-install` restarts the shared local Cortex service, which cuts every
+attached session.
+
+## Testing against a local cluster
+
+For changes that need a real Kubernetes environment (SPIRE identity, the
+operator's sidecar injection, token exchange against Keycloak), the loop is a
+Kind cluster plus the Rossoctl installer. You need both the
+[`rossoctl`](https://github.com/rossoctl/rossoctl) and `cortex` repos cloned.
+
+Only the build and verify steps below live in this repo. Creating the cluster and
+installing the platform belong to `rossoctl` and are documented there. Link to
+its guide rather than reproducing its command lines here — a copied install
+command is what went stale last time.
+
+**1. Install the platform.** Follow rossoctl's
+[install guide](https://github.com/rossoctl/rossoctl/blob/main/docs/operate/install-kubernetes.md).
+Its `scripts/kind/setup-rossoctl.sh` creates the Kind cluster itself (default
+name `rossoctl`), or reuses an existing one with `--skip-cluster`. For JWT-SVID
+auth rather than client secrets, that repo's
+`deployments/envs/dev_values_federated-jwt.yaml` sets
+`authBridge.clientAuthType: federated-jwt`.
+
+**2. Build and load your local images.** `local-build-and-test.sh` is the
+supported path — it builds from both repos and loads everything into Kind. It
+requires the cluster to exist already, which is why it comes second:
+
+```bash
+cd cortex
+export KIND_EXPERIMENTAL_PROVIDER=podman   # Podman only
+CLUSTER_NAME=rossoctl ROSSOCTL_DIR=../rossoctl ./local-build-and-test.sh
+```
+
+Pass `CLUSTER_NAME` explicitly: this script defaults to `rossoctl-dev` while
+rossoctl's installer defaults to `rossoctl`, and a mismatch loads your images
+into a cluster nothing is running in.
+
+It builds `spiffe-idp-setup` (from the rossoctl repo — easy to miss) plus
+`authbridge`, `authbridge-envoy`, `authbridge-lite` and `proxy-init` from this
+one, all tagged `:local`. Confirm with
+`docker exec rossoctl-control-plane crictl images | grep local` (`podman exec`
+under Podman). On Podman the script also loads via tar archives, because
+`kind load docker-image` does not work with Podman's image store.
+
+> **This step is inert on its own.** Step 1 installs released image tags, and
+> loading images into the node store does not change what a running Deployment
+> uses. Making the platform *run* your `:local` builds needs an image-override
+> values file, and the overlay that used to do that was removed from `rossoctl` —
+> so check that repo's current guide for the supported way before relying on this.
+
+**3. Verify the platform came up.**
+
+```bash
+cd cortex
+./verify-spire-keycloak.sh
+```
+
+It checks the SPIRE server, the OIDC discovery provider, the JWKS `use` field,
+Keycloak, the Keycloak admin secret, and the SPIFFE IdP setup job. Run it before
+debugging anything workload-level — most "token exchange is broken" reports turn
+out to be one of these six.
+
+**4. Deploy a workload.** Use a demo rather than hand-written manifests; they
+are kept current, and the manual path is not. Start from
+[`authbridge/demos/README.md`](authbridge/demos/README.md).
 
 ## Installing an unreleased build
 
@@ -150,14 +218,25 @@ Smaller pull requests are typically easier to review and merge. If your pull req
 
 ## Code Style
 
-### Go Code (AuthProxy)
-- Use `go fmt` (enforced by pre-commit and CI)
-- Use `go vet` (enforced by pre-commit and CI)
+### Go Code
+- Before pushing, run `go vet ./...` and `gofmt -l .` from each module you touched.
+  Always give `gofmt` a path — a bare `gofmt -l` reads stdin, so it scans nothing
+  and exits 0. `gofmt -l .` also lists any pre-existing offenders, so check the
+  names it prints are yours.
+- `go vet` is gated: all four `Go CI (…)` jobs run it, and a finding fails the job.
+  `gofmt` is not — CI's lint step runs `go fmt`, which rewrites files and exits 0,
+  so unformatted code still goes green. There are no Go hooks in pre-commit either.
+- Run per-module with `GOWORK=off` — how the root Makefile builds, and how every
+  CI job but authlib runs.
+- If your change deletes a package or its last import of a dependency, also run
+  `go mod tidy -diff` in every module — CI gates on it, and `build`/`vet`/`test`
+  all pass while it fails.
 - Apache 2.0 license header in all Go files
 
-### Python Code (client-registration)
+### Python Code (keycloak_sync.py, sparc-service, demo scripts)
 - Python 3.12+ syntax (type hints with `str | None`)
-- Dependencies version-pinned in `requirements.txt`
+- Dependencies declared in `authbridge/requirements.txt` — exact pins for the
+  langchain/pydantic stack, bounded ranges elsewhere
 
 ## Licensing
 

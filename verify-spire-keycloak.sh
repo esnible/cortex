@@ -1,10 +1,40 @@
 #!/bin/bash
+#
+# verify-spire-keycloak.sh — platform preflight for a Rossoctl dev cluster.
+#
+# Checks the six things a workload needs to exist BEFORE any AuthBridge sidecar
+# can work, in the namespaces the Rossoctl installer creates:
+#
+#   1-3. SPIRE server, OIDC discovery provider, and a JWKS carrying the "use"
+#        field   (ns: zero-trust-workload-identity-manager)
+#   4-5. Keycloak and its admin secret                        (ns: keycloak)
+#     6. The SPIFFE IdP setup job that registers the "spire-spiffe" identity
+#        provider in Keycloak                        (ns: rossoctl-system)
+#
+# Run it once the rossoctl installer has finished, before debugging anything
+# workload-level: most "token exchange is broken" reports are one of these six,
+# and each failure here has a much clearer cause than the 503 it eventually
+# produces in a sidecar.
+#
+# This checks the PLATFORM only — nothing about sidecar injection, plugin
+# pipelines, or a specific agent. For those, run a demo
+# (see authbridge/demos/README.md).
+#
+# Usage:  ./verify-spire-keycloak.sh        (needs kubectl and jq, pointed at the cluster)
+# Exit:   Checks 1, 2, 4 and 5 abort with 1 the moment they fail. Check 3 exits 1
+#         only when the JWKS is missing "use" AND the ConfigMap is unpatched, and
+#         it finishes the run first so you see every fault at once. Everything
+#         else warns and still exits 0 — including check 6 finding the IdP job
+#         absent or incomplete. Read the output; do not gate on $?.
+#
+# Invoked by no CI job by design: it asserts on a locally installed cluster.
+# Referenced from CONTRIBUTING.md ("Testing against a local cluster").
+
 set -e
 
 # Track overall verification status
 VERIFICATION_FAILED=false
 
-# Verification script for SPIRE and Keycloak setup
 echo "=========================================="
 echo "Verifying SPIRE and Keycloak Setup"
 echo "=========================================="
@@ -65,8 +95,27 @@ else
     echo ""
     if [ "$SET_KEY_USE" != "true" ]; then
         echo "❌ CRITICAL: SPIRE needs to be patched with set_key_use: true"
-        echo "   See: LOCAL_TESTING_GUIDE.md → Appendix: Standalone Helm Install"
         echo "   This will prevent JWT-SVID authentication from working!"
+        echo ""
+        echo "   Cause: the SPIRE Helm chart does not render set_key_use to the"
+        echo "   ConfigMap even when it is set in values, so the JWKS comes out"
+        echo "   without the \"use\" field that Keycloak 26+ requires. The Ansible"
+        echo "   installer patches this for you; a standalone Helm install does not."
+        echo ""
+        echo "   Fix:"
+        echo "     kubectl get configmap spire-spiffe-oidc-discovery-provider \\"
+        echo "       -n zero-trust-workload-identity-manager -o json | \\"
+        echo "       jq '.data[\"oidc-discovery-provider.conf\"] |= (fromjson | .set_key_use = true | tojson)' | \\"
+        echo "       kubectl apply -f -"
+        echo "     kubectl rollout restart deployment/spire-spiffe-oidc-discovery-provider \\"
+        echo "       -n zero-trust-workload-identity-manager"
+        echo "     kubectl rollout status deployment/spire-spiffe-oidc-discovery-provider \\"
+        echo "       -n zero-trust-workload-identity-manager --timeout=2m"
+        echo ""
+        echo "   The restart is not optional: patching the ConfigMap leaves the"
+        echo "   Deployment spec unchanged, so nothing rolls on its own and the"
+        echo "   provider keeps serving the old config. Without it, rollout status"
+        echo "   reports success immediately and the JWKS still has no \"use\"."
         VERIFICATION_FAILED=true
     else
         echo "⚠️  ConfigMap is correct but OIDC provider may need restart:"

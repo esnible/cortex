@@ -615,7 +615,7 @@ See [`docs/framework-architecture.md`](docs/framework-architecture.md#9-config-h
 - **Neither `gofmt` nor `go vet` is fully gated.** pre-commit has no Go hooks;
   `ci.yaml` runs `go fmt ./...` (which rewrites and exits 0, so drift
   cannot fail it)
-  and `go vet ./...` on some but not all modules. Run `gofmt -l` yourself before
+  and `go vet ./...` on some but not all modules. Run `gofmt -l .` yourself before
   pushing, and `go mod tidy -diff` if you dropped a package or its last import.
   See the root [`CLAUDE.md`](../CLAUDE.md) Pre-commit Hooks section for the
   per-module breakdown — it is kept in one place on purpose.
@@ -623,10 +623,9 @@ See [`docs/framework-architecture.md`](docs/framework-architecture.md#9-config-h
 - gRPC ext-proc using `envoyproxy/go-control-plane` types (in `authlib/listener/extproc`)
 - JWT validation with `lestrrat-go/jwx/v2` (in `authlib/plugins/jwtvalidation/validation`)
 
-### Python (client-registration, setup scripts)
+### Python (`keycloak_sync.py`, setup scripts)
 - Python 3.12 syntax (type hints: `str | None`)
 - `python-keycloak` library for all Keycloak admin API calls
-- `PyJWT` for JWT decoding (signature verification disabled -- uses `verify_signature: False`)
 - Idempotent: all `get_or_create_*` helper functions check existence before creating
 - UID/GID 1000 in Dockerfile **must match** the `runAsUser`/`runAsGroup` values set by the operator's webhook when injecting the client-registration container (see [operator](https://github.com/rossoctl/operator))
 

@@ -292,7 +292,7 @@ Hooks:
 
 Formatting drift therefore reaches main — a few files are gofmt-dirty there
 today, including three under `authlib`, where `go fmt` demonstrably runs on
-every PR. Run `gofmt -l` yourself before pushing, and `go vet` too if you
+every PR. Run `gofmt -l .` yourself before pushing, and `go vet` too if you
 touched one of the five unvetted modules.
 
 ## Languages and Tech Stack
@@ -381,10 +381,13 @@ cd authbridge && podman build -f cmd/authbridge-proxy/Dockerfile \
 ## Code Style and Conventions
 
 ### Go Code
-- Run `gofmt -l` before pushing. **It is not enforced anywhere:** pre-commit has
-  no Go hooks, and `ci.yaml`'s `go fmt ./...` is `gofmt -l -w`, which rewrites and
-  exits 0. `go vet` *is* gated, but only on 7 of the 12 modules — see the
-  Pre-commit Hooks section for which five are uncovered.
+- Run `go vet ./...` and `gofmt -l .` yourself before pushing, from each module you
+  touched. **Always give `gofmt` a path** — a bare `gofmt -l` reads stdin, scans
+  nothing and exits 0.
+- **Neither is enforced.** pre-commit has no Go hooks, and `ci.yaml`'s `go fmt ./...`
+  is `gofmt -l -w`, which rewrites and exits 0. `go vet` *is* gated, but only on 7 of
+  the 12 modules — see the Pre-commit Hooks section for which five are uncovered.
+  See [CONTRIBUTING.md](CONTRIBUTING.md#code-style) for the contributor-facing version.
 - Run per-module with `GOWORK=off`, as every CI Go job except the `authlib` one
   does, so each module resolves its own `replace` directives instead of pulling in
   workspace siblings.
