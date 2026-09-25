@@ -308,8 +308,8 @@ abctl configure bobshell disable    # removes exactly what enable added
 # >>> cortex abctl (bobshell) >>>
 bob() {
   local p
-  p=$(whence -p bob 2>/dev/null || type -P bob 2>/dev/null)
-  if [ -z "$p" ]; then
+  p=$(unset -f bob 2>/dev/null; command -v bob 2>/dev/null)
+  if [ ! -x "$p" ]; then
     echo "bob: not found in PATH" >&2
     return 127
   fi
@@ -324,8 +324,18 @@ is invisible to child processes, so `status` could never observe one. And inside
 function `\bob` does not reach the real binary: the backslash suppresses *alias*
 expansion only, so it finds the function again and recurses. Resolving `bob` to an
 absolute path first cannot recurse, because an absolute path never matches a
-function name. `whence -p` is zsh and `type -P` is bash; each is silenced so the
-other shell's unknown-flag error never reaches your prompt.
+function name.
+
+Resolving it is where the portability lives. `command -v` is the one spelling all of
+zsh, bash and dash understand — but on its own it finds the *function*, in every one
+of them, and hands `bob` straight back to `abctl exec` to recurse. Unsetting the
+function first, inside the command substitution's subshell, leaves only the `PATH`
+binary for `command -v` to find; the `unset` dies with the subshell, so the function
+you called is still defined afterwards. The guard is `[ ! -x "$p" ]` rather than a
+test for emptiness, because a shell that prints prose instead of failing yields a
+non-empty `$p` that is not a path — dash's `type` does exactly that with the `-P`
+flag it does not recognise, on *stdout* and exiting 0, which is why the earlier
+`whence -p` / `type -P` pair silently invoked the complaint text as a command.
 
 The scope is interactive shells. A script, a Makefile, or another program that runs
 `bob` directly never reads your startup file and so is unaffected — `abctl exec --

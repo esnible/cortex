@@ -3,7 +3,9 @@ package main
 import (
 	"bytes"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -645,8 +647,22 @@ func TestBobShellBlock_ShapeIsSafe(t *testing.T) {
 	if strings.Contains(bobShellBlock, `\bob`) {
 		t.Error(`block uses \bob, which suppresses alias expansion only and recurses inside a function`)
 	}
-	if !strings.Contains(bobShellBlock, "whence -p bob") || !strings.Contains(bobShellBlock, "type -P bob") {
-		t.Error("block does not resolve bob to a path with both the zsh and bash spellings")
+	// Resolution must not be able to see the function. `unset -f bob` in the
+	// subshell is what guarantees that: bare `command -v bob` finds the function in
+	// every shell tested and recursed until a depth guard stopped it. Asserted as the
+	// two halves together, because either one alone is the recursing version.
+	if !strings.Contains(bobShellBlock, "unset -f bob") {
+		t.Error("block resolves bob without unsetting the function first, so it can find itself and recurse")
+	}
+	if !strings.Contains(bobShellBlock, "command -v bob") {
+		t.Error("block does not resolve bob with command -v, which is the only spelling dash also understands")
+	}
+	// `whence -p` / `type -P` were the first version and are wrong in dash, which has
+	// neither: its `type` prints `-P: not found\nbob is a shell function` to STDOUT
+	// and exits 0, so p became prose and the block ran `abctl exec -- <prose>`.
+	// Named here so reintroducing either spelling fails rather than merely regresses.
+	if strings.Contains(bobShellBlock, "whence -p") || strings.Contains(bobShellBlock, "type -P") {
+		t.Error("block uses whence -p / type -P, which dash does not have and does not fail on")
 	}
 	if !strings.Contains(bobShellBlock, `abctl exec -- "$p"`) {
 		t.Error("block does not invoke the resolved path, so it may recurse")
@@ -655,10 +671,18 @@ func TestBobShellBlock_ShapeIsSafe(t *testing.T) {
 	if !strings.Contains(bobShellBlock, `"$@"`) {
 		t.Error(`block does not forward "$@", so user arguments are dropped`)
 	}
-	// Both lookups silenced, or the other shell's unknown-flag error reaches stderr
-	// on every single prompt.
+	// The guard must test executability, not emptiness. `[ -z ]` was the first
+	// version and it let dash's non-empty prose through to the command line; every
+	// other check in this function passed while that happened.
+	if !strings.Contains(bobShellBlock, `[ ! -x "$p" ]`) {
+		t.Error(`block does not guard on [ ! -x "$p" ], so a non-empty non-executable p reaches abctl exec`)
+	}
+	if strings.Contains(bobShellBlock, `[ -z "$p" ]`) {
+		t.Error(`block guards on [ -z "$p" ], which cannot reject prose`)
+	}
+	// Resolution silenced, or a shell without the builtin complains on every prompt.
 	if strings.Count(bobShellBlock, "2>/dev/null") < 2 {
-		t.Error("block does not silence both the zsh and bash path lookups")
+		t.Error("block does not silence both halves of the resolution")
 	}
 	// status can only work if the rc file exports the marker.
 	if !strings.Contains(bobShellBlock, "export "+bobShellMarkerEnv+"=1") {
@@ -977,4 +1001,152 @@ func TestBobShellReviewFindings3(t *testing.T) {
 			t.Errorf("output does not say what to do: %q", out.String())
 		}
 	})
+}
+
+// The installed function, actually RUN in each shell that is present, rather than
+// only pattern-matched as text.
+//
+// This exists because every text assertion in TestBobShellBlock_ShapeIsSafe passed
+// while the block was mis-invoking under dash. `type -P` is not an error there — dash
+// has no such flag, prints `-P: not found` and `bob is a shell function` to STDOUT,
+// and exits 0 — so `p` became that two-line prose, `[ -z "$p" ]` was false, and the
+// function ran `abctl exec -- "-P: not found..." --hello`. Present and absent cases
+// were byte-identical, which means the 127 path was unreachable. Reading the block
+// cannot catch that; running it can.
+//
+// Reachable without the user naming a file: bobShellRCPath prefers ~/.profile for
+// $SHELL=bash when .bash_profile and .bashrc are both absent, and /bin/sh — dash on
+// Debian-family systems — reads .profile.
+func TestBobShellBlock_RunsCorrectlyInEachShell(t *testing.T) {
+	// The block as installed, minus the marker lines, which are comments to the shell
+	// anyway. Taken from bobShellBlock itself so this cannot drift from what enable
+	// writes.
+	body := bobShellBlock
+
+	// A fake `bob` that reports being run, and a fake `abctl` that reports exactly
+	// what it was handed. Both stubs make the wrong behaviour loud rather than subtle.
+	binDir := t.TempDir()
+	writeExec(t, filepath.Join(binDir, "bob"), "#!/bin/sh\necho \"REAL-BOB $*\"\n")
+	writeExec(t, filepath.Join(binDir, "abctl"), "#!/bin/sh\necho \"ABCTL-GOT $*\"\n")
+	// The same abctl, with no bob beside it: the "not installed" case.
+	noBobDir := t.TempDir()
+	writeExec(t, filepath.Join(noBobDir, "abctl"), "#!/bin/sh\necho \"ABCTL-GOT $*\"\n")
+
+	rc := filepath.Join(t.TempDir(), "rc")
+	if err := os.WriteFile(rc, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// dash is the one that mattered and the one most likely to be missing on a dev
+	// machine; sh is included because that is what actually reads .profile.
+	for _, sh := range []string{"dash", "sh", "bash", "zsh"} {
+		path, err := exec.LookPath(sh)
+		if err != nil {
+			t.Logf("%s not installed, skipping", sh)
+			continue
+		}
+		t.Run(sh, func(t *testing.T) {
+			run := func(pathDir string) string {
+				t.Helper()
+				cmd := exec.Command(path, "-c", ". "+rc+"\nbob --hello")
+				// A clean env with exactly one PATH. Appending to os.Environ() leaves
+				// the inherited PATH in place and the child uses that one, so the
+				// stubs were never found — which made every assertion here vacuous.
+				cmd.Env = []string{"PATH=" + pathDir + string(os.PathListSeparator) + "/usr/bin:/bin"}
+				out, _ := cmd.CombinedOutput() // exit status is asserted via output
+				return string(out)
+			}
+
+			// bob on PATH: the real binary runs, exactly once, with the argument —
+			// and by way of `abctl exec`, not directly. The "went through abctl" half
+			// is essential: with no function defined at all, `bob --hello` runs the
+			// PATH binary and prints REAL-BOB too, so that string alone asserts
+			// nothing about the block.
+			got := run(binDir)
+			if !strings.Contains(got, "ABCTL-GOT exec -- ") {
+				t.Errorf("the function did not route through abctl exec:\n%s", got)
+			}
+			if !strings.Contains(got, "ABCTL-GOT exec -- "+filepath.Join(binDir, "bob")+" --hello") {
+				t.Errorf("abctl was not handed the resolved path plus the argument:\n%s", got)
+			}
+			// The signature of the dash defect: prose, or anything that is not the
+			// resolved path, arriving as the command abctl was told to exec.
+			if strings.Contains(got, "not found") || strings.Contains(got, "shell function") {
+				t.Errorf("resolution leaked prose into the invocation:\n%s", got)
+			}
+			// Exactly once. A block that resolved to the function name instead of the
+			// path would hand `bob` back to abctl and re-enter.
+			if n := strings.Count(got, "ABCTL-GOT"); n != 1 {
+				t.Errorf("abctl was invoked %d times, want 1 (recursion?):\n%s", n, got)
+			}
+
+			// bob absent: a clean refusal, and nothing handed to abctl. Under the
+			// defect this output was identical to the case above.
+			got = run(noBobDir)
+			if !strings.Contains(got, "bob: not found in PATH") {
+				t.Errorf("missing bob did not produce the 127 message:\n%s", got)
+			}
+			if strings.Contains(got, "ABCTL-GOT") {
+				t.Errorf("missing bob still invoked abctl:\n%s", got)
+			}
+		})
+	}
+}
+
+// writeExec seeds an executable stub on a fake PATH.
+// The guard itself, against the value the reported defect actually produced.
+//
+// Worth its own test because the two halves of that fix are each sufficient: with
+// `unset -f bob` in place, $p is a real path or empty, so prose never arises and
+// [ -z ] would pass every assertion in the test above. This one substitutes a
+// resolution that yields dash's two-line complaint directly, so the guard is the
+// only thing standing between it and `abctl exec`. Reverting to [ -z "$p" ] fails
+// here even if the unset stays.
+func TestBobShellBlock_GuardRejectsProse(t *testing.T) {
+	// The shipped block with only its resolution swapped for one that yields dash's
+	// two-line complaint. Extracting the guard from bobShellBlock rather than
+	// restating it is what makes this test track the real code: a changed guard is
+	// exercised here, not asserted against a copy that would have to be kept in sync.
+	resolution := regexp.MustCompile(`(?m)^  p=.*$`)
+	if !resolution.MatchString(bobShellBlock) {
+		t.Fatalf("no `  p=...` resolution line to substitute; block:\n%s", bobShellBlock)
+	}
+	body := resolution.ReplaceAllString(bobShellBlock,
+		`  p=$(printf '%s\n' '-P: not found' 'bob is a shell function')`)
+	// Markers are comments, so sourcing the block verbatim is harmless.
+
+	binDir := t.TempDir()
+	writeExec(t, filepath.Join(binDir, "abctl"), "#!/bin/sh\necho \"ABCTL-GOT $*\"\n")
+	rc := filepath.Join(t.TempDir(), "rc")
+	if err := os.WriteFile(rc, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, sh := range []string{"dash", "sh", "bash", "zsh"} {
+		path, err := exec.LookPath(sh)
+		if err != nil {
+			t.Logf("%s not installed, skipping", sh)
+			continue
+		}
+		t.Run(sh, func(t *testing.T) {
+			cmd := exec.Command(path, "-c", ". "+rc+"\nbob --hello")
+			cmd.Env = []string{"PATH=" + binDir + string(os.PathListSeparator) + "/usr/bin:/bin"}
+			out, _ := cmd.CombinedOutput() // the refusal is asserted via output
+			got := string(out)
+			if !strings.Contains(got, "bob: not found in PATH") {
+				t.Errorf("prose was not refused:\n%s", got)
+			}
+			// The defect: prose reaching the command line as if it were a path.
+			if strings.Contains(got, "ABCTL-GOT") {
+				t.Errorf("abctl was invoked with the complaint text:\n%s", got)
+			}
+		})
+	}
+}
+
+func writeExec(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(content), 0o755); err != nil {
+		t.Fatalf("writing %s: %v", path, err)
+	}
 }

@@ -61,25 +61,41 @@ const bobShellMarkerEnv = "CORTEX_BOBSHELL"
 // unreviewable.
 //
 // Inside the function:
-//   - `whence -p` (zsh) and `type -P` (bash) both skip functions and aliases and
-//     return only the PATH binary. Each is silenced so the other shell's failure to
-//     recognise the flag is invisible.
-//   - The emptiness guard turns "bob is not installed" into a plain 127 instead of
-//     `abctl exec -- "" ...`, which would be an obscure failure from abctl instead.
+//   - Resolving `bob` must skip the function itself, or the block invokes itself.
+//     `unset -f bob` in a subshell removes it for the length of that subshell only,
+//     so the `command -v` beside it can see nothing but the PATH binary. That is the
+//     one form verified correct in dash, bash and zsh alike; the two obvious
+//     alternatives are both wrong in a shell that matters:
+//   - `whence -p` (zsh) / `type -P` (bash) was the first version, and dash has
+//     neither. Worse, dash's `type` does not fail on an unknown flag — it prints
+//     `-P: not found` plus `bob is a shell function` to STDOUT and exits 0, so `p`
+//     became that prose and `||` never reached a fallback. Only stderr was
+//     redirected, so the prose survived into the command line.
+//   - bare `command -v bob` finds the FUNCTION in all three shells, since a
+//     function shadows the PATH binary. `p` becomes `bob`, and invoking that
+//     re-enters this block — verified recursing until a depth guard stopped it.
+//   - `[ ! -x "$p" ]` rather than an emptiness test, because empty is not the only
+//     way resolution goes wrong: the dash case above produced a NON-empty `p` that
+//     was prose, and `[ -z ]` let it straight through to
+//     `abctl exec -- "-P: not found..." --hello`. Executability is the property
+//     actually required, and it rejects prose, a directory on PATH, and a
+//     non-executable file, each verified. It also still turns "bob is not installed"
+//     into a plain 127 rather than an obscure failure from abctl.
 //   - "$@" forwards the user's arguments. An alias got this for free; a function has
-//     to say so, and omitting it would silently drop every argument.
-//   - `local p` is not hygiene for its own sake. Without it the assignment is global
-//     in both shells, so calling `bob` would overwrite a `p` the user was already
-//     using — verified before and after: `p=MINE; bob; echo $p` printed bob's path
-//     without it and `MINE` with it, in bash and zsh alike. `local` is outside POSIX
-//     but present in both shells this block is ever written for, which is the only
-//     portability question that applies: bobShellRCPath writes it for zsh or bash and
-//     refuses every other shell.
+//     to say so, and omitting it would silently drop every argument. Verified to
+//     preserve spaces, globs and empty strings.
+//   - `local p` is not hygiene for its own sake. Without it the assignment is global,
+//     so calling `bob` would overwrite a `p` the user was already using — verified
+//     before and after: `p=MINE; bob; echo $p` printed bob's path without it and
+//     `MINE` with it, in bash and zsh alike. `local` is outside POSIX; it is present
+//     in zsh, bash and dash, and absent from ksh, which prints `local: not found`
+//     and then runs the body anyway. bobShellRCPath refuses ksh, so that is only
+//     reachable via an explicit --rc at a ksh startup file.
 const bobShellBlock = bobShellMarkerStart + `
 bob() {
   local p
-  p=$(whence -p bob 2>/dev/null || type -P bob 2>/dev/null)
-  if [ -z "$p" ]; then
+  p=$(unset -f bob 2>/dev/null; command -v bob 2>/dev/null)
+  if [ ! -x "$p" ]; then
     echo "bob: not found in PATH" >&2
     return 127
   fi
