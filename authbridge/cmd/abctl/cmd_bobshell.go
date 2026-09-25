@@ -223,24 +223,40 @@ func runBobShell(args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stderr, "abctl: --rc %s is a directory; give the path of a shell startup file\n", *rcPath)
 			return 2
 		}
-		// Checked here, beside the directory case and for the same reason, rather than
-		// left to the write: writeRCFile creates a sibling .tmp, so a missing parent
-		// surfaced as `open /nonexistent/deeper/rc.tmp: no such file or directory` at
-		// exit 1 — an errno naming a path the user never typed, printed after the
-		// block and a confident "Add to ...". Not MkdirAll, which sibling writeSettings
-		// does: a settings file lives in a directory that tool owns and can create, but
-		// a missing parent for an rc file is nearly always a typo in --rc, and
-		// materialising the typo is worse than refusing it.
-		if dir := filepath.Dir(*rcPath); dir != "" {
+		// Resolved here, before the parent-directory check below, because that check
+		// has to be about the file that gets WRITTEN and not the one that was typed.
+		// Checking the typed path was this guard's first form and it left the original
+		// defect reachable through the case the one-hop logic exists to support: a
+		// symlinked rc file whose target's parent is missing passed the check (the
+		// link's own directory exists) and failed at the write, printing the whole
+		// block and then `open .../rc.tmp: no such file or directory` at exit 1 —
+		// an errno naming a .tmp path the user never typed, at the wrong exit code.
+		//
+		// rcTarget only reads (Lstat / Readlink), so hoisting it costs nothing and
+		// gives both verbs one already-resolved answer instead of each resolving again.
+		target, hops := rcTarget(*rcPath)
+		if hops >= 2 {
+			why := "it is reached through more than one symlink, so which file to write is ambiguous"
+			if action == "disable" {
+				why = "it is reached through more than one symlink, so which file to edit is ambiguous"
+			}
+			return bobShellAdviseManual(why, *rcPath, stdout)
+		}
+		// Checked before anything is printed, rather than left to the write, for the
+		// reason above. Not MkdirAll, which sibling writeSettings does: a settings file
+		// lives in a directory that tool owns and can create, but a missing parent for
+		// an rc file is nearly always a typo in --rc, and materialising the typo is
+		// worse than refusing it.
+		if dir := filepath.Dir(target); dir != "" {
 			if _, serr := os.Stat(dir); serr != nil {
 				fmt.Fprintf(stderr, "abctl: directory %s does not exist; check the --rc path\n", dir)
 				return 2
 			}
 		}
 		if action == "enable" {
-			return bobShellEnable(*rcPath, *yes, stdout, stderr)
+			return bobShellEnable(*rcPath, target, *yes, stdout, stderr)
 		}
-		return bobShellDisable(*rcPath, *yes, stdout, stderr)
+		return bobShellDisable(*rcPath, target, *yes, stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "abctl: unknown bobshell action %q (enable, disable, status)\n", action)
 		fmt.Fprint(stderr, bobShellUsage)
@@ -339,12 +355,11 @@ func bobShellAdviseManual(why, path string, stdout io.Writer) int {
 // The reverse direction is guarded, because it is cheap: a file not ending in a
 // newline gets one before the block is appended, so the marker always starts its own
 // line (see below).
-func bobShellEnable(rcPath string, yes bool, stdout, stderr io.Writer) int {
-	target, hops := rcTarget(rcPath)
-	if hops >= 2 {
-		return bobShellAdviseManual("it is reached through more than one symlink, so which file to write is ambiguous", rcPath, stdout)
-	}
-
+//
+// target is the already-resolved file to touch (runBobShell resolves it, and refuses
+// a chain deeper than one hop); rcPath is kept only for messages, so what is printed
+// back is the path the user actually typed.
+func bobShellEnable(rcPath, target string, yes bool, stdout, stderr io.Writer) int {
 	content, err := readFileAllowMissing(target)
 	if err != nil {
 		fmt.Fprintf(stderr, "abctl: %v\n", err)
@@ -388,12 +403,10 @@ func bobShellEnable(rcPath string, yes bool, stdout, stderr io.Writer) int {
 	return 0
 }
 
-func bobShellDisable(rcPath string, yes bool, stdout, stderr io.Writer) int {
-	target, hops := rcTarget(rcPath)
-	if hops >= 2 {
-		return bobShellAdviseManual("it is reached through more than one symlink, so which file to edit is ambiguous", rcPath, stdout)
-	}
-
+// target is the already-resolved file to touch (runBobShell resolves it, and refuses
+// a chain deeper than one hop); rcPath is kept only for messages, so what is printed
+// back is the path the user actually typed.
+func bobShellDisable(rcPath, target string, yes bool, stdout, stderr io.Writer) int {
 	content, err := readFileAllowMissing(target)
 	if err != nil {
 		fmt.Fprintf(stderr, "abctl: %v\n", err)

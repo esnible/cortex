@@ -172,7 +172,7 @@ func TestBobShellEnable(t *testing.T) {
 	t.Run("creates a missing file", func(t *testing.T) {
 		rc := filepath.Join(t.TempDir(), ".zshrc")
 		var out, errb bytes.Buffer
-		if code := bobShellEnable(rc, true, &out, &errb); code != 0 {
+		if code := bobShellEnable(rc, mustTarget(t, rc), true, &out, &errb); code != 0 {
 			t.Fatalf("exit = %d, want 0 (stderr: %s)", code, errb.String())
 		}
 		if got := readFile(t, rc); got != bobShellBlock {
@@ -185,7 +185,7 @@ func TestBobShellEnable(t *testing.T) {
 		orig := "export FOO=1\nalias ll='ls -l'\n"
 		writeFile(t, rc, orig)
 		var out, errb bytes.Buffer
-		if code := bobShellEnable(rc, true, &out, &errb); code != 0 {
+		if code := bobShellEnable(rc, mustTarget(t, rc), true, &out, &errb); code != 0 {
 			t.Fatalf("exit = %d, want 0 (stderr: %s)", code, errb.String())
 		}
 		if want := orig + bobShellBlock; readFile(t, rc) != want {
@@ -199,7 +199,7 @@ func TestBobShellEnable(t *testing.T) {
 		rc := filepath.Join(t.TempDir(), ".zshrc")
 		writeFile(t, rc, "export FOO=1")
 		var out, errb bytes.Buffer
-		if code := bobShellEnable(rc, true, &out, &errb); code != 0 {
+		if code := bobShellEnable(rc, mustTarget(t, rc), true, &out, &errb); code != 0 {
 			t.Fatalf("exit = %d, want 0 (stderr: %s)", code, errb.String())
 		}
 		got := readFile(t, rc)
@@ -217,11 +217,11 @@ func TestBobShellEnable(t *testing.T) {
 		rc := filepath.Join(t.TempDir(), ".zshrc")
 		writeFile(t, rc, "export FOO=1\n")
 		var out, errb bytes.Buffer
-		bobShellEnable(rc, true, &out, &errb)
+		bobShellEnable(rc, mustTarget(t, rc), true, &out, &errb)
 		first := readFile(t, rc)
 
 		out.Reset()
-		if code := bobShellEnable(rc, true, &out, &errb); code != 0 {
+		if code := bobShellEnable(rc, mustTarget(t, rc), true, &out, &errb); code != 0 {
 			t.Fatalf("second enable: exit = %d, want 0", code)
 		}
 		if got := readFile(t, rc); got != first {
@@ -242,14 +242,14 @@ func TestBobShellEnable(t *testing.T) {
 		orig := "export FOO=1\n"
 		writeFile(t, rc, orig)
 		var out, errb bytes.Buffer
-		bobShellEnable(rc, true, &out, &errb)
+		bobShellEnable(rc, mustTarget(t, rc), true, &out, &errb)
 		if got := readFile(t, rc+".bak"); got != orig {
 			t.Errorf("backup = %q, want the original %q", got, orig)
 		}
 		// A disable-then-enable cycle must not let the backup drift to a version we
 		// wrote.
-		bobShellDisable(rc, true, &out, &errb)
-		bobShellEnable(rc, true, &out, &errb)
+		bobShellDisable(rc, mustTarget(t, rc), true, &out, &errb)
+		bobShellEnable(rc, mustTarget(t, rc), true, &out, &errb)
 		if got := readFile(t, rc+".bak"); got != orig {
 			t.Errorf("backup drifted to %q, want the original %q", got, orig)
 		}
@@ -264,7 +264,7 @@ func TestBobShellEnable(t *testing.T) {
 			t.Fatal(err)
 		}
 		var out, errb bytes.Buffer
-		bobShellEnable(rc, true, &out, &errb)
+		bobShellEnable(rc, mustTarget(t, rc), true, &out, &errb)
 		fi, err := os.Stat(rc)
 		if err != nil {
 			t.Fatal(err)
@@ -279,7 +279,7 @@ func TestBobShellEnable(t *testing.T) {
 	t.Run("tells the user to start a new shell", func(t *testing.T) {
 		rc := filepath.Join(t.TempDir(), ".zshrc")
 		var out, errb bytes.Buffer
-		bobShellEnable(rc, true, &out, &errb)
+		bobShellEnable(rc, mustTarget(t, rc), true, &out, &errb)
 		got := out.String()
 		if !strings.Contains(got, "source") || !strings.Contains(got, "new terminal") {
 			t.Errorf("output does not tell the user how to pick up the change: %q", got)
@@ -293,7 +293,7 @@ func TestBobShellEnable(t *testing.T) {
 		orig := "export FOO=1\n"
 		writeFile(t, rc, orig)
 		var out, errb bytes.Buffer
-		if code := bobShellEnable(rc, false, &out, &errb); code != exitDeclined {
+		if code := bobShellEnable(rc, mustTarget(t, rc), false, &out, &errb); code != exitDeclined {
 			t.Errorf("exit = %d, want %d", code, exitDeclined)
 		}
 		if got := readFile(t, rc); got != orig {
@@ -316,10 +316,10 @@ func TestBobShellDisable(t *testing.T) {
 			rc := filepath.Join(t.TempDir(), ".zshrc")
 			writeFile(t, rc, orig)
 			var out, errb bytes.Buffer
-			if code := bobShellEnable(rc, true, &out, &errb); code != 0 {
+			if code := bobShellEnable(rc, mustTarget(t, rc), true, &out, &errb); code != 0 {
 				t.Fatalf("enable: exit = %d (stderr: %s)", code, errb.String())
 			}
-			if code := bobShellDisable(rc, true, &out, &errb); code != 0 {
+			if code := bobShellDisable(rc, mustTarget(t, rc), true, &out, &errb); code != 0 {
 				t.Fatalf("disable: exit = %d (stderr: %s)", code, errb.String())
 			}
 			// enable normalises a missing trailing newline, and disable cannot know
@@ -340,7 +340,7 @@ func TestBobShellDisable(t *testing.T) {
 		orig := "export FOO=1\n"
 		writeFile(t, rc, orig)
 		var out, errb bytes.Buffer
-		if code := bobShellDisable(rc, true, &out, &errb); code != 0 {
+		if code := bobShellDisable(rc, mustTarget(t, rc), true, &out, &errb); code != 0 {
 			t.Errorf("exit = %d, want 0", code)
 		}
 		if got := readFile(t, rc); got != orig {
@@ -356,7 +356,7 @@ func TestBobShellDisable(t *testing.T) {
 	t.Run("missing file is not an error", func(t *testing.T) {
 		rc := filepath.Join(t.TempDir(), "nonexistent")
 		var out, errb bytes.Buffer
-		if code := bobShellDisable(rc, true, &out, &errb); code != 0 {
+		if code := bobShellDisable(rc, mustTarget(t, rc), true, &out, &errb); code != 0 {
 			t.Errorf("exit = %d, want 0 (stderr: %s)", code, errb.String())
 		}
 		if fileExists(rc) {
@@ -371,7 +371,7 @@ func TestBobShellDisable(t *testing.T) {
 		orig := "export FOO=1\n" + bobShellBlock + "export BAR=2\n" + bobShellBlock
 		writeFile(t, rc, orig)
 		var out, errb bytes.Buffer
-		if code := bobShellDisable(rc, true, &out, &errb); code != 0 {
+		if code := bobShellDisable(rc, mustTarget(t, rc), true, &out, &errb); code != 0 {
 			t.Errorf("exit = %d, want 0", code)
 		}
 		if got := readFile(t, rc); got != orig {
@@ -393,7 +393,7 @@ func TestBobShellDisable(t *testing.T) {
 		orig := "export FOO=1\n" + altered
 		writeFile(t, rc, orig)
 		var out, errb bytes.Buffer
-		if code := bobShellDisable(rc, true, &out, &errb); code != 0 {
+		if code := bobShellDisable(rc, mustTarget(t, rc), true, &out, &errb); code != 0 {
 			t.Errorf("exit = %d, want 0", code)
 		}
 		if got := readFile(t, rc); got != orig {
@@ -414,7 +414,7 @@ func TestBobShellDisable(t *testing.T) {
 		orig := "bob() {\n  echo my own bob\n}\nalias bob='something else'\n"
 		writeFile(t, rc, orig)
 		var out, errb bytes.Buffer
-		if code := bobShellDisable(rc, true, &out, &errb); code != 0 {
+		if code := bobShellDisable(rc, mustTarget(t, rc), true, &out, &errb); code != 0 {
 			t.Errorf("exit = %d, want 0", code)
 		}
 		if got := readFile(t, rc); got != orig {
@@ -425,9 +425,9 @@ func TestBobShellDisable(t *testing.T) {
 	t.Run("declining writes nothing", func(t *testing.T) {
 		rc := filepath.Join(t.TempDir(), ".zshrc")
 		var out, errb bytes.Buffer
-		bobShellEnable(rc, true, &out, &errb)
+		bobShellEnable(rc, mustTarget(t, rc), true, &out, &errb)
 		before := readFile(t, rc)
-		if code := bobShellDisable(rc, false, &out, &errb); code != exitDeclined {
+		if code := bobShellDisable(rc, mustTarget(t, rc), false, &out, &errb); code != exitDeclined {
 			t.Errorf("exit = %d, want %d", code, exitDeclined)
 		}
 		if got := readFile(t, rc); got != before {
@@ -454,7 +454,7 @@ func TestBobShellSymlinks(t *testing.T) {
 		}
 
 		var out, errb bytes.Buffer
-		if code := bobShellEnable(link, true, &out, &errb); code != 0 {
+		if code := bobShellEnable(link, mustTarget(t, link), true, &out, &errb); code != 0 {
 			t.Fatalf("exit = %d, want 0 (stderr: %s)", code, errb.String())
 		}
 		if !strings.Contains(readFile(t, real), bobShellMarkerStart) {
@@ -548,12 +548,9 @@ func TestBobShellSymlinks(t *testing.T) {
 
 		for _, verb := range []string{"enable", "disable"} {
 			var out, errb bytes.Buffer
-			var code int
-			if verb == "enable" {
-				code = bobShellEnable(link, true, &out, &errb)
-			} else {
-				code = bobShellDisable(link, true, &out, &errb)
-			}
+			// Driven through runBobShell rather than the verb: the depth refusal is
+			// checked there, above both verbs, so that is the only place it happens.
+			code := runBobShell([]string{verb, "--rc", link, "--yes"}, &out, &errb)
 			// Printing guidance is a success: it did what it could safely do.
 			if code != 0 {
 				t.Errorf("%s: exit = %d, want 0", verb, code)
@@ -714,7 +711,7 @@ func TestBobShellReviewFindings(t *testing.T) {
 		}
 
 		var out, errb bytes.Buffer
-		if code := bobShellEnable(rc, true, &out, &errb); code == 0 {
+		if code := bobShellEnable(rc, mustTarget(t, rc), true, &out, &errb); code == 0 {
 			t.Errorf("exit = 0, want non-zero: enable succeeded with no backup")
 		}
 		// The whole point: the original is untouched, so the user can retry.
@@ -735,7 +732,7 @@ func TestBobShellReviewFindings(t *testing.T) {
 		writeFile(t, rc+".bak", "PRISTINE\n")
 
 		var out, errb bytes.Buffer
-		if code := bobShellEnable(rc, true, &out, &errb); code != 0 {
+		if code := bobShellEnable(rc, mustTarget(t, rc), true, &out, &errb); code != 0 {
 			t.Fatalf("exit = %d, want 0 (stderr: %s)", code, errb.String())
 		}
 		if got := readFile(t, rc+".bak"); got != "PRISTINE\n" {
@@ -824,7 +821,7 @@ func TestBobShellReviewFindings(t *testing.T) {
 		rc := filepath.Join(dir, ".zshrc")
 		writeFile(t, rc, "export FOO=1\n")
 		var enOut, enErr bytes.Buffer
-		if code := bobShellEnable(rc, true, &enOut, &enErr); code != 0 {
+		if code := bobShellEnable(rc, mustTarget(t, rc), true, &enOut, &enErr); code != 0 {
 			t.Fatalf("enable exit = %d (stderr: %s)", code, enErr.String())
 		}
 		// Hand-edit inside the fence: markers ours, block no longer verbatim.
@@ -832,7 +829,7 @@ func TestBobShellReviewFindings(t *testing.T) {
 		writeFile(t, rc, edited)
 
 		var out, errb bytes.Buffer
-		if code := bobShellDisable(rc, true, &out, &errb); code != 0 {
+		if code := bobShellDisable(rc, mustTarget(t, rc), true, &out, &errb); code != 0 {
 			t.Fatalf("exit = %d, want 0 (stderr: %s)", code, errb.String())
 		}
 		got := out.String()
@@ -858,11 +855,126 @@ func TestBobShellReviewFindings(t *testing.T) {
 		rc := filepath.Join(t.TempDir(), ".zshrc")
 		writeFile(t, rc, "export FOO=1\n")
 		var out, errb bytes.Buffer
-		if code := bobShellDisable(rc, true, &out, &errb); code != 0 {
+		if code := bobShellDisable(rc, mustTarget(t, rc), true, &out, &errb); code != 0 {
 			t.Fatalf("exit = %d, want 0", code)
 		}
 		if !strings.Contains(out.String(), "Not enabled") {
 			t.Errorf("output does not say it was not enabled: %q", out.String())
+		}
+	})
+}
+
+// The resolved write target for a path, the way runBobShell resolves it before
+// calling either verb. Tests that drive a verb directly need the same answer;
+// hops is checked here so a fixture that accidentally builds a deep symlink chain
+// fails as a broken fixture rather than as the behaviour under test.
+func mustTarget(t *testing.T, path string) string {
+	t.Helper()
+	target, hops := rcTarget(path)
+	if hops >= 2 {
+		t.Fatalf("fixture path %s is %d symlink hops deep; the verbs are never reached with one", path, hops)
+	}
+	return target
+}
+
+// Round-3 review findings. Both are cases where round 2's fix was in the right
+// spirit and the wrong place, or where a guard that now carries weight had nothing
+// holding it down.
+func TestBobShellReviewFindings3(t *testing.T) {
+	// The missing-parent guard from round 2 stat'd the path as TYPED while the write
+	// went to the path as RESOLVED, so the defect it was added for still reproduced
+	// through the one case the symlink support exists to serve: an rc file that is a
+	// symlink whose target's directory is gone. The link's own directory exists, so
+	// the guard passed; the write then failed with `open <target>.tmp: no such file
+	// or directory` at exit 1, after printing the whole block — an errno naming a
+	// .tmp path the user never typed, at the wrong exit code, too late to be useful.
+	t.Run("dangling symlink target's missing parent is caught before anything prints", func(t *testing.T) {
+		for _, verb := range []string{"enable", "disable"} {
+			t.Run(verb, func(t *testing.T) {
+				dir := t.TempDir()
+				// The link's parent exists; the target's parent does not. That gap is
+				// the whole finding.
+				missing := filepath.Join(dir, "gone", "deeper", "rc")
+				link := filepath.Join(dir, ".zshrc")
+				if err := os.Symlink(missing, link); err != nil {
+					t.Fatal(err)
+				}
+
+				var out, errb bytes.Buffer
+				code := runBobShell([]string{verb, "--rc", link, "--yes"}, &out, &errb)
+				if code != 2 {
+					t.Errorf("exit = %d, want 2 (usage error, not an operational failure)", code)
+				}
+				// The directory named must be the one that is actually missing — the
+				// resolved target's parent. Naming the link's parent would be a lie:
+				// it exists.
+				if want := filepath.Dir(missing); !strings.Contains(errb.String(), want) {
+					t.Errorf("stderr does not name the missing directory %q: %q", want, errb.String())
+				}
+				// The signature of the bug, asserted directly so a regression is named
+				// rather than merely detected.
+				if strings.Contains(errb.String(), ".tmp") {
+					t.Errorf("stderr leaks the temp path the user never typed: %q", errb.String())
+				}
+				// Refused before committing to anything. An earlier version printed
+				// "Add to ..." and the twelve-line block first, then failed.
+				if out.Len() != 0 {
+					t.Errorf("printed %d bytes before refusing:\n%s", out.Len(), out.String())
+				}
+			})
+		}
+	})
+
+	// enable's mismatched-marker guard had no test, and round 2 made it load-bearing:
+	// the answer to "what if the rc file is not a valid script" became "status in a
+	// new shell is the check", which only holds if a second enable cannot quietly
+	// stack another block on top of a hand-edited one. Without the guard, enable
+	// appends: two `bob()` definitions with the later one winning, and two marker
+	// pairs — which also puts disable into its >1 refusal, so the file can no longer
+	// be cleaned up by this command at all.
+	//
+	// The disable-side twin is tested twice. This is the enable side.
+	t.Run("enable refuses rather than stacking a second block on an altered one", func(t *testing.T) {
+		dir := t.TempDir()
+		rc := filepath.Join(dir, "rc")
+		writeFile(t, rc, "export FOO=1\n")
+
+		var out, errb bytes.Buffer
+		if code := bobShellEnable(rc, mustTarget(t, rc), true, &out, &errb); code != 0 {
+			t.Fatalf("first enable: exit = %d, want 0", code)
+		}
+		// Hand-edit inside the block, the way someone tweaking the message would. The
+		// markers survive; the body no longer matches bobShellBlock byte-for-byte.
+		altered := strings.Replace(readFile(t, rc), "bob: not found in PATH", "bob missing", 1)
+		if altered == readFile(t, rc) {
+			t.Fatal("fixture did not alter the block")
+		}
+		writeFile(t, rc, altered)
+
+		out.Reset()
+		errb.Reset()
+		if code := bobShellEnable(rc, mustTarget(t, rc), true, &out, &errb); code != 0 {
+			t.Errorf("second enable: exit = %d, want 0 (declining is a success)", code)
+		}
+		if got := readFile(t, rc); got != altered {
+			t.Errorf("second enable changed the file:\n%s", got)
+		}
+		// The counts the mutant produces, asserted as counts so the failure says what
+		// went wrong rather than dumping two files to diff by eye.
+		if n := strings.Count(readFile(t, rc), "\nbob() {"); n != 1 {
+			t.Errorf("file holds %d bob() definitions, want 1", n)
+		}
+		if n := strings.Count(readFile(t, rc), bobShellMarkerStart); n != 1 {
+			t.Errorf("file holds %d marker starts, want 1", n)
+		}
+		// Whitespace-collapsed: the message wraps, and pinning the wrap position is
+		// not the point.
+		if got := strings.Join(strings.Fields(out.String()), " "); !strings.Contains(got, "does not match this version") {
+			t.Errorf("output does not explain the refusal: %q", out.String())
+		}
+		// Declining must leave the user a way forward, not a dead end.
+		if !strings.Contains(out.String(), "remove it first") {
+			t.Errorf("output does not say what to do: %q", out.String())
 		}
 	})
 }
