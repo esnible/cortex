@@ -615,7 +615,7 @@ See [`docs/framework-architecture.md`](docs/framework-architecture.md#9-config-h
 - **Neither `gofmt` nor `go vet` is fully gated.** pre-commit has no Go hooks;
   `ci.yaml` runs `go fmt ./...` (which rewrites and exits 0, so drift
   cannot fail it)
-  and `go vet ./...` on some but not all modules. Run `gofmt -l` yourself before
+  and `go vet ./...` on some but not all modules. Run `gofmt -l .` yourself before
   pushing, and `go mod tidy -diff` if you dropped a package or its last import.
   See the root [`CLAUDE.md`](../CLAUDE.md) Pre-commit Hooks section for the
   per-module breakdown — it is kept in one place on purpose.

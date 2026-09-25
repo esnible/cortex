@@ -292,7 +292,7 @@ Hooks:
 
 Formatting drift therefore reaches main — a few files are gofmt-dirty there
 today, including three under `authlib`, where `go fmt` demonstrably runs on
-every PR. Run `gofmt -l` yourself before pushing, and `go vet` too if you
+every PR. Run `gofmt -l .` yourself before pushing, and `go vet` too if you
 touched one of the five unvetted modules.
 
 ## Languages and Tech Stack
