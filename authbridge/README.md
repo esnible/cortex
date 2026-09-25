@@ -62,7 +62,7 @@ Sidecar container images:
 |-------|----------|
 | `authbridge` | proxy-sidecar: the authbridge-proxy binary |
 | `authbridge-envoy` | envoy-sidecar combined: Envoy + ext_proc |
-| `authbridge-lite` | `authbridge-proxy` built with the `lite` profile (see `authbridge/scripts/profile-tags`), a sidecar minimum. A build variant, not a separate binary |
+| `authbridge-lite` | `authbridge-proxy` built with the `lite` profile (see `scripts/profile-tags`), a sidecar minimum. A build variant, not a separate binary |
 
 | Mode | Image | Use Case | How It Works |
 |------|-------|----------|-------------|
@@ -449,7 +449,7 @@ so an artifact's contents are its tag list and nothing more. **A build with no
 tags registers no plugins**, and will reject any config that names one with
 `unknown plugin "..." (registered: [])`.
 
-Tag sets are not written by hand. `authbridge/scripts/profile-tags` holds one
+Tag sets are not written by hand. `scripts/profile-tags` holds one
 declarative profile per shipped artifact and emits its tags:
 
 | Profile | Artifact | Plugins |
@@ -500,7 +500,7 @@ To make a plugin excludable:
 
 package main
 
-import _ "github.com/rossoctl/cortex/authbridge/authlib/plugins/<name>"
+import _ "github.com/rossoctl/cortex/authlib/plugins/<name>"
 ```
 
 2. Never import a plugin package from `main.go`. An unconditional import cannot be
@@ -523,7 +523,7 @@ when `-tags include_plugin_<name>` is passed.
 - [authlib](authlib/README.md) — Shared auth building blocks (Go library)
 - [cmd/authbridge-proxy](cmd/authbridge-proxy/) — proxy-sidecar binary (default mode, full plugin set)
 - [cmd/authbridge-envoy](cmd/authbridge-envoy/) — envoy-sidecar binary (Envoy + ext_proc, full plugin set)
-- `authbridge-lite` image — `cmd/authbridge-proxy` built with the `lite` profile (see `authbridge/scripts/profile-tags`); a build variant, not a separate binary
+- `authbridge-lite` image — `cmd/authbridge-proxy` built with the `lite` profile (see `scripts/profile-tags`); a build variant, not a separate binary
 - [proxy-init](proxy-init/README.md) — iptables init container (envoy-sidecar mode only)
 - [docs/](docs/) — framework architecture and plugin author references
 

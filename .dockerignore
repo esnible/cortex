@@ -1,0 +1,14 @@
+# Build contexts became the repo root when authbridge/ was flattened, so the
+# things that were previously outside every context are now inside one.
+.git
+.worktrees
+bin
+dist
+venv
+.venv
+__pycache__
+.pytest_cache
+.ruff_cache
+.mypy_cache
+*.test
+node_modules

@@ -16,7 +16,7 @@ binaries with shared auth logic in `authlib/`:
   **Every** plugin is opt-in via `-tags include_plugin_<name>` — one
   `plugins_<name>.go` file per plugin, gated by `//go:build include_plugin_<name>`;
   `main.go` imports no plugin package directly, and a build with no tags registers
-  no plugins at all. Tag sets come from `authbridge/scripts/profile-tags`, one
+  no plugins at all. Tag sets come from `scripts/profile-tags`, one
   profile per shipped artifact. **Note:** `context-guru` is
   **opt-IN** (`//go:build include_plugin_contextguru`, not compiled by default),
   because its embedded engine pulls a large transitive dependency set; build with
@@ -39,7 +39,7 @@ binaries with shared auth logic in `authlib/`:
   `config.Config`, so refactors of the shared config have to keep it building.
 - `authbridge-lite` (**image, not a separate binary**) — `cmd/authbridge-proxy`
   built with the `lite` profile, a sidecar minimum (see
-  `authbridge/scripts/profile-tags` for the definition). For size-optimized
+  `scripts/profile-tags` for the definition). For size-optimized
   deployments that don't need protocol-aware session events.
 
 Every sidecar binary but praxis pins one deployment shape and refuses a
@@ -61,7 +61,7 @@ ships in variants that mirror the container images:
 | Variant | Tarball name shape | Matches |
 |---|---|---|
 | unqualified (default plugins) | `authbridge-proxy_<ver>_<os>_<arch>.tar.gz` | `authbridge` image |
-| `-lite` (sidecar-minimum plugin set — see `authbridge/scripts/profile-tags`) | `authbridge-proxy-lite_<ver>_<os>_<arch>.tar.gz` | `authbridge-lite` image |
+| `-lite` (sidecar-minimum plugin set — see `scripts/profile-tags`) | `authbridge-proxy-lite_<ver>_<os>_<arch>.tar.gz` | `authbridge-lite` image |
 | `-sessionbudget` (default + opt-in session-budget) | `authbridge-proxy-sessionbudget_<ver>_<os>_<arch>.tar.gz` | no image today |
 
 One variant per opt-in plugin currently offered for try-out (today:
@@ -255,7 +255,7 @@ Extensively documented shell script that sets up iptables for transparent traffi
 
 Declarative Keycloak synchronization tool that maintains client scope mappings based on `routes.yaml`. Idempotent, used in multi-target demos for dynamic scope assignments.
 
-**Dependencies:** `authbridge/requirements.txt` — `python-keycloak>=7.1.1,<8`.
+**Dependencies:** `requirements.txt` — `python-keycloak>=7.1.1,<8`.
 Note `ci.yaml` pip-installs `python-keycloak==5.3.1` for the Python test job,
 two majors behind what the project declares.
 
@@ -295,8 +295,8 @@ There are **two** setup scripts for different demo scenarios:
 
 | Script | Location | Use Case |
 |--------|----------|----------|
-| `setup_keycloak_weather_advanced.py` | `authbridge/demos/weather-agent/` | Weather agent (advanced) demo: realm setup, scopes for token exchange to the weather tool's audience, alice user. Drives the CI verify script `deploy_and_verify_advanced.sh`. |
-| `setup_keycloak.py` | `authbridge/demos/github-issue/` | GitHub issue integration demo (creates github-tool client, github-tool-aud + github-full-access scopes, alice + bob users) |
+| `setup_keycloak_weather_advanced.py` | `demos/weather-agent/` | Weather agent (advanced) demo: realm setup, scopes for token exchange to the weather tool's audience, alice user. Drives the CI verify script `deploy_and_verify_advanced.sh`. |
+| `setup_keycloak.py` | `demos/github-issue/` | GitHub issue integration demo (creates github-tool client, github-tool-aud + github-full-access scopes, alice + bob users) |
 
 **Common Keycloak defaults across all scripts:**
 - URL: `http://keycloak.localtest.me:8080`
@@ -431,7 +431,7 @@ other permissive on inbound only.
 
 The operator's AgentRuntime CR's `Spec.MTLSMode` flows
 through to a per-agent rendered envoy-config with the matching TLS
-blocks (operator companion PR). The `authbridge/demos/mtls/`
+blocks (operator companion PR). The `demos/mtls/`
 envoy-sidecar variant (`make demo-mtls-envoy*`) ships a hand-crafted
 demo that proves the same Envoy YAML design at the data-plane level
 without needing a CR.
@@ -442,7 +442,7 @@ without needing a CR.
 
 ```bash
 # Build the proxy-init iptables init container (envoy-sidecar + proxy-sidecar enforce-redirect modes)
-cd authbridge/proxy-init
+cd proxy-init
 make docker-build-init
 make load-image                     # Uses KIND_CLUSTER_NAME env var (default: rossoctl)
 
@@ -473,12 +473,12 @@ exchange to a tool's audience:
 
 ```bash
 # Apply manifests, run Keycloak setup, verify end-to-end
-authbridge/demos/weather-agent/deploy_and_verify_advanced.sh
+demos/weather-agent/deploy_and_verify_advanced.sh
 ```
 
 For an interactive walkthrough see
-`authbridge/demos/weather-agent/demo-ui-advanced.md`. For route
-configuration see `authbridge/demos/token-exchange-routes/README.md`.
+`demos/weather-agent/demo-ui-advanced.md`. For route
+configuration see `demos/token-exchange-routes/README.md`.
 
 ## Important Port Mapping
 

@@ -9,11 +9,11 @@ only the repo-level pieces.
 |---|---|
 | Install and run Cortex on a laptop | [root README](../README.md) |
 | Understand the sidecar shapes and deployment | [`authbridge/README.md`](../authbridge/README.md) |
-| Configure a plugin | [`authbridge/docs/plugin-catalog.md`](../authbridge/docs/plugin-catalog.md) |
-| Write a plugin | [`authbridge/docs/plugin-reference.md`](../authbridge/docs/plugin-reference.md) and [`plugin-tutorial.md`](../authbridge/docs/plugin-tutorial.md) |
-| Understand the pipeline internals and hot-reload | [`authbridge/docs/framework-architecture.md`](../authbridge/docs/framework-architecture.md) |
-| Run a demo | [`authbridge/demos/README.md`](../authbridge/demos/README.md) |
-| Use the `abctl` TUI | [`authbridge/cmd/abctl/README.md`](../authbridge/cmd/abctl/README.md) |
+| Configure a plugin | [`docs/plugin-catalog.md`](../docs/plugin-catalog.md) |
+| Write a plugin | [`docs/plugin-reference.md`](../docs/plugin-reference.md) and [`plugin-tutorial.md`](../docs/plugin-tutorial.md) |
+| Understand the pipeline internals and hot-reload | [`docs/framework-architecture.md`](../docs/framework-architecture.md) |
+| Run a demo | [`demos/README.md`](../demos/README.md) |
+| Use the `abctl` TUI | [`cmd/abctl/README.md`](../cmd/abctl/README.md) |
 
 ## In this directory
 
@@ -23,4 +23,4 @@ only the repo-level pieces.
 - `assets/` — images used by the root README.
 
 Dated implementation plans and design specs live in
-[`authbridge/docs/superpowers/`](../authbridge/docs/superpowers/).
+[`docs/superpowers/`](../docs/superpowers/).

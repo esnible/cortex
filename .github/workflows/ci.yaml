@@ -27,7 +27,7 @@ jobs:
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
-          go-version-file: authbridge/authlib/go.mod
+          go-version-file: authlib/go.mod
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
@@ -46,14 +46,14 @@ jobs:
     timeout-minutes: 15
     defaults:
       run:
-        working-directory: authbridge/authlib
+        working-directory: authlib
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
-          go-version-file: authbridge/authlib/go.mod
-          cache-dependency-path: authbridge/authlib/go.sum
+          go-version-file: authlib/go.mod
+          cache-dependency-path: authlib/go.sum
 
       - name: Lint
         run: |
@@ -77,7 +77,7 @@ jobs:
     timeout-minutes: 10
     defaults:
       run:
-        working-directory: authbridge/scripts/profile-tags
+        working-directory: scripts/profile-tags
     env:
       GOWORK: "off"
     steps:
@@ -85,7 +85,7 @@ jobs:
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
-          go-version-file: authbridge/scripts/profile-tags/go.mod
+          go-version-file: scripts/profile-tags/go.mod
 
       - name: Lint
         run: |
@@ -116,7 +116,7 @@ jobs:
     timeout-minutes: 15
     defaults:
       run:
-        working-directory: authbridge/scripts/readme-demo
+        working-directory: scripts/readme-demo
     env:
       GOWORK: "off"
     steps:
@@ -124,7 +124,7 @@ jobs:
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
-          go-version-file: authbridge/scripts/readme-demo/go.mod
+          go-version-file: scripts/readme-demo/go.mod
 
       - name: Lint
         run: |
@@ -165,7 +165,7 @@ jobs:
           - authbridge-praxis
     defaults:
       run:
-        working-directory: authbridge/cmd/${{ matrix.binary }}
+        working-directory: cmd/${{ matrix.binary }}
     env:
       # Disable go.work so each cmd/* module resolves authlib via its own
       # `replace` directive in go.mod (the workspace would otherwise pull
@@ -176,8 +176,8 @@ jobs:
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
-          go-version-file: authbridge/cmd/${{ matrix.binary }}/go.mod
-          cache-dependency-path: authbridge/cmd/${{ matrix.binary }}/go.sum
+          go-version-file: cmd/${{ matrix.binary }}/go.mod
+          cache-dependency-path: cmd/${{ matrix.binary }}/go.sum
 
       - name: Lint
         run: |
@@ -260,7 +260,7 @@ jobs:
       # ztunnel-mark RETURN. That ordering decides whether mesh-delivered traffic
       # is validated or waved through, and nothing else in CI covers it.
       - name: Test enforce-redirect + transparent inbound rules
-        run: sudo -E authbridge/proxy-init/test-enforce-redirect.sh
+        run: sudo -E proxy-init/test-enforce-redirect.sh
 
   python-test:
     name: Python Tests
@@ -292,9 +292,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Run install.sh tests
-        run: sh authbridge/install_test.sh
+        run: sh install_test.sh
 
-  # `go mod tidy -diff` on every authbridge module. GOWORK=off so
+  # `go mod tidy -diff` on every module in the repo. GOWORK=off so
   # replace directives resolve as they do in build.yaml and
   # release-binaries.yaml.
   go-tidy-check:
@@ -308,7 +308,7 @@ jobs:
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
-          go-version-file: authbridge/authlib/go.mod
+          go-version-file: authlib/go.mod
 
       - name: Run go mod tidy -diff in every module
         run: |
@@ -331,9 +331,9 @@ jobs:
               fail=1
             fi
             echo "::endgroup::"
-          done < <(find authbridge -name go.mod -print0 | sort -z)
+          done < <(find . -name go.mod -print0 | sort -z)
           if [ "$found" -eq 0 ]; then
-            echo "::error::no go.mod found under authbridge/"
+            echo "::error::no go.mod found in the repository"
             exit 1
           fi
           exit $fail

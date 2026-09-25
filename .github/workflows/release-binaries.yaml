@@ -80,7 +80,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
-          go-version-file: authbridge/cmd/authbridge-proxy/go.mod
+          go-version-file: cmd/authbridge-proxy/go.mod
 
       - name: Build binaries (linux/darwin, amd64/arm64)
         env:
@@ -104,7 +104,7 @@ jobs:
             # named `main` collides with the branch. Verified — `git rev-parse main`
             # then resolves to the tag, every git command warns that the refname is
             # ambiguous, and the tag freezes at the first publish while the branch
-            # moves on. Must match CHANNEL_TAG in authbridge/install.sh.
+            # moves on. Must match CHANNEL_TAG in install.sh.
             TAG="main-latest"
             VERSION="main-$(printf '%s' "${GITHUB_SHA}" | cut -c1-7)"
           else
@@ -125,8 +125,8 @@ jobs:
           # the default artifact. Every plugin is opt-in, so a variant with no
           # tags would register NO plugins and reject every config it is given —
           # each entry must name a profile. Profiles live in
-          # authbridge/scripts/profile-tags; never enumerate tag combos here.
-          profile_tags() { go -C authbridge/scripts/profile-tags run . "$1"; }
+          # scripts/profile-tags; never enumerate tag combos here.
+          profile_tags() { go -C scripts/profile-tags run . "$1"; }
           full_tags=$(profile_tags full)
           lite_tags=$(profile_tags lite)
           declare -a proxy_variants=(
@@ -143,7 +143,7 @@ jobs:
             # v* tag and differ only on the rolling channel release.
             local archive="dist/authbridge-proxy${suffix}_${TAG}_${os}_${arch}.tar.gz"
             echo "==> authbridge-proxy${suffix} ${os}/${arch}"
-            ( cd authbridge/cmd/authbridge-proxy && \
+            ( cd cmd/authbridge-proxy && \
               GOWORK=off CGO_ENABLED=0 GOOS="${os}" GOARCH="${arch}" \
               go build -trimpath \
                 -tags "${tags}" \
@@ -157,7 +157,7 @@ jobs:
             os="${target%/*}"; arch="${target#*/}"
 
             echo "==> abctl ${os}/${arch}"
-            ( cd authbridge/cmd/abctl && \
+            ( cd cmd/abctl && \
               GOWORK=off CGO_ENABLED=0 GOOS="${os}" GOARCH="${arch}" \
               go build -trimpath \
                 -ldflags "-s -w -X main.version=${VERSION}" \
@@ -211,7 +211,7 @@ jobs:
             add 'Unreleased build from the tip of `main`, rebuilt on every merge. Not a release.'
             add ''
             add 'Install with:'
-            add '    curl -fsSL https://raw.githubusercontent.com/rossoctl/cortex/main/authbridge/install.sh | sh -s -- --ref=main'
+            add '    curl -fsSL https://raw.githubusercontent.com/rossoctl/cortex/main/install.sh | sh -s -- --ref=main'
             add ''
             add 'Each binary reports its own build (`abctl --version` -> `main-<sha>`). For a'
             add 'supported install, use the newest `v*` release instead.'

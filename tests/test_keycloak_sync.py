@@ -1,4 +1,4 @@
-"""Tests for authbridge/keycloak_sync.py."""
+"""Tests for keycloak_sync.py."""
 
 import importlib.util
 from pathlib import Path

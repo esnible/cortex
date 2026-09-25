@@ -1,0 +1,132 @@
+# Storyboard for the cortex README animation.
+#
+# Regenerate the asset after editing:  go run .
+# CI fails if docs/assets/cortex-demo.svg does not match this file.
+#
+# Every string in the shell act is copied from the real source, not paraphrased:
+#   install.sh:376,892,1048,1157   cmd_claudecode.go:462,464,724,495
+# If those strings change, change them here too — the demo claims to be cortex.
+
+total: 50s
+grid:
+  cols: 120
+  rows: 34
+
+acts:
+  # Acts 1 and 2 of the storyboard are one continuous terminal, because
+  # --claude-code does not merely suggest `abctl claude-code enable`: the
+  # installer RUNS it (install.sh:1227-1233) and only prints the "run this
+  # yourself" hint when it is not doing so (install.sh:1219). So the consent
+  # prompt arrives as the tail of the install, with nothing typed but the y.
+  - name: install
+    kind: shell
+    runtime: 14s
+    steps:
+      - cmd: "curl -fsSL https://raw.githubusercontent.com/rossoctl/cortex/main/install.sh | sh -s -- --claude-code"
+        out:
+          - "Resolving newest release..."
+          - "Downloading v0.9.3 for darwin/arm64..."
+          - "Installed abctl and authbridge-proxy to ~/.cortex/bin"
+          - "Setting up the launchd service..."
+          - ""
+          - 'Adds to the "env" block of ~/.claude/settings.json:'
+          - "    HTTPS_PROXY=http://localhost:47600"
+          - "    HTTP_PROXY=http://localhost:47600"
+          - "    NODE_EXTRA_CA_CERTS=~/.cortex/ca/ca.crt"
+          - "Nothing else in the file changes; a copy is kept as settings.json.bak"
+          - "Apply? [y/N] y"
+          - "Enabled — run `claude` as usual."
+        # The long pause on "Downloading" is the trick that makes an authored
+        # sequence read as a machine doing work rather than a text dump.
+        slow:
+          - 120ms
+          - 2500ms
+          - 900ms
+          - 700ms
+          - 120ms
+          - 900ms
+          - 150ms
+          - 150ms
+          - 150ms
+          - 300ms
+          - 1200ms
+          - 900ms
+
+  # Three Claude Code sessions, one per working directory. These are the same
+  # three the next act opens on: abctl names sessions from Claude Code metadata,
+  # so the reader should recognise them by title.
+  - name: sessions
+    kind: windows
+    runtime: 6s
+    windows:
+      - title: "~/work/api"
+        lines:
+          - "$ claude"
+          - "▸ fix the retry handler"
+          - "  Read src/retry/handler.go"
+      - title: "~/work/web"
+        lines:
+          - "$ claude"
+          - "▸ add dark mode toggle"
+          - "  Edit src/pages/Settings.tsx"
+      - title: "~/work/infra"
+        lines:
+          - "$ claude"
+          - "▸ debug the helm chart"
+          - "  Bash helm template ."
+
+  # Where did the money go? Answered with evidence, in the real abctl.
+  - name: insights
+    kind: tui
+    runtime: 30s
+    beats:
+      - label: sessions
+        keys: []
+        hold: 5s
+      - label: spend
+        keys: ["$"]
+        hold: 6s
+      - label: usage
+        keys: ["esc", "u"]
+        hold: 4s
+      - label: events
+        keys: ["esc", "G", "enter"]
+        hold: 5s
+      # "up" off the bottom lands on the last REQUEST rather than its response:
+      # the request is the event carrying the tool manifest and the whole
+      # conversation, which is the thing this act exists to show.
+      - label: detail
+        keys: ["up", "enter"]
+        hold: 4s
+      # Two pages down lands on the boundary where the conversation ends and
+      # "tools": [ begins — the manifest this agent re-sends on every turn.
+      - label: manifest
+        keys: ["f", "f"]
+        hold: 4s
+      - label: back
+        keys: ["esc", "esc"]
+        hold: 2s
+
+    # Synthetic sessions. Costs are per turn and the tier split is derived from
+    # the token counts, so the COST column, the spend band and the `$` breakdown
+    # all agree with each other.
+    fixture:
+      sessions:
+        - id: api-7f3c
+          title: "fix the retry handler"
+          model: claude-opus-5
+          turns:
+            - {messages: 4, tools: 15, input: 1800, cache_read: 46000, cache_write: 9000, output: 620, reasoning: 341, prompt_usd: 0.098, output_usd: 0.047, tool_call: "tools/call", tool_host: "github-tool-mcp"}
+            - {messages: 10, tools: 15, input: 900, cache_read: 93000, cache_write: 2400, output: 810, reasoning: 446, prompt_usd: 0.121, output_usd: 0.061}
+            - {messages: 16, tools: 15, input: 1100, cache_read: 141000, cache_write: 3100, output: 940, reasoning: 517, prompt_usd: 0.174, output_usd: 0.071}
+        - id: web-2a91
+          title: "add dark mode toggle"
+          model: claude-opus-5
+          turns:
+            - {messages: 4, tools: 15, input: 1200, cache_read: 21000, cache_write: 6400, output: 380, reasoning: 209, prompt_usd: 0.061, output_usd: 0.029}
+            - {messages: 8, tools: 15, input: 700, cache_read: 44000, cache_write: 1800, output: 520, reasoning: 286, prompt_usd: 0.074, output_usd: 0.039}
+        - id: infra-55de
+          title: "debug the helm chart"
+          model: claude-sonnet-5
+          turns:
+            - {messages: 4, tools: 15, input: 800, cache_read: 12000, cache_write: 3200, output: 240, reasoning: 132, prompt_usd: 0.012, output_usd: 0.004}

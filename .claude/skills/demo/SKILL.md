@@ -19,11 +19,11 @@ This skill captures knowledge from building, debugging, and running AuthBridge d
 - **Repo:** `rossoctl/cortex` (monorepo)
 - **Container registry:** `ghcr.io/rossoctl/cortex/<image-name>`
 - **Agent examples repo:** `rossoctl/examples` (separate repo, images NOT published to GHCR)
-- **Demo guides:** `authbridge/demos/<demo-name>/demo-manual.md` (manual kubectl) and `demo-ui.md` (UI-driven)
+- **Demo guides:** `demos/<demo-name>/demo-manual.md` (manual kubectl) and `demo-ui.md` (UI-driven)
 
 ## Demo Directory Convention
 
-Each demo lives under `authbridge/demos/<demo-name>/`:
+Each demo lives under `demos/<demo-name>/`:
 
 ```
 demos/<demo-name>/
@@ -51,7 +51,7 @@ docker build -t ghcr.io/rossoctl/examples/<tool>:latest ./mcp/<tool>/
 # Build AuthBridge sidecar images. Every plugin is opt-in, so GO_BUILD_TAGS must
 # name a profile: a build without it registers no plugins and rejects every
 # config it is handed.
-cd cortex/authbridge
+cd cortex
 docker build -f cmd/authbridge-proxy/Dockerfile \
   --build-arg GO_BUILD_TAGS="$(go -C scripts/profile-tags run . full)" \
   -t ghcr.io/rossoctl/cortex/authbridge:latest .
@@ -84,7 +84,7 @@ gone), and `demos/github-issue/k8s/configmaps.yaml` has shrunk to
 Inbound interception is configured through `authbridge-config` and rendered by
 the operator, not hand-written into demo ConfigMaps. The one hand-maintained
 Envoy filter chain left in the repo is
-`authbridge/demos/mtls/k8s/envoy-config-mtls.yaml`; nothing needs lockstep edits
+`demos/mtls/k8s/envoy-config-mtls.yaml`; nothing needs lockstep edits
 any more.
 
 ## Critical Bugs and Fixes

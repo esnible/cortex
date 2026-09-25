@@ -1,11 +1,11 @@
 # AuthBridge Hook System and CPEX Integration
 
 **Status**: Implemented — kept as the design record, not a live proposal.
-The plugin pipeline shipped in `authbridge/authlib/pipeline`, and the CPEX
-integration in `authbridge/authlib/plugins/cpex` + `cmd/authbridge-cpex`. Read
-[`framework-architecture.md`](../../authbridge/docs/framework-architecture.md),
-[`plugin-reference.md`](../../authbridge/docs/plugin-reference.md) and
-[`cpex-plugin.md`](../../authbridge/docs/cpex-plugin.md) for current behaviour;
+The plugin pipeline shipped in `authlib/pipeline`, and the CPEX
+integration in `authlib/plugins/cpex` + `cmd/authbridge-cpex`. Read
+[`framework-architecture.md`](../../docs/framework-architecture.md),
+[`plugin-reference.md`](../../docs/plugin-reference.md) and
+[`cpex-plugin.md`](../../docs/cpex-plugin.md) for current behaviour;
 this document has drifted in places (it still discusses a `waypoint` mode, which
 no longer exists).
 **Date**: April 2026

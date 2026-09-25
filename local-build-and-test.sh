@@ -73,7 +73,7 @@ echo ""
 echo "=========================================="
 echo "Building authbridge (proxy-sidecar combined)"
 echo "=========================================="
-cd "${SCRIPT_DIR}/authbridge"
+cd "${SCRIPT_DIR}"
 # Every plugin is opt-in, so the plugin set must be named: a build without
 # GO_BUILD_TAGS registers none and rejects every config it is handed.
 ${CONTAINER_RUNTIME} build -f cmd/authbridge-proxy/Dockerfile \
@@ -87,7 +87,7 @@ echo ""
 echo "=========================================="
 echo "Building authbridge-envoy (envoy-sidecar combined)"
 echo "=========================================="
-cd "${SCRIPT_DIR}/authbridge"
+cd "${SCRIPT_DIR}"
 ${CONTAINER_RUNTIME} build -f cmd/authbridge-envoy/Dockerfile \
   --build-arg GO_BUILD_TAGS="$(go -C scripts/profile-tags run . envoy)" \
   -t ghcr.io/rossoctl/cortex/authbridge-envoy:local .
@@ -96,12 +96,12 @@ echo "✅ Built and loaded: authbridge-envoy:local"
 echo ""
 
 # Build authbridge-lite: the same authbridge-proxy binary/Dockerfile built with
-# the `lite` profile (see authbridge/scripts/profile-tags). A build variant, not
+# the `lite` profile (see scripts/profile-tags). A build variant, not
 # a separate binary.
 echo "=========================================="
-echo "Building authbridge-lite (proxy build variant: lite profile, see authbridge/scripts/profile-tags)"
+echo "Building authbridge-lite (proxy build variant: lite profile, see scripts/profile-tags)"
 echo "=========================================="
-cd "${SCRIPT_DIR}/authbridge"
+cd "${SCRIPT_DIR}"
 ${CONTAINER_RUNTIME} build -f cmd/authbridge-proxy/Dockerfile \
   --build-arg GO_BUILD_TAGS="$(go -C scripts/profile-tags run . lite)" \
   -t ghcr.io/rossoctl/cortex/authbridge-lite:local .
@@ -113,7 +113,7 @@ echo ""
 echo "=========================================="
 echo "Building proxy-init"
 echo "=========================================="
-cd "${SCRIPT_DIR}/authbridge/proxy-init"
+cd "${SCRIPT_DIR}/proxy-init"
 ${CONTAINER_RUNTIME} build -f Dockerfile.init -t ghcr.io/rossoctl/cortex/proxy-init:local .
 load_image_to_kind ghcr.io/rossoctl/cortex/proxy-init:local
 echo "✅ Built and loaded: proxy-init:local"
