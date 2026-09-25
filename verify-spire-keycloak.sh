@@ -107,8 +107,15 @@ else
         echo "       -n zero-trust-workload-identity-manager -o json | \\"
         echo "       jq '.data[\"oidc-discovery-provider.conf\"] |= (fromjson | .set_key_use = true | tojson)' | \\"
         echo "       kubectl apply -f -"
+        echo "     kubectl rollout restart deployment/spire-spiffe-oidc-discovery-provider \\"
+        echo "       -n zero-trust-workload-identity-manager"
         echo "     kubectl rollout status deployment/spire-spiffe-oidc-discovery-provider \\"
         echo "       -n zero-trust-workload-identity-manager --timeout=2m"
+        echo ""
+        echo "   The restart is not optional: patching the ConfigMap leaves the"
+        echo "   Deployment spec unchanged, so nothing rolls on its own and the"
+        echo "   provider keeps serving the old config. Without it, rollout status"
+        echo "   reports success immediately and the JWKS still has no \"use\"."
         VERIFICATION_FAILED=true
     else
         echo "⚠️  ConfigMap is correct but OIDC provider may need restart:"

@@ -83,9 +83,11 @@ one, all tagged `:local`. Confirm with
 under Podman). On Podman the script also loads via tar archives, because
 `kind load docker-image` does not work with Podman's image store.
 
-> Getting the platform to *run* those `:local` tags needs an image-override
-> values file. The overlay that used to do this was removed from `rossoctl`, so
-> check that repo's current guide for the supported way.
+> **This step is inert on its own.** Step 1 installs released image tags, and
+> loading images into the node store does not change what a running Deployment
+> uses. Making the platform *run* your `:local` builds needs an image-override
+> values file, and the overlay that used to do that was removed from `rossoctl` —
+> so check that repo's current guide for the supported way before relying on this.
 
 **3. Verify the platform came up.**
 
@@ -217,10 +219,13 @@ Smaller pull requests are typically easier to review and merge. If your pull req
 ## Code Style
 
 ### Go Code
-- Run `gofmt -l` and `go vet ./...` before pushing. `go vet` is gated: all four
-  `Go CI (…)` jobs run it, and a finding fails the job. `gofmt` is not — CI's lint step runs
-  `go fmt`, which rewrites files and exits 0, so unformatted code still goes
-  green. There are no Go hooks in pre-commit either.
+- Before pushing, run `go vet ./...` and `gofmt -l .` from each module you touched.
+  Always give `gofmt` a path — a bare `gofmt -l` reads stdin, so it scans nothing
+  and exits 0. `gofmt -l .` also lists any pre-existing offenders, so check the
+  names it prints are yours.
+- `go vet` is gated: all four `Go CI (…)` jobs run it, and a finding fails the job.
+  `gofmt` is not — CI's lint step runs `go fmt`, which rewrites files and exits 0,
+  so unformatted code still goes green. There are no Go hooks in pre-commit either.
 - Run per-module with `GOWORK=off` — how the root Makefile builds, and how every
   CI job but authlib runs.
 - If your change deletes a package or its last import of a dependency, also run
