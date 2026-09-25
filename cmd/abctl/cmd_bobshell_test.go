@@ -219,9 +219,6 @@ func TestBobShellRoundTripIsByteIdentical(t *testing.T) {
 		"",
 		"export EDITOR=vim\n",
 		"# leading comment\n\nexport PATH=$PATH:/opt/bin\nalias g=git\n",
-		// No trailing newline: enable adds one, so this is the one case where a
-		// round trip legitimately cannot be byte-identical — asserted separately
-		// below rather than hidden in this table.
 	} {
 		t.Run("len"+string(rune('0'+len(original)%10)), func(t *testing.T) {
 			home := fakeHome(t)
@@ -583,6 +580,76 @@ func TestBobShellHelpAndUsageErrors(t *testing.T) {
 		// Naming the valid set is the difference between a refusal and a dead end.
 		if !strings.Contains(errb.String(), "enable, disable, status") {
 			t.Errorf("stderr does not name the valid actions: %q", errb.String())
+		}
+	})
+
+	// A bad verb must be refused whatever the environment looks like.
+	//
+	// The subtest above pins SHELL=/bin/zsh, and that is exactly why the bug this
+	// covers survived: three steps between the help switch and the old
+	// action check answer successfully on their own — an unrecognised $SHELL, a
+	// dangling rc symlink, and a chain past the hop limit each print the block and
+	// return 0. With the check at the bottom, `bobshell enabel` under fish printed
+	// the block and exited 0, reporting success for a verb that does not exist.
+	//
+	// Each row below reaches a different one of those early returns, so a future
+	// early return that forgets to validate first fails here rather than shipping.
+	t.Run("misspelled action beats every early return", func(t *testing.T) {
+		for _, tc := range []struct {
+			name  string
+			setup func(t *testing.T, home string)
+			shell string
+		}{
+			{name: "unrecognised shell", shell: "/usr/bin/fish"},
+			{name: "shell unset", shell: ""},
+			{
+				name:  "dangling rc symlink",
+				shell: "/bin/zsh",
+				setup: func(t *testing.T, home string) {
+					if err := os.Symlink(filepath.Join(home, "nowhere"), filepath.Join(home, ".zshrc")); err != nil {
+						t.Fatal(err)
+					}
+				},
+			},
+			{
+				name:  "rc symlink past the hop limit",
+				shell: "/bin/zsh",
+				setup: func(t *testing.T, home string) {
+					dir := t.TempDir()
+					real := filepath.Join(dir, "zshrc")
+					if err := os.WriteFile(real, []byte("export EDITOR=vim\n"), 0o644); err != nil {
+						t.Fatal(err)
+					}
+					mid := filepath.Join(dir, "middle")
+					if err := os.Symlink(real, mid); err != nil {
+						t.Fatal(err)
+					}
+					if err := os.Symlink(mid, filepath.Join(home, ".zshrc")); err != nil {
+						t.Fatal(err)
+					}
+				},
+			},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				home := fakeHome(t)
+				t.Setenv("SHELL", tc.shell)
+				if tc.setup != nil {
+					tc.setup(t, home)
+				}
+
+				var out, errb bytes.Buffer
+				if code := runBobShell([]string{"enabel"}, &out, &errb); code != 2 {
+					t.Errorf("exit = %d, want 2", code)
+				}
+				if !strings.Contains(errb.String(), `"enabel"`) {
+					t.Errorf("stderr does not name the bad action: %q", errb.String())
+				}
+				// The signature of the bug: advice printed for a verb that does not
+				// exist. A refusal must not look like a successful answer.
+				if strings.Contains(out.String(), bobShellBlock) {
+					t.Errorf("printed the block for an unknown action:\n%s", out.String())
+				}
+			})
 		}
 	})
 }

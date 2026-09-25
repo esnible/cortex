@@ -107,6 +107,20 @@ func runBobShell(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 
+	// The verb is validated HERE, before any environment or filesystem work,
+	// because three of the steps below answer successfully on their own: an
+	// unrecognised $SHELL, a dangling rc symlink, and a chain past the hop limit
+	// each print the block and return 0. Validating the action last meant
+	// `bobshell enabel` under fish printed the block and exited 0 — reporting
+	// success for a verb that does not exist. Nothing downstream can reach this
+	// check, so it has to come first.
+	switch action {
+	case "enable", "disable", "status":
+	default:
+		fmt.Fprintf(stderr, "abctl: unknown bobshell action %q (enable, disable, status)\n", action)
+		return 2
+	}
+
 	// status answers from the environment alone, so it needs no home directory,
 	// no rc path and no file. Dispatched before all of that rather than after, so
 	// a user whose $SHELL is unrecognised can still ask.
@@ -154,15 +168,12 @@ func runBobShell(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 
-	switch action {
-	case "enable":
+	// Only enable and disable reach here: help and status returned above, and any
+	// other verb was refused before the home directory was read.
+	if action == "enable" {
 		return bobShellEnable(target, stdout, stderr)
-	case "disable":
-		return bobShellDisable(target, stdout, stderr)
-	default:
-		fmt.Fprintf(stderr, "abctl: unknown bobshell action %q (enable, disable, status)\n", action)
-		return 2
 	}
+	return bobShellDisable(target, stdout, stderr)
 }
 
 // bobShellRCPath maps the shell's basename to the rc file to edit.
