@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 )
@@ -135,11 +136,24 @@ func runBobShell(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
+	// Resolve this binary's own path before dispatching, for ALL THREE verbs.
+	//
+	// Only enable used to need it, and that asymmetry was the bug: disable and status
+	// recognised an alias by the binary's NAME containing "abctl", so a binary called
+	// anything else (a rename, a symlink, `/tmp/ab8`) did not recognise the block enable
+	// had just written — a second enable duplicated it and disable left it live. The
+	// running path is what makes the three verbs agree, so all three get it.
+	//
+	// A failure here is fatal only for enable, which must write the path into the file.
+	// disable and status still work without it, falling back to the name test, so they
+	// carry on rather than refusing to run over a file they can very likely still read.
+	self, selfErr := abctlPath()
+	bobShellSelfPath = self
+
 	switch action {
 	case "enable":
-		self, err := abctlPath()
-		if err != nil {
-			fmt.Fprintf(stderr, "abctl: %v\n", err)
+		if selfErr != nil {
+			fmt.Fprintf(stderr, "abctl: %v\n", selfErr)
 			return 1
 		}
 		return bobShellEnable(*rcPath, self, *yes, stdout, stderr)
@@ -254,71 +268,223 @@ func bobShellAliasLine(abctlPath string) string {
 	return "alias bob='" + abctlPath + " exec -- \\bob'"
 }
 
-// isOurAliasLine reports whether line is one THIS command could have written — the
-// full rendered shape, for some abctl path, not merely a line that starts with
-// `alias bob=`.
+// unquoteShellWord returns the literal value of a shell word, honouring quotes
+// wherever they sit in it, and whether it parsed cleanly.
 //
-// The distinction is the file header's promise, and a bare-prefix test broke it
-// twice. Inside a recovered lone-START block (see findBobShellBlock) the run of
-// claimed lines is bounded by adjacency, so a user's own `alias bob='/usr/local/bin/bob
-// --fast'` sitting directly under a damaged marker matched the prefix, got swallowed
-// into the block, and was DELETED by disable. Reconstructing the line from the path
-// it names and requiring equality means the only lines we claim are ones we can show
-// we would have produced — which is also why this cannot just compare against the
-// current binary's path: a block written by a moved or reinstalled abctl is still
-// ours, and status exists to say so.
-func isOurAliasLine(line string) bool {
-	const pre = "alias bob='"
-	const suf = " exec -- \\bob'"
-	t := strings.TrimSpace(line)
-	if !strings.HasPrefix(t, pre) || !strings.HasSuffix(t, suf) {
-		return false
+// This exists because the question "is this line a live alias to our proxy" is a
+// question about what the SHELL sees, and text matching answers a different one.
+// Round 7 found three inputs where the two diverge, all of them live aliases the
+// tool reported as absent: a trailing comment (`alias bob='...' # note`), split
+// quoting (`alias bob=/b/abctl' exec -- \bob'`), and the double-quoted form. To
+// bash all three define the identical alias; the predicate they defeated compared
+// text with strings.Trim, which only strips quotes at the ends of the string.
+//
+// Unquoting first collapses every spelling of one alias onto one value, so the
+// predicate compares meanings instead of spellings and the spellings stop mattering.
+// Parsing rather than executing is the point: sourcing a user's rc to ask the shell
+// directly would run arbitrary code, which a status command must never do.
+func unquoteShellWord(s string) (string, bool) {
+	var b strings.Builder
+	for i := 0; i < len(s); {
+		switch c := s[i]; c {
+		case '\'':
+			// Single quotes: everything literal until the next one.
+			j := strings.IndexByte(s[i+1:], '\'')
+			if j < 0 {
+				return "", false
+			}
+			b.WriteString(s[i+1 : i+1+j])
+			i += j + 2
+		case '"':
+			i++
+			for i < len(s) && s[i] != '"' {
+				// In double quotes a backslash escapes only these four; before
+				// anything else it is itself literal — which is what keeps the
+				// \bob in `alias bob="... -- \bob"` intact.
+				if s[i] == '\\' && i+1 < len(s) && strings.IndexByte("\"\\$`", s[i+1]) >= 0 {
+					b.WriteByte(s[i+1])
+					i += 2
+					continue
+				}
+				b.WriteByte(s[i])
+				i++
+			}
+			if i >= len(s) {
+				return "", false
+			}
+			i++
+		case ' ', '\t':
+			// Unquoted whitespace ends the word, which is what makes a trailing comment
+			// stop hiding the alias in front of it: in `alias bob='...' # note` the word
+			// is over at the space, and the comment never enters the value.
+			//
+			// A `#` is deliberately NOT a terminator here. It looked like one — a
+			// comment starts a comment — but both bash and zsh were asked directly, and
+			// `alias bob=/bin/echo#c` defines the value `/bin/echo#c`: a `#` only opens a
+			// comment where a word could START, not mid-word. Treating it as a
+			// terminator truncated a value the shell keeps whole. Unobservable for this
+			// predicate either way, since a value containing `#` is not our alias in
+			// either reading — but this function's only job is to model what the shell
+			// does, so a clause that models something else does not belong in it.
+			return b.String(), true
+		case '\\':
+			if i+1 >= len(s) {
+				return "", false
+			}
+			b.WriteByte(s[i+1])
+			i += 2
+		default:
+			b.WriteByte(c)
+			i++
+		}
 	}
-	path := t[len(pre) : len(t)-len(suf)]
-	// An absolute path with no quote in it: what enable emits (it refuses any other),
-	// so anything else was not written here.
-	return path != "" && strings.HasPrefix(path, "/") && !strings.Contains(path, "'")
+	return b.String(), true
 }
 
-// looksLikeOurMechanism reports whether line is an alias that routes bob through an
-// abctl — this tool's mechanism, spelled some other way.
+// aliasRoutesThroughAbctl reports whether line defines `bob` as an alias that runs
+// some abctl's `exec -- bob` — this feature's mechanism, however it is spelled.
 //
-// It is deliberately looser than isOurAliasLine and is used ONLY for the interior of
-// a matched marker pair. The two predicates answer different questions, and the
-// difference is what round 6 turned on. isOurAliasLine asks "would THIS code have
-// emitted this exact line" and governs ownership anywhere in the file, where being
-// wrong means editing a line we cannot prove is ours. Inside a fence we ourselves
-// wrote, the burden is the other way round: a line there is presumptively ours, and
-// the only ones to leave alone are those that are recognisably NOT this mechanism.
+// It replaces the two predicates rounds 5 and 6 left behind (an exact-reconstruction
+// one for file scope, a looser one for inside a fence). Keeping two was what let a
+// live alias be invisible in one scope and claimed in the other, which is the same
+// defect the reviewer reported from both directions in rounds 6 and 7. One question
+// deserves one answer, and unquoting makes a single answer possible: every spelling
+// of the same alias now reduces to the same value before anything is compared.
 //
-// That distinction resolves a real conflict between two review rounds. Round 5
-// established that a fence must not swallow `alias bob='/usr/local/bin/bob --fast'`
-// — a user's own alias to the real binary, which happens to sit in our region. Round 6
-// found that a fence MUST claim `alias bob="/b/abctl exec -- \bob"` — our own
-// mechanism with double quotes instead of single, from another abctl build or a
-// hand-edit — because leaving it behind meant disable printed "Disabled.", exited 0,
-// and left the shell still routing bob through the proxy. Both are `alias bob=` inside
-// a matched pair; what separates them is what they invoke. The first runs the real bob
-// with the user's flags. The second runs an abctl's `exec -- bob`, which is this
-// feature and nothing else.
-//
-// Anything it cannot recognise stays unclaimed, which is the safe direction: a
-// leftover line is cosmetic, and deleting a line of someone else's rc file is not.
-func looksLikeOurMechanism(line string) bool {
+// It stays narrow in the way round 5 established. The discriminator is what the
+// alias INVOKES, not how it is written: `alias bob='/usr/local/bin/bob --fast'` is
+// the user's own alias to the real binary and is never ours, no matter where in the
+// file it sits, while `/b/abctl exec -- \bob` is this mechanism and nothing else.
+// bobShellSelfPath is the absolute path of the running binary, as the alias would
+// spell it. Set once by runBobShell; empty in a context that never resolved it, which
+// only costs the self-path arm of aliasRoutesThroughAbctl.
+var bobShellSelfPath string
+
+func aliasRoutesThroughAbctl(line string) bool {
 	t := strings.TrimSpace(line)
-	if !strings.HasPrefix(t, "alias bob=") {
-		return false
+	for _, pre := range []string{"alias bob=", "alias -- bob="} {
+		if !strings.HasPrefix(t, pre) {
+			continue
+		}
+		v, ok := unquoteShellWord(strings.TrimPrefix(t, pre))
+		if !ok {
+			return false
+		}
+		f := strings.Fields(v)
+		// <abctl> exec [flags...] -- bob
+		//
+		// The arity floor is a bounds guard for f[1] and f[len(f)-2], and nothing more:
+		// mutating 4 down to 2 changes no answer, because `exec` followed by the
+		// `-- bob` tail already implies four fields. What it does prevent is a panic on
+		// `alias bob=/b/abctl` — one field, no subcommand — which is why the test table
+		// carries a one-field row. Lowering it to 1 panics; the constant itself is
+		// unobservable above 2, so no test pins 4 specifically and none should pretend to.
+		if len(f) < 4 || f[1] != "exec" {
+			return false
+		}
+		last := f[len(f)-1]
+		if f[len(f)-2] != "--" || (last != "bob" && last != `\bob`) {
+			return false
+		}
+		// The first field must be an abctl: either one by name, or the exact path this
+		// process is running as.
+		//
+		// Name alone was wrong, and it took a real round trip to see it. `Contains(Base,
+		// "abctl")` accepts `abctl-dev` but not `/tmp/ab8`, so a binary whose filename
+		// does not happen to contain "abctl" did not recognise the alias IT HAD JUST
+		// WRITTEN: a second enable appended a duplicate, and disable then left a live
+		// alias behind. A user who renames the binary, symlinks it as `~/bin/cortex`, or
+		// runs a versioned download hits exactly that. Identical inputs differing only in
+		// the binary's filename must not differ in behaviour.
+		//
+		// Matching the running binary's own path fixes the symmetry without loosening the
+		// check: whatever this binary is called, it always recognises its own work. The
+		// name test stays for blocks written by a DIFFERENT abctl than the one running now
+		// — a moved or reinstalled binary, which status reports and enable rewrites.
+		//
+		// bobShellSelfPath is a package-level value rather than a parameter threaded
+		// through ownedLines, bobShellAliasesIn and the two rewriters. It is genuinely
+		// one value per process, and passing it down six call sites would add exactly the
+		// plumbing this file is already too long for. Tests set it directly.
+		if strings.Contains(filepath.Base(f[0]), "abctl") {
+			return true
+		}
+		return bobShellSelfPath != "" && f[0] == bobShellSelfPath
 	}
-	// Tolerate either quoting style — the point of this predicate is that the quoting
-	// is exactly what differs.
-	body := strings.Trim(strings.TrimPrefix(t, "alias bob="), `"'`)
-	fields := strings.Fields(body)
-	if len(fields) < 3 || !strings.HasSuffix(fields[0], "abctl") {
-		return false
+	return false
+}
+
+// heredocDelim returns the delimiter word opened by the last heredoc operator on
+// line, and whether it was the tab-stripping `<<-` form. "" means the line opens no
+// heredoc.
+//
+// RE2 has no lookahead, so the scan is manual: that is how `<<<` (a herestring,
+// which has no body) is told apart from `<<`. Our own end marker contains `<<<`,
+// and an earlier regex read it as opening a heredoc named `cortex` — which marked
+// the rest of a perfectly ordinary rc file as heredoc body and would have made
+// disable a no-op on real blocks. Only executing it showed that; reasoning about
+// the pattern did not.
+func heredocDelim(line string) (delim string, dashed bool) {
+	for i := 0; i+1 < len(line); i++ {
+		if line[i] != '<' || line[i+1] != '<' {
+			continue
+		}
+		if i+2 < len(line) && line[i+2] == '<' {
+			i += 2 // herestring, not a heredoc
+			continue
+		}
+		rest := line[i+2:]
+		m := heredocDelimRe.FindStringSubmatch(rest)
+		if m == nil {
+			continue
+		}
+		for _, g := range m[1:] {
+			if g != "" {
+				delim = g
+				break
+			}
+		}
+		dashed = strings.HasPrefix(rest, "-")
 	}
-	rest := strings.Join(fields[1:], " ")
-	return strings.HasPrefix(rest, "exec ") &&
-		(strings.HasSuffix(rest, " -- \\bob") || strings.HasSuffix(rest, " -- bob"))
+	return delim, dashed
+}
+
+var heredocDelimRe = regexp.MustCompile(`^-?[ \t]*(?:'([^']*)'|"([^"]*)"|\\?([A-Za-z_][A-Za-z0-9_]*))`)
+
+// heredocBody reports, per line, whether the line is heredoc BODY — data handed to
+// another program, not a command the shell runs.
+//
+// Round 7's first finding: every line of a heredoc was being treated as rc content.
+// `disable` excised the alias line out of the middle of a Python string literal in
+// `python3 - <<'PY'`, printed "Disabled.", exited 0 — over a file where bash
+// confirmed no alias was ever defined — and the script it corrupted went on running,
+// silently computing a different answer. A plain `cat <<'EOF'` lost all three lines,
+// collapsing the heredoc to its opener followed by its terminator.
+//
+// This is not a shell parser and does not try to be. It tracks the one construct
+// that puts non-command text in an rc file at line granularity. A quoted operator
+// (`echo '<<EOF'`) is read as an opener it is not, which suppresses claims until the
+// delimiter appears; over-detection leaves lines alone, and leaving a line alone is
+// the recoverable error. Under-detection edits a file we do not own.
+func heredocBody(lines []string) []bool {
+	body := make([]bool, len(lines))
+	delim, dashed := "", false
+	for i, l := range lines {
+		if delim == "" {
+			delim, dashed = heredocDelim(l)
+			continue
+		}
+		t := l
+		if dashed {
+			t = strings.TrimLeft(t, "\t")
+		}
+		if strings.TrimRight(t, " \t") == delim {
+			delim, dashed = "", false // the terminator is a boundary, not body
+			continue
+		}
+		body[i] = true
+	}
+	return body
 }
 
 // bobShellBlock renders the managed block, newline-terminated.
@@ -332,184 +498,119 @@ func bobShellBlock(abctlPath string) string {
 		bobShellMarkerEnd + "\n"
 }
 
-// ownedLines reports the index of every line in the file that THIS command wrote —
-// as a set, not a range.
+// ownedLines returns the indices of the lines this command may rewrite or delete.
 //
-// A range was the wrong primitive, and three rounds of review found three different
-// hand-edits that break it. A file's damaged state is not reliably one contiguous
-// span: a blank line or a stray comment inside a fence-damaged block splits it, a
-// second START marker means two, an orphaned END sits alone with our alias above it.
-// Each time, the claimed span covered some of what we wrote and missed the rest, and
-// the miss was always the same shape — a LIVE alias left in the file while status
-// reported "not enabled". That is worse than any cosmetic residue, because the shell
-// keeps routing bob through a proxy the user believes they turned off.
+// It returns a SET, not a span. A span was tried and failed twice: a file whose
+// owned lines are non-contiguous has a hull covering lines that are not ours, and
+// keying a write off the hull deletes the user's content between our lines.
+// What we own is a SET, not a span: a hand-edit can leave our lines
+// non-contiguous, and every writer iterates the set for that reason.
 //
-// So this collects indices instead of bounding a span, and the ownership test is
-// per-line provenance:
+// A line is ours when both of these hold:
 //
-//   - a START or END marker, in any number and any order, matched exactly;
-//   - an alias line matching the exact shape enable emits (isOurAliasLine), anywhere
-//     in the file, fenced or not.
+//   - It is a COMMAND, not heredoc body. A heredoc hands its lines to another
+//     program; they are data. Round 7 found disable reaching into a Python string
+//     literal to excise an alias line, reporting success over a file where bash
+//     confirmed nothing was ever defined, and collapsing a `cat <<'EOF'` to its
+//     opener plus terminator. Pairing could not prevent it, because the alias test
+//     applied at file scope and the heredoc was inside the fence's reach either way.
 //
-// Note what is NOT here: position. Being inside a fence does not make a line ours.
-// That was tempting — a fence is a region this command manages, so its contents look
-// like they must be ours by construction — and a generated-damage test caught it
-// immediately: a user who pastes their own `alias bob='/usr/local/bin/bob --fast'`
-// between the markers had it silently replaced by enable. A fence is a bookkeeping
-// device we wrote into someone else's file, not a licence to delete whatever ends up
-// inside it. Provenance is the only test, which also means an unterminated START
-// cannot swallow everything below it, and a closed fence holding a foreign line
-// leaves that line behind after disable. The leftover is the correct outcome: it is
-// not ours to remove.
+//   - It is either one of our markers, or an alias that routes bob through an abctl
+//     (aliasRoutesThroughAbctl), anywhere in the file, fenced or not.
 //
-// The one thing position still buys is the INSERTION POINT — see
+// Note what is NOT here: position. Being inside a fence does not make a line ours,
+// and being outside one does not make it safe. Both halves have been learned the
+// hard way. Round 5: a user's own `alias bob='/usr/local/bin/bob --fast'` pasted
+// between the markers was silently replaced, because the fence was read as a licence
+// to claim its contents — it is a bookkeeping device written into someone else's
+// file, not that. Round 7: the double-quoted form of OUR alias was invisible once
+// its markers were hand-deleted, so status said not enabled, disable said nothing to
+// do, and enable then appended a second live alias to a file that already had one.
+// Provenance is the only test, and it is per line.
+//
+// That one rule replaced the two-predicate, two-pass, pair-matching arrangement
+// rounds 5 and 6 built up. The reason it can is aliasRoutesThroughAbctl: unquoting
+// before comparing collapses every spelling of an alias onto one value, so the
+// strict-inside / loose-outside split those rounds needed — and the contradiction
+// between them the reviewer reported from both directions — stops existing.
+//
+// The one thing position still buys is the INSERTION POINT: see
 // replaceBobShellBlock, which puts the fresh block where the first owned line was.
 //
-// The last clause is what earlier versions could not express, and it is safe only
-// because isOurAliasLine reconstructs the full rendered line rather than matching a
-// prefix: a user's own `alias bob='/usr/local/bin/bob --fast'` fails it wherever it
-// sits. The bare-prefix version of that test is exactly what made an unbounded scan
-// dangerous in round 3, which is why the fix then was to bound the scan; with
-// provenance done properly the bound is no longer what keeps the user's line safe,
-// and dropping it is what lets us find every copy of ours.
+// The invariants the callers need: after enable the file defines exactly one live
+// bob alias, and after disable exactly zero.
+func ownedLines(lines []string) []int { return ownedLinesFor(lines, false) }
+
+// ownedLinesFor is ownedLines with the marker rule made explicit.
 //
-// The invariants the callers need, which a span could not deliver: after enable the
-// file holds exactly one live alias, and after disable exactly zero.
-func ownedLines(lines []string) []int {
-	owned := map[int]bool{}
-
-	// Pass 1: aliases we can prove we emitted, anywhere in the file, fenced or not.
-	// This is what guarantees no live alias of ours survives disable, and it is
-	// position-independent for the reason the comment above gives.
+// installing is true only for enable, which is about to put a live alias into this
+// file. That changes what a marker means here, and the asymmetry is load-bearing
+// rather than a convenience:
+//
+//   - disable and status must not claim a marker in a file with no live alias of
+//     ours, because a file that merely DOCUMENTS the block looks exactly like that
+//     and deleting from it is unrecoverable (round 6 / MF3).
+//   - enable, installing the alias itself, owns the markers regardless: an orphan
+//     START left by a hand-edit is part of the block it is replacing, not prose. Left
+//     unclaimed it made enable non-idempotent — the first call appended past the
+//     orphan and the second absorbed it, so two identical calls produced two
+//     different files.
+func ownedLinesFor(lines []string, installing bool) []int {
+	body := heredocBody(lines)
+	live := make([]bool, len(lines))
+	marker := make([]bool, len(lines))
+	any := false
 	for i, l := range lines {
-		if isOurAliasLine(l) {
-			owned[i] = true
+		if body[i] {
+			continue
+		}
+		t := strings.TrimSpace(l)
+		switch {
+		case aliasRoutesThroughAbctl(t):
+			live[i] = true
+			any = true
+		case t == bobShellMarkerStart, t == bobShellMarkerEnd:
+			marker[i] = true
 		}
 	}
 
-	// Pass 2: MATCHED marker pairs, and their interiors.
-	//
-	// A marker is claimed only as half of a pair, which is the round-6 correction. On
-	// its own a marker is just a line of text that happens to read like ours, and the
-	// most likely way one gets into a file alone is the user copying the block out of
-	// `--help` into a comment for reference. Claiming those deleted two lines from the
-	// middle of a documentation comment, silently, while reporting "Disabled." — a
-	// direct breach of the file header's promise that everything outside our lines
-	// stays byte-identical.
-	//
-	// A matched pair is different in kind: the odds of a user reproducing both halves,
-	// in order, around their own content are negligible, so a pair really is a region
-	// we wrote. That is what lets the interior be claimed, and the interior is what
-	// round 6's second finding needed — an alias inside our fence whose quoting differs
-	// from ours is our mechanism, and leaving it behind meant disable reported success
-	// over a still-live alias.
-	//
-	// Scanning for the NEAREST enclosing pair (a START, then the first END after it)
-	// keeps an unterminated START from reaching the end of the file: without a closing
-	// marker there is no pair, so nothing is claimed by position at all, and only
-	// pass 1's proven aliases go.
-	for i := 0; i < len(lines); i++ {
-		if strings.TrimSpace(lines[i]) != bobShellMarkerStart {
-			continue
-		}
-		end := -1
-		for j := i + 1; j < len(lines); j++ {
-			t := strings.TrimSpace(lines[j])
-			if t == bobShellMarkerEnd {
-				end = j
-				break
-			}
-			// A second START before any END means the first was never closed; the pair
-			// begins at the later one. Stopping here rather than spanning both keeps an
-			// abandoned START from donating its interior to the next block.
-			if t == bobShellMarkerStart {
-				break
-			}
-		}
-		if end < 0 {
-			continue
-		}
-		// A pair is only ours if it actually FENCES OUR MECHANISM. This is the second
-		// half of the round-6 correction, and pairing alone was not enough to get it.
-		//
-		// The trigger is `--help`, which prints the block verbatim, markers included.
-		// A user who copies it into their rc as a note ends up with a genuine matched
-		// pair — byte-identical to ours, because they copied it — wrapped around a
-		// COMMENTED-OUT illustration like `#   alias bob='...abctl exec -- \bob'`.
-		// There is no textual signal separating those markers from ones we wrote, so
-		// pairing claimed them and disable deleted two lines out of the middle of a
-		// comment, silently, while reporting success.
-		//
-		// What a block we wrote always has, and a note about one never does, is a LIVE
-		// alias inside it: bobShellBlock emits exactly marker / alias / marker. A
-		// commented-out alias is a comment, not an alias, so requiring a live one
-		// inside the pair separates the two without having to guess at intent. An
-		// emptied-out fence is left alone as a result — inert text, and the safe error.
-		hasLive := false
-		for j := i + 1; j < end; j++ {
-			if t := strings.TrimSpace(lines[j]); isOurAliasLine(t) || looksLikeOurMechanism(t) {
-				hasLive = true
-				break
-			}
-		}
-		if !hasLive {
-			continue
-		}
-		owned[i] = true
-		owned[end] = true
-		for j := i + 1; j < end; j++ {
-			// Interior lines are presumptively ours, but only those that are
-			// recognisably this mechanism. A user's own alias to the real bob binary,
-			// or any unrelated line they parked in here, stays: see
-			// looksLikeOurMechanism for why the burden of proof inverts inside a pair
-			// but does not vanish.
-			if t := strings.TrimSpace(lines[j]); t == "" || looksLikeOurMechanism(t) {
-				owned[j] = true
-			}
-		}
-		i = end
-	}
-
-	out := make([]int, 0, len(owned))
+	out := make([]int, 0, 4)
 	for i := range lines {
-		if owned[i] {
+		// A marker is claimed only when the file has a live alias of ours somewhere.
+		//
+		// The markers ARE comments — the start marker's text begins with `#` — so no
+		// amount of textual scrutiny distinguishes one we wrote from one sitting in a
+		// user's prose. `--help` prints the block verbatim, which makes prose copies a
+		// realistic thing to find. Round 6 handled that by requiring a matched PAIR
+		// around something live; the pairing turned out to be unnecessary, because what
+		// actually separates the two cases is simply whether this file has a live alias
+		// of ours at all. A file that merely documents the block has none, so its
+		// markers stay; a file we configured has one, so ours go. Dropping the pair
+		// scan also removes the failure mode where a hand-deleted marker left the
+		// survivor unowned.
+		if marker[i] && !any && !installing {
+			continue
+		}
+		if live[i] || marker[i] {
 			out = append(out, i)
 		}
 	}
 	return out
 }
 
-// findBobShellBlock reports the span of what we own, markers included, for the
-// messages that quote it. It is NOT what the rewriters use: they go through
-// ownedLines, because what we own is a set and this is only its hull.
-//
-// A file whose owned lines are non-contiguous has a hull covering lines that are not
-// ours, so no writer may key off this. bobShellOwnsAnything is the predicate for "is
-// there something here"; the span is for "what should I show the user".
-func findBobShellBlock(lines []string) (start, end int, found bool) {
-	owned := ownedLines(lines)
-	if len(owned) == 0 {
-		return -1, -1, false
-	}
-	return owned[0], owned[len(owned)-1] + 1, true
-}
-
-// bobShellOwnsAnything reports whether the file holds anything this command wrote.
-func bobShellOwnsAnything(lines []string) bool {
-	return len(ownedLines(lines)) > 0
-}
-
 // bobShellAliasesIn returns every alias line this command owns, in file order.
 //
 // Plural because a damaged file can hold more than one, and status has to be able to
 // say so rather than reporting the first and implying it is the only one. The filter
-// is isOurAliasLine, not the `alias bob=` prefix the single-valued version used: that
-// prefix would report a user's own alias as though it were ours, the round-4 defect
-// in a different function.
+// is aliasRoutesThroughAbctl, not the `alias bob=` prefix the single-valued version
+// used: that prefix would report a user's own alias as though it were ours, the
+// round-4 defect in a different function. Iterating ownedLines rather than the raw
+// file also means heredoc bodies are skipped here, so status no longer reports an
+// alias that exists only as data inside someone's embedded script.
 func bobShellAliasesIn(lines []string) []string {
 	var out []string
 	for _, i := range ownedLines(lines) {
-		if t := strings.TrimSpace(lines[i]); isOurAliasLine(t) {
+		if t := strings.TrimSpace(lines[i]); aliasRoutesThroughAbctl(t) {
 			out = append(out, t)
 		}
 	}
@@ -526,7 +627,10 @@ func bobShellAliasesIn(lines []string) []string {
 // states at the top; the block simply sits against the preceding line.
 func replaceBobShellBlock(lines []string, block string) []string {
 	blockLines := strings.Split(strings.TrimSuffix(block, "\n"), "\n")
-	owned := ownedLines(lines)
+	// The installing view: see ownedLinesFor. enable is putting a live alias here, so
+	// a stray marker from a hand-edited block is ours to absorb rather than prose to
+	// preserve — which is what makes two identical enables produce identical files.
+	owned := ownedLinesFor(lines, true)
 	if len(owned) == 0 {
 		out := append([]string(nil), lines...)
 		return append(out, blockLines...)
@@ -801,7 +905,7 @@ func bobShellDisable(rcPath string, yes bool, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stdout, "Nothing to do: no Cortex bob alias in %s.\n", rcPath)
 		return 0
 	}
-	// Exactly the lines the write removes — the OWNED SET, not findBobShellBlock's
+	// Exactly the lines the write removes — the OWNED SET, not its
 	// hull. This is a consent prompt for a destructive edit, so the one property it
 	// must have is that it describes the edit. The hull does not: on a file whose
 	// owned lines are non-contiguous it spans the user's lines between ours, so the
@@ -875,7 +979,7 @@ func bobShellStatus(rcPath string, stdout io.Writer) int {
 	// elsewhere, or moved — aliases bob to a path that may not exist. Enable
 	// rewrites it, and saying so here is cheaper than debugging it from the
 	// "command not found" the alias itself would produce.
-	if self, serr := abctlPath(); serr == nil {
+	if self := bobShellSelfPath; self != "" {
 		// Equality, not Contains: an alias line truncated by a hand-edit is a
 		// substring of the correct one, and would have reported as matching while
 		// the shell saw a broken alias.

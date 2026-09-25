@@ -277,6 +277,21 @@ func TestBobShell_LeavesForeignAliasAlone(t *testing.T) {
 	}
 }
 
+// withSelfPath sets bobShellSelfPath for the duration of a test, the way runBobShell
+// sets it for the duration of a process.
+//
+// The tests call bobShellEnable / bobShellDisable / bobShellStatus directly, so they do
+// not go through the one place that resolves it. That is exactly the asymmetry the
+// self-path recognition exists to remove — a verb that has not been told what binary it
+// is falls back to matching "abctl" in the name — so a test asserting behaviour for a
+// given binary has to say which binary it means.
+func withSelfPath(t *testing.T, p string) {
+	t.Helper()
+	prev := bobShellSelfPath
+	bobShellSelfPath = p
+	t.Cleanup(func() { bobShellSelfPath = prev })
+}
+
 func TestBobShellStatus(t *testing.T) {
 	t.Run("missing file", func(t *testing.T) {
 		var out bytes.Buffer
@@ -297,6 +312,7 @@ func TestBobShellStatus(t *testing.T) {
 		if err != nil {
 			t.Fatalf("abctlPath: %v", err)
 		}
+		withSelfPath(t, self)
 		rc := filepath.Join(t.TempDir(), ".zshrc")
 		var out, errb bytes.Buffer
 		if code := bobShellEnable(rc, self, true, &out, &errb); code != 0 {
@@ -319,6 +335,11 @@ func TestBobShellStatus(t *testing.T) {
 	// The mismatch branch, which carries the actionable "Re-run" advice: an alias left
 	// behind by an abctl that has since moved or been reinstalled elsewhere.
 	t.Run("alias names a different abctl", func(t *testing.T) {
+		self, err := abctlPath()
+		if err != nil {
+			t.Fatalf("abctlPath: %v", err)
+		}
+		withSelfPath(t, self)
 		rc := filepath.Join(t.TempDir(), ".zshrc")
 		var out, errb bytes.Buffer
 		if code := bobShellEnable(rc, "/somewhere/else/abctl", true, &out, &errb); code != 0 {
@@ -1032,14 +1053,12 @@ func TestBobShellBlock_KeepsAUserAliasUnderADamagedMarker(t *testing.T) {
 			}
 			lines = append(lines, theirs)
 
-			if !bobShellOwnsAnything(lines) {
+			if len(ownedLines(lines)) == 0 {
 				t.Fatal("nothing recognized as ours; the recovery path did not run")
 			}
-			// The OWNED SET, not findBobShellBlock's span. The span is the hull of the
-			// owned lines and is deliberately wider when a hand-edit splits the block —
-			// it exists to quote the damaged region back to the user, and no writer keys
-			// off it. Ownership is what decides what gets deleted, so ownership is what
-			// this asserts.
+			// Ownership is a SET, and it is what decides what gets deleted, so it is what
+			// this asserts. A hand-edit can leave our lines non-contiguous, so there is
+			// deliberately no span/hull helper for a writer to key off by mistake.
 			for _, i := range ownedLines(lines) {
 				if strings.TrimSpace(lines[i]) == theirs {
 					t.Fatalf("claimed the user's own alias as ours:\n%v", lines)
@@ -1131,11 +1150,47 @@ func TestIsOurAliasLine(t *testing.T) {
 		{"alias bob='bob'", false},
 		{"alias bob=", false},
 		{"alias bobcat='/opt/abctl/abctl exec -- \\bob'", false},
-		{"alias bob='/opt/abctl/abctl exec -- \\bob' # mine", false},
+		// Round 7 MF2: this row asserted false — the trailing comment made the old
+		// text-matching predicate miss a LIVE alias, and the test pinned that in
+		// place. bash resolves it to exactly our alias, so it is ours.
+		{"alias bob='/opt/abctl/abctl exec -- \\bob' # mine", true},
+		// Round 7 MF2/MF3: spellings that reduce to the same alias. All were missed.
+		{`alias bob=/b/abctl' exec -- \bob'`, true},
+		{`alias bob="/b/abctl exec -- \bob"`, true},
+		{`alias bob="/b/abctl exec --fast -- bob"`, true},
+		// Still not ours: the real binary, and our shape around a foreign program.
+		{`alias bob=/usr/bin/evil' exec -- \bob'`, false},
+		{`alias bob='/b/abctl service status'`, false},
+		{`# alias bob='/b/abctl exec -- \bob'`, false},
+		// An abctl, our tail, but some other subcommand. `service status` above does not
+		// reach the subcommand check — it is rejected on arity first — so without this
+		// row, dropping the `exec` check entirely changed no test's answer.
+		{`alias bob='/b/abctl frobnicate -- bob'`, false},
+		// Our words without the `--` separator. `exec bob bob` passes every other
+		// clause, so it is the only shape that pins the separator itself.
+		{`alias bob='/b/abctl exec bob bob'`, false},
+		// Our exact shape, proxying something that is not bob. Claiming it would mean
+		// disable deleting a user's alias that deliberately routes another program
+		// through Cortex — the severe direction, and nothing else in the table pins the
+		// final word, so without this row the `bob` check could be dropped unnoticed.
+		{`alias bob='/b/abctl exec -- other'`, false},
+		// Backslash-escaped spaces, no quotes anywhere. bash resolves this to exactly
+		// our alias value, so it is live and must be found. It is the MF2 class the
+		// round-7 review named — a spelling that IS live without looking it — and the
+		// unquoted-backslash branch is the only thing that reads it correctly.
+		{`alias bob=/b/abctl\ exec\ --\ bob`, true},
+		// The `alias -- bob=` spelling. Both bash and zsh accept it and define exactly
+		// the same alias, so a live one written this way must be found — dropping the
+		// alternative changed no test's answer until this row existed.
+		{`alias -- bob='/b/abctl exec -- \bob'`, true},
+		{`alias -- bob='/usr/local/bin/bob --fast'`, false},
+		// One field: no subcommand to index. This row is the arity floor's whole job —
+		// removing the floor panics here rather than returning an answer.
+		{`alias bob=/b/abctl`, false},
 		{"", false},
 	} {
-		if got := isOurAliasLine(tc.line); got != tc.want {
-			t.Errorf("isOurAliasLine(%q) = %v, want %v", tc.line, got, tc.want)
+		if got := aliasRoutesThroughAbctl(tc.line); got != tc.want {
+			t.Errorf("aliasRoutesThroughAbctl(%q) = %v, want %v", tc.line, got, tc.want)
 		}
 	}
 }
@@ -1296,7 +1351,7 @@ func ownedMarkerPair(lines []string) (int, int, bool) {
 			}
 			if t == bobShellMarkerEnd {
 				for k := i + 1; k < j; k++ {
-					if kt := strings.TrimSpace(lines[k]); isOurAliasLine(kt) || looksLikeOurMechanism(kt) {
+					if kt := strings.TrimSpace(lines[k]); aliasRoutesThroughAbctl(kt) {
 						return i, j, true
 					}
 				}
@@ -1313,7 +1368,7 @@ func ownedMarkerPair(lines []string) (int, int, bool) {
 func countOurAliases(lines []string) int {
 	n := 0
 	for _, l := range lines {
-		if isOurAliasLine(strings.TrimSpace(l)) {
+		if aliasRoutesThroughAbctl(strings.TrimSpace(l)) {
 			n++
 		}
 	}
@@ -1398,7 +1453,7 @@ func TestBobShellStatus_ReportsEveryAlias(t *testing.T) {
 // TestBobShellDisable_PromptMatchesTheWrite is the round-6 MUST FIX 1 regression: the
 // confirmation prompt must list exactly the lines the write removes.
 //
-// It printed findBobShellBlock's hull instead, which on a file whose owned lines are
+// It printed the hull of the owned lines instead, which on a file whose owned lines are
 // non-contiguous spans the user's own lines between ours. The reviewer's fixture is
 // the one that shows why it is not cosmetic: the prompt claimed
 // `export SECRET_TOKEN=...` and `source ~/.work_secrets` were being removed, and they
@@ -1579,14 +1634,471 @@ func TestLooksLikeOurMechanism(t *testing.T) {
 		// and not just the tail.
 		{`alias bob='/usr/bin/evil exec -- \bob'`, false},
 		{`alias bob='/usr/bin/sudo exec -- bob'`, false},
+		// Round 7 MF2: asserted false, and that was the bug — the trailing comment
+		// hid a live alias from disable while bash ran it happily.
+		{`alias bob='/b/abctl exec -- \bob' # note`, true},
+		{`alias bob=/b/abctl' exec -- \bob'`, true},
 		// Unrecognised shapes stay unclaimed — the safe direction.
-		{`alias bob='/b/abctl exec -- \bob' # note`, false},
 		{`alias bobby='/b/abctl exec -- \bob'`, false},
 		{`# alias bob='/b/abctl exec -- \bob'`, false},
 		{"", false},
 	} {
-		if got := looksLikeOurMechanism(tc.line); got != tc.want {
-			t.Errorf("looksLikeOurMechanism(%q) = %v, want %v", tc.line, got, tc.want)
+		if got := aliasRoutesThroughAbctl(tc.line); got != tc.want {
+			t.Errorf("aliasRoutesThroughAbctl(%q) = %v, want %v", tc.line, got, tc.want)
 		}
+	}
+}
+
+// TestBobShellDisable_LeavesHeredocBodiesAlone pins round 7's first finding.
+//
+// A heredoc hands its lines to another program; they are data, not commands the
+// shell runs. disable was editing them: on the python3 case it excised the alias
+// line from the middle of a string literal, printed "Disabled.", exited 0 — over a
+// file where `bash -c 'source ...; alias bob'` reports no alias at all — and left
+// the script running with a silently different value. The cat case lost all three
+// lines, collapsing the heredoc to its opener immediately followed by its
+// terminator, which breaks the user's script outright.
+//
+// The fixtures are the reviewer's, executed rather than paraphrased. Each is checked
+// byte-for-byte, because the failure was silent: nothing in the output said a
+// heredoc had been touched.
+func TestBobShellDisable_LeavesHeredocBodiesAlone(t *testing.T) {
+	alias := bobShellAliasLine("/usr/local/bin/abctl")
+	for _, tc := range []struct {
+		name  string
+		lines []string
+	}{
+		{"quoted cat heredoc", []string{
+			"#!/bin/bash", "cat <<'EOF'",
+			bobShellMarkerStart, alias, bobShellMarkerEnd,
+			"EOF", "echo done",
+		}},
+		{"python string literal", []string{
+			"# my rc", "python3 - <<'PY'", `doc = """`,
+			bobShellMarkerStart, alias, bobShellMarkerEnd,
+			`"""`, "print(len(doc))", "PY",
+		}},
+		{"unquoted heredoc", []string{
+			"cat <<EOF", bobShellMarkerStart, alias, bobShellMarkerEnd, "EOF",
+		}},
+		{"tab-stripping heredoc", []string{
+			"cat <<-'EOF'", bobShellMarkerStart, "\t" + alias, bobShellMarkerEnd, "\tEOF",
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rc := filepath.Join(t.TempDir(), ".zshrc")
+			body := strings.Join(tc.lines, "\n") + "\n"
+			if err := os.WriteFile(rc, []byte(body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			var out, errb bytes.Buffer
+			if code := bobShellDisable(rc, true, &out, &errb); code != 0 {
+				t.Fatalf("disable: exit = %d (stderr: %s)", code, errb.String())
+			}
+			if got := readFile(t, rc); got != body {
+				t.Errorf("disable edited heredoc body:\n%s\n--- want ---\n%s", got, body)
+			}
+			// And status must not claim an alias that exists only as data.
+			out.Reset()
+			if code := bobShellStatus(rc, &out); code != 0 {
+				t.Fatalf("status: exit = %d, want 0", code)
+			}
+			if !strings.Contains(out.String(), "not enabled") {
+				t.Errorf("status = %q, want not enabled (the alias is heredoc data)", out.String())
+			}
+		})
+	}
+}
+
+// TestBobShellDisable_RemovesEverySpellingOfOurAlias pins round 7's second and third
+// findings, which are one defect reported from two directions.
+//
+// Each of these is a LIVE alias — bash resolves every one to the same thing our own
+// canonical line resolves to — that the old text-matching predicate missed. disable
+// printed "Nothing to do", exited 0, and left the shell routing bob through the
+// proxy; status said not enabled. The third case is the sharpest, because it is the
+// exact spelling round 6 added support for, with its markers hand-deleted: unowned at
+// file scope, so enable then appended a SECOND live alias.
+func TestBobShellDisable_RemovesEverySpellingOfOurAlias(t *testing.T) {
+	for _, tc := range []struct{ name, line string }{
+		{"trailing comment", `alias bob='/b/abctl exec -- \bob' # note`},
+		{"split quoting", `alias bob=/b/abctl' exec -- \bob'`},
+		{"double quoted, unfenced", `alias bob="/b/abctl exec -- \bob"`},
+		{"extra exec flag", `alias bob='/b/abctl exec --fast -- bob'`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rc := filepath.Join(t.TempDir(), ".zshrc")
+			if err := os.WriteFile(rc, []byte("# rc\n"+tc.line+"\nexport X=1\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			// status must see it.
+			var out, errb bytes.Buffer
+			if code := bobShellStatus(rc, &out); code != 0 {
+				t.Fatalf("status: exit = %d", code)
+			}
+			if !strings.Contains(out.String(), "enabled in ") || strings.Contains(lastLine(out.String()), "not enabled") {
+				t.Errorf("status = %q, want it to report this live alias", out.String())
+			}
+			// disable must remove it.
+			out.Reset()
+			if code := bobShellDisable(rc, true, &out, &errb); code != 0 {
+				t.Fatalf("disable: exit = %d (stderr: %s)", code, errb.String())
+			}
+			got := readFile(t, rc)
+			if strings.Contains(got, "alias bob") {
+				t.Errorf("disable exited 0 but left the live alias:\n%s", got)
+			}
+			if !strings.Contains(got, "export X=1") || !strings.Contains(got, "# rc") {
+				t.Errorf("disable took the user's lines too:\n%s", got)
+			}
+			// And enable must not stack a second alias on top of one already live.
+			if err := os.WriteFile(rc, []byte("# rc\n"+tc.line+"\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			out.Reset()
+			if code := bobShellEnable(rc, testAbctl, true, &out, &errb); code != 0 {
+				t.Fatalf("enable: exit = %d (stderr: %s)", code, errb.String())
+			}
+			if n := countOurAliases(strings.Split(readFile(t, rc), "\n")); n != 1 {
+				t.Errorf("after enable over a live alias, %d live aliases, want 1:\n%s", n, readFile(t, rc))
+			}
+		})
+	}
+}
+
+// TestHeredocDelim pins the operator scan, including the two ways it was wrong before
+// being executed against real input.
+func TestHeredocDelim(t *testing.T) {
+	for _, tc := range []struct {
+		line   string
+		delim  string
+		dashed bool
+	}{
+		{"cat <<'EOF'", "EOF", false},
+		{"cat <<EOF", "EOF", false},
+		{`cat <<"EOF"`, "EOF", false},
+		{"cat <<-'EOF'", "EOF", true},
+		{"python3 - <<'PY'", "PY", false},
+		// The last operator on the line is the one whose body comes next.
+		{"cat a <<X b <<Y", "Y", false},
+		// A herestring has no body. `<<<` was read as `<<` plus a delimiter, and
+		// since our own END marker contains `<<<` that marked the rest of an
+		// ordinary rc file as heredoc body — which would have made disable a no-op
+		// on real blocks. Only running it showed this.
+		{"cat <<<'word'", "", false},
+		{bobShellMarkerEnd, "", false},
+		{bobShellMarkerStart, "", false},
+		// An earlier pattern consumed the delimiter's first byte, yielding "OF".
+		{"cat <<ABC", "ABC", false},
+		{"alias bob='/b/abctl exec -- \\bob'", "", false},
+		{"", "", false},
+	} {
+		d, dash := heredocDelim(tc.line)
+		if d != tc.delim || dash != tc.dashed {
+			t.Errorf("heredocDelim(%q) = (%q, %v), want (%q, %v)", tc.line, d, dash, tc.delim, tc.dashed)
+		}
+	}
+}
+
+// TestUnquoteShellWord pins the unquoter that makes one predicate possible.
+//
+// The point of the table is the block in the middle: five different spellings that
+// must all reduce to the SAME value, because to the shell they are the same alias.
+// Comparing text instead of meaning is what made rounds 5 and 6 need two predicates
+// with opposite burdens of proof, and what let a live alias hide behind a comment.
+// TestUnquoteShellWord_UnquotedBackslashEscapes pins the backslash outside quotes,
+// where it escapes the very next character whatever it is — most usefully a space,
+// which is how a word can contain one without any quotes at all.
+//
+// bash resolves `alias bob=/b/abctl\ exec\ --\ bob` to the same value as the quoted
+// form, so this is a live alias that must be recognised. Mutating the branch to write
+// the backslash through instead survived the suite until this existed.
+func TestUnquoteShellWord_UnquotedBackslashEscapes(t *testing.T) {
+	for _, tc := range []struct {
+		in, want string
+	}{
+		{`/b/ab\ ctl`, `/b/ab ctl`},
+		{`/b/abctl\ exec\ --\ bob`, `/b/abctl exec -- bob`},
+		{`\#notacomment`, `#notacomment`},
+	} {
+		got, ok := unquoteShellWord(tc.in)
+		if !ok || got != tc.want {
+			t.Errorf("unquoteShellWord(%q) = %q, %v; want %q, true", tc.in, got, ok, tc.want)
+		}
+	}
+}
+
+// TestUnquoteShellWord_DoubleQuoteEscapes pins the four characters a backslash
+// escapes inside double quotes, and the far more common case of one that escapes
+// nothing.
+//
+// The escape branch survived mutation until this test existed, and the reason is worth
+// keeping: the only double-quoted row in the predicate table was
+// `alias bob="... -- \bob"`, where deleting the branch writes the backslash through
+// literally and produces the same `\bob` the correct path produces. The row could not
+// fail. What the branch actually governs is `\"`, `\\`, `\$` and backtick — asked of
+// bash directly, which reports `"\bob"` → `\bob` but `"\\bob"` → `\bob` and
+// `"a\"b"` → `a"b`.
+func TestUnquoteShellWord_DoubleQuoteEscapes(t *testing.T) {
+	for _, tc := range []struct {
+		in, want string
+	}{
+		{`"/b/abctl exec -- \bob"`, `/b/abctl exec -- \bob`},  // \b escapes nothing: both kept
+		{`"/b/abctl exec -- \\bob"`, `/b/abctl exec -- \bob`}, // \\ is one backslash
+		{`"/b/ab\"ctl"`, `/b/ab"ctl`},                         // \" is a literal quote
+		{`"/b/abctl -- \$bob"`, `/b/abctl -- $bob`},           // \$ suppresses expansion
+	} {
+		got, ok := unquoteShellWord(tc.in)
+		if !ok || got != tc.want {
+			t.Errorf("unquoteShellWord(%q) = %q, %v; want %q, true", tc.in, got, ok, tc.want)
+		}
+	}
+}
+
+// TestUnquoteShellWord_HashIsOnlyACommentBetweenWords pins the one place this
+// unquoter deliberately differs from what "handle comments" would suggest.
+//
+// `#` opens a comment only where a word could begin. Mid-word it is an ordinary
+// character: `bash` and `zsh` both define `alias bob=/bin/echo#c` with the value
+// `/bin/echo#c`. An earlier draft terminated the word at any unquoted `#`, which is
+// unobservable through the predicate — such a value is not our alias under either
+// reading — and therefore exactly the kind of wrong that survives a test suite.
+func TestUnquoteShellWord_HashIsOnlyACommentBetweenWords(t *testing.T) {
+	for _, tc := range []struct {
+		in, want string
+	}{
+		{`/bin/echo#c`, `/bin/echo#c`},       // abuts the word: part of the value
+		{`/bin/echo' x'#c`, `/bin/echo x#c`}, // same, after a quoted section
+		{`/bin/echo # c`, `/bin/echo`},       // space first: the comment is separate
+		{`'#notacomment'`, `#notacomment`},   // quoted: always literal
+	} {
+		got, ok := unquoteShellWord(tc.in)
+		if !ok || got != tc.want {
+			t.Errorf("unquoteShellWord(%q) = %q, %v; want %q, true", tc.in, got, ok, tc.want)
+		}
+	}
+}
+
+func TestUnquoteShellWord(t *testing.T) {
+	const want = `/b/abctl exec -- \bob`
+	for _, in := range []string{
+		`'/b/abctl exec -- \bob'`,
+		`'/b/abctl exec -- \bob' # note`,
+		`/b/abctl' exec -- \bob'`,
+		`"/b/abctl exec -- \bob"`,
+		`/b/abctl" exec -- "'\bob'`,
+	} {
+		got, ok := unquoteShellWord(in)
+		if !ok || got != want {
+			t.Errorf("unquoteShellWord(%q) = (%q, %v), want (%q, true)", in, got, ok, want)
+		}
+	}
+	// Unterminated quoting is not something to guess at.
+	for _, in := range []string{`'/b/abctl exec`, `"/b/abctl exec`, `abc\`} {
+		if _, ok := unquoteShellWord(in); ok {
+			t.Errorf("unquoteShellWord(%q) reported a clean parse, want not ok", in)
+		}
+	}
+}
+
+// TestBobShellEnable_IsIdempotentOverAnOrphanMarker pins a bug this round introduced
+// and mutation-style re-running caught.
+//
+// Gating marker ownership on "is there a live alias in this file" fixed the
+// documentation case but made enable non-idempotent: with an orphan START and no
+// alias yet, the first enable saw no live alias, left the orphan unclaimed and
+// appended past it; the second enable saw the alias it had just written, claimed the
+// orphan and absorbed it. Two identical calls, two different files. See
+// ownedLinesFor's `installing` parameter.
+func TestBobShellEnable_IsIdempotentOverAnOrphanMarker(t *testing.T) {
+	rc := filepath.Join(t.TempDir(), ".zshrc")
+	if err := os.WriteFile(rc, []byte("# mine\n"+bobShellMarkerStart+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var out, errb bytes.Buffer
+	if code := bobShellEnable(rc, testAbctl, true, &out, &errb); code != 0 {
+		t.Fatalf("first enable: exit = %d (stderr: %s)", code, errb.String())
+	}
+	first := readFile(t, rc)
+	out.Reset()
+	if code := bobShellEnable(rc, testAbctl, true, &out, &errb); code != 0 {
+		t.Fatalf("second enable: exit = %d (stderr: %s)", code, errb.String())
+	}
+	if second := readFile(t, rc); second != first {
+		t.Errorf("enable is not idempotent over an orphan marker:\n%s\n--- vs ---\n%s", first, second)
+	}
+	if n := countOurAliases(strings.Split(first, "\n")); n != 1 {
+		t.Errorf("%d live aliases after enable, want 1:\n%s", n, first)
+	}
+}
+
+// TestAliasRoutesThroughAbctl_RecognisesRenamedBinaries pins the other bug this round
+// introduced.
+//
+// Requiring the path to END in "abctl" failed to recognise a block this command had
+// genuinely written whenever the binary was named anything else — the test binary
+// (abctl.test) is one, and so is a user's abctl-dev or a versioned download. Failing
+// to recognise our own alias is the severe direction: disable reports success over a
+// live proxy alias. Matching the basename still refuses a foreign program, which is
+// the only thing the check is for.
+func TestAliasRoutesThroughAbctl_RecognisesRenamedBinaries(t *testing.T) {
+	for _, p := range []string{"/tmp/abctl.test", "/usr/local/bin/abctl-dev", "/opt/abctl.v2", "/x/my-abctl"} {
+		if !aliasRoutesThroughAbctl(bobShellAliasLine(p)) {
+			t.Errorf("aliasRoutesThroughAbctl did not recognise our own alias for %q", p)
+		}
+	}
+	for _, p := range []string{"/usr/bin/evil", "/usr/bin/sudo", "/bin/sh"} {
+		if aliasRoutesThroughAbctl(bobShellAliasLine(p)) {
+			t.Errorf("aliasRoutesThroughAbctl claimed an alias to %q", p)
+		}
+	}
+}
+
+// TestBobShellDisable_RealBlockAfterAHeredoc is the other half of heredoc handling,
+// and it exists because mutation testing found it missing.
+//
+// Mutating "the terminator closes the body" to a no-op SURVIVED the whole suite: with
+// every line after a heredoc treated as data, disable silently does nothing on any rc
+// file that opens a heredoc before our block — and no test noticed. Skipping heredoc
+// bodies is only half a requirement; resuming afterwards is the other half, and a
+// suite that only checks the skipping cannot tell correct tracking from tracking that
+// never stops.
+func TestBobShellDisable_RealBlockAfterAHeredoc(t *testing.T) {
+	rc := filepath.Join(t.TempDir(), ".zshrc")
+	body := strings.Join([]string{
+		"# rc", "cat <<'EOF'", "just text", "EOF",
+		bobShellMarkerStart, bobShellAliasLine("/x/abctl"), bobShellMarkerEnd,
+	}, "\n") + "\n"
+	if err := os.WriteFile(rc, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var out, errb bytes.Buffer
+	if code := bobShellStatus(rc, &out); code != 0 {
+		t.Fatalf("status: exit = %d", code)
+	}
+	if strings.Contains(lastLine(out.String()), "not enabled") {
+		t.Errorf("status = %q, want the block after the heredoc reported as enabled", out.String())
+	}
+	out.Reset()
+	if code := bobShellDisable(rc, true, &out, &errb); code != 0 {
+		t.Fatalf("disable: exit = %d (stderr: %s)", code, errb.String())
+	}
+	got := readFile(t, rc)
+	if strings.Contains(got, "alias bob") {
+		t.Errorf("disable left the block that follows a heredoc:\n%s", got)
+	}
+	// The heredoc itself is untouched.
+	for _, want := range []string{"cat <<'EOF'", "just text", "EOF"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("disable damaged the heredoc (missing %q):\n%s", want, got)
+		}
+	}
+}
+
+// TestBobShellDisable_RealBlockAfterATabbedHeredoc is the same requirement as
+// TestBobShellDisable_RealBlockAfterAHeredoc for the `<<-` form, which strips leading
+// tabs from its terminator.
+//
+// It is separate because it needs the block AFTER the heredoc to discriminate at all.
+// Disabling the tab-strip was a surviving mutation against a fixture that did have a
+// tab-indented terminator: without stripping, the heredoc never closes, so the whole
+// rest of the file stays body — and a test that only asserts "nothing was changed"
+// cannot tell that from correct handling, because in both cases nothing is changed.
+// Putting something real past the terminator is what makes the two outcomes differ.
+func TestBobShellDisable_RealBlockAfterATabbedHeredoc(t *testing.T) {
+	rc := filepath.Join(t.TempDir(), ".zshrc")
+	body := strings.Join([]string{
+		"cat <<-'EOF'", "\tjust text", "\tEOF",
+		bobShellMarkerStart, bobShellAliasLine("/x/abctl"), bobShellMarkerEnd,
+	}, "\n") + "\n"
+	if err := os.WriteFile(rc, []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var out, errb bytes.Buffer
+	if code := bobShellStatus(rc, &out); code != 0 {
+		t.Fatalf("status: exit = %d", code)
+	}
+	if strings.Contains(lastLine(out.String()), "not enabled") {
+		t.Errorf("status = %q, want the block after the tabbed heredoc reported as enabled", out.String())
+	}
+	out.Reset()
+	if code := bobShellDisable(rc, true, &out, &errb); code != 0 {
+		t.Fatalf("disable: exit = %d (stderr: %s)", code, errb.String())
+	}
+	got := readFile(t, rc)
+	if strings.Contains(got, "alias bob") {
+		t.Errorf("disable left the block that follows a <<- heredoc:\n%s", got)
+	}
+	for _, want := range []string{"cat <<-'EOF'", "\tjust text", "\tEOF"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("disable damaged the heredoc (missing %q):\n%s", want, got)
+		}
+	}
+}
+
+// TestBobShell_RoundTripUnderAnyBinaryName is the regression test for a bug a real
+// round trip found and no unit test could: behaviour that depended on what the binary
+// was CALLED.
+//
+// Ownership matched `abctl` in the basename, so a binary named anything else did not
+// recognise the block it had itself just written. Built as /tmp/ab8, a second enable
+// appended a duplicate alias and disable then left one live — while the identical run
+// as /tmp/abctl-dev was correctly idempotent. Same inputs, same code, different
+// filename, different outcome.
+//
+// The names below are the realistic ones: a versioned download, a symlink a user made,
+// a scratch build. Each must enable once, stay byte-identical on a second enable, and
+// round-trip back to the original file on disable.
+func TestBobShell_RoundTripUnderAnyBinaryName(t *testing.T) {
+	for _, self := range []string{
+		"/tmp/ab8",             // the scratch build that found this
+		"/home/u/bin/cortex",   // symlinked under another name entirely
+		"/opt/abctl-v2.3/ctl",  // versioned install, binary not named abctl
+		"/usr/local/bin/abctl", // the ordinary case, still has to work
+	} {
+		t.Run(filepath.Base(self), func(t *testing.T) {
+			withSelfPath(t, self)
+			rc := filepath.Join(t.TempDir(), ".zshrc")
+			orig := "# my rc\nexport FOO=1\n"
+			if err := os.WriteFile(rc, []byte(orig), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			var out, errb bytes.Buffer
+			if code := bobShellEnable(rc, self, true, &out, &errb); code != 0 {
+				t.Fatalf("enable: exit = %d (stderr: %s)", code, errb.String())
+			}
+			afterFirst := readFile(t, rc)
+			if n := strings.Count(afterFirst, "alias bob"); n != 1 {
+				t.Fatalf("first enable wrote %d alias lines, want 1:\n%s", n, afterFirst)
+			}
+
+			// Idempotence is where the name dependence showed: a binary that cannot see
+			// its own alias appends another one.
+			out.Reset()
+			if code := bobShellEnable(rc, self, true, &out, &errb); code != 0 {
+				t.Fatalf("second enable: exit = %d", code)
+			}
+			if got := readFile(t, rc); got != afterFirst {
+				t.Errorf("second enable changed the file:\n--- first ---\n%s\n--- second ---\n%s", afterFirst, got)
+			}
+
+			// status must see it too, or it reports not-enabled over a live alias.
+			out.Reset()
+			if code := bobShellStatus(rc, &out); code != 0 {
+				t.Errorf("status: exit = %d", code)
+			}
+			if strings.Contains(lastLine(out.String()), "not enabled") {
+				t.Errorf("status = %q, want enabled for a block this binary wrote", out.String())
+			}
+
+			// And disable must remove it, not report success over it.
+			out.Reset()
+			if code := bobShellDisable(rc, true, &out, &errb); code != 0 {
+				t.Fatalf("disable: exit = %d (stderr: %s)", code, errb.String())
+			}
+			if got := readFile(t, rc); got != orig {
+				t.Errorf("disable did not round-trip to the original:\n%q\nwant:\n%q", got, orig)
+			}
+		})
 	}
 }
