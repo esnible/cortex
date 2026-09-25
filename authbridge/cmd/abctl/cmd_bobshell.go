@@ -291,65 +291,95 @@ func bobShellBlock(abctlPath string) string {
 		bobShellMarkerEnd + "\n"
 }
 
-// findBobShellBlock locates the managed block in lines, returning the half-open range
-// [start, end) that covers it, markers included.
+// ownedLines reports the index of every line in the file that THIS command wrote —
+// as a set, not a range.
 //
-// An unterminated start marker — someone deleted the end marker by hand — reports
-// just the start line, so a rewrite replaces it rather than silently appending a
-// second block below the first.
-func findBobShellBlock(lines []string) (start, end int, found bool) {
-	start = -1
+// A range was the wrong primitive, and three rounds of review found three different
+// hand-edits that break it. A file's damaged state is not reliably one contiguous
+// span: a blank line or a stray comment inside a fence-damaged block splits it, a
+// second START marker means two, an orphaned END sits alone with our alias above it.
+// Each time, the claimed span covered some of what we wrote and missed the rest, and
+// the miss was always the same shape — a LIVE alias left in the file while status
+// reported "not enabled". That is worse than any cosmetic residue, because the shell
+// keeps routing bob through a proxy the user believes they turned off.
+//
+// So this collects indices instead of bounding a span, and the ownership test is
+// per-line provenance:
+//
+//   - a START or END marker, in any number and any order, matched exactly;
+//   - an alias line matching the exact shape enable emits (isOurAliasLine), anywhere
+//     in the file, fenced or not.
+//
+// Note what is NOT here: position. Being inside a fence does not make a line ours.
+// That was tempting — a fence is a region this command manages, so its contents look
+// like they must be ours by construction — and a generated-damage test caught it
+// immediately: a user who pastes their own `alias bob='/usr/local/bin/bob --fast'`
+// between the markers had it silently replaced by enable. A fence is a bookkeeping
+// device we wrote into someone else's file, not a licence to delete whatever ends up
+// inside it. Provenance is the only test, which also means an unterminated START
+// cannot swallow everything below it, and a closed fence holding a foreign line
+// leaves that line behind after disable. The leftover is the correct outcome: it is
+// not ours to remove.
+//
+// The one thing position still buys is the INSERTION POINT — see
+// replaceBobShellBlock, which puts the fresh block where the first owned line was.
+//
+// The last clause is what earlier versions could not express, and it is safe only
+// because isOurAliasLine reconstructs the full rendered line rather than matching a
+// prefix: a user's own `alias bob='/usr/local/bin/bob --fast'` fails it wherever it
+// sits. The bare-prefix version of that test is exactly what made an unbounded scan
+// dangerous in round 3, which is why the fix then was to bound the scan; with
+// provenance done properly the bound is no longer what keeps the user's line safe,
+// and dropping it is what lets us find every copy of ours.
+//
+// The invariants the callers need, which a span could not deliver: after enable the
+// file holds exactly one live alias, and after disable exactly zero.
+func ownedLines(lines []string) []int {
+	var owned []int
 	for i, l := range lines {
-		switch strings.TrimSpace(l) {
-		case bobShellMarkerStart:
-			if start == -1 {
-				start = i
-			}
-		case bobShellMarkerEnd:
-			if start != -1 {
-				return start, i + 1, true
-			}
+		switch t := strings.TrimSpace(l); {
+		case t == bobShellMarkerStart, t == bobShellMarkerEnd, isOurAliasLine(t):
+			owned = append(owned, i)
 		}
 	}
-	if start != -1 {
-		// A start marker with no end: the fence's far side was deleted or mangled by
-		// hand. Returning the marker alone left our own alias line below it behind, so
-		// status reported a block "with no alias line" while the shell had a LIVE
-		// alias, and disable removed the comment and exited 0 leaving that alias. Take
-		// the contiguous run of lines that this command could itself have written —
-		// the alias and a mangled end marker — and stop at anything else. Bounding it
-		// to lines adjacent to a marker we DID write is necessary but NOT sufficient:
-		// the first version of this walk matched the bare prefix `alias bob=`, so a
-		// user's own alias on the line below a damaged marker was claimed and deleted.
-		// isOurAliasLine requires the whole shape this command emits, so what we take
-		// is bounded by adjacency AND by provenance.
-		end = start + 1
-		for end < len(lines) {
-			t := strings.TrimSpace(lines[end])
-			if isOurAliasLine(t) || strings.HasPrefix(t, "# <<< cortex abctl") {
-				end++
-				continue
-			}
-			break
-		}
-		return start, end, true
-	}
-	return -1, -1, false
+	return owned
 }
 
-// bobShellAliasIn returns the alias line inside the managed block, or "" if there is no
-// block. Used by status to report a block that names a different abctl.
-func bobShellAliasIn(lines []string) string {
-	start, end, found := findBobShellBlock(lines)
-	if !found {
-		return ""
+// findBobShellBlock reports the span of what we own, markers included, for the
+// messages that quote it. It is NOT what the rewriters use: they go through
+// ownedLines, because what we own is a set and this is only its hull.
+//
+// A file whose owned lines are non-contiguous has a hull covering lines that are not
+// ours, so no writer may key off this. bobShellOwnsAnything is the predicate for "is
+// there something here"; the span is for "what should I show the user".
+func findBobShellBlock(lines []string) (start, end int, found bool) {
+	owned := ownedLines(lines)
+	if len(owned) == 0 {
+		return -1, -1, false
 	}
-	for _, l := range lines[start:end] {
-		if t := strings.TrimSpace(l); strings.HasPrefix(t, "alias bob=") {
-			return t
+	return owned[0], owned[len(owned)-1] + 1, true
+}
+
+// bobShellOwnsAnything reports whether the file holds anything this command wrote.
+func bobShellOwnsAnything(lines []string) bool {
+	return len(ownedLines(lines)) > 0
+}
+
+// bobShellAliasesIn returns every alias line this command owns, in file order.
+//
+// Plural because a damaged file can hold more than one, and status has to be able to
+// say so rather than reporting the first and implying it is the only one. The filter
+// is isOurAliasLine, not the `alias bob=` prefix the single-valued version used: that
+// prefix would report a user's own alias as though it were ours, the round-4 defect
+// in a different function.
+func bobShellAliasesIn(lines []string) []string {
+	var out []string
+	for _, i := range ownedLines(lines) {
+		if t := strings.TrimSpace(lines[i]); isOurAliasLine(t) {
+			out = append(out, t)
 		}
 	}
-	return ""
+	return out
 }
 
 // replaceBobShellBlock puts block where the managed block is, or appends it.
@@ -362,15 +392,30 @@ func bobShellAliasIn(lines []string) string {
 // states at the top; the block simply sits against the preceding line.
 func replaceBobShellBlock(lines []string, block string) []string {
 	blockLines := strings.Split(strings.TrimSuffix(block, "\n"), "\n")
-	if start, end, found := findBobShellBlock(lines); found {
-		out := make([]string, 0, len(lines)-(end-start)+len(blockLines))
-		out = append(out, lines[:start]...)
-		out = append(out, blockLines...)
-		out = append(out, lines[end:]...)
-		return out
+	owned := ownedLines(lines)
+	if len(owned) == 0 {
+		out := append([]string(nil), lines...)
+		return append(out, blockLines...)
 	}
-	out := append([]string(nil), lines...)
-	return append(out, blockLines...)
+	// Every owned line goes, and the fresh block lands where the FIRST one was. A
+	// span-based rewrite substituted the block for its hull, which on a
+	// non-contiguous file both swallowed the user's lines inside the hull and left
+	// our lines outside it — the second of those being a live alias that survived
+	// enable, so the file ended up with two.
+	drop := make(map[int]bool, len(owned))
+	for _, i := range owned {
+		drop[i] = true
+	}
+	out := make([]string, 0, len(lines)-len(owned)+len(blockLines))
+	for i, l := range lines {
+		if i == owned[0] {
+			out = append(out, blockLines...)
+		}
+		if !drop[i] {
+			out = append(out, l)
+		}
+	}
+	return out
 }
 
 // removeBobShellBlock drops the managed block, reporting whether there was one.
@@ -378,13 +423,26 @@ func replaceBobShellBlock(lines []string, block string) []string {
 // Exactly the block, and nothing adjacent to it: enable appends no separator, so
 // there is none to reclaim, and a blank line before the block is the user's.
 func removeBobShellBlock(lines []string) ([]string, bool) {
-	start, end, found := findBobShellBlock(lines)
-	if !found {
+	owned := ownedLines(lines)
+	if len(owned) == 0 {
 		return lines, false
 	}
-	out := make([]string, 0, len(lines)-(end-start))
-	out = append(out, lines[:start]...)
-	return append(out, lines[end:]...), true
+	// Every owned line, not the span between the first and the last: the span holds
+	// the user's lines too when a hand-edit split the block, and removing it took
+	// them with it. Dropping the set leaves everything that is not ours exactly where
+	// it was, which is the round trip this file's header promises, and leaves no alias
+	// of ours behind, which is what disable means.
+	drop := make(map[int]bool, len(owned))
+	for _, i := range owned {
+		drop[i] = true
+	}
+	out := make([]string, 0, len(lines)-len(owned))
+	for i, l := range lines {
+		if !drop[i] {
+			out = append(out, l)
+		}
+	}
+	return out, true
 }
 
 // readRC reads the file into lines, plus whether it ended with a newline so a
@@ -644,9 +702,9 @@ func bobShellStatus(rcPath string, stdout io.Writer) int {
 		fmt.Fprintf(stdout, "not enabled (%v)\n", err)
 		return 0
 	}
-	alias := bobShellAliasIn(lines)
-	if alias == "" {
-		if _, _, found := findBobShellBlock(lines); found {
+	aliases := bobShellAliasesIn(lines)
+	if len(aliases) == 0 {
+		if bobShellOwnsAnything(lines) {
 			// Markers but no alias: a hand-edit gutted the block. Enable repairs it.
 			fmt.Fprintf(stdout, "not enabled in %s (the Cortex block is there but has no alias line)\n", rcPath)
 			return 0
@@ -654,7 +712,18 @@ func bobShellStatus(rcPath string, stdout io.Writer) int {
 		fmt.Fprintf(stdout, "not enabled in %s\n", rcPath)
 		return 0
 	}
-	fmt.Fprintf(stdout, "  %s\n", alias)
+	for _, a := range aliases {
+		fmt.Fprintf(stdout, "  %s\n", a)
+	}
+	// More than one is a state a hand-edit can reach, and reporting only the first
+	// would describe a file the user does not have. Whichever the shell takes, enable
+	// collapses them to one.
+	if len(aliases) > 1 {
+		fmt.Fprintf(stdout, "enabled in %s, but with %d alias lines — the shell uses the last one.\n", rcPath, len(aliases))
+		fmt.Fprintln(stdout, "  Re-run `abctl configure bobshell enable` to collapse them to one.")
+		return 0
+	}
+	alias := aliases[0]
 	// A block naming an abctl that is no longer where it was — reinstalled
 	// elsewhere, or moved — aliases bob to a path that may not exist. Enable
 	// rewrites it, and saying so here is cheaper than debugging it from the

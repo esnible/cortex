@@ -812,7 +812,16 @@ func TestBobShellBlock_SurvivesADamagedEndMarker(t *testing.T) {
 			if strings.Contains(got, "alias bob") {
 				t.Errorf("disable exited 0 but left the live alias:\n%s", got)
 			}
-			if strings.Contains(got, "cortex abctl") {
+			// A marker we WROTE must be gone. A hand-MANGLED one is no longer a line
+			// this command emits, so ownership by exact match leaves it — inert text,
+			// and the alternative is the prefix matching that let a recovered block
+			// claim a user's own alias (round-4 MUST FIX 2). Round 4's suggestion 4
+			// asked about exactly this residue; the answer then was "already removed",
+			// which was true only as a side effect of that unsafe prefix.
+			if strings.Contains(got, bobShellMarkerStart) || strings.Contains(got, bobShellMarkerEnd) {
+				t.Errorf("disable left one of our own markers behind:\n%s", got)
+			}
+			if tc.damage == "" && strings.Contains(got, "cortex abctl") {
 				t.Errorf("disable left a marker behind:\n%s", got)
 			}
 			if !strings.Contains(got, "export AFTER=1") {
@@ -997,13 +1006,17 @@ func TestBobShellBlock_KeepsAUserAliasUnderADamagedMarker(t *testing.T) {
 			}
 			lines = append(lines, theirs)
 
-			start, end, found := findBobShellBlock(lines)
-			if !found {
-				t.Fatal("no block found; the lone-START recovery did not run")
+			if !bobShellOwnsAnything(lines) {
+				t.Fatal("nothing recognized as ours; the recovery path did not run")
 			}
-			for _, l := range lines[start:end] {
-				if strings.TrimSpace(l) == theirs {
-					t.Fatalf("the block claimed the user's own alias:\n%v", lines[start:end])
+			// The OWNED SET, not findBobShellBlock's span. The span is the hull of the
+			// owned lines and is deliberately wider when a hand-edit splits the block —
+			// it exists to quote the damaged region back to the user, and no writer keys
+			// off it. Ownership is what decides what gets deleted, so ownership is what
+			// this asserts.
+			for _, i := range ownedLines(lines) {
+				if strings.TrimSpace(lines[i]) == theirs {
+					t.Fatalf("claimed the user's own alias as ours:\n%v", lines)
 				}
 			}
 			updated, removed := removeBobShellBlock(lines)
@@ -1148,5 +1161,175 @@ func TestBobShellEnable_WritesTheFileItNamed(t *testing.T) {
 	}
 	if got := readFile(t, second); strings.Contains(got, bobShellAliasLine(testAbctl)) {
 		t.Errorf("the write landed on %s, which no message mentioned:\n%s", second, got)
+	}
+}
+
+// theirAlias is a user's own bob alias — never ours, whatever it sits next to.
+const theirAlias = "alias bob='/usr/local/bin/bob --fast'"
+
+// TestBobShellOwnership_HoldsAcrossDamagedFiles is the test the three previous rounds
+// of this file needed and did not have. Each round, a reviewer hand-edited the rc file
+// into a shape the recovery code had not anticipated — a blank line inside a damaged
+// block, a lone END marker, a second START — and each time the result was the same
+// failure: enable left TWO live aliases, or disable left one behind while reporting
+// success. The bug was never really the particular shape; it was that ownership was
+// expressed as a contiguous span, and a damaged file's owned lines are a set.
+//
+// So this asserts the invariant directly, over every shape found so far plus the
+// healthy one, rather than testing the shapes one at a time:
+//
+//   - after enable: exactly one line the shell would take as our alias;
+//   - after disable: none, and no marker of ours;
+//   - always: a user's own `alias bob=...` is still there, byte for byte.
+func TestBobShellOwnership_HoldsAcrossDamagedFiles(t *testing.T) {
+	ours := bobShellAliasLine(testAbctl)
+	for _, tc := range []struct {
+		name  string
+		lines []string
+	}{
+		{"healthy block", []string{"# a", bobShellMarkerStart, ours, bobShellMarkerEnd, "# b"}},
+		{"no block at all", []string{"# a", "export X=1"}},
+		{"blank line inside a damaged block", []string{bobShellMarkerStart, "", ours, "# tail"}},
+		{"comment inside a damaged block", []string{bobShellMarkerStart, "# added by me", ours, "# tail"}},
+		{"lone end marker", []string{"# mine", bobShellMarkerEnd}},
+		{"lone end marker with our alias above", []string{"# mine", ours, bobShellMarkerEnd}},
+		{"two start markers no end", []string{bobShellMarkerStart, ours, bobShellMarkerStart, ours}},
+		{"gutted block", []string{bobShellMarkerStart, bobShellMarkerEnd}},
+		{"end before start", []string{bobShellMarkerEnd, "# x", bobShellMarkerStart, ours}},
+		{"their alias under a damaged marker", []string{bobShellMarkerStart, ours, theirAlias}},
+		{"their alias alone", []string{theirAlias}},
+		{"their alias inside a healthy block", []string{bobShellMarkerStart, ours, bobShellMarkerEnd, theirAlias}},
+		// Found by TestBobShellOwnership_HoldsOverGeneratedDamage, not by hand: a user
+		// who pastes their own alias BETWEEN the markers. Being fenced does not make a
+		// line ours, so enable must not replace it and disable must not remove it.
+		{"their alias inside the fence", []string{bobShellMarkerStart, theirAlias, bobShellMarkerEnd}},
+		{"their alias fenced beside ours", []string{bobShellMarkerStart, theirAlias, ours, bobShellMarkerEnd}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			theirs := slices.Contains(tc.lines, theirAlias)
+
+			enabled := replaceBobShellBlock(tc.lines, bobShellBlock(testAbctl))
+			if n := countOurAliases(enabled); n != 1 {
+				t.Errorf("after enable: %d of our alias lines, want exactly 1:\n%v", n, enabled)
+			}
+			if theirs && !slices.Contains(enabled, theirAlias) {
+				t.Errorf("enable removed the user's own alias:\n%v", enabled)
+			}
+
+			// Disable from the ENABLED state, which is the sequence a user performs.
+			disabled, found := removeBobShellBlock(enabled)
+			if !found {
+				t.Fatal("disable found nothing to remove after enable")
+			}
+			if n := countOurAliases(disabled); n != 0 {
+				t.Errorf("after disable: %d of our alias lines left live:\n%v", n, disabled)
+			}
+			for _, l := range disabled {
+				if t2 := strings.TrimSpace(l); t2 == bobShellMarkerStart || t2 == bobShellMarkerEnd {
+					t.Errorf("disable left one of our markers behind:\n%v", disabled)
+				}
+			}
+			if theirs && !slices.Contains(disabled, theirAlias) {
+				t.Errorf("disable removed the user's own alias:\n%v", disabled)
+			}
+
+			// Disabling straight from the original must be just as complete: a user who
+			// never ran enable on the damaged file still gets every alias of ours gone.
+			fromOriginal, _ := removeBobShellBlock(tc.lines)
+			if n := countOurAliases(fromOriginal); n != 0 {
+				t.Errorf("disable on the original left %d of our aliases live:\n%v", n, fromOriginal)
+			}
+			if theirs && !slices.Contains(fromOriginal, theirAlias) {
+				t.Errorf("disable on the original removed the user's own alias:\n%v", fromOriginal)
+			}
+		})
+	}
+}
+
+// countOurAliases counts lines the shell would take as an alias WE wrote. Independent
+// of ownedLines on purpose: a counter built from the thing under test could not catch
+// a line that ownership fails to claim, which is the whole family of bugs here.
+func countOurAliases(lines []string) int {
+	n := 0
+	for _, l := range lines {
+		if isOurAliasLine(strings.TrimSpace(l)) {
+			n++
+		}
+	}
+	return n
+}
+
+// TestBobShellOwnership_HoldsOverGeneratedDamage generalizes the table above. Three
+// review rounds each produced a new hand-edit that broke a span-based implementation,
+// so rather than wait for a fourth, this enumerates every arrangement of the pieces a
+// damaged rc file is built from and asserts the same invariant over all of them.
+func TestBobShellOwnership_HoldsOverGeneratedDamage(t *testing.T) {
+	ours := bobShellAliasLine(testAbctl)
+	pieces := []string{bobShellMarkerStart, bobShellMarkerEnd, ours, theirAlias, "", "# mine"}
+
+	var rec func(prefix []string, depth int)
+	checked := 0
+	rec = func(prefix []string, depth int) {
+		if depth == 0 {
+			checked++
+			lines := slices.Clone(prefix)
+			theirs := strings.Count(strings.Join(lines, "\n"), theirAlias)
+
+			enabled := replaceBobShellBlock(lines, bobShellBlock(testAbctl))
+			if n := countOurAliases(enabled); n != 1 {
+				t.Fatalf("after enable: %d of our aliases, want 1\n  in:  %q\n  out: %q", n, lines, enabled)
+			}
+			if got := strings.Count(strings.Join(enabled, "\n"), theirAlias); got != theirs {
+				t.Fatalf("enable changed the count of the user's own alias %d -> %d\n  in:  %q\n  out: %q",
+					theirs, got, lines, enabled)
+			}
+			disabled, _ := removeBobShellBlock(enabled)
+			if n := countOurAliases(disabled); n != 0 {
+				t.Fatalf("after disable: %d of our aliases left\n  in:  %q\n  out: %q", n, lines, disabled)
+			}
+			if got := strings.Count(strings.Join(disabled, "\n"), theirAlias); got != theirs {
+				t.Fatalf("disable changed the count of the user's own alias %d -> %d\n  in:  %q\n  out: %q",
+					theirs, got, lines, disabled)
+			}
+			return
+		}
+		for _, p := range pieces {
+			rec(append(prefix, p), depth-1)
+		}
+	}
+	// Up to 4 lines: 6^1+6^2+6^3+6^4 = 1554 files, which covers every ordering of a
+	// marker pair with two lines between them — the shape all three MUST FIX items of
+	// round 5 live in — and runs in well under a second.
+	for depth := 1; depth <= 4; depth++ {
+		rec(nil, depth)
+	}
+	t.Logf("checked %d generated files", checked)
+}
+
+// TestBobShellStatus_ReportsEveryAlias — a damaged file can hold more than one of our
+// aliases, and reporting only the first describes a file the user does not have. The
+// shell takes the last, so the count is what matters, not which one is shown.
+func TestBobShellStatus_ReportsEveryAlias(t *testing.T) {
+	rc := filepath.Join(t.TempDir(), "rc")
+	ours := bobShellAliasLine(testAbctl)
+	content := strings.Join([]string{bobShellMarkerStart, ours, bobShellMarkerStart, ours, ""}, "\n")
+	if err := os.WriteFile(rc, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	if code := bobShellStatus(rc, &out); code != 0 {
+		t.Fatalf("exit = %d, want 0", code)
+	}
+	if !strings.Contains(out.String(), "2 alias lines") {
+		t.Errorf("status does not report that there are two aliases:\n%s", out.String())
+	}
+	// And enable must collapse them, which is what status tells the user to do.
+	var eout, errb bytes.Buffer
+	if code := bobShellEnable(rc, testAbctl, true, &eout, &errb); code != 0 {
+		t.Fatalf("enable: exit = %d, want 0 (stderr: %s)", code, errb.String())
+	}
+	if n := countOurAliases(strings.Split(readFile(t, rc), "\n")); n != 1 {
+		t.Errorf("enable left %d aliases, want 1:\n%s", n, readFile(t, rc))
 	}
 }
