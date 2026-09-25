@@ -318,7 +318,20 @@ with_bootstrap() { # want_ref http_new http_legacy newest_release [run_as=pipe|f
 		# shellcheck disable=SC2016 # literal on purpose: expanded by the probe, not here.
 		printf '  for _a in "$@"; do [ "${_prev}" = "-o" ] && _out="${_a}"; case "$_a" in http*) _u="$_a" ;; esac; _prev="${_a}"; done\n'
 		# shellcheck disable=SC2016 # same.
-		printf '  case "${_u}" in */authbridge/install.sh) _c="%s" ;; *) _c="%s" ;; esac\n' "${_httplegacy}" "${_http}"
+		# Pin the whole URL, not just its suffix. A suffix-only match sent a
+		# mis-interpolated ref, a doubled slash or a truncated path into the `*)`
+		# arm and returned the new-layout status, so a regression in root-URL
+		# construction still passed. BADURL is neither 200 nor 404, so it reaches
+		# install.sh's die and the scenario fails instead of quietly succeeding.
+		# shellcheck disable=SC2016 # literal on purpose: expanded by the probe, not here.
+		printf '  case "${_u}" in\n'
+		printf '    *//install.sh|*/cortex//*|*/cortex/install.sh) _c="BADURL" ;;\n'
+		printf '    https://raw.githubusercontent.com/rossoctl/cortex/*/authbridge/install.sh) _c="%s" ;;\n' "${_httplegacy}"
+		printf '    https://raw.githubusercontent.com/rossoctl/cortex/*/install.sh) _c="%s" ;;\n' "${_http}"
+		printf '    *) _c="BADURL" ;;\n'
+		printf '  esac\n'
+		# shellcheck disable=SC2016 # same.
+		printf '  [ "${_c}" = "200" ] || [ -z "${_out}" ] || : > "${_out}"\n'
 		# shellcheck disable=SC2016 # same.
 		printf '  [ "${_c}" != "200" ] || [ -z "${_out}" ] || printf "#!/bin/sh\\nprintf \\"REEXECED\\\\n\\"\\nexit 0\\n" > "${_out}"\n'
 		# shellcheck disable=SC2016 # same.

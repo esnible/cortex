@@ -1274,9 +1274,10 @@ if [ -z "${NO_SERVICE}" ]; then
 		case "${version}" in
 			v*)
 				die "the ${version} abctl has no 'service' command, which this installer needs
-  in order to start Cortex. Either re-run this installer pinned to that release,
-  which resolves its installer in either layout:
-    --ref=${version}
+  in order to start Cortex. Either run that release's own installer, piped -- a
+  local copy of this script never re-execs, so --ref would pin only its binaries
+  and land you back here:
+    curl -fsSL https://raw.githubusercontent.com/${REPO}/main/install.sh | sh -s -- --ref=${version}
   or install newer binaries with this script:
     --ref=<newer tag>"
 				;;
