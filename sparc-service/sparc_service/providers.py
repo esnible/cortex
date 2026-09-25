@@ -41,7 +41,7 @@ def _patch_watsonx_for_reasoning_models(client_cls):
     content, so response_format mode always raises 'No content or tool calls found in
     response'. Injecting the schema into the system prompt (same as ALTK's Ollama
     provider) makes the model return valid JSON in content.
-    See: https://github.com/kagenti/kagenti-extensions/issues/676
+    See: https://github.com/rossoctl/cortex/issues/676
 
     Idempotent: uses a sentinel attribute on ``client_cls`` so repeated calls
     (e.g. once per configured track when ``ReflectionEngine`` builds a new
@@ -133,7 +133,7 @@ def _patch_debug_logging(client_cls):
     Activated only when SPARC_DEBUG_LLM=true. Logs at DEBUG level so normal
     runs are unaffected. Each log line is prefixed [LLM_DEBUG] for easy grep:
 
-        kubectl logs -n kagenti-system deploy/sparc-service | grep LLM_DEBUG
+        kubectl logs -n <namespace> deploy/sparc-service | grep LLM_DEBUG
 
     Idempotent: guarded by a sentinel attribute so debug wrappers don't stack
     across repeated ``build_llm_client`` calls.
