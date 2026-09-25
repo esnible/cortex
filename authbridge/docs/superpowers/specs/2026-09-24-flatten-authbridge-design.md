@@ -29,7 +29,7 @@ Four questions were settled before design:
 | Question | Decision |
 |---|---|
 | Scope | **Structural only.** Paths lose the `/authbridge` segment; no package or binary is renamed. `authlib` stays `authlib`, `cmd/authbridge-proxy` keeps its name. |
-| Published install URL | **Shim at the old path.** The canonical one-liner may change; nothing may break. |
+| Published install URL | **No shim.** The canonical one-liner changes to `main/install.sh`; the old path 404s. See §6 — this was revised after measuring who actually references it. |
 | `docs/` merge | **Flat union**, no reorganisation. |
 | `README.md` / `CLAUDE.md` collisions | **Resolved inside the sweep**, in separate commits. |
 
@@ -71,11 +71,10 @@ cortex/
 ├── docs/                     # union: 5 root + 42 authbridge = 47 files
 ├── scripts/                  # union: hooks/ + profile-tags/ + readme-demo/
 ├── tests/                    # now beside keycloak_sync.py
-├── .github/  .claude/
-│
-└── authbridge/
-    └── install.sh            # forwarding shim, the only survivor
+└── .github/  .claude/
 ```
+
+There is no `authbridge/` directory afterwards. Nothing survives at that path.
 
 `LOCAL_TESTING_GUIDE.md` is absent: PR #1126 removes it.
 
@@ -123,45 +122,63 @@ checked against both real strings before being relied on.
 
 ## 6. Install compatibility
 
-The hard requirement. The canonical URL becomes
-`raw.githubusercontent.com/rossoctl/cortex/main/install.sh`.
+The canonical URL becomes
+`raw.githubusercontent.com/rossoctl/cortex/main/install.sh`. The old path is not
+preserved.
 
-`install.sh:472` fetches *another ref's copy of itself* to honour `--ref=`, and
-the surrounding logic is deliberate: HTTP 200 runs that copy; 404 warns and runs
-main's script while keeping `VERSION_REF` so the binary pin survives; any other
-status calls `die` rather than silently substituting main.
+### Two independent concerns, previously conflated
 
-The new root installer therefore tries **two paths in order**:
+An earlier draft of this design kept a forwarding shim at
+`authbridge/install.sh`, justified partly by the `--ref=` machinery. That was
+wrong: **`--ref` and the published URL are unrelated problems.**
+
+**`--ref` needs nothing from `main`.** `install.sh:472` fetches another ref's copy
+of itself, and that copy lives in *that ref's own tree*. Moving the file on `main`
+cannot affect what a tag contains, so every existing release keeps working.
+
+What `--ref` does need is for the new installer to look in both places, because
+refs from either era must resolve:
 
 1. `${REPO}/${ref}/install.sh`
 2. on 404 only, `${REPO}/${ref}/authbridge/install.sh`
 
-| Invocation | Result |
+| `--ref=` target | Result |
 |---|---|
-| Old URL `main/authbridge/install.sh` | shim forwards to `main/install.sh`, args preserved |
-| `--ref=<pre-flatten tag>` | (1) 404 → (2) 200 → pin intact |
-| `--ref=<post-flatten ref>` | (1) 200; shim never involved |
-| `--ref=<ref predating the script>` | both 404 → existing warn + main, pin preserved |
-| transport error / 5xx | still `die`, unchanged |
+| post-flatten ref | (1) 200 |
+| pre-flatten tag (every release today) | (1) 404 → (2) 200, `VERSION_REF` pin intact |
+| ref predating the script entirely | both 404 → existing warn + main's script, pin preserved |
+| transport error / 5xx | still `die`, unchanged — never silently substitute main |
 
-Because (1) is tried first, the `--ref` machinery never reaches the shim for a
-post-flatten ref. The shim's only job is a stale human URL, where forwarding to
-main's current installer is the right answer.
+### The old published URL: who breaks, and how
 
-The shim copies `install-demo.sh`'s existing pattern exactly: fetch to a temp
-file, then `sh "$tmp" "$@"` — so a truncated download cannot execute as a
-partial script, and arguments survive.
+Measured rather than assumed. Every reference to `main/authbridge/install.sh`
+across public GitHub is inside the rossoctl org — **no third parties**:
 
-`install-demo.sh` is retargeted at `main/install.sh` directly rather than
-double-hopping through the shim. It needs no shim of its own: its old URL,
-`main/authbridge/install-demo.sh`, has zero references in this repository and
-zero across public GitHub — checked, not assumed. It is itself a shim for a name
-that predates it, so a shim for a shim would be protecting nothing.
+| Repo | Files | Action |
+|---|---|---|
+| `rossoctl/cortex` | 8 | updated in this PR |
+| `rossoctl/rossoctl` | 2 — current `docs/get-started/laptop.md`, `docs/concepts/experiments/cost-control.md` | coordinated PR |
+| `rossoctl/.github` | 3 — `versioned_docs/version-0.7/`, `version-0.8/` | left alone; archives are not rewritten |
 
-**Removal criterion.** `install-demo.sh`'s comment promises removal "once the old
-URL stops being fetched," which is unfalsifiable: `raw.githubusercontent.com` is
-a CDN and exposes no fetch telemetry. Both shims get a concrete trigger instead
-— removed at the next major version — stated in the comment.
+So the only casualty is a reader following **archived v0.7/v0.8 docs**. The
+failure mode there, measured: `curl -fsSL <404> | sh` gives curl exit 56 with 49
+bytes on stderr, then `sh` reads empty stdin and exits **0**. An interactive user
+sees `curl: (56) ... error: 404` and nothing installs — discoverable. Anything
+scripted around the pipeline sees success having installed nothing, which is the
+worse half.
+
+That is accepted. Those archives pin old releases whose commands drift anyway,
+and a permanent file at `authbridge/install.sh` would re-create the directory
+this change exists to remove — with no falsifiable criterion for ever deleting
+it, since `raw.githubusercontent.com` exposes no fetch telemetry.
+
+`install-demo.sh` moves to the root and is retargeted at `main/install.sh`. Its
+own old URL, `main/authbridge/install-demo.sh`, has zero references in this
+repository and zero across public GitHub — checked. It is already a shim for an
+older name.
+
+Its stale comment promising removal "once the old URL stops being fetched" is
+replaced with a concrete trigger, since that condition is unobservable.
 
 ## 7. New requirement: root `.dockerignore`
 
@@ -196,8 +213,8 @@ from the prose merges:
 
 1. **`refactor: Flatten authbridge/ into the repo root`** — the sweep only:
    `git mv`, 12 module paths, 1,019 import occurrences, 97 non-Go files, 36
-   workflow references, 6 dependabot directories, the install two-path lookup,
-   the shim, the `.dockerignore`, `go.sum` regeneration. Driven by a script
+   workflow references, 6 dependabot directories, the install `--ref` two-path
+   lookup, the `.dockerignore`, `go.sum` regeneration. Driven by a script
    committed in the same PR so review is "re-run it and diff".
 2. **`docs: Rehome the AuthBridge architecture doc`** — `authbridge/README.md` →
    `docs/architecture.md` plus inbound links.
@@ -214,12 +231,16 @@ All Go commands with `GOWORK=off`, as CI runs them.
 - `cmd/abctl`, `cmd/authbridge-{proxy,envoy,praxis}`, `storage/redis`,
   `scripts/{profile-tags,readme-demo}`: build, vet, test
 - `bash -n` and `shellcheck` on every moved shell script
-- `sh install_test.sh`, extended with a case per row of the table in §6
+- `sh install_test.sh`, extended with a case per row of the `--ref` table in §6.
+  The two-path lookup is the testable part and must be covered against both a
+  path that exists and one that 404s. The abandoned old *published* URL is not
+  testable offline and is not a behaviour we are keeping, so it gets no case.
 - a real `docker build` of the proxy image, to prove the context change and the
   new `.dockerignore`
-- `grep -rn 'cortex/authbridge'` returns nothing outside `docs/superpowers/` and
-  the shim
-- the old install URL resolves and installs
+- `grep -rn 'authbridge'` reviewed by hand: the only surviving matches should be
+  the `authbridge-*` binary and image names (deliberate, §12), the `--ref`
+  fallback path in `install.sh`, and `docs/superpowers/` archive text
+- no `authbridge/` directory remains
 - `rossoctl/operator` and `rossoctl-cli` built against the branch with a local
   `replace`, to record exactly what downstream will need — not to block
 
@@ -246,7 +267,8 @@ main for unrelated `tlsbridge` drift.
 | Risk | Mitigation |
 |---|---|
 | A missed path reference breaks CI after merge | Every workflow and dependabot entry enumerated in §3/§9; `grep` gate in §10 |
-| An installer invocation breaks | §6 table, one `install_test.sh` case per row, gated by the existing `install-script` job |
+| `--ref=<old tag>` stops resolving | Two-path lookup (§6), `install_test.sh` cases for both eras, gated by the existing `install-script` job |
+| A reader of archived v0.7/v0.8 docs gets a 404 | **Accepted, not mitigated** (§6). Curl exits 56 visibly, but the pipeline exits 0 having installed nothing. Current docs in `rossoctl/rossoctl` get a coordinated PR; the archives do not. |
 | Docker context bloat | Root `.dockerignore` in the same commit; real `docker build` in §10 |
 | A release tagged mid-flight publishes then unpublishes a module path | Do not tag until the PR has settled |
 | Rollback | Pure rename: `git revert` the merge commit. Consumers are pinned and unaffected. |
