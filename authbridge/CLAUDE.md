@@ -613,7 +613,7 @@ See [`docs/framework-architecture.md`](docs/framework-architecture.md#9-config-h
 - `authbridge/go.work` links 9 of the 12 for local development — the three
   `demos/*` modules are deliberately outside the workspace.
 - **Neither `gofmt` nor `go vet` is fully gated.** pre-commit has no Go hooks;
-  `ci.yaml` runs `go fmt ./...` (which rewrites rather than reporting, so drift
+  `ci.yaml` runs `go fmt ./...` (which rewrites and exits 0, so drift
   cannot fail it)
   and `go vet ./...` on some but not all modules. Run `gofmt -l` yourself before
   pushing, and `go mod tidy -diff` if you dropped a package or its last import.

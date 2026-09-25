@@ -217,7 +217,7 @@ self-contained `demos/*` modules are outside the workspace. `go-tidy-check` in
 - `authbridge/storage/redis/`, `authbridge/scripts/{profile-tags,readme-demo}/`, and the self-contained `authbridge/demos/{echo,finance-sparc,ibac}/`.
 - `authbridge/go.work` — workspace linking authlib + the binaries for local development.
 
-**Config format:** YAML with `${ENV_VAR}` expansion, mode presets, and startup validation. Supports `keycloak_url` + `keycloak_realm` derivation for operator compatibility. The `mode` field must match the binary for all but `authbridge-praxis`, which pins no mode.
+**Config format:** YAML with `${ENV_VAR}` expansion, mode presets, and startup validation. The `mode` field must match the binary for all but `authbridge-praxis`, which pins no mode.
 
 ## CI/CD Workflows
 
@@ -288,7 +288,7 @@ Hooks:
   needs CGO and a pinned `libcpex_ffi.a`, so `build.yaml` covers it via the image
   build), `storage/redis`, and the three `demos/*` modules.
 - `go fmt ./...` is **not** a gate. `go fmt` is `gofmt -l -w`: it rewrites the
-  checkout instead of reporting, so formatting drift cannot fail a build.
+  checkout and exits 0, so formatting drift cannot fail a build.
 
 Formatting drift therefore reaches main — a few files are gofmt-dirty there
 today, including three under `authlib`, where `go fmt` demonstrably runs on
