@@ -505,17 +505,33 @@ func TestBobShellBlockShape(t *testing.T) {
 	}
 }
 
-// An unrecognised shell must write NOTHING and print the block. Writing a guess
-// puts the block in a file the user's shell never reads, and they have no reason
-// to look there to find out why "bob" does not work.
+// An unrecognised shell must write NOTHING and say what to do by hand. Writing a
+// guess puts the block in a file the user's shell never reads, and they have no
+// reason to look there to find out why "bob" does not work.
+//
+// The advice has to match the VERB, and this test used to assert the block for both
+// — codifying the bug rather than catching it. `disable` under fish printed "Add
+// this to whichever file your shell reads at startup" and the whole block, handing
+// someone who was removing the integration the text to paste in. wantBlock is the
+// property that was missing.
 func TestBobShellUnknownShell(t *testing.T) {
 	home := fakeHome(t)
 	t.Setenv("SHELL", "/usr/bin/fish")
 
-	for _, action := range []string{"enable", "disable"} {
-		t.Run(action, func(t *testing.T) {
+	for _, tc := range []struct {
+		action    string
+		wantBlock bool
+	}{
+		// enable cannot do the edit, so the block is the whole answer.
+		{"enable", true},
+		// disable must NOT print it: the user already has the text — it is in their
+		// file — and printing it here reads as an instruction to add what they asked
+		// to have removed. They get the markers to search for instead.
+		{"disable", false},
+	} {
+		t.Run(tc.action, func(t *testing.T) {
 			var out, errb bytes.Buffer
-			if code := runBobShell([]string{action}, &out, &errb); code != 0 {
+			if code := runBobShell([]string{tc.action}, &out, &errb); code != 0 {
 				t.Fatalf("exit = %d, want 0; stderr: %s", code, errb.String())
 			}
 			// Nothing at all in the home directory: not .bashrc, not .zshrc, and
@@ -531,14 +547,90 @@ func TestBobShellUnknownShell(t *testing.T) {
 				}
 				t.Errorf("created files under an unrecognised shell: %v", names)
 			}
-			if !strings.Contains(out.String(), bobShellBlock) {
-				t.Errorf("stdout does not carry the block to paste:\n%s", out.String())
+			if got := strings.Contains(out.String(), bobShellBlock); got != tc.wantBlock {
+				t.Errorf("block printed = %v, want %v; stdout:\n%s", got, tc.wantBlock, out.String())
+			}
+			// Whichever half it printed, it has to name the markers — they are what
+			// the user greps for, in a file abctl is not going to touch.
+			if !strings.Contains(out.String(), bobShellMarkerStart) {
+				t.Errorf("stdout does not name the start marker:\n%s", out.String())
 			}
 			// Name the shell, so the user can see which setting produced this.
 			if !strings.Contains(out.String(), "/usr/bin/fish") {
 				t.Errorf("stdout does not name $SHELL:\n%s", out.String())
 			}
 		})
+	}
+}
+
+// The other two fallbacks, which sit at the same spot above the verb dispatch and
+// had the same bug: a dangling rc symlink and a chain past the hop limit. Covered
+// here rather than left to the unrecognised-$SHELL case because all three inlined
+// enable's answer independently, so one test passing proves nothing about the other
+// two — and the symlink arms are the ones no test reached at all.
+func TestBobShellUnwritableLinkAdvisesPerVerb(t *testing.T) {
+	for _, shape := range []struct {
+		name string
+		// setup arranges home so that .zshrc cannot be written through, and
+		// returns nothing: the rc path is always $home/.zshrc.
+		setup func(t *testing.T, home string)
+	}{
+		{"dangling link", func(t *testing.T, home string) {
+			if err := os.Symlink(filepath.Join(home, "nowhere"), filepath.Join(home, ".zshrc")); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"past the hop limit", func(t *testing.T, home string) {
+			real := filepath.Join(home, "real")
+			if err := os.WriteFile(real, nil, 0o644); err != nil {
+				t.Fatal(err)
+			}
+			mid := filepath.Join(home, "mid")
+			if err := os.Symlink(real, mid); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(mid, filepath.Join(home, ".zshrc")); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		for _, tc := range []struct {
+			action    string
+			wantBlock bool
+		}{
+			{"enable", true},
+			{"disable", false},
+		} {
+			t.Run(shape.name+"/"+tc.action, func(t *testing.T) {
+				home := fakeHome(t)
+				t.Setenv("SHELL", "/bin/zsh")
+				shape.setup(t, home)
+
+				var out, errb bytes.Buffer
+				if code := runBobShell([]string{tc.action}, &out, &errb); code != 0 {
+					t.Fatalf("exit = %d, want 0; stderr: %s", code, errb.String())
+				}
+				if got := strings.Contains(out.String(), bobShellBlock); got != tc.wantBlock {
+					t.Errorf("block printed = %v, want %v; stdout:\n%s", got, tc.wantBlock, out.String())
+				}
+				if !strings.Contains(out.String(), bobShellMarkerStart) {
+					t.Errorf("stdout does not name the start marker:\n%s", out.String())
+				}
+				// The refusal must not have written anything through the link: the
+				// dangling case would create the missing target, and the deep case
+				// would replace a link the user built on purpose.
+				if _, err := os.Stat(filepath.Join(home, "nowhere")); err == nil {
+					t.Error("created the dangling link's missing target")
+				}
+				st, err := os.Lstat(filepath.Join(home, ".zshrc"))
+				if err != nil {
+					t.Fatal(err)
+				}
+				if st.Mode()&os.ModeSymlink == 0 {
+					t.Error(".zshrc is no longer a symlink: the refusal wrote over it")
+				}
+			})
+		}
 	}
 }
 

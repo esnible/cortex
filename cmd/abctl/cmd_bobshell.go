@@ -175,11 +175,11 @@ func runBobShell(args []string, stdout, stderr io.Writer) int {
 	path, err := bobShellRCPath(os.Getenv("SHELL"), home)
 	if err != nil {
 		// Not an error exit: we know what the user wanted and we can still tell
-		// them how to get it. Printing the block is the whole answer here.
+		// them how to get it. What "it" is depends on the verb, which is why the
+		// advice is a function taking the action rather than three inlined copies
+		// of enable's answer — see bobShellAdviseManual.
 		fmt.Fprintf(stdout, "abctl: %v\n\n", err)
-		fmt.Fprint(stdout, "Add this to whichever file your shell reads at startup:\n\n")
-		fmt.Fprint(stdout, bobShellBlock)
-		return 0
+		return bobShellAdviseManual(action, "whichever file your shell reads at startup", stdout)
 	}
 
 	// Resolved ONCE, here, above both verbs — so the path that gets checked is
@@ -195,15 +195,13 @@ func runBobShell(args []string, stdout, stderr io.Writer) int {
 	// value is identical in both cases; only the hop count separates them.
 	if err != nil && !(hops == 0 && errors.Is(err, os.ErrNotExist)) {
 		fmt.Fprintf(stdout, "abctl: cannot follow %s: %v\n\n", path, err)
-		fmt.Fprint(stdout, "Sort the link out, or add this yourself:\n\n")
-		fmt.Fprint(stdout, bobShellBlock)
-		return 0
+		fmt.Fprint(stdout, "Sort the link out, or do it by hand.\n\n")
+		return bobShellAdviseManual(action, "the real file", stdout)
 	}
 	if hops > maxRCSymlinkHops {
 		fmt.Fprintf(stdout, "abctl: %s is %d symlinks deep (ending at %s).\n\n", path, hops, target)
-		fmt.Fprint(stdout, "That is deliberate enough that abctl will not write through it. Add this to the real file yourself:\n\n")
-		fmt.Fprint(stdout, bobShellBlock)
-		return 0
+		fmt.Fprint(stdout, "That is deliberate enough that abctl will not write through it.\n\n")
+		return bobShellAdviseManual(action, "the real file", stdout)
 	}
 
 	// Only enable and disable reach here: help and status returned above, and any
@@ -374,6 +372,37 @@ func bobShellDisable(path string, stdout, stderr io.Writer) int {
 // The environment, and nothing else. Exits 0 either way: "not enabled" is a
 // successful report, not a failure, which is how claudeCodeStatus behaves and
 // what makes this usable in a script that only wants the text.
+// bobShellAdviseManual prints what the user has to do by hand when abctl will not
+// touch the file itself — an unrecognised $SHELL, a dangling rc symlink, or a chain
+// past the hop limit. Returns 0: we could not do it for them, but we answered the
+// question they asked, and that is a success.
+//
+// It takes the action because the three callers sit ABOVE the enable/disable
+// dispatch — they run before either verb does, so they cannot tell the verbs apart
+// on their own. That is exactly what went wrong when each of them inlined
+// enable's answer: `configure bobshell disable` under fish printed "add this to
+// your startup file" and the whole block, telling someone trying to REMOVE the
+// integration to paste it in. Branching here rather than duplicating the arms
+// keeps the two answers next to each other, where a future third fallback picks
+// both up for free.
+//
+// where names the file in the caller's own words ("the real file", "whichever file
+// your shell reads at startup"), because only the caller knows why it is giving up.
+func bobShellAdviseManual(action, where string, stdout io.Writer) int {
+	if action == "disable" {
+		// No block printed: a user removing the integration has the text already —
+		// it is in their file — and printing it again is at best noise and at worst
+		// read as an instruction to add it. The markers are what they need, since
+		// that is what they are searching the file for.
+		fmt.Fprintf(stdout, "To remove it by hand, delete the block between %s\nand %s from %s.\n",
+			bobShellMarkerStart, bobShellMarkerEnd, where)
+		return 0
+	}
+	fmt.Fprintf(stdout, "Add this to %s:\n\n", where)
+	fmt.Fprint(stdout, bobShellBlock)
+	return 0
+}
+
 func bobShellStatus(stdout io.Writer) int {
 	if v, ok := os.LookupEnv(bobShellEnvVar); ok {
 		fmt.Fprintf(stdout, "  %s=%s\n", bobShellEnvVar, v)

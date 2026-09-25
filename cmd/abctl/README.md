@@ -336,7 +336,7 @@ The basename of `$SHELL` picks it, and only these two:
 |---|---|
 | …`/zsh` | `~/.zshrc` |
 | …`/bash` | `~/.bashrc` |
-| anything else, or unset | nothing is written — the block is printed for you to place |
+| anything else, or unset | nothing is written — `enable` prints the block for you to place, `disable` tells you which block to delete |
 
 That is the whole rule. `abctl` does not work out whether your shell will be a
 login or a non-login shell, or which of zsh's four startup files you meant,
@@ -355,9 +355,14 @@ A `~/.zshrc` symlinked into a dotfiles repo is followed, and the block lands in
 the real file: writing the link itself would replace it with a regular file and
 silently detach it from the repo, leaving the tracked copy stale with nothing
 in `git status` to show it. Two or more links deep, or a dangling link, and
-both verbs decline and print the block instead — a chain that long is somebody's
-deliberate arrangement, and a write through it is more likely to surprise than
-to help.
+both verbs decline to write — a chain that long is somebody's deliberate
+arrangement, and a write through it is more likely to surprise than to help.
+
+What they print instead follows the verb, as it does for an unrecognised
+`$SHELL`: `enable` gives you the block to paste, and `disable` names the markers
+to delete between, because you already have the block — it is in your file — and
+printing it at someone removing the integration reads as an instruction to put
+it back.
 
 The write is temp-file-then-rename, so a failure part way through leaves your
 rc file as it was rather than half-written. An existing file keeps its own
