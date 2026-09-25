@@ -556,7 +556,7 @@ ca_fingerprint() {
 
 # Demo listener ports — loopback, and deliberately uncommon to avoid colliding
 # with common dev tools. Keep in sync with the built-in config in
-# authbridge/cmd/authbridge-proxy/local.go.
+# cmd/authbridge-proxy/local.go.
 DEMO_FORWARD_PORT=47600
 DEMO_SESSION_PORT=47601
 DEMO_STATS_PORT=47602

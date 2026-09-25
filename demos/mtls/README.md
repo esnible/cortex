@@ -148,7 +148,7 @@ hit the listener:
 **Proxy-sidecar matches the same outbound semantics now**: its
 forward proxy dials plaintext in permissive mode and TLS-or-fail in
 strict, with no per-connection fallback. The two deployment shapes
-share one outbound model. See `authbridge/CLAUDE.md`'s
+share one outbound model. See the root [`CLAUDE.md`](../../CLAUDE.md)'s
 "Top-level mtls: configuration" for the full table.
 
 ### Mixed-mode caveat
