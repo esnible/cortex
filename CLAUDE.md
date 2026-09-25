@@ -148,6 +148,8 @@ cortex/
 │                                     #   not an inert archive.
 │
 ├── scripts/
+│   ├── local-build-and-test.sh       # Build every image and load it into Kind
+│   ├── verify-spire-keycloak.sh      # Platform preflight for a local dev cluster
 │   ├── profile-tags/                 # Build-tag resolver: one profile per artifact
 │   ├── readme-demo/                  # Generates the README demo animation
 │   └── hooks/commit-msg              # Rewrites Co-Authored-By to Assisted-By
@@ -173,7 +175,6 @@ cortex/
 ├── tests/                            # Python tests (keycloak_sync)
 ├── go.work                           # Workspace linking 9 of the 12 Go modules
 ├── install.sh                        # Laptop installer (abctl + the local proxy service)
-├── local-build-and-test.sh           # Build every image and load it into Kind
 ├── .github/
 │   ├── workflows/                    # CI/CD (ci.yaml, build.yaml, release-binaries.yaml,
 │   │                                 # security-scans, scorecard, spellcheck)
@@ -786,13 +787,14 @@ There are **two** setup scripts for different demo scenarios:
 
 ### Building Everything Locally
 
-The repo-root `local-build-and-test.sh` orchestrates every image
+`scripts/local-build-and-test.sh` orchestrates every image
 the platform needs (`spiffe-idp-setup` from rossoctl, plus
 `authbridge`, `authbridge-envoy`, `authbridge-lite`, `proxy-init`
-from this repo) and loads them into a Kind cluster:
+from this repo) and loads them into a Kind cluster. Run it from
+the repo root:
 
 ```bash
-ROSSOCTL_DIR=../rossoctl ./local-build-and-test.sh
+ROSSOCTL_DIR=../rossoctl ./scripts/local-build-and-test.sh
 ```
 
 To build a single image directly. All Docker build contexts are the repo root now,
@@ -926,7 +928,7 @@ resulting `/shared/client-id.txt` and `/shared/client-secret.txt`.
 - Example deployment YAMLs in `demos/*/k8s/`
 
 ### Shell Scripts
-- Strict mode where it is safe to add: `local-build-and-test.sh` uses
+- Strict mode where it is safe to add: `scripts/local-build-and-test.sh` uses
   `set -euo pipefail`, `install.sh` uses `set -eu`. **`proxy-init/init-iptables.sh`
   is `set -e` only** — do not "fix" it to `pipefail` without testing, its iptables
   probes rely on tolerated failures.

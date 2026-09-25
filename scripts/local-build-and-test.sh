@@ -5,7 +5,11 @@ set -euo pipefail
 # This script builds all necessary images locally and loads them into Kind
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROSSOCTL_DIR="${ROSSOCTL_DIR:-$(cd "$SCRIPT_DIR/../rossoctl" 2>/dev/null && pwd || echo "")}"
+# This script lives in scripts/, one level below the repo root; every relative
+# path below (Docker build contexts, the rossoctl sibling checkout) is anchored
+# to REPO_ROOT, not SCRIPT_DIR.
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+ROSSOCTL_DIR="${ROSSOCTL_DIR:-$(cd "$REPO_ROOT/../rossoctl" 2>/dev/null && pwd || echo "")}"
 if [ -z "$ROSSOCTL_DIR" ] || [ ! -d "$ROSSOCTL_DIR" ]; then
     echo "ERROR: Set ROSSOCTL_DIR to point to your rossoctl repo clone"
     exit 1
@@ -73,7 +77,7 @@ echo ""
 echo "=========================================="
 echo "Building authbridge (proxy-sidecar combined)"
 echo "=========================================="
-cd "${SCRIPT_DIR}"
+cd "${REPO_ROOT}"
 # Every plugin is opt-in, so the plugin set must be named: a build without
 # GO_BUILD_TAGS registers none and rejects every config it is handed.
 ${CONTAINER_RUNTIME} build -f cmd/authbridge-proxy/Dockerfile \
@@ -87,7 +91,7 @@ echo ""
 echo "=========================================="
 echo "Building authbridge-envoy (envoy-sidecar combined)"
 echo "=========================================="
-cd "${SCRIPT_DIR}"
+cd "${REPO_ROOT}"
 ${CONTAINER_RUNTIME} build -f cmd/authbridge-envoy/Dockerfile \
   --build-arg GO_BUILD_TAGS="$(go -C scripts/profile-tags run . envoy)" \
   -t ghcr.io/rossoctl/cortex/authbridge-envoy:local .
@@ -101,7 +105,7 @@ echo ""
 echo "=========================================="
 echo "Building authbridge-lite (proxy build variant: lite profile, see scripts/profile-tags)"
 echo "=========================================="
-cd "${SCRIPT_DIR}"
+cd "${REPO_ROOT}"
 ${CONTAINER_RUNTIME} build -f cmd/authbridge-proxy/Dockerfile \
   --build-arg GO_BUILD_TAGS="$(go -C scripts/profile-tags run . lite)" \
   -t ghcr.io/rossoctl/cortex/authbridge-lite:local .
@@ -113,7 +117,7 @@ echo ""
 echo "=========================================="
 echo "Building proxy-init"
 echo "=========================================="
-cd "${SCRIPT_DIR}/proxy-init"
+cd "${REPO_ROOT}/proxy-init"
 ${CONTAINER_RUNTIME} build -f Dockerfile.init -t ghcr.io/rossoctl/cortex/proxy-init:local .
 load_image_to_kind ghcr.io/rossoctl/cortex/proxy-init:local
 echo "✅ Built and loaded: proxy-init:local"

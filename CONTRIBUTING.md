@@ -32,7 +32,7 @@ cd cortex
 pre-commit install
 
 # Build the proxy-init image (one-target Makefile in proxy-init/).
-# For every image at once, use the repo-root local-build-and-test.sh —
+# For every image at once, use scripts/local-build-and-test.sh —
 # see "Testing against a local cluster" below.
 cd proxy-init && make docker-build-init
 ```
@@ -62,14 +62,14 @@ auth rather than client secrets, that repo's
 `deployments/envs/dev_values_federated-jwt.yaml` sets
 `authBridge.clientAuthType: federated-jwt`.
 
-**2. Build and load your local images.** `local-build-and-test.sh` is the
-supported path — it builds from both repos and loads everything into Kind. It
+**2. Build and load your local images.** `scripts/local-build-and-test.sh` is
+the supported path — it builds from both repos and loads everything into Kind. It
 requires the cluster to exist already, which is why it comes second:
 
 ```bash
 cd cortex
 export KIND_EXPERIMENTAL_PROVIDER=podman   # Podman only
-CLUSTER_NAME=rossoctl ROSSOCTL_DIR=../rossoctl ./local-build-and-test.sh
+CLUSTER_NAME=rossoctl ROSSOCTL_DIR=../rossoctl ./scripts/local-build-and-test.sh
 ```
 
 Pass `CLUSTER_NAME` explicitly: this script defaults to `rossoctl-dev` while
@@ -93,7 +93,7 @@ under Podman). On Podman the script also loads via tar archives, because
 
 ```bash
 cd cortex
-./verify-spire-keycloak.sh
+./scripts/verify-spire-keycloak.sh
 ```
 
 It checks the SPIRE server, the OIDC discovery provider, the JWKS `use` field,
