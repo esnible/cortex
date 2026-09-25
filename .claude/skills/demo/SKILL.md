@@ -59,7 +59,7 @@ docker build -f cmd/authbridge-envoy/Dockerfile \
   --build-arg GO_BUILD_TAGS="$(go -C scripts/profile-tags run . envoy)" \
   -t ghcr.io/rossoctl/cortex/authbridge-envoy:latest .
 
-cd cortex/authbridge/proxy-init
+cd proxy-init
 docker build -f Dockerfile.init -t ghcr.io/rossoctl/cortex/proxy-init:latest .
 
 # Load into Kind
@@ -141,10 +141,11 @@ reader (client-registration) ran as UID 1000.
 
 **Fix at the time:** align `RunAsUser` / `RunAsGroup` across both containers.
 
-**Today this cannot happen:** there is no second container. `authlib/spiffe`'s
-Provider fetches SVIDs in-process and writes the `/opt/` mirror as the same UID
-that reads it. If you see this symptom now, you are looking at a pre-#411
-deployment.
+**Today this symptom cannot recur:** the in-process mirror writes
+`/opt/jwt_svid.token` mode `0644` (`authlib/spiffe/mirror.go`), not `0600`, and the
+`client-registration` reader is gone. `svid_key.pem` is still `0600`, so a
+different-UID reader of *the key* would be denied — that is a different symptom
+from the one above.
 
 ### 4. Istio Ambient Mesh Inbound Path
 

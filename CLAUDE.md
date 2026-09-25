@@ -173,7 +173,7 @@ into workload pods. Default deployment shape (proxy-sidecar mode):
          │                                    │
          │  authbridge-proxy ──► SPIRE Agent  │  (in-process
          │    - spiffe.Provider reads SVIDs   │   Workload API
-         │      over the Workload API and     │   client; driven
+         │      over the Workload API and     │   client; shaped
          │      mirrors them under /opt/      │   by the `spiffe:`
          │    - Reverse proxy: inbound JWT    │   config block)
          │    - Forward proxy: outbound       │
@@ -193,8 +193,7 @@ into workload pods. Default deployment shape (proxy-sidecar mode):
 
 There is no `spiffe-helper` sidecar and no `SPIRE_ENABLED` gate. SPIRE
 credentials are fetched in-process by `authlib/spiffe`'s Provider, which
-also mirrors them to `/opt/` for external readers. Presence or absence of
-the top-level `spiffe:` block in the runtime config is what drives this.
+also mirrors them to `/opt/` for external readers.
 
 ## AuthBridge Binaries
 
@@ -264,9 +263,8 @@ All images are pushed to `ghcr.io/rossoctl/cortex/` from
 
 None of these images bundle `spiffe-helper`, and `SPIRE_ENABLED` no
 longer gates anything. SPIRE credentials are fetched in-process by
-`authlib/spiffe`'s Provider, driven by the top-level `spiffe:` block in
-the runtime config; the Provider also mirrors the SVIDs under `/opt/`
-for external readers.
+`authlib/spiffe`'s Provider; the Provider also mirrors the SVIDs under
+`/opt/` for external readers.
 
 The legacy `authbridge-unified`, `authbridge-light`, `client-registration`,
 `spiffe-helper`, `auth-proxy`, and `demo-app` standalone images have
@@ -292,7 +290,7 @@ Hooks:
   needs CGO and a pinned `libcpex_ffi.a`, so `build.yaml` covers it via the image
   build), `storage/redis`, and the three `demos/*` modules.
 - `go fmt ./...` is **not** a gate. `go fmt` is `gofmt -l -w`: it rewrites the
-  checkout and exits 0, so it can never fail a build.
+  checkout instead of reporting, so formatting drift cannot fail a build.
 
 Formatting drift therefore reaches main — a few files are gofmt-dirty there
 today, including three under `authlib`, where `go fmt` demonstrably runs on
@@ -414,7 +412,8 @@ cd authbridge && podman build -f cmd/authbridge-proxy/Dockerfile \
 1. **Envoy Proxy UID:** Envoy runs as UID 1337. The `proxy-init` iptables rules exclude this UID from redirection to prevent loops. The `authbridge` container also runs as UID 1337.
 
 2. **Shared Volume Contract:** The sidecar and the operator communicate through files:
-   - `/opt/jwt_svid.token`, `/opt/svid.pem`, `/opt/svid_key.pem`, `/opt/svid_bundle.pem` — written by authbridge's in-process `spiffe.Provider` mirror, for external readers (e2e probes, debugging). The hot path reads SVIDs from memory, not these files.
+   - `/opt/svid.pem`, `/opt/svid_key.pem`, `/opt/svid_bundle.pem` — written by authbridge's in-process `spiffe.Provider` mirror, for external readers (e2e probes, debugging). The hot path reads SVIDs from memory, not these files.
+   - `/opt/jwt_svid.token` — same mirror, but written only when a plugin requests a JWT-SVID for an audience (today: `token-exchange` with `identity.type: spiffe`). An X.509-only workload never produces it.
    - `/shared/client-id.txt` — operator-created Secret mount, read by authbridge (`jwt-validation`'s `audience_file`)
    - `/shared/client-secret.txt` — operator-created Secret mount, read by authbridge (`token-exchange`)
 

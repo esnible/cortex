@@ -83,7 +83,7 @@ See [`docs/plugin-catalog.md`](./docs/plugin-catalog.md) for the full list of im
 
 ## Architecture (Operator-Injected)
 
-The following describes the operator-injected sidecar deployment. After cortex#411 each mode is served by its own image (one container per pod). SPIRE credentials are fetched **in-process** by `authlib/spiffe`'s Provider over the Workload API, driven by the top-level `spiffe:` block in the runtime config; the Provider also mirrors the SVIDs under `/opt/` for external readers. The legacy `authbridge-unified`, `authbridge-light`, `envoy-with-processor`, and standalone `client-registration` / `spiffe-helper` sidecars are gone — there is no bundled `spiffe-helper` binary and `SPIRE_ENABLED` no longer gates anything.
+The following describes the operator-injected sidecar deployment. After cortex#411 each mode is served by its own image (one container per pod). SPIRE credentials are fetched **in-process** by `authlib/spiffe`'s Provider over the Workload API; the Provider also mirrors the SVIDs under `/opt/` for external readers. The legacy `authbridge-unified`, `authbridge-light`, `envoy-with-processor`, and standalone `client-registration` / `spiffe-helper` sidecars are gone — there is no bundled `spiffe-helper` binary and `SPIRE_ENABLED` no longer gates anything.
 
 ### What AuthBridge Does
 
@@ -218,7 +218,7 @@ registration runs in the operator, not the pod.
 |-----------|------|------|---------|
 | `proxy-init` | init | envoy-sidecar only | Sets up iptables to intercept inbound and outbound traffic (excludes Keycloak port to avoid token-exchange loops) |
 | `Your App` | container | both | Your application |
-| `authbridge-proxy` | container | proxy-sidecar (default) | Sidecar from the `authbridge` image: HTTP forward + reverse proxies, full plugin set (jwt-validation + token-exchange + a2a/mcp/inference parsers). Fetches SVIDs in-process when `spiffe:` is configured. |
+| `authbridge-proxy` | container | proxy-sidecar (default) | Sidecar from the `authbridge` image: HTTP forward + reverse proxies, full plugin set (jwt-validation + token-exchange + a2a/mcp/inference parsers). Fetches SVIDs in-process. |
 | `envoy-proxy` | container | envoy-sidecar | Combined sidecar from the `authbridge-envoy` image: Envoy + ext_proc. Validates inbound JWTs (signature + issuer via JWKS) and exchanges outbound tokens; HTTPS is TLS-passthrough. |
 
 ### Target Service Pod
