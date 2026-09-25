@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Move all 1,005 files under `authbridge/` up to the repository root, dropping the `/authbridge` segment from 12 Go module paths and every path reference, leaving no `authbridge/` directory behind.
+**Goal:** Move all 1,006 files under `authbridge/` up to the repository root, dropping the `/authbridge` segment from 12 Go module paths and every path reference, leaving no `authbridge/` directory behind.
 
-**Architecture:** A mechanical rename driven by a committed script, so review is "re-run it and diff" rather than reading 1,005 renames. Paths *within* the moving subtree (`replace` directives, `go.work` use list, Dockerfile `COPY`) survive untouched because the subtree moves together; paths that climb *out* of it are enumerated and fixed by hand. One PR, five commits.
+**Architecture:** A mechanical rename driven by a committed script, so review is "re-run it and diff" rather than reading 1,006 renames. Paths *within* the moving subtree (`replace` directives, `go.work` use list, Dockerfile `COPY`) survive untouched because the subtree moves together; paths that climb *out* of it are enumerated and fixed by hand. One PR, five commits.
 
 **Tech Stack:** Go 1.26.5 (12 modules, `go.work`), POSIX sh (`install.sh` + its test harness), GitHub Actions, Docker.
 
@@ -175,8 +175,8 @@ Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>"
 **Files:**
 - Create: `scripts/flatten-authbridge.sh` (the migration script, committed for review; deleted in Task 6)
 - Create: `.dockerignore`
-- Move: all 1,005 files under `authbridge/` up one level
-- Modify: 12 `go.mod` module lines; 460 Go files (1,019 import occurrences); `.github/workflows/{ci,build,release-binaries,dependabot-tidy,security-scans}.yaml` (36 refs); `.github/dependabot.yml` (6 directories); `Makefile`; `local-build-and-test.sh`; `.gitignore`
+- Move: all 1,006 files under `authbridge/` up one level
+- Modify: 12 `go.mod` module lines; 423 Go files (909 import occurrences); `.github/workflows/{ci,build,release-binaries,dependabot-tidy,security-scans}.yaml` (36 refs); `.github/dependabot.yml` (6 directories); `Makefile`; `local-build-and-test.sh`; `.gitignore`
 
 **Interfaces:**
 - Consumes: Task 1's `install.sh` (moved unchanged).
@@ -190,7 +190,7 @@ Create `scripts/flatten-authbridge.sh`:
 #!/bin/sh
 # One-shot migration: move authbridge/* to the repo root and drop the segment
 # from every module path and path reference. Committed so review is "re-run it
-# and diff" rather than reading 1,005 renames. Deleted in the final commit.
+# and diff" rather than reading 1,006 renames. Deleted in the final commit.
 set -eu
 
 cd "$(git rev-parse --show-toplevel)"
@@ -355,13 +355,13 @@ Expected: builds. Watch the "transferring context" line — it should be tens of
 git add -A
 git commit -s -m "refactor: Flatten authbridge/ into the repo root
 
-authbridge/ held 1,005 of 1,061 tracked files and separated nothing from
+authbridge/ held 1,006 of 1061 tracked files and separated nothing from
 nothing: it dates from when this repo was kagenti-extensions and held more than
 one extension. The level was carried by the public install URL, all 12 Go module
 paths, 36 workflow references and 6 dependabot module directories.
 
 Driven by scripts/flatten-authbridge.sh, committed here so review is re-run it
-and diff rather than reading 1,005 renames.
+and diff rather than reading 1,006 renames.
 
 Three things needed no edit, because the subtree moved together and they point
 within it: the replace directives' relative paths, go.work's use list, and the
@@ -690,7 +690,7 @@ Expected: all clean; no `authbridge` directory.
 git add -A
 git commit -s -m "chore: Retire the flatten migration script
 
-It was committed so the 1,005-file rename could be reviewed by re-running it
+It was committed so the 1,006-file rename could be reviewed by re-running it
 rather than read line by line. That job is done, and a one-shot script that
 rewrites module paths in a directory which no longer exists is only a hazard.
 
