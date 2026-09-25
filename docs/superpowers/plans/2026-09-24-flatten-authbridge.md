@@ -335,6 +335,10 @@ done
 (cd scripts/readme-demo && go test -count=1 ./...)
 sh install_test.sh
 shellcheck install.sh install_test.sh local-build-and-test.sh verify-spire-keycloak.sh
+# CI's python-test job. Easy to forget because this repo is 95% Go — and
+# forgetting it is how a dead `parents[1]/"authbridge"` path in
+# tests/test_keycloak_sync.py survived the first pass of this very sweep.
+pytest tests/ -v -x --ignore=tests/e2e
 ```
 
 Expected: every module clean. `scripts/readme-demo`'s staleness test may fail here — that is Task 5's job; note it and continue.
@@ -420,10 +424,34 @@ For the full deployment architecture — sidecar shapes, container inventory, th
 end-to-end token flow — see [`architecture.md`](architecture.md).
 ```
 
+- [ ] **Step 3b: Retarget the eleven links that point at this file**
+
+Task 2's sweep rewrote `authbridge/README.md` → `README.md` in these, which is the
+wrong document — the root README is the product page, this is the architecture
+deep dive. Task 2's fix round restored them to `authbridge/README.md`; now that
+the file has become `docs/architecture.md`, point them there. Three anchors
+(`#download-prebuilt-binaries`, `#deployment-modes`, `#build-tag-plugin-selection`)
+exist only in this document, so getting the target wrong leaves them dead:
+
+```
+authlib/plugins/README.md:57              demos/github-issue/demo-manual.md:1204
+cmd/abctl/README.md:13                    demos/weather-agent/demo-ui.md:847
+demos/README.md:172                       demos/weather-agent/demo-with-abctl.md:44
+demos/github-issue/demo.md:92             docs/kubernetes.md:44
+demos/github-issue/demo-ui.md:1217        docs/kubernetes.md:45
+```
+
+Mind the relative depth: each needs the correct number of `../` to reach
+`docs/architecture.md` from its own location, which differs per file.
+
+```bash
+grep -rn 'authbridge/README' --exclude-dir=.git --exclude-dir=docs/superpowers . || echo "none left"
+```
+
 - [ ] **Step 4: Verify every inbound link still resolves**
 
 ```bash
-for f in docs/README.md docs/kubernetes.md README.md CONTRIBUTING.md CLAUDE.md; do
+for f in $(git ls-files "*.md"); do
   d=$(dirname "$f")
   grep -oE '\]\(([^)#h][^)]*)\)' "$f" | sed 's/](//;s/)$//' | while read -r l; do
     [ -e "$d/$l" ] || echo "BROKEN in $f -> $l"
