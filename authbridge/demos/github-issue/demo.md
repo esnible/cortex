@@ -49,7 +49,7 @@ The agent pod has two containers (after cortex#411):
 
 There is no bundled `spiffe-helper` binary and no `SPIRE_ENABLED` gate:
 SVIDs are fetched in-process by `authlib/spiffe`'s Provider over the SPIRE
-Workload API and mirrored under `/opt/` for external readers. Keycloak client registration is
+Workload API. Keycloak client registration is
 operator-managed (no in-pod sidecar); the operator's
 `ClientRegistrationReconciler` creates a
 `rossoctl-keycloak-client-credentials-<hash>` Secret that the

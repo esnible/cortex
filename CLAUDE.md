@@ -192,8 +192,7 @@ into workload pods. Default deployment shape (proxy-sidecar mode):
 ```
 
 There is no `spiffe-helper` sidecar and no `SPIRE_ENABLED` gate. SPIRE
-credentials are fetched in-process by `authlib/spiffe`'s Provider, which
-also mirrors them to `/opt/` for external readers.
+credentials are fetched in-process by `authlib/spiffe`'s Provider.
 
 ## AuthBridge Binaries
 
@@ -212,7 +211,7 @@ Sidecar binaries, one Dockerfile each; the `authbridge-lite` image is a build va
 **Go modules** (12 in total; `authbridge/go.work` links 9 of them — the three
 self-contained `demos/*` modules are outside the workspace. `go-tidy-check` in
 `ci.yaml` does cover all 12: it discovers them with `find`, not from `go.work`):
-- `authbridge/authlib/` — pure library: validation, exchange, cache, bypass, spiffe, routing, auth, config, all listener implementations, all plugins. **Consumed by two other repos** (`rossoctl/operator`, `rossoctl-cli`), so removing exported API here is a cross-repo change.
+- `authbridge/authlib/` — pure library: validation, exchange, cache, bypass, spiffe, routing, auth, config, all listener implementations, all plugins. **Consumed outside this repo**, so removing exported API here is a cross-repo change.
 - `authbridge/cmd/authbridge-{proxy,envoy,cpex,praxis}/` — thin main packages that import authlib and start the listeners they need; they import no plugin package directly. (The `authbridge-lite` image is `authbridge-proxy` built with the `lite` profile.)
 - `authbridge/cmd/abctl/` — the TUI; also released as a standalone binary.
 - `authbridge/storage/redis/`, `authbridge/scripts/{profile-tags,readme-demo}/`, and the self-contained `authbridge/demos/{echo,finance-sparc,ibac}/`.
@@ -224,7 +223,7 @@ self-contained `demos/*` modules are outside the workspace. `go-tidy-check` in
 
 | Workflow | Trigger | Purpose |
 |----------|---------|---------|
-| `ci.yaml` | PR to main/release-* | Pre-commit; `go fmt`/`go vet`/build/test for authlib, both `scripts/*` and the `cmd/*` matrix; `go mod tidy -diff` for all 12 modules; Python tests. Note `go fmt` rewrites rather than fails — only vet/build/test/tidy actually gate |
+| `ci.yaml` | PR to main/release-* | Pre-commit; `go fmt`/`go vet`/build/test for authlib, both `scripts/*` and the `cmd/*` matrix; `go mod tidy -diff` for all 12 modules; Python tests. Note `go fmt` rewrites rather than fails, so it does not gate |
 | `build.yaml` | Tag push (`v*`) or manual | Multi-arch Docker builds for all six matrix images: proxy-init, authbridge (proxy-sidecar combined), authbridge-envoy (envoy-sidecar combined), authbridge-lite (proxy Dockerfile built with the `lite` profile from `authbridge/scripts/profile-tags`), authbridge-cpex, and sparc-service (Python). Every Go image passes `GO_BUILD_TAGS` naming a profile — plugins are all opt-in, so an image built without tags registers none |
 | `security-scans.yaml` | PR to main | Dependency review, shellcheck, YAML lint, Hadolint, Bandit, Trivy, CodeQL |
 | `scorecard.yaml` | Weekly / push to main | OpenSSF Scorecard security health metrics |
@@ -263,8 +262,7 @@ All images are pushed to `ghcr.io/rossoctl/cortex/` from
 
 None of these images bundle `spiffe-helper`, and `SPIRE_ENABLED` no
 longer gates anything. SPIRE credentials are fetched in-process by
-`authlib/spiffe`'s Provider; the Provider also mirrors the SVIDs under
-`/opt/` for external readers.
+`authlib/spiffe`'s Provider.
 
 The legacy `authbridge-unified`, `authbridge-light`, `client-registration`,
 `spiffe-helper`, `auth-proxy`, and `demo-app` standalone images have
@@ -412,7 +410,7 @@ cd authbridge && podman build -f cmd/authbridge-proxy/Dockerfile \
 1. **Envoy Proxy UID:** Envoy runs as UID 1337. The `proxy-init` iptables rules exclude this UID from redirection to prevent loops. The `authbridge` container also runs as UID 1337.
 
 2. **Shared Volume Contract:** The sidecar and the operator communicate through files:
-   - `/opt/svid.pem`, `/opt/svid_key.pem`, `/opt/svid_bundle.pem` — written by authbridge's in-process `spiffe.Provider` mirror, for external readers (e2e probes, debugging). The hot path reads SVIDs from memory, not these files.
+   - `/opt/svid.pem`, `/opt/svid_key.pem`, `/opt/svid_bundle.pem` — written by authbridge's in-process `spiffe.Provider` mirror when `spiffe.mirror_files` is on (the default), for external readers (e2e probes, debugging). The hot path reads SVIDs from memory, not these files.
    - `/opt/jwt_svid.token` — same mirror, but written only when a plugin requests a JWT-SVID for an audience (today: `token-exchange` with `identity.type: spiffe`). An X.509-only workload never produces it.
    - `/shared/client-id.txt` — operator-created Secret mount, read by authbridge (`jwt-validation`'s `audience_file`)
    - `/shared/client-secret.txt` — operator-created Secret mount, read by authbridge (`token-exchange`)
