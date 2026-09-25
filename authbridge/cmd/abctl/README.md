@@ -307,6 +307,7 @@ abctl configure bobshell disable    # removes exactly what enable added
 ```sh
 # >>> cortex abctl (bobshell) >>>
 bob() {
+  local p
   p=$(whence -p bob 2>/dev/null || type -P bob 2>/dev/null)
   if [ -z "$p" ]; then
     echo "bob: not found in PATH" >&2

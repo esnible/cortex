@@ -68,8 +68,16 @@ const bobShellMarkerEnv = "CORTEX_BOBSHELL"
 //     `abctl exec -- "" ...`, which would be an obscure failure from abctl instead.
 //   - "$@" forwards the user's arguments. An alias got this for free; a function has
 //     to say so, and omitting it would silently drop every argument.
+//   - `local p` is not hygiene for its own sake. Without it the assignment is global
+//     in both shells, so calling `bob` would overwrite a `p` the user was already
+//     using — verified before and after: `p=MINE; bob; echo $p` printed bob's path
+//     without it and `MINE` with it, in bash and zsh alike. `local` is outside POSIX
+//     but present in both shells this block is ever written for, which is the only
+//     portability question that applies: bobShellRCPath writes it for zsh or bash and
+//     refuses every other shell.
 const bobShellBlock = bobShellMarkerStart + `
 bob() {
+  local p
   p=$(whence -p bob 2>/dev/null || type -P bob 2>/dev/null)
   if [ -z "$p" ]; then
     echo "bob: not found in PATH" >&2
@@ -179,6 +187,22 @@ func runBobShell(args []string, stdout, stderr io.Writer) int {
 	case "enable", "disable":
 		// Resolved here rather than in each verb so both agree on which file they are
 		// talking about, and so the error text is written once.
+		// An explicit empty --rc is a usage error, not a request for the default.
+		// `*rcPath == ""` alone cannot tell "flag absent" from `--rc ""`, so
+		// `enable --rc "$RC_FILE"` with RC_FILE unset fell through to the $SHELL
+		// default and wrote the user's real startup file — a write at a file the
+		// caller never named. fs.Visit reports only flags actually seen, which is the
+		// distinction the string value has already lost by this point.
+		given := false
+		fs.Visit(func(f *flag.Flag) {
+			if f.Name == "rc" {
+				given = true
+			}
+		})
+		if given && *rcPath == "" {
+			fmt.Fprintln(stderr, "abctl: --rc was given an empty path; name a shell startup file, or omit --rc for the default")
+			return 2
+		}
 		if *rcPath == "" {
 			home, err := os.UserHomeDir()
 			if err != nil || home == "" {
@@ -198,6 +222,20 @@ func runBobShell(args []string, stdout, stderr io.Writer) int {
 		if fi, serr := os.Stat(*rcPath); serr == nil && fi.IsDir() {
 			fmt.Fprintf(stderr, "abctl: --rc %s is a directory; give the path of a shell startup file\n", *rcPath)
 			return 2
+		}
+		// Checked here, beside the directory case and for the same reason, rather than
+		// left to the write: writeRCFile creates a sibling .tmp, so a missing parent
+		// surfaced as `open /nonexistent/deeper/rc.tmp: no such file or directory` at
+		// exit 1 — an errno naming a path the user never typed, printed after the
+		// block and a confident "Add to ...". Not MkdirAll, which sibling writeSettings
+		// does: a settings file lives in a directory that tool owns and can create, but
+		// a missing parent for an rc file is nearly always a typo in --rc, and
+		// materialising the typo is worse than refusing it.
+		if dir := filepath.Dir(*rcPath); dir != "" {
+			if _, serr := os.Stat(dir); serr != nil {
+				fmt.Fprintf(stderr, "abctl: directory %s does not exist; check the --rc path\n", dir)
+				return 2
+			}
 		}
 		if action == "enable" {
 			return bobShellEnable(*rcPath, *yes, stdout, stderr)
@@ -286,6 +324,21 @@ func bobShellAdviseManual(why, path string, stdout io.Writer) int {
 	return 0
 }
 
+// bobShellEnable appends the block to the startup file, or explains why it did not.
+//
+// Behaviour is unspecified when the existing file is not a valid script. This command
+// appends text; it does not parse shell, which is the deliberate design choice the
+// whole command rests on (see bobShellStatus). So a file that ends inside an open
+// construct — an unclosed `if`, a `for` with no `done`, an unterminated quote or
+// heredoc — will swallow the appended block as part of that construct, and enable
+// will report "Enabled" having installed nothing that runs. Nothing here detects it:
+// recognising it requires exactly the shell grammar this design refuses to carry, and
+// a file in that state is already broken for every other line in it, not just ours.
+// `status` in a new shell is the check that answers whether the block took effect.
+//
+// The reverse direction is guarded, because it is cheap: a file not ending in a
+// newline gets one before the block is appended, so the marker always starts its own
+// line (see below).
 func bobShellEnable(rcPath string, yes bool, stdout, stderr io.Writer) int {
 	target, hops := rcTarget(rcPath)
 	if hops >= 2 {
@@ -351,14 +404,21 @@ func bobShellDisable(rcPath string, yes bool, stdout, stderr io.Writer) int {
 	// wrote, and nothing else.
 	switch n := strings.Count(content, bobShellBlock); {
 	case n == 0:
-		fmt.Fprintf(stdout, "Not enabled in %s\n", target)
-		// A marker with no matching block means a hand-edit, which is the one case
-		// where "not enabled" alone would mislead: there is something of ours in
-		// there, and we are deliberately not touching it.
+		// Two different situations, and they had one headline between them. A file with
+		// our markers but no matching block is a hand-edit: the function is live, the
+		// export line ran, and `status` in a new shell will say enabled — so "Not
+		// enabled" was contradicted by the next command the user would run. It now
+		// reads like the n > 1 arm below, which is the same kind of answer: we found
+		// something of ours, and we are deliberately not touching it. The wording
+		// mirrors enable's own refusal for this case.
 		if strings.Contains(content, bobShellMarkerStart) {
-			fmt.Fprintln(stdout, "  A cortex bobshell block is present but does not match this version, so it")
-			fmt.Fprintln(stdout, "  was left alone. Remove it by hand if you no longer want it.")
+			fmt.Fprintf(stdout, "Not changing %s: it already holds a cortex bobshell block that does not\n", target)
+			fmt.Fprintln(stdout, "match this version.")
+			fmt.Fprintln(stdout, "  Remove it by hand if you no longer want it. `bob` may still be routed")
+			fmt.Fprintln(stdout, "  through Cortex in shells that already sourced this file.")
+			return 0
 		}
+		fmt.Fprintf(stdout, "Not enabled in %s\n", target)
 		return 0
 	case n > 1:
 		fmt.Fprintf(stdout, "Not changing %s: it holds %d copies of the cortex bobshell block.\n", target, n)
@@ -434,11 +494,28 @@ func writeRCFile(path, content string) error {
 		if fi, serr := os.Stat(path); serr == nil {
 			mode = fi.Mode().Perm()
 		}
+		// Three outcomes, and the middle one is the fix: a .bak that exists as a
+		// regular file is the backup-once rule working (keep the pristine copy), a
+		// .bak that is absent gets written, and a .bak that is anything else — a
+		// directory, a socket, a dangling symlink — is an error. Testing only
+		// os.IsNotExist collapsed the third into the first: os.Stat on a directory
+		// returns a nil error, so the branch was skipped and the edit proceeded with
+		// no backup at all, while the help text and README both promise one. The
+		// backup is the stated reason this command is safe to run on a file accreted
+		// by hand over years, so it fails loudly rather than quietly not happening.
 		bak := path + ".bak"
-		if _, serr := os.Stat(bak); os.IsNotExist(serr) {
+		switch fi, serr := os.Lstat(bak); {
+		case serr == nil && fi.Mode().IsRegular():
+			// Backup already taken on an earlier run. Left exactly as it is.
+		case serr == nil:
+			return fmt.Errorf("backup path %s exists but is not a regular file (%s); "+
+				"move it aside so the original can be backed up", bak, fi.Mode().Type())
+		case os.IsNotExist(serr):
 			if werr := os.WriteFile(bak, cur, mode); werr != nil {
 				return fmt.Errorf("writing backup %s: %w", bak, werr)
 			}
+		default:
+			return fmt.Errorf("checking backup %s: %w", bak, serr)
 		}
 	}
 	tmp := path + ".tmp"

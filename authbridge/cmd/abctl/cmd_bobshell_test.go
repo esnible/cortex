@@ -399,7 +399,10 @@ func TestBobShellDisable(t *testing.T) {
 		if got := readFile(t, rc); got != orig {
 			t.Errorf("file changed: %q", got)
 		}
-		if got := out.String(); !strings.Contains(got, "does not match this version") {
+		// Whitespace-collapsed before matching: the message wraps across lines, and a
+		// substring test against the raw output pins the wrap position rather than the
+		// wording. Rewrapping the sentence is not a regression; losing it is.
+		if got := strings.Join(strings.Fields(out.String()), " "); !strings.Contains(got, "does not match this version") {
 			t.Errorf("output does not explain the near-miss: %q", got)
 		}
 	})
@@ -664,6 +667,19 @@ func TestBobShellBlock_ShapeIsSafe(t *testing.T) {
 	if !strings.Contains(bobShellBlock, "export "+bobShellMarkerEnv+"=1") {
 		t.Error("block does not export the marker status reads")
 	}
+	// The scratch variable must be scoped to the function. Without `local` the
+	// assignment is global in both bash and zsh, so every `bob` call silently
+	// overwrote whatever the user had in `p` — confirmed by running
+	// `p=MINE; bob; echo $p` against the installed block in both shells.
+	if !strings.Contains(bobShellBlock, "local p") {
+		t.Error("block does not declare p local, so calling bob clobbers the user's p")
+	}
+	// Ordering matters: `local p` must come before the assignment, or it scopes
+	// nothing. Asserted by index rather than by presence, because a block with both
+	// lines in the wrong order passes every other check here.
+	if i, j := strings.Index(bobShellBlock, "local p"), strings.Index(bobShellBlock, "p=$("); i < 0 || j < 0 || i > j {
+		t.Errorf("`local p` (at %d) does not precede the assignment (at %d)", i, j)
+	}
 }
 
 // readFile is shared with the other tests in this package
@@ -676,4 +692,177 @@ func writeFile(t *testing.T, path, content string) {
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("writing %s: %v", path, err)
 	}
+}
+
+// The defects a review of this command's first version found, each asserted by the
+// fixture that exposed it. Grouped because they share a theme: every one of them was
+// a path where the command reported success, or reported the wrong thing, while doing
+// something other than what its own help text promises.
+func TestBobShellReviewFindings(t *testing.T) {
+	// A .bak that is not a regular file used to be indistinguishable from "backup
+	// already taken": os.Stat succeeds on a directory, so os.IsNotExist is false, the
+	// backup branch was skipped, and the edit proceeded to exit 0 with no backup and
+	// no mention of one. Backup-once is the stated reason this command is safe to run
+	// on a hand-accreted file, so it must fail rather than quietly not happen.
+	t.Run("backup path blocked by a directory refuses the edit", func(t *testing.T) {
+		dir := t.TempDir()
+		rc := filepath.Join(dir, ".zshrc")
+		orig := "export FOO=1\n"
+		writeFile(t, rc, orig)
+		if err := os.Mkdir(rc+".bak", 0o755); err != nil {
+			t.Fatal(err)
+		}
+
+		var out, errb bytes.Buffer
+		if code := bobShellEnable(rc, true, &out, &errb); code == 0 {
+			t.Errorf("exit = 0, want non-zero: enable succeeded with no backup")
+		}
+		// The whole point: the original is untouched, so the user can retry.
+		if got := readFile(t, rc); got != orig {
+			t.Errorf("file was edited without a backup:\n%s", got)
+		}
+		if !strings.Contains(errb.String(), ".bak") {
+			t.Errorf("stderr does not name the backup path: %q", errb.String())
+		}
+	})
+
+	// A regular .bak is the backup-once rule working, and must still be left alone.
+	// Paired with the case above so a fix for one cannot silently break the other.
+	t.Run("existing regular backup is preserved", func(t *testing.T) {
+		dir := t.TempDir()
+		rc := filepath.Join(dir, ".zshrc")
+		writeFile(t, rc, "export FOO=1\n")
+		writeFile(t, rc+".bak", "PRISTINE\n")
+
+		var out, errb bytes.Buffer
+		if code := bobShellEnable(rc, true, &out, &errb); code != 0 {
+			t.Fatalf("exit = %d, want 0 (stderr: %s)", code, errb.String())
+		}
+		if got := readFile(t, rc+".bak"); got != "PRISTINE\n" {
+			t.Errorf("backup was overwritten: %q", got)
+		}
+	})
+
+	// A missing parent directory used to reach the write, which creates a sibling
+	// .tmp — so the user saw a confident "Add to ...", the whole block, and then
+	// `open /nonexistent/deeper/rc.tmp: no such file or directory` at exit 1: an
+	// errno naming a path they never typed. It is a usage error (2), caught before
+	// anything is printed.
+	t.Run("missing parent directory is a usage error", func(t *testing.T) {
+		missing := filepath.Join(t.TempDir(), "nonexistent", "deeper", ".zshrc")
+		for _, action := range []string{"enable", "disable"} {
+			t.Run(action, func(t *testing.T) {
+				var out, errb bytes.Buffer
+				if code := runBobShell([]string{action, "--yes", "--rc", missing}, &out, &errb); code != 2 {
+					t.Errorf("exit = %d, want 2", code)
+				}
+				// Nothing on stdout: the block and the "Add to ..." line must not be
+				// printed before a refusal.
+				if out.Len() != 0 {
+					t.Errorf("stdout not empty before a refusal: %q", out.String())
+				}
+				// The errno spelling is the bug's signature, asserted directly.
+				if strings.Contains(errb.String(), ".tmp") {
+					t.Errorf("stderr names a .tmp path the user never gave: %q", errb.String())
+				}
+				if !strings.Contains(errb.String(), "--rc") {
+					t.Errorf("stderr does not point at the flag to fix: %q", errb.String())
+				}
+			})
+		}
+	})
+
+	// `--rc ""` is what `--rc "$RC_FILE"` expands to when RC_FILE is unset, and it
+	// used to fall through to the $SHELL default — writing the user's real startup
+	// file when they had named a different one. `*rcPath == ""` cannot tell that from
+	// "flag absent"; fs.Visit can.
+	t.Run("empty --rc is refused, not defaulted", func(t *testing.T) {
+		// A home directory that would be written if the fallback fired, so the
+		// assertion is about behaviour and not only about the message.
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		t.Setenv("SHELL", "/bin/zsh")
+
+		for _, action := range []string{"enable", "disable"} {
+			t.Run(action, func(t *testing.T) {
+				var out, errb bytes.Buffer
+				if code := runBobShell([]string{action, "--yes", "--rc", ""}, &out, &errb); code != 2 {
+					t.Errorf("exit = %d, want 2", code)
+				}
+				if fileExists(filepath.Join(home, ".zshrc")) {
+					t.Error("fell back to the $SHELL default and wrote a file the caller never named")
+				}
+				if !strings.Contains(errb.String(), "--rc") {
+					t.Errorf("stderr does not name the flag: %q", errb.String())
+				}
+			})
+		}
+	})
+
+	// Omitting --rc entirely must still reach the default. The guard above keys off
+	// fs.Visit, and a guard that also caught the absent case would break the command
+	// for everyone who uses it normally.
+	t.Run("absent --rc still uses the default", func(t *testing.T) {
+		home := t.TempDir()
+		t.Setenv("HOME", home)
+		t.Setenv("SHELL", "/bin/zsh")
+
+		var out, errb bytes.Buffer
+		if code := runBobShell([]string{"enable", "--yes"}, &out, &errb); code != 0 {
+			t.Fatalf("exit = %d, want 0 (stderr: %s)", code, errb.String())
+		}
+		if !fileExists(filepath.Join(home, ".zshrc")) {
+			t.Error("did not write the $SHELL default when --rc was omitted")
+		}
+	})
+
+	// disable used to headline "Not enabled" over a file holding our markers — while
+	// the function was live, CORTEX_BOBSHELL was exported, and `status` in a new
+	// shell would say enabled. Two commands, opposite answers, same file.
+	t.Run("disable does not claim not-enabled over a hand-edited block", func(t *testing.T) {
+		dir := t.TempDir()
+		rc := filepath.Join(dir, ".zshrc")
+		writeFile(t, rc, "export FOO=1\n")
+		var enOut, enErr bytes.Buffer
+		if code := bobShellEnable(rc, true, &enOut, &enErr); code != 0 {
+			t.Fatalf("enable exit = %d (stderr: %s)", code, enErr.String())
+		}
+		// Hand-edit inside the fence: markers ours, block no longer verbatim.
+		edited := strings.Replace(readFile(t, rc), "bob: not found in PATH", "bob missing", 1)
+		writeFile(t, rc, edited)
+
+		var out, errb bytes.Buffer
+		if code := bobShellDisable(rc, true, &out, &errb); code != 0 {
+			t.Fatalf("exit = %d, want 0 (stderr: %s)", code, errb.String())
+		}
+		got := out.String()
+		// The contradiction, asserted directly: this file's `bob` may well be routed.
+		if strings.Contains(got, "Not enabled") {
+			t.Errorf("headline still claims the file is not enabled:\n%s", got)
+		}
+		if !strings.Contains(got, "Not changing "+rc) {
+			t.Errorf("output does not say the file was left alone:\n%s", got)
+		}
+		if !strings.Contains(got, "does not") {
+			t.Errorf("output does not explain the version mismatch:\n%s", got)
+		}
+		// Left alone means left alone.
+		if readFile(t, rc) != edited {
+			t.Error("the hand-edited block was modified")
+		}
+	})
+
+	// The plain case must keep the plain message: a file with nothing of ours in it
+	// really is "not enabled", and the fix above must not have widened to cover it.
+	t.Run("a file with no markers still says not enabled", func(t *testing.T) {
+		rc := filepath.Join(t.TempDir(), ".zshrc")
+		writeFile(t, rc, "export FOO=1\n")
+		var out, errb bytes.Buffer
+		if code := bobShellDisable(rc, true, &out, &errb); code != 0 {
+			t.Fatalf("exit = %d, want 0", code)
+		}
+		if !strings.Contains(out.String(), "Not enabled") {
+			t.Errorf("output does not say it was not enabled: %q", out.String())
+		}
+	})
 }
