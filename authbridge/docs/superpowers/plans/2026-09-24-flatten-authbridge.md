@@ -543,12 +543,38 @@ Task 2's substitution already covers `README.md`, `CONTRIBUTING.md`, `install-de
 grep -rn 'main/authbridge/install.sh' --exclude-dir=.git --exclude-dir=docs . || echo "all replaced"
 ```
 
-Two places the sweep deliberately skipped, because `install.sh` is excluded from that rule (its `--ref` fallback must keep probing the old path — see Task 2 Step 1's comment). Hand-edit the usage comments only:
+`install.sh` is excluded from that sweep rule, because its `--ref` fallback must keep probing the old path (see Task 2 Step 1's comment). It has four legacy references and they are not all the same kind:
 
-- `install.sh:4` — the header usage line
-- `install.sh:164` — the `--help` example
+```bash
+grep -n 'authbridge/install.sh' install.sh
+```
 
-Both become `https://raw.githubusercontent.com/rossoctl/cortex/main/install.sh`. Leave the `${want_ref}/authbridge/install.sh` fallback inside the bootstrap block alone.
+- **`:4` and `:164`** — the header usage line and the `--help` example. Hand-edit both to `https://raw.githubusercontent.com/rossoctl/cortex/main/install.sh`.
+- **`:485`** — the `--ref` fallback probe. **Leave it alone.** It exists to find pre-flatten refs.
+- **`:1278`** — an advisory URL inside the `abctl service` version-mismatch `die`, interpolating a *tag*: `${REPO}/${version}/authbridge/install.sh`. Correct for a pre-flatten tag, a 404 for a post-flatten one, and it cannot do a two-path lookup because it is printed advice rather than a fetch.
+
+Fix `:1278` by deleting the URL guess rather than repairing it. Task 1 made `--ref=` resolve either layout, so the advice can delegate to the mechanism instead of duplicating it:
+
+```sh
+			v*)
+				die "the ${version} abctl has no 'service' command, which this installer needs
+  in order to start Cortex. Either re-run this installer pinned to that release,
+  which resolves its installer in either layout:
+    --ref=${version}
+  or install newer binaries with this script:
+    --ref=<newer tag>"
+				;;
+```
+
+That is strictly more robust than any hardcoded path: it is correct for both eras with no version boundary to encode, and it stays correct if the layout ever changes again.
+
+- [ ] **Step 1b: Confirm only the probe remains**
+
+```bash
+grep -n 'authbridge/install.sh' install.sh
+```
+
+Expected: exactly one hit, line ~485, the fallback probe.
 
 - [ ] **Step 2: Replace `install-demo.sh`'s unfalsifiable removal promise**
 
