@@ -237,10 +237,15 @@ find . -name '*.go' -not -path './.git/*' -print0 \
 find . -name go.mod -not -path './.git/*' -print0 \
 	| xargs -0 sed -i '' 's|github.com/rossoctl/cortex/authbridge/|github.com/rossoctl/cortex/|g'
 
-# 5. Path references outside Go. docs/superpowers/ is excluded on purpose:
-#    dated records, per #1125.
+# 5. Path references outside Go. Two exclusions, both deliberate:
+#    - docs/superpowers/: dated records, per spec §12.
+#    - install.sh: its --ref fallback deliberately PROBES the old location
+#      (${ref}/authbridge/install.sh). Rewriting that makes both lookup paths
+#      identical and silently breaks --ref for every pre-flatten tag. Its two
+#      usage comments are hand-edited in step 5b instead.
 git ls-files -z -- '*.yaml' '*.yml' '*.md' '*.sh' 'Makefile' '*.toml' '*.json' \
 	| grep -zv '^docs/superpowers/' \
+	| grep -zv '^install\.sh$' \
 	| xargs -0 sed -i '' \
 		-e 's|authbridge/authlib|authlib|g' \
 		-e 's|authbridge/cmd/|cmd/|g' \
@@ -530,9 +535,20 @@ Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>"
 
 `scripts/readme-demo`'s test regenerates the SVG and compares it against the committed asset. The asset renders the install one-liner, so changing the one-liner makes it stale and that job fails until it is regenerated. This task is therefore required, not cosmetic.
 
-- [ ] **Step 1: Update every published spelling of the URL**
+- [ ] **Step 1: Verify the sweep replaced every published spelling, and fix what it missed**
 
-Replace `main/authbridge/install.sh` with `main/install.sh` in all six files. `install-demo.sh` points at the new URL directly rather than at a path that no longer exists.
+Task 2's substitution already covers `README.md`, `CONTRIBUTING.md`, `install-demo.sh`, `release-binaries.yaml` and `demo.yaml`, so expect most of this to be done:
+
+```bash
+grep -rn 'main/authbridge/install.sh' --exclude-dir=.git --exclude-dir=docs . || echo "all replaced"
+```
+
+Two places the sweep deliberately skipped, because `install.sh` is excluded from that rule (its `--ref` fallback must keep probing the old path — see Task 2 Step 1's comment). Hand-edit the usage comments only:
+
+- `install.sh:4` — the header usage line
+- `install.sh:164` — the `--help` example
+
+Both become `https://raw.githubusercontent.com/rossoctl/cortex/main/install.sh`. Leave the `${want_ref}/authbridge/install.sh` fallback inside the bootstrap block alone.
 
 - [ ] **Step 2: Replace `install-demo.sh`'s unfalsifiable removal promise**
 
