@@ -130,7 +130,7 @@ cortex/
 
 ### 1. AuthBridge Binaries (Go)
 
-**Sidecar binaries** providing transparent traffic interception for both inbound JWT validation and outbound OAuth 2.0 token exchange (RFC 8693). All but `authbridge-praxis` pin one deployment shape and refuse a mismatching `mode:` at boot; mode is no longer selected at runtime. The `authbridge-lite` **image** is a build variant of the proxy binary (not a separate binary) — see below.
+**Sidecar binaries** providing transparent traffic interception for both inbound JWT validation and outbound OAuth 2.0 token exchange (RFC 8693). All sidecar binaries but `authbridge-praxis` pin one deployment shape and refuse a mismatching `mode:` at boot; mode is no longer selected at runtime. The `authbridge-lite` **image** is a build variant of the proxy binary (not a separate binary) — see below.
 
 **Library:** `authbridge/authlib/` (shared)
 **Language:** Go 1.26.5 (`authbridge/go.work` and the nine workspace modules; the
@@ -219,7 +219,7 @@ self-contained `demos/*` modules are outside the workspace. `go-tidy-check` in
 - `authbridge/storage/redis/`, `authbridge/scripts/{profile-tags,readme-demo}/`, and the self-contained `authbridge/demos/{echo,finance-sparc,ibac}/`.
 - `authbridge/go.work` — workspace linking authlib + the binaries for local development.
 
-**Config format:** YAML with `${ENV_VAR}` expansion, mode presets, and startup validation. Supports `keycloak_url` + `keycloak_realm` derivation for operator compatibility. The `mode` field must match the binary for all but `authbridge-praxis`, which pins no mode; every binary rejects a missing or invalid `mode:` at boot.
+**Config format:** YAML with `${ENV_VAR}` expansion, mode presets, and startup validation. Supports `keycloak_url` + `keycloak_realm` derivation for operator compatibility. The `mode` field must match the binary for all but `authbridge-praxis`, which pins no mode.
 
 ## CI/CD Workflows
 

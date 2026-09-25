@@ -1,6 +1,6 @@
 # AuthBridge
 
-AuthBridge provides **secure, transparent token management** for Kubernetes workloads. The shared library is at [`authlib/`](./authlib/); the mode-specific binaries (proxy-sidecar default, envoy-sidecar, lite) live under [`cmd/`](./cmd/). Keycloak client registration is handled by the [operator](https://github.com/rossoctl/operator)'s `ClientRegistrationReconciler` (no in-pod registration sidecar). Together with [SPIFFE/SPIRE](https://spiffe.io), this enables zero-trust authentication flows.
+AuthBridge provides **secure, transparent token management** for Kubernetes workloads. The shared library is at [`authlib/`](./authlib/); the sidecar binaries live under [`cmd/`](./cmd/) (see [`cmd/README.md`](./cmd/README.md) for which pins which mode). Keycloak client registration is handled by the [operator](https://github.com/rossoctl/operator)'s `ClientRegistrationReconciler` (no in-pod registration sidecar). Together with [SPIFFE/SPIRE](https://spiffe.io), this enables zero-trust authentication flows.
 
 > **📘 Looking to run the demo?** See the [Weather Agent](./demos/weather-agent/demo-ui.md) or [GitHub Issue Agent](./demos/github-issue/demo.md) demos for step-by-step instructions, and [Token-Exchange Routes](./demos/token-exchange-routes/README.md) for route configuration.
 
@@ -56,7 +56,7 @@ lines; the default `full` avoids the question.
 
 ## Deployment Modes
 
-Two container images are published:
+Sidecar container images:
 
 | Image | Contents |
 |-------|----------|
@@ -68,7 +68,10 @@ Two container images are published:
 |------|-------|----------|-------------|
 | `proxy-sidecar` (default) | `authbridge` | HTTP_PROXY-based forward + reverse proxies | Agent routes outbound traffic through forward proxy; reverse proxy validates inbound JWTs |
 | `envoy-sidecar` | `authbridge-envoy` | Transparent interception via iptables | Envoy intercepts all traffic, delegates auth to authbridge via ext_proc gRPC |
-| `lite` | `authbridge-lite` | The `authbridge-proxy` binary built with the `lite` profile (see `authbridge/scripts/profile-tags`) | For size-constrained deployments that don't need protocol-aware session events |
+
+There are only these two modes. `lite` is a build *profile*, not a mode: the
+`authbridge-lite` image runs the `authbridge-proxy` binary in `proxy-sidecar`
+mode with a trimmed plugin set (see the profile table below).
 
 The operator resolves the mode per workload from `AgentRuntime.Spec.AuthBridgeMode` → namespace ConfigMap → deprecated `rossoctl.io/authbridge-mode` annotation → cluster default (`proxy-sidecar`). See operator#361.
 

@@ -42,9 +42,9 @@ binaries with shared auth logic in `authlib/`:
   `authbridge/scripts/profile-tags` for the definition). For size-optimized
   deployments that don't need protocol-aware session events.
 
-Every binary but praxis pins one deployment shape and refuses a mismatching
-`mode:` at boot; praxis pins none and accepts either. All four reject a missing
-or invalid `mode:`. Mode is no longer selected at runtime. See
+Every sidecar binary but praxis pins one deployment shape and refuses a
+mismatching `mode:` at boot; praxis pins none. Mode is no longer
+selected at runtime. See
 [`cmd/README.md`](cmd/README.md) for which binary pins which shape.
 
 Not a sidecar, but the largest component in `cmd/` and the one the root README
@@ -315,7 +315,7 @@ When the webhook injects sidecars (via [operator](https://github.com/rossoctl/op
 | `keycloak-admin-secret` | Secret | operator (ClientRegistrationReconciler) | `KEYCLOAK_ADMIN_USERNAME`, `KEYCLOAK_ADMIN_PASSWORD` |
 | `authproxy-routes` | ConfigMap (optional) | authbridge | `routes.yaml` with per-host token exchange rules |
 | `spiffe-helper-config` | ConfigMap (legacy, unused by authbridge) | (none — retained only for compatibility with older deployments) | Previously held `helper.conf` for the bundled `spiffe-helper` binary. Authbridge now drives SPIRE configuration via the top-level `spiffe:` block in the `authbridge-runtime-config` ConfigMap and no longer reads this ConfigMap. |
-| `authbridge-runtime-config` | ConfigMap | authbridge | The runtime `config.yaml`: top-level `mode`, `listener`, `session`, `spiffe`, `mtls`, `stats` and the pipeline composition. Mounted from the `authbridge-runtime` **volume** — the volume and the ConfigMap are deliberately spelled differently. |
+| `authbridge-runtime-config` | ConfigMap | authbridge | The runtime `config.yaml` — `mode`, `listener`, `pipeline`, and the top-level `session` / `stats` / `mtls` / `spiffe` / `tls_bridge` / `pricing` / `cost_ledger` blocks. Note the name differs from the `authbridge-runtime` volume the operator mounts it through. |
 | `envoy-config` | ConfigMap | Envoy (inside the `authbridge-envoy` combined image, envoy-sidecar mode only) | `envoy.yaml` (full Envoy configuration) |
 
 **`authproxy-routes` format** (`routes.yaml`):

@@ -3,8 +3,7 @@
 Four authbridge binaries (proxy, envoy, cpex, praxis) plus the
 `abctl` TUI — see the table below for which are published and which are paused.
 Proxy, envoy and cpex each pin one deployment shape and refuse a mismatching
-`mode:` at boot; praxis pins none and accepts either. All four reject a missing
-or invalid `mode:`, via `config.Validate`. Note proxy and cpex both pin
+`mode:` at boot; praxis pins none. Note proxy and cpex both pin
 `proxy-sidecar`, so `mode:` names a shape, not a binary. Mode is selected at
 build time by which binary you run, not at runtime via a flag. The `authbridge-lite`
 image is a build variant of the proxy binary (proxy Dockerfile +

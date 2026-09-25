@@ -90,8 +90,9 @@ authbridge/cmd/authbridge-praxis/authbridge-praxis
 # (`go help build`). What lands a binary here is a single-package build such as
 # `go build ./cmd/authbridge-proxy`, or `go build -o . ./cmd/...`.
 # `authbridge-lite` appears here but has no cmd/ entry above: it is a build
-# variant of authbridge-proxy, not its own module, so the authbridge/ spelling is
-# the only one an ordinary build produces.
+# variant of authbridge-proxy, not its own module. No build emits that filename —
+# the lite variant is always written as authbridge-proxy — so this entry is purely
+# defensive, against someone passing `-o authbridge-lite` by hand.
 authbridge/abctl
 authbridge/authbridge-proxy
 authbridge/authbridge-envoy
