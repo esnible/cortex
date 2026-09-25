@@ -469,7 +469,10 @@ if [ -n "${_reexec}" ]; then
 		done
 
 		boot=$(mktemp)
-		url="https://raw.githubusercontent.com/${REPO}/${want_ref}/authbridge/install.sh"
+		# Two paths, because a pinned ref may predate the flatten. Try the current
+		# layout first so a post-flatten ref never pays for the legacy probe; fall
+		# back only on a clean 404, never on a transport error.
+		url="https://raw.githubusercontent.com/${REPO}/${want_ref}/install.sh"
 		# Capture the status code rather than collapsing every failure into one
 		# branch. A 404 means that ref genuinely predates this script — fall back.
 		# A transport error means we could not ask, and silently dropping to main
@@ -478,6 +481,11 @@ if [ -n "${_reexec}" ]; then
 		# so appending our own default produced "HTTP 000000". Overwrite instead.
 		http=$(curl -sSL -o "${boot}" -w '%{http_code}' "${url}" 2>/dev/null) || http="000"
 		[ -n "${http}" ] || http="000"
+		if [ "${http}" = "404" ]; then
+			url="https://raw.githubusercontent.com/${REPO}/${want_ref}/authbridge/install.sh"
+			http=$(curl -sSL -o "${boot}" -w '%{http_code}' "${url}" 2>/dev/null) || http="000"
+			[ -n "${http}" ] || http="000"
+		fi
 		if [ "${http}" = "200" ] && [ -s "${boot}" ]; then
 			info "Using the installer from ${want_ref}."
 			# set -e would abort the parent on a non-zero child before any of the
@@ -500,7 +508,7 @@ if [ -n "${_reexec}" ]; then
 			# VERSION_REF keeps the pin: running main's SCRIPT is the fallback,
 			# changing which BINARIES get installed is not. `--ref=X installs X`
 			# has to survive this branch or the flag means nothing here.
-			warn "${want_ref} has no authbridge/install.sh (HTTP 404); continuing with the copy from main"
+			warn "${want_ref} has no install.sh at either path (HTTP 404); continuing with the copy from main"
 			SCRIPT_REF="main"
 			VERSION_REF="${want_ref}"
 		else

@@ -295,8 +295,8 @@ done
 # catch that: in isolation main -> CHANNEL_TAG is correct. The bug was in the bootstrap
 # deciding to pass "main" at all. So extract the bootstrap block itself and assert the
 # pair it produces.
-with_bootstrap() { # want_ref http_code_for_script_fetch newest_release_output [run_as=pipe|file]
-	_want=$1; _http=$2; _newest=$3; _runas=${4:-pipe}
+with_bootstrap() { # want_ref http_new http_legacy newest_release [run_as=pipe|file]
+	_want=$1; _http=$2; _httplegacy=${3:-$2}; _newest=$4; _runas=${5:-pipe}
 	_start=$(awk '/^SCRIPT_REF="\$\{AUTHBRIDGE_SCRIPT_REF:-\}"/{print NR; exit}' "${INSTALL_SH}")
 	_end=$(awk -v s="${_start}" 'NR>=s && /^fi$/{print NR; exit}' "${INSTALL_SH}")
 	{
@@ -314,12 +314,15 @@ with_bootstrap() { # want_ref http_code_for_script_fetch newest_release_output [
 		# every scenario silently fell through to the failure handling below — including
 		# the one asserting that a transport failure refuses to run main.
 		printf 'curl() {\n'
-		printf '  _out=""; _prev=""\n'
+		printf '  _out=""; _prev=""; _u=""\n'
 		# shellcheck disable=SC2016 # literal on purpose: expanded by the probe, not here.
-		printf '  for _a in "$@"; do [ "${_prev}" = "-o" ] && _out="${_a}"; _prev="${_a}"; done\n'
+		printf '  for _a in "$@"; do [ "${_prev}" = "-o" ] && _out="${_a}"; case "$_a" in http*) _u="$_a" ;; esac; _prev="${_a}"; done\n'
 		# shellcheck disable=SC2016 # same.
-		printf '  [ -z "${_out}" ] || printf "#!/bin/sh\\nprintf \\"REEXECED\\\\n\\"\\nexit 0\\n" > "${_out}"\n'
-		printf '  printf "%%s" "%s"\n' "${_http}"
+		printf '  case "${_u}" in */authbridge/install.sh) _c="%s" ;; *) _c="%s" ;; esac\n' "${_httplegacy}" "${_http}"
+		# shellcheck disable=SC2016 # same.
+		printf '  [ "${_c}" != "200" ] || [ -z "${_out}" ] || printf "#!/bin/sh\\nprintf \\"REEXECED\\\\n\\"\\nexit 0\\n" > "${_out}"\n'
+		# shellcheck disable=SC2016 # same.
+		printf '  printf "%%s" "${_c}"\n'
 		printf '}\n'
 		# shellcheck disable=SC2016 # literal on purpose: these expand in the
 		# generated probe, not here. Same reason install.sh disables SC2016.
@@ -347,37 +350,65 @@ with_bootstrap() { # want_ref http_code_for_script_fetch newest_release_output [
 # install. Unauthenticated api.github.com is 60 req/hr per IP, so it is routine from
 # behind NAT, not a corner case.
 check "API unreachable, no --ref: script=main, nothing to install" \
-	"script=main version=" "$(with_bootstrap "" 000 "")"
+	"script=main version=" "$(with_bootstrap "" 000 000 "")"
 
 # --ref=main, the documented spelling.
 check "--ref=main: script=main, install main" \
-	"script=main version=main" "$(with_bootstrap main 000 v0.7.0-alpha.7)"
+	"script=main version=main" "$(with_bootstrap main 000 000 v0.7.0-alpha.7)"
 
 # --ref=<CHANNEL_TAG>, which is the title shown on the Releases page, so someone will
 # type it after seeing it there. It must mean the same thing as --ref=main rather than
 # bootstrapping that tag's frozen script and then installing newest-release binaries.
 check "--ref=CHANNEL_TAG behaves as --ref=main" \
-	"script=main version=main" "$(with_bootstrap "${CHANNEL_TAG}" 000 v0.7.0-alpha.7)"
+	"script=main version=main" "$(with_bootstrap "${CHANNEL_TAG}" 000 000 v0.7.0-alpha.7)"
 
-# A pinned release whose tag predates authbridge/install.sh: fall back to main's SCRIPT,
-# but keep the pin for the BINARIES. Losing it here would break "--ref=X installs X" on
-# the one path where the user was most explicit about X.
+# A pinned release whose tag predates the flatten AND authbridge/install.sh: both paths
+# 404, so fall back to main's SCRIPT, but keep the pin for the BINARIES. Losing it here
+# would break "--ref=X installs X" on the one path where the user was most explicit
+# about X.
 check "--ref=v0.5.0 with a 404 script: script=main, install v0.5.0" \
-	"script=main version=v0.5.0" "$(with_bootstrap v0.5.0 404 v0.7.0-alpha.7)"
+	"script=main version=v0.5.0" "$(with_bootstrap v0.5.0 404 404 v0.7.0-alpha.7)"
+
+# A ref from AFTER the flatten: /install.sh exists, so the legacy path is never
+# consulted and re-exec fires straight off the first fetch. Asserted on the child's
+# OWN output (REEXECED), same convention as the 200 case below: had the code
+# wrongly gone to the legacy path first, that 404 would fall through to main
+# instead ("script=main version=v9.9.9"), so this still catches the regression.
+check "--ref=v9.9.9 with /install.sh present: re-execs without consulting the legacy path" \
+	"REEXECED" "$(with_bootstrap v9.9.9 200 404 v0.7.0-alpha.7)"
+
+# A ref from BEFORE the flatten: /install.sh 404s, the legacy
+# /authbridge/install.sh answers, and re-exec fires off that second fetch. Without
+# the fallback this would 404 straight through to main ("script=main
+# version=v0.8.0") instead of reaching REEXECED. (This one happens to reach the same
+# REEXECED even against the single-fetch predecessor of this code, which always dialled
+# the legacy URL and would have hit its 200 directly — the case below is what actually
+# tells the two apart.)
+check "--ref=v0.8.0 falls back to the legacy path and re-execs" \
+	"REEXECED" "$(with_bootstrap v0.8.0 404 200 v0.7.0-alpha.7)"
+
+# The fallback triggers on a clean 404 ONLY. A transport error on the new path (down,
+# rate-limited, proxied) must die rather than quietly trying the legacy path — even
+# though that legacy fetch would have succeeded here. Getting this wrong (falling back
+# on ANY non-200) would report REEXECED instead of DIED, and is also what distinguishes
+# the two-path code from the single-fetch predecessor for this exact input: the old code
+# never saw "000" at all, since it only ever dialled the legacy URL.
+check "--ref=v0.8.0 with a transport failure on the new path never falls back to a working legacy path" \
+	"DIED" "$(with_bootstrap v0.8.0 000 200 v0.7.0-alpha.7)"
 
 # A transport failure is NOT a 404. We cannot tell whether a released installer exists,
 # so running main instead would break the exact guarantee the bootstrap provides — the
 # script has to refuse. This is the security-relevant arm and it was unreachable through
 # the harness until the curl stub started writing the file the real one writes.
 check "--ref=v0.5.0 with a transport failure refuses to run main" \
-	"DIED" "$(with_bootstrap v0.5.0 000 v0.7.0-alpha.7)"
+	"DIED" "$(with_bootstrap v0.5.0 000 000 v0.7.0-alpha.7)"
 
 # HTTP 200 re-execs the released copy and exits with its status rather than continuing in
 # this process. Asserted on the child's OWN output, not on the absence of the probe's:
 # an empty result would also be produced by the probe dying early, which is exactly the
 # kind of vacuous pass that hid the unreachable arm above.
 check "--ref=v0.5.0 with a 200 script re-execs into it" \
-	"REEXECED" "$(with_bootstrap v0.5.0 200 v0.7.0-alpha.7)"
+	"REEXECED" "$(with_bootstrap v0.5.0 200 200 v0.7.0-alpha.7)"
 
 # --- run as a LOCAL FILE: never re-exec the released copy (the reported bug) ---
 #
@@ -388,9 +419,9 @@ check "--ref=v0.5.0 with a 200 script re-execs into it" \
 # still follow --ref (or resolve newest when unset), so `--ref=X` pins X's binaries even
 # though this local script — not X's — is what runs.
 check "local file, --ref=v0.5.0: run THIS script, pin v0.5.0 binaries, no re-exec" \
-	"script= version=v0.5.0" "$(with_bootstrap v0.5.0 200 v0.7.0-alpha.7 file)"
+	"script= version=v0.5.0" "$(with_bootstrap v0.5.0 200 200 v0.7.0-alpha.7 file)"
 check "local file, no --ref: run THIS script, resolve binaries later, no re-exec" \
-	"script= version=" "$(with_bootstrap "" 200 v0.7.0-alpha.7 file)"
+	"script= version=" "$(with_bootstrap "" 200 200 v0.7.0-alpha.7 file)"
 
 # --- the one-liner survives an exhausted API quota ---
 #
