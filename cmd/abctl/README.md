@@ -288,6 +288,88 @@ command and says so, but leaves the four replacing variables unset — the child
 keeps its own public roots and only bridged hosts fail, rather than losing all
 trust to a bundle with no bridge CA in it.
 
+## Typing `bob` instead of `abctl exec -- bob` (`abctl configure bobshell`)
+
+`abctl exec -- bob` routes one invocation. `abctl configure bobshell enable`
+makes that the meaning of `bob` in every new shell, by appending a delimited
+block to your rc file:
+
+```sh
+# >>> cortex abctl (bobshell) >>>
+bob() {
+  abctl exec -- bob "$@"
+}
+export CORTEX_BOBSHELL=1
+# <<< cortex abctl (bobshell) <<<
+```
+
+```sh
+abctl configure bobshell enable    # append the block
+abctl configure bobshell disable   # remove exactly that block
+abctl configure bobshell status    # is bob routed in THIS shell?
+```
+
+Nothing else in the file is touched, and `disable` restores it byte-for-byte —
+a round-trip test asserts exactly that, so the two halves cannot drift apart.
+Run `enable` twice and the second run is a no-op. If the block is there but
+hand-edited, or there twice over, both verbs decline and say so rather than
+guess which copy you meant.
+
+A shell function, not an alias: bash does not expand aliases in
+non-interactive shells unless `expand_aliases` is set, and `"$@"` forwards
+arguments explicitly, so `bob "two words"` stays one argument.
+
+It cannot recurse into itself, which is why there is no machinery to resolve
+the real binary past the function. `abctl exec` replaces its child's process
+image, and that process never reads your rc file, so the `bob` inside the body
+is always the one on `PATH`.
+
+### Which file it writes
+
+The basename of `$SHELL` picks it, and only these two:
+
+| `$SHELL` | File |
+|---|---|
+| …`/zsh` | `~/.zshrc` |
+| …`/bash` | `~/.bashrc` |
+| anything else, or unset | nothing is written — the block is printed for you to place |
+
+That is the whole rule. `abctl` does not work out whether your shell will be a
+login or a non-login shell, or which of zsh's four startup files you meant,
+because being wrong about it writes a block into a file nothing reads and
+leaves you with no reason to look there.
+
+**bash on macOS is the case to know about.** Terminal.app starts bash as a
+*login* shell, which reads `~/.bash_profile` and not `~/.bashrc`. If the
+function does not appear in a new window, either source `~/.bashrc` from
+`~/.bash_profile` — the usual arrangement — or move the block there yourself.
+`enable` always prints the path it wrote, so you can see where it went.
+
+### Symlinks
+
+A `~/.zshrc` symlinked into a dotfiles repo is followed, and the block lands in
+the real file: writing the link itself would replace it with a regular file and
+silently detach it from the repo, leaving the tracked copy stale with nothing
+in `git status` to show it. Two or more links deep, or a dangling link, and
+both verbs decline and print the block instead — a chain that long is somebody's
+deliberate arrangement, and a write through it is more likely to surprise than
+to help.
+
+The write is temp-file-then-rename, so a failure part way through leaves your
+rc file as it was rather than half-written. An existing file keeps its own
+permissions; a new one is created `0644`.
+
+### What `status` does and does not know
+
+It reports whether `CORTEX_BOBSHELL` is set in the environment — that is,
+whether **this** shell routes `bob` through Cortex. It reads no files. So it
+says `not enabled` in the very shell that just ran `enable`, until you open a
+new terminal or source the file. That is the honest answer to "is it working
+right now", and recognising the block inside a startup script would mean
+parsing shell, which is the thing this command deliberately does not do.
+
+Both answers exit 0: "not enabled" is a report, not a failure.
+
 ## Panes
 
 The UI has these panes. `Enter` drills in; `Esc` backs out.
