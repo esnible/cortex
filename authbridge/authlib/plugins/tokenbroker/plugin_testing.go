@@ -41,19 +41,6 @@ func createSuccessBroker(t *testing.T, token string) *httptest.Server {
 	}))
 }
 
-// createErrorBroker creates a mock broker that returns an error response
-func createErrorBroker(t *testing.T, statusCode int, oauthError, message string) *httptest.Server {
-	t.Helper()
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(statusCode)
-		json.NewEncoder(w).Encode(map[string]string{
-			"error":   oauthError,
-			"message": message,
-		})
-	}))
-}
-
 // createCapturingBroker creates a mock broker that captures request details
 func createCapturingBroker(t *testing.T, token string, captureFunc func(*http.Request)) *httptest.Server {
 	t.Helper()

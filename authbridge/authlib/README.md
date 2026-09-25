@@ -25,10 +25,10 @@ A pure Go library providing reusable building blocks for JWT validation, OAuth 2
 |---------|---------|
 | `plugins/` | Registry + parser plugins (a2a-parser, mcp-parser, inference-parser) + shared `Build` + `StatsSource` contract |
 | `plugins/jwtvalidation/` | The `jwt-validation` plugin. Owns `plugins/jwtvalidation/validation/` (JWKS-backed JWT verifier). |
-| `plugins/tokenexchange/` | The `token-exchange` plugin. Owns `plugins/tokenexchange/exchange/` (RFC 8693 client), `plugins/tokenexchange/cache/` (token TTL cache), `plugins/tokenexchange/spiffe/` (JWT-SVID file source). |
+| `plugins/tokenexchange/` | The `token-exchange` plugin. Owns `plugins/tokenexchange/exchange/` (RFC 8693 client) and `plugins/tokenexchange/cache/` (token TTL cache). Its JWT-SVID source is the framework's `spiffe/`, not a plugin-internal copy. |
 | `plugins/plugintesting/` | Test helpers — stubs of jwt-validation / token-exchange that skip file IO, for listener-level tests. |
 
-Packages that used to live at `authlib/validation`, `authlib/exchange`, `authlib/cache`, `authlib/spiffe` moved under their owning plugin. They had no reuse outside that plugin; keeping them at `authlib/` top-level implied wider usefulness than reality. New plugins should follow the same pattern: if the package is plugin-internal, colocate it under `plugins/<plugin>/`.
+Packages that used to live at `authlib/validation`, `authlib/exchange`, `authlib/cache` moved under their owning plugin. They had no reuse outside that plugin; keeping them at `authlib/` top-level implied wider usefulness than reality. New plugins should follow the same pattern: if the package is plugin-internal, colocate it under `plugins/<plugin>/`.
 
 ## Usage
 

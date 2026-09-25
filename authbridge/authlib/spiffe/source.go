@@ -1,12 +1,13 @@
 // Package spiffe provides framework-shared SPIFFE credential helpers.
-// Today the only consumer is the mTLS layer in authlib/tls and the
-// proxy-sidecar listeners; future LLM-judges or audit plugins that
-// need workload identity can layer on top.
+// Its consumers are the mTLS layer in authlib/tls with the proxy-sidecar
+// listeners (X509Source), the token-exchange plugin (JWTSource), and the
+// plugin framework, which injects *Provider into any plugin implementing
+// ProviderConsumer; future LLM-judges or audit plugins that need workload
+// identity can layer on top.
 //
-// Compare with authlib/plugins/tokenexchange/spiffe/, which holds the
-// JWT-SVID source used exclusively by token-exchange. That one stays
-// plugin-internal because only token-exchange consumes it; this
-// package is framework-shared because mTLS spans every listener.
+// Both interfaces are declared here rather than inside the plugin that
+// consumes them, so the framework Provider can hand them out without
+// importing plugin-internal code.
 package spiffe
 
 import (
