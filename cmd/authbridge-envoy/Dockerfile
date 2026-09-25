@@ -4,7 +4,7 @@
 # SPIFFE credentials are obtained in-process by authbridge-envoy via
 # go-spiffe's WorkloadAPI client (no spiffe-helper sidecar binary).
 #
-# Build context: ./authbridge (needs access to authlib/ and cmd/authbridge-envoy/)
+# Build context: . (repository root; needs access to authlib/ and cmd/authbridge-envoy/)
 
 # Stage 1: Build authbridge-envoy binary.
 # `-ldflags="-s -w"` drops the symbol table and DWARF debug info to

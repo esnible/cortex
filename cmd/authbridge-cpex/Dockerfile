@@ -4,7 +4,7 @@
 # plugins). Built with -tags cpex; links libcpex_ffi.a from a
 # pinned CPEX release.
 #
-# Build context: ./authbridge (needs authlib/ and cmd/authbridge-cpex/)
+# Build context: . (repository root; needs authlib/ and cmd/authbridge-cpex/)
 #
 # Why not just authbridge-proxy: that image is pure-Go, CGO_ENABLED=0.
 # CPEX requires cgo. Operators switch images (not build flags) to

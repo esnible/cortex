@@ -11,7 +11,7 @@
 # Uses alpine base (~5 MB) — needs bash for the supervisor entrypoint.
 # authbridge-proxy is CGO_ENABLED=0 static, so musl is fine.
 #
-# Build context: ./authbridge (needs access to authlib/ and cmd/authbridge-proxy/)
+# Build context: . (repository root; needs access to authlib/ and cmd/authbridge-proxy/)
 #
 # authlib embeds github.com/rossoctl/context-guru (a published module, fetched via
 # GOPROXY like any other dependency). It builds pure-Go — skeleton's cgo is behind

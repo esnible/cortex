@@ -62,7 +62,7 @@ CONTAINER_RUNTIME ?= $(shell command -v podman >/dev/null 2>&1 && echo podman ||
 AGENT_IMAGE       := echo-agent:latest
 UPSTREAM_IMAGE    := echo-upstream:latest
 
-# Repo root (demos/echo -> demos -> authbridge). The sidecar Dockerfile
+# Repo root (demos/echo -> demos -> repo root). The sidecar Dockerfile
 # lives at cmd/authbridge-proxy/Dockerfile and builds with the repo root
 # as context.
 REPO_ROOT         := $(abspath ../..)

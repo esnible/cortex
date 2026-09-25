@@ -124,20 +124,35 @@ checked against both real strings before being relied on.
 
 §4's "relative paths survive" holds only for paths pointing *within* the moving
 subtree. A path that climbs *out* of it counts levels from the repo root and
-breaks, and no substitution on `authbridge/` can see it. There are seven, in
-three files, all of which lose exactly one `../`:
+breaks, and no substitution on `authbridge/` can see it. There are eleven,
+across ten files, each losing exactly one `../`:
 
 | File | Site | Now | After |
 |---|---|---|---|
 | `scripts/readme-demo/main.go:22` | default `-out` | `../../../docs/assets/` | `../../docs/assets/` |
 | `scripts/readme-demo/staleness_test.go:12` | `assetPath` | `../../../docs/assets/` | `../../docs/assets/` |
+| `scripts/readme-demo/README.md:42` | example command's `-out` path | `../../../docs/assets/` | `../../docs/assets/` |
 | `demos/github-issue/rbac/Makefile:59` | `AGENT_EXAMPLES_DIR` | `../../../../../agent-examples` | `../../../../agent-examples` |
 | `demos/github-issue/rbac/Makefile:63` | `VENV` | `../../../../.venv` | `../../../.venv` |
-| `demos/github-issue/rbac/Makefile:85` | hint string | `-r ../../../requirements.txt` | `-r ../../requirements.txt` |
 | `demos/github-issue/aiac/Makefile:43` | `VENV` | `../../../../.venv` | `../../../.venv` |
-| `demos/github-issue/aiac/Makefile:71` | hint string | `-r ../../../requirements.txt` | `-r ../../requirements.txt` |
+| `scripts/profile-tags/guards_test.go:15` | `repoRoot` | `../../..` | `../..` |
+| `install_test.sh:513` | `WORKFLOW` | `${SCRIPT_DIR}/../.github/workflows/release-binaries.yaml` | `${SCRIPT_DIR}/.github/workflows/release-binaries.yaml` |
+| `demos/session-budget/hitl-with-claude-code.md:14` | `[qs]` link target | `../../../README.md#quick-start` | `../../README.md#quick-start` |
+| `docs/laptop-token-savings.md:8` | "quick start" link target | `../../README.md#quick-start` | `../README.md#quick-start` |
+| `proxy-init/README.md:189,227,229` | links to `build.yaml` and two `demos/` docs | `../../...` | `../...` |
 
-The `readme-demo` two matter most: CI's `go-ci-readme-demo` job runs a staleness
+The rule that decides which paths shorten: shorten only where the target did
+**not** also move. `demos/github-issue/{rbac,aiac}/Makefile`'s
+`-r ../../../requirements.txt` hint string looks like the same shape as the
+`VENV` line just above it in each file, but `requirements.txt` moved from
+`authbridge/` to the root *with* those Makefiles — the relative distance
+between them is unchanged, so that hint stays exactly as it was and is
+deliberately not a row in this table. `VENV`, `AGENT_EXAMPLES_DIR`, and every
+row above point at targets that did not move together with the referencing
+file, so those do shorten.
+
+The `readme-demo` pair CI actually exercises (`main.go`, `staleness_test.go`)
+matters most: CI's `go-ci-readme-demo` job runs a staleness
 test that regenerates the demo SVG and compares it against the committed
 `docs/assets/cortex-demo.svg`. Left unfixed, the generator writes above the
 repository root and the job fails. That job is also why the SVG **must** be
@@ -232,18 +247,39 @@ first or accept a rebase.
 
 ## 9. Commit structure
 
-One pull request, three commits, so the mechanical move can be reviewed apart
-from the prose merges:
+One pull request, nineteen commits, not three. The core intent still landed
+exactly as planned — one pure-sweep commit, one rehome commit, and three
+prose-merge commits for `CLAUDE.md` — but this repo's convention is to commit
+the dated design doc and plan doc themselves, then revise them in place across
+review rounds and follow-up fixes, and that convention supplies the other
+fourteen commits:
 
-1. **`refactor: Flatten authbridge/ into the repo root`** — the sweep only:
-   `git mv`, 12 module paths, 1,019 import occurrences, 97 non-Go files, 36
-   workflow references, 6 dependabot directories, the install `--ref` two-path
-   lookup, the `.dockerignore`, `go.sum` regeneration. Driven by a script
-   committed in the same PR so review is "re-run it and diff".
-2. **`docs: Rehome the AuthBridge architecture doc`** — `authbridge/README.md` →
-   `docs/architecture.md` plus inbound links.
-3. **`docs: Merge the two CLAUDE.md files`** — the ~1,100-line reconciliation,
-   reviewable as prose.
+1. **`refactor: Flatten authbridge/ into the repo root`** (`afb49e9f`) — the
+   sweep only: `git mv`, 12 module paths, 1,019 import occurrences, 97 non-Go
+   files, 36 workflow references, 6 dependabot directories, the
+   `.dockerignore`, `go.sum` regeneration. Driven by a script committed in the
+   same PR so review is "re-run it and diff".
+2. **`docs: Rehome the AuthBridge architecture doc`** (`d568d067`) —
+   `authbridge/README.md` → `docs/architecture.md` plus inbound links.
+3. **`docs: Bring the nine root-only sections of authbridge/CLAUDE.md into the
+   root`** (`0eeab0b8`), **`docs: Reconcile the six overlapping sections
+   against the tree`** (`2c02eb54`), and **`docs: Delete authbridge/CLAUDE.md,
+   leaving no authbridge/ directory`** (`8c646f17`) — the ~1,100-line
+   reconciliation, split into three reviewable passes rather than landing as
+   one prose merge.
+
+The install `--ref` two-path lookup that this list originally credited to the
+sweep commit is its own commit, `feat(install): Resolve --ref against both
+layouts` (`b65d15e6`), and lands *before* the sweep rather than inside it —
+Task 1 has to exist before the sweep can move anything under it.
+
+The remaining thirteen commits are the design doc (`566701e2`, `21db048d`),
+the plan doc and the review rounds and pre-flight fixes it went through
+(`1e1cc209`, `87461290`, `0bb6e9ee`, `ce997853`, `00dd4143`, `9bbf47de`,
+`b5401450`, `da6ae2d8`), a fix commit closing four gaps the gates found after
+the sweep landed (`c7268f1b`), a follow-up publishing `install.sh` at its new
+canonical path (`11a8a9ab`), and the closing cleanup that deletes the
+migration script once nothing needed it anymore (`be62b427`).
 
 ## 10. Verification
 
@@ -291,7 +327,7 @@ main for unrelated `tlsbridge` drift.
 | Risk | Mitigation |
 |---|---|
 | A missed path reference breaks CI after merge | Every workflow and dependabot entry enumerated in §3/§9; `grep` gate in §10 |
-| A fixed-depth `../../../` path silently resolves outside the repo | All seven enumerated in §5; invisible to a string sweep, so they are a named task rather than a side effect. The `readme-demo` pair is caught by CI's staleness job. |
+| A fixed-depth `../../../` path silently resolves outside the repo | All eleven enumerated in §5; invisible to a string sweep, so they are a named task rather than a side effect. The `readme-demo` pair is caught by CI's staleness job. |
 | `--ref=<old tag>` stops resolving | Two-path lookup (§6), `install_test.sh` cases for both eras, gated by the existing `install-script` job |
 | A reader of archived v0.7/v0.8 docs gets a 404 | **Accepted, not mitigated** (§6). Curl exits 56 visibly, but the pipeline exits 0 having installed nothing. Current docs in `rossoctl/rossoctl` get a coordinated PR; the archives do not. |
 | Docker context bloat | Root `.dockerignore` in the same commit; real `docker build` in §10 |

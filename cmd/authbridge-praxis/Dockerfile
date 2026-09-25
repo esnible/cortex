@@ -16,7 +16,7 @@
 # built together — a default-feature Praxis in this image would fail to start
 # on exactly the configs that need inbound auth.
 #
-# Build context: ./authbridge (needs access to authlib/, storage/, and
+# Build context: . (repository root; needs access to authlib/, storage/, and
 # cmd/authbridge-praxis/)
 #
 # Praxis source is not vendored in this repo, so the Rust stage fetches it from

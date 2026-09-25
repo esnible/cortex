@@ -25,7 +25,10 @@ fmt: ## Run formatters across all sub-projects
 	cd cmd/authbridge-envoy && go fmt ./...
 	@# Scope matches the ruff hooks in .pre-commit-config.yaml. Both skip the root
 	@# tests/ tree, which `authbridge/` never covered and which does not format clean.
-	ruff format . --exclude tests
+	@# Must be `--exclude ./tests`, root-anchored like the hook's `^tests/`: plain
+	@# `--exclude tests` also drops sparc-service/tests, and `--exclude /tests`
+	@# stops excluding root tests/ entirely.
+	ruff format . --exclude ./tests
 
 pre-commit: ## Install pre-commit hooks (including commit-msg)
 	pre-commit install --hook-type pre-commit --hook-type commit-msg

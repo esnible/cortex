@@ -278,19 +278,25 @@ sh scripts/flatten-authbridge.sh
 
 Expected: no errors. `authbridge/` now contains only `README.md` and `CLAUDE.md`.
 
-- [ ] **Step 3: Fix the seven fixed-depth upward paths by hand**
+- [ ] **Step 3: Fix the eleven fixed-depth upward paths by hand**
 
-These climb *out* of the moved subtree, so no substitution sees them. Each loses exactly one `../`:
+These climb *out* of the moved subtree, so no substitution sees them. Each loses exactly one `../` — except a path whose target moved up the same amount as the file referencing it, which must stay put: shorten only where the target did NOT also move.
 
 ```
-scripts/readme-demo/main.go:22          filepath.Join("..","..","..","docs",…)  -> "..","..","docs"
-scripts/readme-demo/staleness_test.go:12 "../../../docs/assets/cortex-demo.svg" -> "../../docs/assets/cortex-demo.svg"
-demos/github-issue/rbac/Makefile:59     ../../../../../agent-examples           -> ../../../../agent-examples
-demos/github-issue/rbac/Makefile:63     ../../../../.venv                       -> ../../../.venv
-demos/github-issue/rbac/Makefile:85     -r ../../../requirements.txt            -> -r ../../requirements.txt
-demos/github-issue/aiac/Makefile:43     ../../../../.venv                       -> ../../../.venv
-demos/github-issue/aiac/Makefile:71     -r ../../../requirements.txt            -> -r ../../requirements.txt
+scripts/readme-demo/main.go:22               filepath.Join("..","..","..","docs",…)      -> "..","..","docs"
+scripts/readme-demo/staleness_test.go:12     "../../../docs/assets/cortex-demo.svg"       -> "../../docs/assets/cortex-demo.svg"
+scripts/readme-demo/README.md:42             '../../../docs/assets/cortex-demo.svg'       -> '../../docs/assets/cortex-demo.svg'
+demos/github-issue/rbac/Makefile:59          ../../../../../agent-examples                -> ../../../../agent-examples
+demos/github-issue/rbac/Makefile:63          ../../../../.venv                            -> ../../../.venv
+demos/github-issue/aiac/Makefile:43          ../../../../.venv                            -> ../../../.venv
+scripts/profile-tags/guards_test.go:15       repoRoot = "../../.."                        -> repoRoot = "../.."
+install_test.sh:513                          ${SCRIPT_DIR}/../.github/workflows/…         -> ${SCRIPT_DIR}/.github/workflows/…
+demos/session-budget/hitl-with-claude-code.md:14  ../../../README.md#quick-start          -> ../../README.md#quick-start
+docs/laptop-token-savings.md:8               ../../README.md#quick-start                  -> ../README.md#quick-start
+proxy-init/README.md:189,227,229             ../../.github/workflows/build.yaml, etc.     -> ../.github/workflows/build.yaml, etc.
 ```
+
+NOT in this list, and must NOT change: `demos/github-issue/{rbac,aiac}/Makefile`'s `-r ../../../requirements.txt` hint. It looks like the same shape as the `VENV` line right above it, but `requirements.txt` moved from `authbridge/` to the root *with* those Makefiles, so the relative distance between them is unchanged — shortening it to `-r ../../requirements.txt` would point at `demos/requirements.txt`, which does not exist.
 
 - [ ] **Step 4: Add the root `.dockerignore`**
 
@@ -776,7 +782,7 @@ Assisted-By: Claude (Anthropic AI) <noreply@anthropic.com>"
 
 ## Self-Review
 
-**Spec coverage.** §3 target layout → Tasks 2–4. §3 collision resolutions → Task 2 (docs, scripts), Task 3 (README), Task 4 (CLAUDE). §3 module mapping → Task 2 Step 1. §4 free wins → Task 2 Step 1, asserted in the commit message. §5 fixed-depth paths → Task 2 Step 3, all seven. §6 `--ref` two-path → Task 1. §6 abandoned URL + `install-demo.sh` → Task 5. §7 `.dockerignore` → Task 2 Step 4, proven in Step 7. §8 sequencing → Global Constraints. §9 commit structure → Tasks 2–6 (five commits, plus Task 1's, which lands first and separately). §10 verification → Task 2 Step 6, Task 6 Step 4. §11 downstream → Task 6 Step 3. §12 out of scope → nothing renames a binary or image. §13 risks → each mitigation appears as a step.
+**Spec coverage.** §3 target layout → Tasks 2–4. §3 collision resolutions → Task 2 (docs, scripts), Task 3 (README), Task 4 (CLAUDE). §3 module mapping → Task 2 Step 1. §4 free wins → Task 2 Step 1, asserted in the commit message. §5 fixed-depth paths → Task 2 Step 3, all eleven. §6 `--ref` two-path → Task 1. §6 abandoned URL + `install-demo.sh` → Task 5. §7 `.dockerignore` → Task 2 Step 4, proven in Step 7. §8 sequencing → Global Constraints. §9 commit structure → Tasks 2–6 (five commits, plus Task 1's, which lands first and separately). §10 verification → Task 2 Step 6, Task 6 Step 4. §11 downstream → Task 6 Step 3. §12 out of scope → nothing renames a binary or image. §13 risks → each mitigation appears as a step.
 
 **Placeholder scan.** No TBD/TODO. Every code step carries the actual content. The `sed -i ''` portability note is a real instruction, not a deferral.
 
