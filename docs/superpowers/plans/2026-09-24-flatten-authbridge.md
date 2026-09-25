@@ -520,7 +520,12 @@ grep -n 'authbridge/' CLAUDE.md | grep -v 'authbridge-'   # expect: nothing
 for d in authlib cmd demos docs scripts storage proxy-init sparc-service lineage-attach tests; do
   grep -q "$d" CLAUDE.md || echo "MISSING from the tree block: $d"
 done
-for f in $(grep -oE '\]\([^)#h][^)]*\)' CLAUDE.md | sed 's/](//;s/)$//'); do
+# Strip the #anchor before testing existence — a link like
+# ](../README.md#quick-start) names a real file, and testing the whole string
+# reports it broken. That bug made an earlier version of this check emit ~68
+# false positives on an unchanged tree, which is worse than no check: a gate
+# that always fails is a gate everyone learns to skip.
+for f in $(grep -oE '\]\([^)#h][^)]*\)' CLAUDE.md | sed 's/](//;s/)$//;s/#.*$//'); do
   [ -e "$f" ] || echo "BROKEN link -> $f"
 done
 ```
