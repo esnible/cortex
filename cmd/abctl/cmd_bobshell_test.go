@@ -82,7 +82,7 @@ func TestBobShellEnableAppends(t *testing.T) {
 	}
 
 	var out, errb bytes.Buffer
-	if code := runBobShell([]string{"enable"}, &out, &errb); code != 0 {
+	if code := runBobShell([]string{"enable", "--yes"}, &out, &errb); code != 0 {
 		t.Fatalf("exit = %d, want 0; stderr: %s", code, errb.String())
 	}
 	if errb.Len() != 0 {
@@ -124,7 +124,7 @@ func TestBobShellEnableAddsMissingNewline(t *testing.T) {
 	}
 
 	var out, errb bytes.Buffer
-	if code := runBobShell([]string{"enable"}, &out, &errb); code != 0 {
+	if code := runBobShell([]string{"enable", "--yes"}, &out, &errb); code != 0 {
 		t.Fatalf("exit = %d, want 0; stderr: %s", code, errb.String())
 	}
 	got, err := os.ReadFile(rc)
@@ -148,7 +148,7 @@ func TestBobShellEnableCreatesTheFile(t *testing.T) {
 	rc := filepath.Join(home, ".zshrc")
 
 	var out, errb bytes.Buffer
-	if code := runBobShell([]string{"enable"}, &out, &errb); code != 0 {
+	if code := runBobShell([]string{"enable", "--yes"}, &out, &errb); code != 0 {
 		t.Fatalf("exit = %d, want 0; stderr: %s", code, errb.String())
 	}
 	got, err := os.ReadFile(rc)
@@ -194,7 +194,7 @@ func TestBobShellEnablePreservesAnExistingMode(t *testing.T) {
 	}
 
 	var out, errb bytes.Buffer
-	if code := runBobShell([]string{"enable"}, &out, &errb); code != 0 {
+	if code := runBobShell([]string{"enable", "--yes"}, &out, &errb); code != 0 {
 		t.Fatalf("exit = %d, want 0; stderr: %s", code, errb.String())
 	}
 
@@ -224,7 +224,7 @@ func TestBobShellEnableIsIdempotent(t *testing.T) {
 	rc := filepath.Join(home, ".zshrc")
 
 	var out1, errb bytes.Buffer
-	if code := runBobShell([]string{"enable"}, &out1, &errb); code != 0 {
+	if code := runBobShell([]string{"enable", "--yes"}, &out1, &errb); code != 0 {
 		t.Fatalf("first enable: exit = %d; stderr: %s", code, errb.String())
 	}
 	first, err := os.ReadFile(rc)
@@ -234,7 +234,7 @@ func TestBobShellEnableIsIdempotent(t *testing.T) {
 
 	var out2 bytes.Buffer
 	errb.Reset()
-	if code := runBobShell([]string{"enable"}, &out2, &errb); code != 0 {
+	if code := runBobShell([]string{"enable", "--yes"}, &out2, &errb); code != 0 {
 		t.Fatalf("second enable: exit = %d; stderr: %s", code, errb.String())
 	}
 	second, err := os.ReadFile(rc)
@@ -279,7 +279,7 @@ func TestBobShellEnableDeclinesAHandEditedBlock(t *testing.T) {
 	var out, errb bytes.Buffer
 	// Exit 0, like disable's refusal: declining with an explanation is a successful
 	// outcome, not a failure to be scripted against.
-	if code := runBobShell([]string{"enable"}, &out, &errb); code != 0 {
+	if code := runBobShell([]string{"enable", "--yes"}, &out, &errb); code != 0 {
 		t.Fatalf("exit = %d, want 0; stderr: %s", code, errb.String())
 	}
 	if errb.Len() != 0 {
@@ -336,12 +336,12 @@ func TestBobShellRoundTripIsByteIdentical(t *testing.T) {
 			}
 
 			var out, errb bytes.Buffer
-			if code := runBobShell([]string{"enable"}, &out, &errb); code != 0 {
+			if code := runBobShell([]string{"enable", "--yes"}, &out, &errb); code != 0 {
 				t.Fatalf("enable: exit = %d; stderr: %s", code, errb.String())
 			}
 			out.Reset()
 			errb.Reset()
-			if code := runBobShell([]string{"disable"}, &out, &errb); code != 0 {
+			if code := runBobShell([]string{"disable", "--yes"}, &out, &errb); code != 0 {
 				t.Fatalf("disable: exit = %d; stderr: %s", code, errb.String())
 			}
 
@@ -410,7 +410,7 @@ func TestBobShellDisable(t *testing.T) {
 			var out, errb bytes.Buffer
 			// Every one of these is exit 0: a refusal that explains itself is a
 			// successful outcome for a command whose job is "or do nothing".
-			if code := runBobShell([]string{"disable"}, &out, &errb); code != 0 {
+			if code := runBobShell([]string{"disable", "--yes"}, &out, &errb); code != 0 {
 				t.Fatalf("exit = %d, want 0; stderr: %s", code, errb.String())
 			}
 			if errb.Len() != 0 {
@@ -774,7 +774,7 @@ func TestBobShellRejectsStrayArguments(t *testing.T) {
 			// Enabled first, so a `disable` that wrongly went ahead has something to
 			// remove and shows up as a changed file rather than a no-op.
 			var out, errb bytes.Buffer
-			if code := runBobShell([]string{"enable"}, &out, &errb); code != 0 {
+			if code := runBobShell([]string{"enable", "--yes"}, &out, &errb); code != 0 {
 				t.Fatalf("setup enable: exit = %d; stderr: %s", code, errb.String())
 			}
 			before, err := os.ReadFile(rc)
@@ -968,7 +968,7 @@ func TestBobShellEnableQuotesThePathItTellsYouToSource(t *testing.T) {
 	t.Setenv("SHELL", "/bin/zsh")
 
 	var out, errb bytes.Buffer
-	if code := runBobShell([]string{"enable"}, &out, &errb); code != 0 {
+	if code := runBobShell([]string{"enable", "--yes"}, &out, &errb); code != 0 {
 		t.Fatalf("exit = %d, want 0\nstderr: %s", code, errb.String())
 	}
 
@@ -1017,5 +1017,94 @@ func TestBobShellEnableQuotesThePathItTellsYouToSource(t *testing.T) {
 		if outBytes, err := exec.Command(sh, "-c", runnable).CombinedOutput(); err != nil {
 			t.Errorf("%s could not run the printed command %q (as %q): %v\n%s", sh, sourceLine, runnable, err, outBytes)
 		}
+	}
+}
+
+// Without --yes, and with no terminal to prompt on, both verbs must write
+// NOTHING. `go test` has no controlling terminal, so confirm's /dev/tty open
+// fails and it declines — which is the CI and container case, and the reason
+// --yes exists at all.
+//
+// This is the guard on a real hazard in the confirm/--yes pair: the prompt sits
+// between "decided to write" and "wrote", so a mistake there does not fail
+// loudly, it just silently stops applying — enable reporting success while the
+// rc file is untouched. Every other test in this file passes --yes, so without
+// this one nothing exercises the unconfirmed path and deleting the prompt
+// entirely would keep the suite green.
+func TestBobShellWithoutYesAndWithoutATerminalWritesNothing(t *testing.T) {
+	for _, verb := range []string{"enable", "disable"} {
+		t.Run(verb, func(t *testing.T) {
+			home := fakeHome(t)
+			t.Setenv("SHELL", "/bin/zsh")
+			rc := filepath.Join(home, ".zshrc")
+
+			// disable needs a block present, or it answers "not enabled" and returns
+			// before ever reaching the prompt — which would pass this test for the
+			// wrong reason.
+			var setup bytes.Buffer
+			if code := runBobShell([]string{"enable", "--yes"}, &setup, &setup); code != 0 {
+				t.Fatalf("setup enable: exit = %d: %s", code, setup.String())
+			}
+			before, err := os.ReadFile(rc)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if verb == "enable" {
+				// For enable the interesting file is one with no block yet, so the
+				// write is the thing the prompt is gating.
+				if err := os.WriteFile(rc, []byte("export EDITOR=vim\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				if before, err = os.ReadFile(rc); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			var out, errb bytes.Buffer
+			code := runBobShell([]string{verb}, &out, &errb)
+
+			// Declining is not a failure: nothing was asked for that could not be
+			// done, so this is the same "advice printed, nothing applied" exit 0 as
+			// an unrecognised $SHELL.
+			if code != 0 {
+				t.Errorf("exit = %d, want 0; stderr: %s", code, errb.String())
+			}
+			after, err := os.ReadFile(rc)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(before, after) {
+				t.Errorf("%s wrote without confirmation:\nbefore: %q\nafter:  %q", verb, before, after)
+			}
+			// The user has to be told how to get past it, or the command looks broken.
+			if !strings.Contains(out.String(), "--yes") {
+				t.Errorf("stdout does not mention --yes:\n%s", out.String())
+			}
+			// And which file was at stake, since $SHELL chose it rather than the user.
+			if !strings.Contains(out.String(), rc) {
+				t.Errorf("stdout does not name the file %q:\n%s", rc, out.String())
+			}
+		})
+	}
+}
+
+// The advice status prints must name "type", not "which". In bash, `which` is
+// /usr/bin/which — a separate process that cannot see its parent shell's
+// function table — so with the function live it prints the bob BINARY's path,
+// which under the old wording ("a path means no") reads as a definitive "not
+// routed" in exactly the case the check exists to detect. zsh's `which` is a
+// builtin and does report the function, which is why the wrong advice survived:
+// it works in one of the two shells this command writes a file for.
+func TestBobShellStatusAdvisesTypeNotWhich(t *testing.T) {
+	t.Setenv(bobShellEnvVar, "1")
+	var out bytes.Buffer
+	if code := bobShellStatus(&out); code != 0 {
+		t.Fatalf("exit = %d", code)
+	}
+	if !strings.Contains(out.String(), "type bob") {
+		t.Errorf("status does not advise \"type bob\":\n%s", out.String())
+	}
+	if strings.Contains(out.String(), "which bob") {
+		t.Errorf("status still advises \"which bob\", which is wrong in bash:\n%s", out.String())
 	}
 }

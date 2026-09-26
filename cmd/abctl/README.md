@@ -399,9 +399,16 @@ your startup file and therefore has no `bob` function at all. There, `bob` is th
 plain binary and Cortex is not in the path of the call, while the variable still
 says `1`. `status` cannot tell the two apart: the shell's function table lives in
 that shell's memory and is never exported, so `abctl`, as a child process, cannot
-see it. To settle it in a particular shell, ask that shell — `which bob` prints a
-function body when the function is live and a path when it is not. (`mise doctor`
-splits `activated:` from `shims_on_path:` for the same reason.)
+see it. To settle it in a particular shell, ask that shell: `type bob` says
+`bob is a function` when the function is live, and names a file when it is not.
+
+Use `type`, not `which`. In bash, `which` is `/usr/bin/which` — a separate
+process, which cannot see its parent shell's functions, so with the function live
+it reports the `bob` binary's path and looks like a definitive "not routed". zsh's
+`which` is a builtin and does report the function, so the wrong advice works in
+one of the two shells this writes a file for. `type` is a shell builtin in sh,
+bash, zsh and dash alike. (`mise doctor` splits `activated:` from
+`shims_on_path:` for the same reason.)
 
 Both answers exit 0: "not enabled" is a report, not a failure.
 

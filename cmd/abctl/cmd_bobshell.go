@@ -13,14 +13,18 @@ import (
 const bobShellUsage = `abctl configure bobshell — run Bob through Cortex by typing "bob"
 
 Usage:
-  abctl configure bobshell enable
-  abctl configure bobshell disable
+  abctl configure bobshell enable  [--yes]
+  abctl configure bobshell disable [--yes]
   abctl configure bobshell status
+
+Flags:
+  --yes           do not prompt for confirmation
 
 enable appends a block to your shell's rc file defining a "bob" shell function
 that runs "abctl exec -- bob", and exporting ` + bobShellEnvVar + `=1. Open a new
 terminal, or source the file, for it to take effect. disable removes exactly that
-block. Neither touches anything else in the file.
+block. Neither touches anything else in the file. Both ask before writing; --yes
+skips the question, and with no terminal to ask on they write nothing and say so.
 
 Which file: the basename of $SHELL picks it — zsh gets ~/.zshrc, bash gets
 ~/.bashrc. Any other shell gets the block printed for you to place yourself,
@@ -131,17 +135,22 @@ func runBobShell(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	// These verbs take no flags and no operands, and anything after them is a
-	// misunderstanding that must not be silently dropped. An empty FlagSet, the
-	// same shape claude-code builds with ContinueOnError, both rejects an
-	// unrecognised flag and gives -h its own usage — so `disable --help` prints
-	// help instead of deleting the block, and `enable --dry-run` is refused
-	// instead of enabling for real.
+	// These verbs take no operands, and anything after them is a misunderstanding
+	// that must not be silently dropped. A FlagSet with ContinueOnError, the same
+	// shape claude-code builds, both rejects an unrecognised flag and gives -h its
+	// own usage — so `disable --help` prints help instead of deleting the block,
+	// and `enable --dry-run` is refused instead of enabling for real.
 	fs := flag.NewFlagSet("configure bobshell "+action, flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	// The FlagSet has no flags, so its own usage would print a bare header and an
-	// empty list. Printing this command's usage instead is the useful answer, and
-	// suppressing it here keeps -h's single copy on stdout below.
+	// --yes for parity with `configure claude-code`, whose enable and disable both
+	// prompt before writing and take --yes to skip it. enable and disable here edit
+	// a startup file, which is the same class of change, and review found the
+	// asymmetry: this command had no flags at all, so there was no way to say yes
+	// in advance and nothing to pass from a script or an installer.
+	yes := fs.Bool("yes", false, "do not prompt for confirmation")
+	// The FlagSet's own usage would print a bare header and a one-flag list.
+	// Printing this command's usage instead is the useful answer, and suppressing
+	// it here keeps -h's single copy on stdout below.
 	fs.Usage = func() {}
 	if err := fs.Parse(args[1:]); err != nil {
 		// -h and --help arrive here as flag.ErrHelp, and asking for help is not a
@@ -207,9 +216,9 @@ func runBobShell(args []string, stdout, stderr io.Writer) int {
 	// Only enable and disable reach here: help and status returned above, and any
 	// other verb was refused before the home directory was read.
 	if action == "enable" {
-		return bobShellEnable(target, stdout, stderr)
+		return bobShellEnable(target, *yes, stdout, stderr)
 	}
-	return bobShellDisable(target, stdout, stderr)
+	return bobShellDisable(target, *yes, stdout, stderr)
 }
 
 // bobShellRCPath maps the shell's basename to the rc file to edit.
@@ -282,7 +291,7 @@ func rcTarget(path string) (string, int, error) {
 	}
 }
 
-func bobShellEnable(path string, stdout, stderr io.Writer) int {
+func bobShellEnable(path string, yes bool, stdout, stderr io.Writer) int {
 	content, err := os.ReadFile(path)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		fmt.Fprintf(stderr, "abctl: read %s: %v\n", path, err)
@@ -310,6 +319,15 @@ func bobShellEnable(path string, stdout, stderr io.Writer) int {
 	// TestBobShellRoundTripIsByteIdentical's no-trailing-newline rows.
 	out := string(content) + bobShellBlock
 
+	// Prompted HERE, not at the top of the verb: the two branches above answer
+	// "already enabled" and "there is a block I do not recognise" without writing
+	// anything, and asking permission to do nothing trains people to stop reading
+	// the question. Past this point a write is certain, so this is the last moment
+	// that is still honest.
+	if !yes && !bobShellConfirm(path, "Add the cortex bobshell block to", stdout) {
+		return 0
+	}
+
 	if err := writeRCFile(path, out); err != nil {
 		fmt.Fprintf(stderr, "abctl: %v\n", err)
 		return 1
@@ -327,7 +345,7 @@ func bobShellEnable(path string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-func bobShellDisable(path string, stdout, stderr io.Writer) int {
+func bobShellDisable(path string, yes bool, stdout, stderr io.Writer) int {
 	content, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		fmt.Fprintf(stdout, "Not enabled in %s (no such file). Nothing to do.\n", path)
@@ -345,6 +363,11 @@ func bobShellDisable(path string, stdout, stderr io.Writer) int {
 		// One Replace of the whole block, leading newline included, so it is the
 		// exact inverse of enable's append and the file comes back byte-identical.
 		out := strings.Replace(string(content), bobShellBlock, "", 1)
+		// Only this branch writes. The other three report and return 0, so the
+		// prompt lives here rather than above the switch.
+		if !yes && !bobShellConfirm(path, "Remove the cortex bobshell block from", stdout) {
+			return 0
+		}
 		if err := writeRCFile(path, out); err != nil {
 			fmt.Fprintf(stderr, "abctl: %v\n", err)
 			return 1
@@ -423,13 +446,38 @@ func bobShellStatus(stdout io.Writer) int {
 		// cannot see it. mise reports the same split as separate `activated:` and
 		// `shims_on_path:` lines for the same reason.
 		fmt.Fprint(stdout, "configured — a shell that reads your startup file defines \"bob\"\n")
-		fmt.Fprint(stdout, "\nIn an interactive shell that is the function, so \"bob\" runs through Cortex.\nTo confirm it in THIS shell: type \"which bob\" — a function body means yes, a path\nmeans no (a script or non-interactive subshell inherits the variable but not the\nfunction).\n")
+		// "type bob", NOT "which bob". In bash `which` is /usr/bin/which, a separate
+		// process, and a child cannot see its parent's function table — so with the
+		// function live and a bob binary on PATH, bash's `which bob` prints the
+		// BINARY'S PATH. Read by the old rule ("a path means no") that is a false
+		// negative in exactly the case this check exists to find, and it reads as
+		// authoritative. zsh's `which` is a builtin and does report the function,
+		// which is why this survived review: it is right in one of the two shells we
+		// write a file for. `type` is a POSIX shell builtin — verified as a builtin in
+		// sh, bash, zsh and dash — so it sees the function in all of them.
+		fmt.Fprint(stdout, "\nIn an interactive shell that is the function, so \"bob\" runs through Cortex.\nTo confirm it in THIS shell: run \"type bob\" — it says \"bob is a function\" if Cortex\nis in the path of the call, and names a file if it is not (a script or\nnon-interactive subshell inherits the variable but not the function).\n")
 		return 0
 	}
 	fmt.Fprintf(stdout, "  %s (unset)\n", bobShellEnvVar)
 	fmt.Fprint(stdout, "not enabled in this shell\n")
 	fmt.Fprint(stdout, "\nIf you have just run enable, this shell has not read the file yet — open a new\nterminal or source it. Otherwise: abctl configure bobshell enable\n")
 	return 0
+}
+
+// bobShellConfirm names the file, then asks, reusing claude-code's confirm.
+//
+// The file is named on its own line first because the prompt itself cannot say
+// which file it means: confirm's question is the fixed "Apply? [y/N]", shared
+// with claude-code, and the whole point of the question here is WHICH startup
+// file is about to change — $SHELL picked it, not the user.
+//
+// confirm reads /dev/tty rather than stdin and declines when there is no
+// terminal, printing "re-run with --yes". That is the behaviour we want: in CI or
+// a container this writes nothing and exits 0, the same "advice printed, nothing
+// applied" outcome as an unrecognised $SHELL.
+func bobShellConfirm(path, what string, stdout io.Writer) bool {
+	fmt.Fprintf(stdout, "%s %s\n", what, path)
+	return confirm(stdout)
 }
 
 // writeRCFile replaces path's contents atomically, keeping its permissions.
