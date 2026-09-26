@@ -1,8 +1,6 @@
-# Default owners for everything
+# Default owners for everything. The AuthBridge components used to carry their
+# own rule for authbridge/; that tree is now the repo root, so `*` covers it.
 * @rossoctl/maintainers
-
-# AuthBridge components
-authbridge/ @rossoctl/maintainers
 
 # CI/CD and GitHub configuration
 .github/ @rossoctl/platform

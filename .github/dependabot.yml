@@ -13,7 +13,7 @@ updates:
   # Go - authlib (the shared library — pulled in by every cmd/* binary
   # via replace directives, so updates here flow into everything).
   - package-ecosystem: gomod
-    directory: /authbridge/authlib
+    directory: /authlib
     schedule:
       interval: weekly
     ignore:
@@ -33,7 +33,7 @@ updates:
         update-types: ["version-update:semver-major"]
       # bifrost/core v1.8.0 raised its own go directive to 1.27.0, which Go
       # propagates into every module in the workspace. Adopting it is a Go
-      # 1.27 migration, not a dependency bump: it needs authbridge/go.work
+      # 1.27 migration, not a dependency bump: it needs go.work
       # bumped and the four digest-pinned golang:1.26-alpine builders in
       # cmd/*/Dockerfile moved to 1.27 (they set GOWORK=off but not
       # GOTOOLCHAIN, so they would silently download the 1.27 toolchain
@@ -50,7 +50,7 @@ updates:
 
   # Go - mode-specific binaries
   - package-ecosystem: gomod
-    directory: /authbridge/cmd/authbridge-proxy
+    directory: /cmd/authbridge-proxy
     schedule:
       interval: weekly
     ignore:
@@ -62,7 +62,7 @@ updates:
       - dependency-name: "github.com/maximhq/bifrost/core"
         versions: [">=1.8.0"]
   - package-ecosystem: gomod
-    directory: /authbridge/cmd/authbridge-envoy
+    directory: /cmd/authbridge-envoy
     schedule:
       interval: weekly
     ignore:
@@ -75,7 +75,7 @@ updates:
         versions: [">=1.8.0"]
   # Go - abctl TUI
   - package-ecosystem: gomod
-    directory: /authbridge/cmd/abctl
+    directory: /cmd/abctl
     schedule:
       interval: weekly
     ignore:
@@ -85,7 +85,7 @@ updates:
 
   # Go - storage backends (direct deps: go-redis, miniredis)
   - package-ecosystem: gomod
-    directory: /authbridge/storage/redis
+    directory: /storage/redis
     schedule:
       interval: weekly
 
@@ -97,6 +97,6 @@ updates:
 
   # Docker - proxy-init (iptables init container, envoy-sidecar mode)
   - package-ecosystem: docker
-    directory: /authbridge/proxy-init
+    directory: /proxy-init
     schedule:
       interval: weekly

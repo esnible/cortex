@@ -1,0 +1,149 @@
+package tui
+
+import (
+	"encoding/json"
+	"strings"
+	"testing"
+
+	"github.com/rossoctl/cortex/authlib/costevent"
+	"github.com/rossoctl/cortex/authlib/pipeline"
+)
+
+// tlsHeader returns "" for plaintext events so callers can prepend
+// unconditionally. Locks the contract that the header is invisible
+// on non-TLS connections.
+func TestTLSHeader_NilProducesEmpty(t *testing.T) {
+	if got := tlsHeader(nil); got != "" {
+		t.Errorf("tlsHeader(nil) = %q, want empty", got)
+	}
+}
+
+// Full TLS state — the header includes version, cipher, and peer.
+func TestTLSHeader_FullState(t *testing.T) {
+	got := tlsHeader(&pipeline.EventTLS{
+		Version:      "TLS 1.3",
+		CipherSuite:  "TLS_AES_128_GCM_SHA256",
+		PeerSPIFFEID: "spiffe://rossoctl.local/ns/team1/sa/caller-agent",
+	})
+	for _, want := range []string{
+		"TLS:",
+		"version: TLS 1.3",
+		"cipher: TLS_AES_128_GCM_SHA256",
+		"peer:    spiffe://rossoctl.local/ns/team1/sa/caller-agent",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("tlsHeader missing %q\ngot:\n%s", want, got)
+		}
+	}
+}
+
+// Partial state — version+cipher only, no peer (e.g. peer cert had
+// no SPIFFE URI). The peer line should be absent rather than showing
+// "peer: " with an empty value.
+func TestTLSHeader_NoPeerSPIFFEID(t *testing.T) {
+	got := tlsHeader(&pipeline.EventTLS{
+		Version:     "TLS 1.3",
+		CipherSuite: "TLS_AES_128_GCM_SHA256",
+	})
+	if strings.Contains(got, "peer:") {
+		t.Errorf("tlsHeader unexpectedly included peer line on no-SPIFFE cert\ngot:\n%s", got)
+	}
+	if !strings.Contains(got, "version: TLS 1.3") {
+		t.Errorf("tlsHeader missing version on partial state\ngot:\n%s", got)
+	}
+}
+
+// Empty version + cipher but with peer — the version/cipher line
+// is omitted, but peer still shows. Tolerates partial wire data
+// gracefully.
+func TestTLSHeader_PeerOnly(t *testing.T) {
+	got := tlsHeader(&pipeline.EventTLS{
+		PeerSPIFFEID: "spiffe://test/example",
+	})
+	if !strings.Contains(got, "spiffe://test/example") {
+		t.Errorf("tlsHeader missing peer\ngot:\n%s", got)
+	}
+	if strings.Contains(got, "version:") || strings.Contains(got, "cipher:") {
+		t.Errorf("tlsHeader unexpectedly included version/cipher on peer-only state\ngot:\n%s", got)
+	}
+}
+
+// tunnelHeader summarizes the folded CONNECT tunnel on a TLS-bridged row:
+// the bridged origin (host:port) and any gate invocation that ran on the
+// tunnel-open before the bytes were decrypted.
+func TestTunnelHeader_OriginAndInvocations(t *testing.T) {
+	got := tunnelHeader(&pipeline.SessionEvent{
+		Host: "api.anthropic.com:443",
+		Invocations: &pipeline.Invocations{
+			Outbound: []pipeline.Invocation{
+				{Plugin: "jwt-validation", Action: pipeline.ActionSkip, Reason: "no_inbound_identity"},
+			},
+		},
+	})
+	for _, want := range []string{
+		"CONNECT api.anthropic.com:443",
+		"TLS bridge",
+		"jwt-validation skip",
+		"no_inbound_identity",
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("tunnelHeader missing %q\ngot:\n%s", want, got)
+		}
+	}
+}
+
+// A tunnel with no gate invocations (pure passthrough that was then bridged)
+// still names the origin without trailing invocation lines.
+func TestTunnelHeader_NoInvocations(t *testing.T) {
+	got := tunnelHeader(&pipeline.SessionEvent{Host: "example.com:8443"})
+	if !strings.Contains(got, "CONNECT example.com:8443") {
+		t.Errorf("tunnelHeader missing origin\ngot:\n%s", got)
+	}
+	if strings.Count(got, "\n") != 0 {
+		t.Errorf("tunnelHeader with no invocations should be one line\ngot:\n%s", got)
+	}
+}
+
+// The proxy writes the cost record under both the current and the legacy key, so an abctl
+// older than the rename keeps showing cost. This abctl reads the current one, so the detail
+// view must show ONE record — two identical objects under two names give an operator no way
+// to tell which is authoritative.
+func TestFilterForDetail_ShowsOneCostRecord(t *testing.T) {
+	record := `{"cost_usd":0.25,"settled":true}`
+	wire := []byte(`{"phase":"response","plugins":{` +
+		`"` + costevent.Key + `":` + record + `,` +
+		`"` + costevent.PluginName + `":` + record + `,` +
+		`"tool-prune":{"bytesRemoved":900}}}`)
+
+	var got map[string]any
+	if err := json.Unmarshal(filterForDetail(wire, pipeline.SessionResponse), &got); err != nil {
+		t.Fatal(err)
+	}
+	pl, ok := got["plugins"].(map[string]any)
+	if !ok {
+		t.Fatalf("no plugins block survived: %v", got)
+	}
+	if _, ok := pl[costevent.Key]; !ok {
+		t.Errorf("the current cost key was dropped: %v", pl)
+	}
+	if _, ok := pl[costevent.PluginName]; ok {
+		t.Errorf("the legacy duplicate is still rendered: %v", pl)
+	}
+	// Unrelated plugin events are untouched — this filters a duplicate, not a category.
+	if _, ok := pl["tool-prune"]; !ok {
+		t.Errorf("an unrelated plugin event was dropped: %v", pl)
+	}
+}
+
+// A proxy older than the rename writes ONLY the legacy key, and its cost must still render.
+func TestFilterForDetail_KeepsALoneLegacyRecord(t *testing.T) {
+	wire := []byte(`{"phase":"response","plugins":{"` + costevent.PluginName + `":{"cost_usd":0.25}}}`)
+	var got map[string]any
+	if err := json.Unmarshal(filterForDetail(wire, pipeline.SessionResponse), &got); err != nil {
+		t.Fatal(err)
+	}
+	pl, _ := got["plugins"].(map[string]any)
+	if _, ok := pl[costevent.PluginName]; !ok {
+		t.Errorf("a lone legacy record was dropped, so an older proxy shows no cost: %v", pl)
+	}
+}

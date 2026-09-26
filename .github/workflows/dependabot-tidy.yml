@@ -1,6 +1,6 @@
 name: Dependabot go mod tidy
 
-# When Dependabot bumps a dep in authbridge/authlib, the cmd/* modules'
+# When Dependabot bumps a dep in authlib, the cmd/* modules'
 # go.sum files go stale — they reference authlib's transitive deps via
 # replace directives but Dependabot only tidies the directory it updated.
 # CI's `go fmt`/`go vet` then fails with "updates to go.mod needed".
@@ -10,8 +10,8 @@ name: Dependabot go mod tidy
 on:
   pull_request:
     paths:
-      - "authbridge/**/go.mod"
-      - "authbridge/**/go.sum"
+      - "**/go.mod"
+      - "**/go.sum"
 
 permissions:
   contents: read
@@ -41,7 +41,7 @@ jobs:
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
-          go-version-file: authbridge/authlib/go.mod
+          go-version-file: authlib/go.mod
 
       - name: Run go mod tidy in every module
         run: |
@@ -51,7 +51,7 @@ jobs:
             echo "::group::go mod tidy in $mod"
             (cd "$mod" && go mod tidy)
             echo "::endgroup::"
-          done < <(find authbridge -name go.mod -not -path '*/demos/*' -print0 | sort -z)
+          done < <(find . -name go.mod -not -path '*/demos/*' -print0 | sort -z)
 
       - name: Commit and push if changed
         id: commit

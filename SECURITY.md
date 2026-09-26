@@ -39,5 +39,5 @@ This project implements several security controls:
 ## Security-Related Configuration
 
 For deployment security configuration, see:
-- [AuthBridge README](authbridge/README.md) - Authentication bridge architecture
+- [AuthBridge architecture](docs/architecture.md) - Authentication bridge architecture
 - [operator](https://github.com/rossoctl/operator) - Admission webhook configuration (migrated from this repo)

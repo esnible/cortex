@@ -19,11 +19,16 @@ lint: ## Run all linters (pre-commit hooks)
 	pre-commit run --all-files
 
 fmt: ## Run formatters across all sub-projects
-	cd authbridge/authlib && go fmt ./...
-	cd authbridge/cmd/abctl && go fmt ./...
-	cd authbridge/cmd/authbridge-proxy && go fmt ./...
-	cd authbridge/cmd/authbridge-envoy && go fmt ./...
-	ruff format authbridge/
+	cd authlib && go fmt ./...
+	cd cmd/abctl && go fmt ./...
+	cd cmd/authbridge-proxy && go fmt ./...
+	cd cmd/authbridge-envoy && go fmt ./...
+	@# Scope matches the ruff hooks in .pre-commit-config.yaml. Both skip the root
+	@# tests/ tree, which `authbridge/` never covered and which does not format clean.
+	@# Must be `--exclude ./tests`, root-anchored like the hook's `^tests/`: plain
+	@# `--exclude tests` also drops sparc-service/tests, and `--exclude /tests`
+	@# stops excluding root tests/ entirely.
+	ruff format . --exclude ./tests
 
 pre-commit: ## Install pre-commit hooks (including commit-msg)
 	pre-commit install --hook-type pre-commit --hook-type commit-msg
@@ -31,7 +36,7 @@ pre-commit: ## Install pre-commit hooks (including commit-msg)
 ##@ Sub-project Targets
 
 build-proxy-init: ## Build the proxy-init iptables init container
-	cd authbridge/proxy-init && make docker-build-init
+	cd proxy-init && make docker-build-init
 
 pricing-table: ## Regenerate the bundled price table (COMMIT=<sha> [NO_PROXY_FOR_GEN=1])
 ifndef COMMIT
@@ -43,20 +48,20 @@ endif
 	@# "github.com is behind a TLS-intercepting proxy" was true on one developer's
 	@# machine, not a property of this repo, and hardcoding it broke the target for
 	@# anyone whose proxy is the only route out.
-	cd authbridge/authlib && $(if $(filter 1,$(NO_PROXY_FOR_GEN)),HTTPS_PROXY= HTTP_PROXY= ALL_PROXY=,) \
+	cd authlib && $(if $(filter 1,$(NO_PROXY_FOR_GEN)),HTTPS_PROXY= HTTP_PROXY= ALL_PROXY=,) \
 		go run ./pricing/internal/gen -commit $(COMMIT) -dir ./pricing
-	cd authbridge/authlib && go test ./pricing/ -run TestBundled
+	cd authlib && go test ./pricing/ -run TestBundled
 
 ##@ Binary Targets
 
 # authbridge-proxy's plugin set is resolved from a named profile via
-# authbridge/scripts/profile-tags — the same helper CI uses — so the tag
+# scripts/profile-tags — the same helper CI uses — so the tag
 # list stays in sync without hand-maintenance. abctl links no plugins.
 
 abctl: ## Build abctl to ./bin/abctl
 	@mkdir -p $(BIN_DIR)
 	@echo "→ building abctl"
-	@cd authbridge/cmd/abctl && GOWORK=off go build -o $(BIN_DIR)/abctl .
+	@cd cmd/abctl && GOWORK=off go build -o $(BIN_DIR)/abctl .
 
 authbridge-proxy: ## Build authbridge-proxy to ./bin/authbridge-proxy (PROFILE=full|lite|local, default full)
 	@mkdir -p $(BIN_DIR)
@@ -70,9 +75,9 @@ authbridge-proxy: ## Build authbridge-proxy to ./bin/authbridge-proxy (PROFILE=f
 	@# The resolved tags, not just the profile name: "why is plugin X missing from my
 	@# binary" is answered by the tag list, and quieting the command removed the only
 	@# place it appeared.
-	@TAGS=$$(go -C authbridge/scripts/profile-tags run . $(or $(PROFILE),full)) && \
+	@TAGS=$$(go -C scripts/profile-tags run . $(or $(PROFILE),full)) && \
 		echo "→ building authbridge-proxy (profile $(or $(PROFILE),full)): $$TAGS" && \
-		cd authbridge/cmd/authbridge-proxy && \
+		cd cmd/authbridge-proxy && \
 		GOWORK=off go build -tags "$$TAGS" -o $(BIN_DIR)/authbridge-proxy .
 
 ##@ Local Dev

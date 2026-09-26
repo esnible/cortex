@@ -12,7 +12,7 @@
 *.out
 cover.out
 
-# Go workspace files. Note `authbridge/go.work` IS tracked despite this
+# Go workspace files. Note `go.work` IS tracked despite this
 # pattern — gitignore does not apply to already-tracked files, and that one is
 # committed deliberately so every checkout gets the same module graph. This
 # pattern stops *new* stray go.work files (and go.work.sum, which is generated).
@@ -75,16 +75,16 @@ __pycache__/
 #
 # Spelled out per binary on purpose. A Go binary has no extension, so no glob
 # can tell "the compiled output" from a source file or a package directory —
-# `authbridge/cmd/*/*` would ignore the source. One line per binary is the only
+# `cmd/*/*` would ignore the source. One line per binary is the only
 # pattern that is safe, so the list below is exhaustive for `cmd/` and for the
 # two `scripts/` helpers further down. The `demos/*` mains are deliberately not
 # listed. Keep adding to it.
-authbridge/cmd/abctl/abctl
-authbridge/cmd/authbridge-proxy/authbridge-proxy
-authbridge/cmd/authbridge-envoy/authbridge-envoy
-authbridge/cmd/authbridge-cpex/authbridge-cpex
-authbridge/cmd/authbridge-praxis/authbridge-praxis
-# Built from authbridge/ rather than from inside the package dir, a binary lands
+cmd/abctl/abctl
+cmd/authbridge-proxy/authbridge-proxy
+cmd/authbridge-envoy/authbridge-envoy
+cmd/authbridge-cpex/authbridge-cpex
+cmd/authbridge-praxis/authbridge-praxis
+# Built from the repo root rather than from inside the package dir, a binary lands
 # here instead, so ignore those spellings too. Note `go build ./cmd/...` is NOT
 # one of those commands: with more than one main package Go compiles and discards
 # (`go help build`). What lands a binary here is a single-package build such as
@@ -93,12 +93,16 @@ authbridge/cmd/authbridge-praxis/authbridge-praxis
 # variant of authbridge-proxy, not its own module. No build emits that filename —
 # the lite variant is always written as authbridge-proxy — so this entry is purely
 # defensive, against someone passing `-o authbridge-lite` by hand.
-authbridge/abctl
-authbridge/authbridge-proxy
-authbridge/authbridge-envoy
-authbridge/authbridge-cpex
-authbridge/authbridge-lite
-authbridge/authbridge-praxis
+#
+# Leading slash is load-bearing now that the repo root IS the module root: a bare
+# `abctl` has no separator, so git would match it at any depth — including the
+# package directory `cmd/abctl`, silently ignoring new source files under it.
+/abctl
+/authbridge-proxy
+/authbridge-envoy
+/authbridge-cpex
+/authbridge-lite
+/authbridge-praxis
 
 # MLflow local tracking store — created by `mlflow` runs in the working tree.
 # Local experiment state, not project source.
@@ -114,14 +118,16 @@ cortex-ca/
 # gitlinks pins another branch's checkout into this tree, which is never wanted.
 .worktrees/
 
-# `go build ./...` inside either authbridge/scripts helper drops its multi-MB
+# `go build ./...` inside either scripts/ helper drops its multi-MB
 # binary beside the source, where it is easy to stage by accident — it was, once.
-/authbridge/scripts/profile-tags/profile-tags
-/authbridge/scripts/readme-demo/readme-demo
-# ...and the authbridge/ spellings, for the same reason as the cmd/* ones above:
-# `go build ./scripts/profile-tags` (or `-o .`) from authbridge/ lands it there.
-authbridge/profile-tags
-authbridge/readme-demo
+/scripts/profile-tags/profile-tags
+/scripts/readme-demo/readme-demo
+# ...and the repo-root spellings, for the same reason as the cmd/* ones above:
+# `go build ./scripts/profile-tags` (or `-o .`) from the root lands it there.
+# Anchored for the same reason as the binaries above: bare `profile-tags` would
+# also match the package directory `scripts/profile-tags`.
+/profile-tags
+/readme-demo
 
 # Output dir for `make abctl` / `make authbridge-proxy`.
 /bin/

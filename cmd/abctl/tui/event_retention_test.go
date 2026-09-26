@@ -1,0 +1,428 @@
+package tui
+
+import (
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
+
+	"github.com/rossoctl/cortex/authlib/pipeline"
+	"github.com/rossoctl/cortex/authlib/session"
+	"github.com/rossoctl/cortex/cmd/abctl/apiclient"
+)
+
+// #870: users reported the events they were investigating vanishing after a
+// proxy restart or a communication blip.
+//
+// The store is in-memory and per-pod, so abctl's cache is the only copy. An
+// empty /v1/sessions arrives as an ordinary message, not an error, so the old
+// reconcile read "the server does not list this" as "delete it" and wiped the
+// events about two seconds after the user looked away.
+func TestSessionsRefresh_KeepsEventsAndPane(t *testing.T) {
+	m := newRetentionModel(t, "default", 3)
+
+	m.Update(sessionsLoadedMsg{}) // proxy restarted: list is empty
+
+	if got := len(m.events["default"]); got != 3 {
+		t.Errorf("cached events dropped on an empty server list: got %d, want 3", got)
+	}
+	if m.pane != paneEvents {
+		t.Errorf("pane changed under the user: got %v, want paneEvents", m.pane)
+	}
+	if m.selectedSess != "default" {
+		t.Errorf("selection cleared: got %q, want %q", m.selectedSess, "default")
+	}
+}
+
+// The same protection while the user is on the usage charts, which are computed
+// from the same cache.
+func TestSessionsRefresh_KeepsUsageInvestigation(t *testing.T) {
+	m := newRetentionModel(t, "default", 3)
+	m.pane = paneUsage
+
+	m.Update(sessionsLoadedMsg{})
+
+	if got := len(m.events["default"]); got != 3 {
+		t.Errorf("cached events dropped while on the usage pane: got %d, want 3", got)
+	}
+	if m.pane != paneUsage {
+		t.Errorf("pane changed under the user: got %v, want paneUsage", m.pane)
+	}
+}
+
+// A session the server drops individually (evicted under max_sessions) is
+// retained too — same reasoning, and the user may still be reading it.
+func TestSessionsRefresh_KeepsEvictedSession(t *testing.T) {
+	m := newRetentionModel(t, "old", 3)
+
+	m.Update(sessionsLoadedMsg{{ID: "fresh", UpdatedAt: time.Now()}})
+
+	if got := len(m.events["old"]); got != 3 {
+		t.Errorf("evicted session's events dropped: got %d, want 3", got)
+	}
+}
+
+// Retention is only half a fix if the events cannot be reached. After a restart
+// the server lists nothing, so the picker must still offer a row for whatever
+// the cache holds.
+func TestSessionsPicker_ListsCachedOnlySessions(t *testing.T) {
+	m := newRetentionModel(t, "default", 3)
+
+	m.Update(sessionsLoadedMsg{})
+	m.rebuildSessionsTable()
+
+	var row []string
+	for _, r := range m.sessionsTbl.Rows() {
+		if r[0] == "default" {
+			row = r
+		}
+	}
+	if row == nil {
+		t.Fatal("no picker row for a session whose events are still cached — " +
+			"the retained history is unreachable")
+	}
+	// By column title, not by a hardcoded index: rows are built positionally, so the literal
+	// 2 and 4 this used to carry both moved when TITLE was inserted after SESSION — and an
+	// index that is merely stale keeps asserting, on the wrong cell, quietly. That already
+	// happened once when COST and SAVED were inserted ahead of ACTIVE.
+	//
+	// TrimSpace because EVENTS is right-aligned: the cell is padded into its fitted width so
+	// digits line up between rows, and this test is about the COUNT rather than the padding.
+	if got := strings.TrimSpace(sessionsCell(t, m, row, "EVENTS")); got != "3" {
+		t.Errorf("row event count = %q, want %q", got, "3")
+	}
+	// FOUND BY COLUMN, not by position. The marker used to ride in ACTIVE, addressed here as
+	// the last cell — which broke once when COST and SAVED were inserted ahead of it, and again
+	// when ACTIVE was replaced by CONTEXT(1M) and the marker moved into UPDATED. What this test
+	// is about is the marker, not where the row happens to keep it.
+	if got := strings.TrimSpace(sessionsCell(t, m, row, "UPDATED")); got != cachedMarker {
+		t.Errorf("row not marked as cached-only (UPDATED cell %q): %v", got, row)
+	}
+}
+
+// The cached-only marker must survive rendering under a colour profile. bubbles
+// truncates each cell with runewidth.Truncate BEFORE styling, and runewidth is
+// not ANSI-aware, so a styled cell measures its escape bytes against the column
+// width and comes out mangled with the reset stripped. The marker is therefore
+// plain text; CI has no TTY and cannot catch a regression here, so force one.
+func TestSessionsPicker_CachedMarkerRendersIntact(t *testing.T) {
+	orig := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.ANSI256)
+	t.Cleanup(func() { lipgloss.SetColorProfile(orig) })
+
+	m := newRetentionModel(t, "vanished", 3)
+	m.pane = paneSessions
+	m.Update(sessionsLoadedMsg{})
+	m.rebuildSessionsTable()
+
+	view := m.sessionsTbl.View()
+	if !strings.Contains(view, "cached") {
+		t.Errorf("marker did not survive rendering:\n%s", view)
+	}
+	if strings.Contains(view, "cache…") || strings.Contains(view, "cach…") {
+		t.Error("marker was truncated mid-word — a styled cell is being measured " +
+			"with its escape bytes counted against the column width")
+	}
+}
+
+// A cache key with no events must not produce a row: snapshotLoadedMsg assigns
+// m.events[id] unconditionally, so drilling into an empty session creates the
+// key, and a row advertising zero events helps nobody.
+func TestSessionsPicker_SkipsEmptyCacheKeys(t *testing.T) {
+	m := newRetentionModel(t, "real", 3)
+	m.events["empty"] = nil
+
+	m.Update(sessionsLoadedMsg{})
+	m.rebuildSessionsTable()
+
+	for _, r := range m.sessionsTbl.Rows() {
+		if r[0] == "empty" {
+			t.Errorf("empty cache key produced a picker row: %v", r)
+		}
+	}
+}
+
+// The single release point: picking a DIFFERENT session in the picker. That is
+// the only reliable signal the previous events stopped mattering, and it is
+// what bounds the cache now that the refresh never deletes.
+func TestPickingAnotherSession_ReleasesThePrevious(t *testing.T) {
+	m := newRetentionModel(t, "default", 3)
+	m.events["other"] = make([]pipeline.SessionEvent, 2)
+	m.sessions = []session.SessionSummary{{ID: "default"}, {ID: "other"}}
+	m.rebuildSessionsTable()
+
+	// Back to the picker, cursor on "other", press enter.
+	m.pane = paneSessions
+	for i, r := range m.sessionsTbl.Rows() {
+		if r[0] == "other" {
+			m.sessionsTbl.SetCursor(i)
+		}
+	}
+	m.handleKey(keyRune('l'))
+
+	if m.selectedSess != "other" {
+		t.Fatalf("precondition: handler did not open \"other\" (got %q)", m.selectedSess)
+	}
+	if _, still := m.events["default"]; still {
+		t.Error("the previous session's events were not released")
+	}
+	if got := len(m.events["other"]); got != 2 {
+		t.Errorf("the newly-opened session's events were dropped: got %d, want 2", got)
+	}
+}
+
+// The release loop must NOT touch cached-only sessions. Their copy is the only
+// copy, so dropping one is the same unrecoverable loss as #870 — and after a
+// restart every previously-visited session is cached-only, so a user with three
+// such rows who opens one to read it would destroy the other two.
+//
+// (This test is the reason the release is scoped to live sessions rather than
+// "everything except the one being opened", which is what it did first.)
+func TestPickingAnotherSession_KeepsCachedOnlySessions(t *testing.T) {
+	m := newRetentionModel(t, "sessA", 3)
+	m.events["sessB"] = make([]pipeline.SessionEvent, 5)
+	m.events["sessC"] = make([]pipeline.SessionEvent, 7)
+
+	// Proxy restarted: the server lists nothing, so all three are cached-only.
+	m.Update(sessionsLoadedMsg{})
+	m.rebuildSessionsTable()
+	m.pane = paneSessions
+	for i, r := range m.sessionsTbl.Rows() {
+		if r[0] == "sessB" {
+			m.sessionsTbl.SetCursor(i)
+		}
+	}
+
+	m.handleKey(keyRune('l'))
+
+	for id, want := range map[string]int{"sessA": 3, "sessB": 5, "sessC": 7} {
+		if got := len(m.events[id]); got != want {
+			t.Errorf("%s: got %d events, want %d — a cached-only session was "+
+				"released and its events are unrecoverable", id, got, want)
+		}
+	}
+}
+
+// A cached-only session has no server-side counterpart, so opening one must not
+// fire a snapshot: GetSession would 404 and errMsg flashes that over the very
+// events this change preserves.
+func TestOpeningCachedOnlySession_SkipsTheSnapshot(t *testing.T) {
+	m := newRetentionModel(t, "gone-session", 3)
+	m.Update(sessionsLoadedMsg{}) // restart; nothing is live
+	m.rebuildSessionsTable()
+	m.pane = paneSessions
+
+	if cmd := m.handleKey(keyRune('l')); cmd != nil {
+		t.Error("a snapshot was issued for a session the server does not have; " +
+			"it will 404 and flash an error over the retained events")
+	}
+}
+
+// The live case still fires one, or a session whose history has not yet streamed
+// in would render empty.
+func TestOpeningLiveSession_StillSnapshots(t *testing.T) {
+	m := newRetentionModel(t, "live", 3)
+	m.rebuildSessionsTable()
+	m.pane = paneSessions
+
+	if cmd := m.handleKey(keyRune('l')); cmd == nil {
+		t.Error("no snapshot for a live session")
+	}
+}
+
+// Re-opening the SAME session must not release its own events.
+func TestReopeningSameSession_KeepsItsEvents(t *testing.T) {
+	m := newRetentionModel(t, "default", 3)
+	m.rebuildSessionsTable()
+	m.pane = paneSessions
+
+	m.handleKey(keyRune('l'))
+
+	if got := len(m.events["default"]); got != 3 {
+		t.Errorf("re-opening the same session dropped its events: got %d, want 3", got)
+	}
+}
+
+func newRetentionModel(t *testing.T, id string, n int) *model {
+	t.Helper()
+	evs := make([]pipeline.SessionEvent, n)
+	for i := range evs {
+		evs[i] = pipeline.SessionEvent{
+			At:        time.Now(),
+			Direction: pipeline.Outbound,
+			Phase:     pipeline.SessionRequest,
+			Host:      "api.example.com",
+		}
+	}
+	m := &model{
+		pane:         paneEvents,
+		selectedSess: id,
+		width:        200,
+		height:       40,
+		bodyHeight:   12,
+		events:       map[string][]pipeline.SessionEvent{id: evs},
+		eventColumns: defaultColumnSelection(),
+		sessions:     []session.SessionSummary{{ID: id}},
+	}
+	m.eventsTbl = newEventsTable()
+	m.sessionsTbl = newSessionsTable()
+	m.rebuildEventsTable()
+	return m
+}
+
+// Retention is unbounded now. abctl used to cut both the snapshot and the live
+// stream to the most recent 1000 events per session, on the stated grounds that this
+// "matches the server's default maxEvents cap so we don't hold more than the server
+// itself does" — the server's default was 500, so it held twice as much, and neither
+// side caps by default any more.
+//
+// The first event matters as much as the count: FIFO eviction takes the BEGINNING of
+// a session, which on a long agent run is where the inbound request that started it
+// lives.
+func TestStreamedEvents_AreRetainedWithoutACap(t *testing.T) {
+	const id = "unbounded"
+	m := newRetentionModel(t, id, 0)
+	m.events[id] = nil
+	// Retention is what is under test, not rendering. Left on the events pane, each of
+	// the 2500 events below would also rebuild the events table — ~1.5ms apiece, so
+	// four seconds of test time to assert something the pane has no part in.
+	m.pane = paneSessions
+
+	const n = 2500 // comfortably past both retired caps
+	first := time.Now()
+	for i := 0; i < n; i++ {
+		m.handleStreamEvent(apiclient.StreamEvent{Event: &pipeline.SessionEvent{
+			At:        first.Add(time.Duration(i) * time.Millisecond),
+			SessionID: id, Direction: pipeline.Outbound, Phase: pipeline.SessionRequest,
+			Host: "api.example.com",
+		}})
+	}
+
+	got := m.events[id]
+	if len(got) != n {
+		t.Errorf("retained %d streamed events, want all %d", len(got), n)
+	}
+	if len(got) > 0 && !got[0].At.Equal(first) {
+		t.Errorf("oldest retained event is at %v, want the very first at %v", got[0].At, first)
+	}
+}
+
+// A snapshot is kept whole for the same reason — it used to be trimmed on arrival,
+// so opening a long session showed a timeline that began wherever the cut fell.
+func TestSnapshot_IsKeptWhole(t *testing.T) {
+	const id = "snapshot"
+	m := newRetentionModel(t, id, 0)
+
+	first := time.Now()
+	evs := make([]pipeline.SessionEvent, 3000)
+	for i := range evs {
+		// Distinct timestamps, so the identity of the oldest survivor can be asserted
+		// as well as the count — the doc comment above promises the timeline still
+		// begins where it did, and identical events cannot show that.
+		evs[i] = pipeline.SessionEvent{
+			At: first.Add(time.Duration(i) * time.Millisecond), SessionID: id,
+			Direction: pipeline.Outbound, Phase: pipeline.SessionRequest, Host: "h",
+		}
+	}
+	m.Update(snapshotLoadedMsg{id: id, events: evs})
+
+	got := m.events[id]
+	if len(got) != len(evs) {
+		t.Errorf("snapshot of %d events stored as %d", len(evs), len(got))
+	}
+	if len(got) > 0 && !got[0].At.Equal(first) {
+		t.Errorf("oldest stored event is at %v, want the very first at %v", got[0].At, first)
+	}
+}
+
+// The EVENTS column has ONE source: the server's count, refreshed by the sessions
+// poll. It used to have two — the poll wrote the server's number and every streamed
+// event overwrote it with abctl's local cache length — so the cell flipped between
+// them on live traffic, 500 against 1000 back when both sides capped. Uncapping
+// alone would not have fixed that: abctl's buffer holds what it snapshotted plus
+// what it streamed since attaching, which for a session that predates the
+// connection is still a different number from the server's.
+func TestSessionsPane_EventCountDoesNotFlipOnAStreamedEvent(t *testing.T) {
+	const id = "counted"
+	m := newRetentionModel(t, id, 0)
+	m.pane = paneSessions
+	m.sessionsTbl.SetHeight(12)
+
+	// The server's summary, as a poll delivers it: a session older than this
+	// connection, so its count exceeds anything abctl has cached.
+	m.Update(sessionsLoadedMsg{{
+		ID: id, CreatedAt: time.Now(), UpdatedAt: time.Now(), EventCount: 830, Active: true,
+	}})
+	want := sessionsEventsCell(t, m, id)
+	if want != "830" {
+		t.Fatalf("EVENTS after the poll = %q, want %q", want, "830")
+	}
+
+	// Live traffic arrives. The cell must still report the server's count.
+	for i := 0; i < 5; i++ {
+		m.handleStreamEvent(apiclient.StreamEvent{Event: &pipeline.SessionEvent{
+			At: time.Now(), SessionID: id,
+			Direction: pipeline.Outbound, Phase: pipeline.SessionRequest, Host: "h",
+		}})
+		if got := sessionsEventsCell(t, m, id); got != want {
+			t.Fatalf("streamed event %d changed EVENTS to %q, want %q", i+1, got, want)
+		}
+	}
+}
+
+// sessionsEventsCell reads the EVENTS column from the sessions row for id.
+//
+// The column is located by TITLE, not by the index it happens to have. Rows are built
+// positionally, so a hardcoded index agrees with the table only until someone inserts a
+// column — after which this would read TOKENS and go on passing against the wrong cell.
+func sessionsEventsCell(t *testing.T, m *model, id string) string {
+	t.Helper()
+	// headerTitle, not the raw Title: EVENTS right-aligns its heading, so the installed
+	// title carries the padding that puts it over its own digits.
+	col := -1
+	for i, c := range m.sessionsTbl.Columns() {
+		if headerTitle(c) == "EVENTS" {
+			col = i
+			break
+		}
+	}
+	if col < 0 {
+		t.Fatalf("no EVENTS column in %v", m.sessionsTbl.Columns())
+	}
+	for _, r := range m.sessionsTbl.Rows() {
+		if r[0] != id {
+			continue
+		}
+		if col >= len(r) {
+			t.Fatalf("row for %q has %d cells, EVENTS is column %d: %v", id, len(r), col, r)
+		}
+		return strings.TrimSpace(r[col])
+	}
+	t.Fatalf("no sessions row for %q", id)
+	return ""
+}
+
+// sessionsCell reads one cell of a sessions row by its column title.
+//
+// The sessions table is built positionally, so every index in a test here is a fact about
+// the column ORDER rather than about the cell it means to check — and inserting a column
+// leaves such an index pointing at a neighbour, still asserting and still passing. Looking
+// the title up costs a line and removes that whole failure mode.
+func sessionsCell(t *testing.T, m *model, row []string, title string) string {
+	t.Helper()
+	for i, c := range m.sessionsTbl.Columns() {
+		// Through headerTitle: the numeric headings are right-aligned into their fitted
+		// widths, so a stored title is "  EVENTS" rather than "EVENTS" and an exact compare
+		// finds nothing.
+		if headerTitle(c) == title {
+			if i >= len(row) {
+				t.Fatalf("row has %d cells, no index %d for column %q: %v", len(row), i, title, row)
+			}
+			return row[i]
+		}
+	}
+	t.Fatalf("no %q column in the sessions table", title)
+	return ""
+}

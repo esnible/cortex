@@ -1,9 +1,9 @@
 # Directional Body Capabilities and the `tool-prune` Plugin
 
 **Status**: Implemented — kept as the design record, not a live proposal.
-Shipped as the `tool-prune` plugin (`authbridge/authlib/plugins/toolprune`) plus
-the directional body capabilities in `authbridge/authlib/pipeline`. Read
-[`tool-prune-plugin.md`](../../authbridge/docs/tool-prune-plugin.md) for current
+Shipped as the `tool-prune` plugin (`authlib/plugins/toolprune`) plus
+the directional body capabilities in `authlib/pipeline`. Read
+[`tool-prune-plugin.md`](../../docs/tool-prune-plugin.md) for current
 behaviour.
 **Date**: September 2026
 

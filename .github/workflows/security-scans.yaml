@@ -150,18 +150,11 @@ jobs:
       - name: Run Bandit security scan
         run: |
           echo "=== Bandit Python Security Scan ==="
-          # Scan AuthBridge Python code and tests
-          PYTHON_DIRS=""
-          for dir in authbridge tests; do
-            if [ -d "$dir" ]; then
-              PYTHON_DIRS="$PYTHON_DIRS $dir"
-            fi
-          done
-          if [ -z "$PYTHON_DIRS" ]; then
-            echo "No Python directories found"
-            exit 0
-          fi
-          echo "Scanning:$PYTHON_DIRS"
+          # Scan all Python in the repo. This was `authbridge tests` until that
+          # tree became the repo root; the union is now `.`, which is also the only
+          # spelling that still reaches the root-level keycloak_sync.py.
+          PYTHON_DIRS="."
+          echo "Scanning: $PYTHON_DIRS"
           echo ""
 
           # HIGH severity blocks the build
@@ -250,7 +243,7 @@ jobs:
           scan-type: 'config'
           scan-ref: '.'
           severity: 'CRITICAL,HIGH,MEDIUM'
-          skip-dirs: 'authbridge/demos'
+          skip-dirs: 'demos'
           exit-code: '0'
           format: 'table'
 

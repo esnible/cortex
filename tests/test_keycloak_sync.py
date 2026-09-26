@@ -1,4 +1,4 @@
-"""Tests for authbridge/keycloak_sync.py."""
+"""Tests for keycloak_sync.py."""
 
 import importlib.util
 from pathlib import Path
@@ -9,7 +9,7 @@ import pytest
 # Load keycloak_sync via importlib to avoid mutating sys.path
 _spec = importlib.util.spec_from_file_location(
     "keycloak_sync",
-    Path(__file__).resolve().parents[1] / "authbridge" / "keycloak_sync.py",
+    Path(__file__).resolve().parents[1] / "keycloak_sync.py",
 )
 _mod = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(_mod)

@@ -22,7 +22,7 @@ One binary, no Kubernetes. macOS or Linux, amd64 or arm64.
      Change both, or they drift — the --ref wording already did once. -->
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/rossoctl/cortex/main/authbridge/install.sh \
+curl -fsSL https://raw.githubusercontent.com/rossoctl/cortex/main/install.sh \
   | sh -s -- --claude-code
 ```
 
@@ -38,9 +38,9 @@ claude          # as usual — no environment variables to set
 
 Your agent's calls stream into `abctl`. Cortex only reads them; nothing is rewritten.
 
-- **[Cut token cost](./authbridge/docs/laptop-token-savings.md)** — one more command
-- **[Start, stop, remove](./authbridge/docs/laptop-service.md)** — `abctl service status | start | stop`
-- **[Run it in Kubernetes](./authbridge/docs/kubernetes.md)** — sidecars, Keycloak, SPIFFE/SPIRE
+- **[Cut token cost](./docs/laptop-token-savings.md)** — one more command
+- **[Start, stop, remove](./docs/laptop-service.md)** — `abctl service status | start | stop`
+- **[Run it in Kubernetes](./docs/kubernetes.md)** — sidecars, Keycloak, SPIFFE/SPIRE
 
 **Any agent works**, not only Claude Code: point it at `localhost:47600` and trust
 `~/.cortex/ca/ca.crt`.
@@ -78,9 +78,10 @@ platform services agentic workloads need in production, as a sidecar or standalo
 - **Egress control** — govern which external services a workload can reach.
 - **Cost controls** — trim the context a workload sends, and cap its spend.
 
-Everything is a plugin in one pipeline; the [plugin catalog](./authbridge/docs/plugin-catalog.md)
-lists what ships, and the [architecture reference](./authbridge/README.md) explains how
-a request flows through it. Code lives under [`authbridge/`](./authbridge/).
+Everything is a plugin in one pipeline; the [plugin catalog](./docs/plugin-catalog.md)
+lists what ships, and the [architecture reference](./docs/architecture.md) explains how
+a request flows through it. The shared library is [`authlib/`](./authlib/); the
+binaries live under [`cmd/`](./cmd/).
 
 ## License
 

@@ -16,7 +16,7 @@ Comment `/claim` on an issue to have it automatically assigned to you. Issues la
 
 ## Prerequisites
 
-- **Go 1.26.5+** (matches `authbridge/go.work`)
+- **Go 1.26.5+** (matches `go.work`)
 - **Python 3.12+** (for `keycloak_sync.py` and the demo setup scripts)
 - **Docker or Podman** (for building container images)
 - **pre-commit** (for local hooks)
@@ -32,9 +32,9 @@ cd cortex
 pre-commit install
 
 # Build the proxy-init image (one-target Makefile in proxy-init/).
-# For every image at once, use the repo-root local-build-and-test.sh —
+# For every image at once, use scripts/local-build-and-test.sh —
 # see "Testing against a local cluster" below.
-cd authbridge/proxy-init && make docker-build-init
+cd proxy-init && make docker-build-init
 ```
 
 Most day-to-day work needs no cluster: `make abctl` / `make authbridge-proxy`
@@ -62,14 +62,14 @@ auth rather than client secrets, that repo's
 `deployments/envs/dev_values_federated-jwt.yaml` sets
 `authBridge.clientAuthType: federated-jwt`.
 
-**2. Build and load your local images.** `local-build-and-test.sh` is the
-supported path — it builds from both repos and loads everything into Kind. It
+**2. Build and load your local images.** `scripts/local-build-and-test.sh` is
+the supported path — it builds from both repos and loads everything into Kind. It
 requires the cluster to exist already, which is why it comes second:
 
 ```bash
 cd cortex
 export KIND_EXPERIMENTAL_PROVIDER=podman   # Podman only
-CLUSTER_NAME=rossoctl ROSSOCTL_DIR=../rossoctl ./local-build-and-test.sh
+CLUSTER_NAME=rossoctl ROSSOCTL_DIR=../rossoctl ./scripts/local-build-and-test.sh
 ```
 
 Pass `CLUSTER_NAME` explicitly: this script defaults to `rossoctl-dev` while
@@ -93,7 +93,7 @@ under Podman). On Podman the script also loads via tar archives, because
 
 ```bash
 cd cortex
-./verify-spire-keycloak.sh
+./scripts/verify-spire-keycloak.sh
 ```
 
 It checks the SPIRE server, the OIDC discovery provider, the JWKS `use` field,
@@ -103,14 +103,14 @@ out to be one of these six.
 
 **4. Deploy a workload.** Use a demo rather than hand-written manifests; they
 are kept current, and the manual path is not. Start from
-[`authbridge/demos/README.md`](authbridge/demos/README.md).
+[`demos/README.md`](demos/README.md).
 
 ## Installing an unreleased build
 
 A fix merged to `main` is installable immediately, without waiting for a release:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/rossoctl/cortex/main/authbridge/install.sh \
+curl -fsSL https://raw.githubusercontent.com/rossoctl/cortex/main/install.sh \
   | sh -s -- --claude-code --ref=main
 ```
 
@@ -235,7 +235,7 @@ Smaller pull requests are typically easier to review and merge. If your pull req
 
 ### Python Code (keycloak_sync.py, sparc-service, demo scripts)
 - Python 3.12+ syntax (type hints with `str | None`)
-- Dependencies declared in `authbridge/requirements.txt` — exact pins for the
+- Dependencies declared in `requirements.txt` — exact pins for the
   langchain/pydantic stack, bounded ranges elsewhere
 
 ## Licensing

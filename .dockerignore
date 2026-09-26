@@ -1,0 +1,47 @@
+# Build contexts became the repo root when authbridge/ was flattened, so the
+# things that were previously outside every context are now inside one.
+#
+# NOTE ON ANCHORING — the opposite of .gitignore. Docker matches each pattern
+# against the file's WHOLE path relative to the context root, so a bare `venv`
+# catches ./venv and nothing else; a nested tests/__pycache__ sails straight
+# past it. Recursive patterns need an explicit `**/`. The flip side is that a
+# bare name here cannot accidentally match a directory deeper in the tree the
+# way it does in .gitignore, so the root-level entries below need no leading
+# slash to stay anchored.
+.git
+.worktrees
+.superpowers
+bin
+dist
+
+# Caches and virtualenvs, which show up at any depth (tests/__pycache__ does).
+**/venv
+**/.venv
+**/__pycache__
+**/.pytest_cache
+**/.ruff_cache
+**/.mypy_cache
+**/node_modules
+**/*.test
+
+# Compiled Go binaries. This mirrors .gitignore, which Docker does not read: on
+# any machine that has run `go build`, these are ~63MB of stale binaries that
+# would otherwise be shipped into the build context and then ignored by the
+# builder, which recompiles from source anyway.
+#
+# `cmd/*/authbridge-*` catches the in-package builds (cmd/authbridge-proxy/
+# authbridge-proxy and friends) without touching the package DIRECTORIES, which
+# are one path segment shorter, nor any source file — no tracked file under
+# cmd/*/ begins with "authbridge-".
+abctl
+authbridge-proxy
+authbridge-envoy
+authbridge-cpex
+authbridge-lite
+authbridge-praxis
+profile-tags
+readme-demo
+cmd/abctl/abctl
+cmd/*/authbridge-*
+scripts/profile-tags/profile-tags
+scripts/readme-demo/readme-demo
