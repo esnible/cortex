@@ -163,8 +163,54 @@ func TestBobShellEnableCreatesTheFile(t *testing.T) {
 	}
 	// 0644, not 0600: an rc file the user may share across machines should not be
 	// created more restrictively than the convention.
-	if perm := st.Mode().Perm(); perm != rcFileMode {
-		t.Errorf("mode = %v, want %v", perm, rcFileMode)
+	//
+	// The literal, not rcFileMode. writeRCFile sets the mode FROM that constant, so
+	// comparing against it compares the implementation with itself — both sides move
+	// together and changing 0644 to anything else stays green. README.md commits to
+	// 0644 by name, so 0644 is what the test says.
+	if perm := st.Mode().Perm(); perm != 0o644 {
+		t.Errorf("mode = %v, want %v", perm, os.FileMode(0o644))
+	}
+}
+
+// An rc file that already exists keeps its own permissions. README.md promises this,
+// and someone who deliberately locked their rc file down is exactly the person who
+// would not notice abctl widening it again.
+//
+// 0600 is the mode to test with, because it is the one that differs from the
+// new-file default: with a 0644 fixture, deleting writeRCFile's mode-inheritance
+// branch outright changes no observable behaviour and every test still passes.
+func TestBobShellEnablePreservesAnExistingMode(t *testing.T) {
+	home := fakeHome(t)
+	t.Setenv("SHELL", "/bin/zsh")
+	rc := filepath.Join(home, ".zshrc")
+	if err := os.WriteFile(rc, []byte("export EDITOR=vim\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// os.WriteFile applies the umask, so the fixture is only 0600 if we say so.
+	if err := os.Chmod(rc, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var out, errb bytes.Buffer
+	if code := runBobShell([]string{"enable"}, &out, &errb); code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr: %s", code, errb.String())
+	}
+
+	st, err := os.Stat(rc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if perm := st.Mode().Perm(); perm != 0o600 {
+		t.Errorf("mode = %v, want 0600 preserved — the write widened a locked-down file", perm)
+	}
+	// The edit still has to have happened; a no-op would also preserve the mode.
+	got, err := os.ReadFile(rc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(got), bobShellBlock) {
+		t.Errorf("block not written:\n%q", got)
 	}
 }
 
@@ -205,6 +251,54 @@ func TestBobShellEnableIsIdempotent(t *testing.T) {
 	}
 	if !strings.Contains(out2.String(), "Already enabled") {
 		t.Errorf("second run did not say it was already enabled:\n%s", out2.String())
+	}
+}
+
+// enable's twin of TestBobShellDisable/"hand-edited between the markers": our markers
+// are present but the block between them is not what we write, so enable declines too.
+//
+// Both verbs have to refuse here, for the same reason and with the same outcome.
+// Appending a second block would leave two `bob()` definitions in one file with the
+// last one silently winning — a worse state than the one the user started in, and one
+// disable would then refuse to clean up because it sees more than one copy.
+//
+// This is the enable half of a guard that had no test at all. Deleting the whole `if`
+// from cmd_bobshell.go left the package green, because only disable's arm was covered.
+func TestBobShellEnableDeclinesAHandEditedBlock(t *testing.T) {
+	home := fakeHome(t)
+	t.Setenv("SHELL", "/bin/zsh")
+	rc := filepath.Join(home, ".zshrc")
+	// Same fixture shape as the disable row, so the two refusals are visibly the
+	// same case seen from either verb.
+	content := bobShellMarkerStart + "\nbob() { echo my own version; }\n" + bobShellMarkerEnd + "\n"
+	if err := os.WriteFile(rc, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	var out, errb bytes.Buffer
+	// Exit 0, like disable's refusal: declining with an explanation is a successful
+	// outcome, not a failure to be scripted against.
+	if code := runBobShell([]string{"enable"}, &out, &errb); code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr: %s", code, errb.String())
+	}
+	if errb.Len() != 0 {
+		t.Errorf("stderr not empty: %q", errb.String())
+	}
+	if !strings.Contains(out.String(), "not one matching") {
+		t.Errorf("stdout does not explain the mismatch:\n%s", out.String())
+	}
+
+	// The whole point of the guard: the user's version survives untouched, and no
+	// second block was appended beside it.
+	got, err := os.ReadFile(rc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != content {
+		t.Errorf("file changed:\n%q\nwant\n%q", got, content)
+	}
+	if strings.Contains(string(got), bobShellBlock) {
+		t.Errorf("our block was appended alongside the user's:\n%q", got)
 	}
 }
 

@@ -161,7 +161,12 @@ func TestConfigure_UsageErrors(t *testing.T) {
 			t.Errorf("stderr does not quote the input: %q", got)
 		}
 		// Naming the valid set is the difference between a refusal and a dead end.
-		for _, agent := range []string{"claude-code", "bob", "codex", "opencode"} {
+		//
+		// "bobshell" in full, not "bob": the shorter spelling is a substring of the
+		// longer one, so it stayed green through the rename this PR performs and
+		// would stay green through the next rename too. An expectation that a
+		// rename cannot break is not pinning the rename.
+		for _, agent := range []string{"claude-code", "bobshell", "codex", "opencode"} {
 			if !strings.Contains(got, agent) {
 				t.Errorf("stderr omits %q: %q", agent, got)
 			}
@@ -208,7 +213,14 @@ func TestConfigure_BobIsNoLongerAnAgent(t *testing.T) {
 	}
 	// The error has to name the replacement, or someone with `configure bob` in a
 	// script has no way to find out what to type instead.
-	if !strings.Contains(errb.String(), "bobshell") {
-		t.Errorf("stderr does not point at the new spelling: %q", errb.String())
+	//
+	// Asserted against the FIRST LINE, not the whole stream. The default arm prints
+	// configureUsage to stderr right after the error, and that usage text names
+	// bobshell three times — so `Contains(errb.String(), "bobshell")` passes even
+	// with the agent name stripped out of the error itself, which is the one thing
+	// this test exists to pin. Splitting first makes the assertion able to fail.
+	errLine, _, _ := strings.Cut(errb.String(), "\n")
+	if !strings.Contains(errLine, "bobshell") {
+		t.Errorf("the error line does not point at the new spelling: %q", errLine)
 	}
 }
