@@ -309,9 +309,25 @@ abctl configure bobshell disable   # remove exactly that block
 abctl configure bobshell status    # is bob routed in THIS shell?
 ```
 
-The block opens with a blank line, so it lands on a line of its own even after a
-file whose last line has no newline. That newline is part of the block, removed
-with the rest of it, which is why nothing else in the file is touched and the
+`abctl configure bob` no longer exists — it is `bobshell`, because what gets
+configured is the Bob Shell integration and not Bob itself. This is a breaking
+change and not an alias: the old spelling printed "coming soon" and exited 0,
+and now exits 2 with `unknown agent "bob"`, so a script that ran it and checked
+the status starts failing rather than silently doing nothing. The error names
+`bobshell`, so the fix is visible at the point of failure.
+
+Let `enable` write it rather than pasting the block above. What `enable` appends
+begins with a blank line, which the fence cannot show you: it is invisible when
+rendered, and formatters strip a leading blank line inside a fence anyway. That
+newline is part of the block rather than something added to your content, so the
+block starts on a line of its own even after a file whose last line has no
+newline of its own, and `disable` takes the separator away with the rest of it.
+Paste the fence's text verbatim at the top of a file and `disable` will report a
+block "edited since it was written" and decline — it matches the whole constant,
+leading newline included. It declines rather than guessing, so nothing is lost,
+but the block is then yours to remove by hand.
+
+Letting `enable` write it is also why nothing else in the file is touched and the
 file comes back byte-for-byte — a round-trip test asserts exactly that,
 including on a file with no trailing newline, so the two halves cannot drift
 apart.
