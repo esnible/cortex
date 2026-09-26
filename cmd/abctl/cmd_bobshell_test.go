@@ -993,13 +993,29 @@ func TestBobShellEnableQuotesThePathItTellsYouToSource(t *testing.T) {
 		t.Errorf("the path is not single-quoted: %q", sourceLine)
 	}
 
-	// Ground truth: run it. `sh -c` resolves the quoting exactly as the user's shell
+	// Ground truth: run it. A shell resolves the quoting exactly as the user's shell
 	// will, so this fails on an unquoted path (sourcing ".../Ed", which does not
 	// exist) and on a broken quoting scheme, without the test needing to model
-	// either. /bin/sh is POSIX and present wherever these tests run; the rc file
-	// holds only a function definition and an export, which sh parses.
-	cmd := exec.Command("/bin/sh", "-c", sourceLine)
-	if outBytes, err := cmd.CombinedOutput(); err != nil {
-		t.Errorf("a shell could not run the printed command %q: %v\n%s", sourceLine, err, outBytes)
+	// either. The rc file holds only a function definition and an export, which any
+	// of these shells parses.
+	//
+	// The VERB is swapped to "." before running, and only the verb. `source` is a
+	// bash/zsh builtin; POSIX specifies `.`, and dash implements only that — so
+	// `sh -c "source ..."` exits 127 "source: not found" wherever /bin/sh is dash,
+	// which is every Ubuntu CI runner. It passes on macOS, where /bin/sh is bash in
+	// POSIX mode and keeps the builtin, so this is a defect that hides locally and
+	// fails only in CI. What enable PRINTS stays `source`: its audience is an
+	// interactive zsh or bash, where `source` is idiomatic and correct, and the
+	// advice is not being tested here — the quoting of the path is. Substituting the
+	// verb keeps the path under test byte-for-byte as enable emitted it, which
+	// rebuilding the line from rc would not.
+	runnable := ". " + strings.TrimPrefix(sourceLine, "source ")
+	for _, sh := range []string{"/bin/sh", "/bin/bash", "/bin/zsh"} {
+		if _, err := os.Stat(sh); err != nil {
+			continue // not every runner has all three
+		}
+		if outBytes, err := exec.Command(sh, "-c", runnable).CombinedOutput(); err != nil {
+			t.Errorf("%s could not run the printed command %q (as %q): %v\n%s", sh, sourceLine, runnable, err, outBytes)
+		}
 	}
 }
