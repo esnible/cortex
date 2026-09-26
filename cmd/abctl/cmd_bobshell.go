@@ -316,7 +316,13 @@ func bobShellEnable(path string, stdout, stderr io.Writer) int {
 	}
 
 	fmt.Fprintf(stdout, "Enabled in %s.\n", path)
-	fmt.Fprintf(stdout, "\nOpen a new terminal, or run:\n  source %s\n", path)
+	// shellQuote, because this line is meant to be COPIED AND RUN, unlike the
+	// prose above that merely names the path. An unquoted "source /Users/a b/.zshrc"
+	// splits at the space and sources /Users/a, so the rc file is written correctly
+	// and the instructions for loading it are broken — the worse of the two failures
+	// to have, since the user sees "Enabled" and then a command that does not work.
+	// cmd_exec.go's helper already handles the embedded-single-quote case.
+	fmt.Fprintf(stdout, "\nOpen a new terminal, or run:\n  source %s\n", shellQuote(path))
 	fmt.Fprint(stdout, "\nThen \"bob\" runs through Cortex. \"abctl configure bobshell disable\" is the off switch.\n")
 	return 0
 }
@@ -406,7 +412,18 @@ func bobShellAdviseManual(action, where string, stdout io.Writer) int {
 func bobShellStatus(stdout io.Writer) int {
 	if v, ok := os.LookupEnv(bobShellEnvVar); ok {
 		fmt.Fprintf(stdout, "  %s=%s\n", bobShellEnvVar, v)
-		fmt.Fprint(stdout, "enabled in this shell — \"bob\" runs through Cortex\n")
+		// Two lines, because these are two different facts and the variable only
+		// establishes the first. It is exported, so it is inherited by every child
+		// process — including a NON-INTERACTIVE subshell, which does not read the rc
+		// file and therefore has no bob function at all. There, `bob` is the PATH
+		// binary and Cortex is not in the path of the call, while the variable still
+		// says 1. Claiming "bob runs through Cortex" on the strength of an inherited
+		// variable is a claim this command cannot check: the function table lives in
+		// the shell's own memory and is never exported, so abctl, as a child process,
+		// cannot see it. mise reports the same split as separate `activated:` and
+		// `shims_on_path:` lines for the same reason.
+		fmt.Fprint(stdout, "configured — a shell that reads your startup file defines \"bob\"\n")
+		fmt.Fprint(stdout, "\nIn an interactive shell that is the function, so \"bob\" runs through Cortex.\nTo confirm it in THIS shell: type \"which bob\" — a function body means yes, a path\nmeans no (a script or non-interactive subshell inherits the variable but not the\nfunction).\n")
 		return 0
 	}
 	fmt.Fprintf(stdout, "  %s (unset)\n", bobShellEnvVar)

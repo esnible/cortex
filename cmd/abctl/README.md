@@ -370,12 +370,22 @@ permissions; a new one is created `0644`.
 
 ### What `status` does and does not know
 
-It reports whether `CORTEX_BOBSHELL` is set in the environment — that is,
-whether **this** shell routes `bob` through Cortex. It reads no files. So it
-says `not enabled` in the very shell that just ran `enable`, until you open a
-new terminal or source the file. That is the honest answer to "is it working
-right now", and recognising the block inside a startup script would mean
-parsing shell, which is the thing this command deliberately does not do.
+It reports whether `CORTEX_BOBSHELL` is set in the environment, and it reads no
+files. So it says `not enabled` in the very shell that just ran `enable`, until
+you open a new terminal or source the file — recognising the block inside a
+startup script would mean parsing shell, which is the thing this command
+deliberately does not do.
+
+What the variable proves is narrower than "`bob` is routed", which is why the
+report is two lines. The variable is exported, so every child process inherits
+it — including a **non-interactive** subshell or a script, which does not read
+your startup file and therefore has no `bob` function at all. There, `bob` is the
+plain binary and Cortex is not in the path of the call, while the variable still
+says `1`. `status` cannot tell the two apart: the shell's function table lives in
+that shell's memory and is never exported, so `abctl`, as a child process, cannot
+see it. To settle it in a particular shell, ask that shell — `which bob` prints a
+function body when the function is live and a path when it is not. (`mise doctor`
+splits `activated:` from `shims_on_path:` for the same reason.)
 
 Both answers exit 0: "not enabled" is a report, not a failure.
 

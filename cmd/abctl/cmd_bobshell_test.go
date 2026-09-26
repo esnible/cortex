@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -438,16 +439,22 @@ func TestBobShellDisable(t *testing.T) {
 // enabled" is a report, not a failure, matching claudeCodeStatus.
 func TestBobShellStatus(t *testing.T) {
 	for _, tc := range []struct {
-		name     string
-		set      bool
-		value    string
-		wantSays string
+		name        string
+		set         bool
+		value       string
+		wantSays    string
+		wantNotSays string
 	}{
-		{name: "enabled", set: true, value: "1", wantSays: "enabled in this shell"},
-		{name: "not enabled", wantSays: "not enabled in this shell"},
+		// wantSays / wantNotSays as a PAIR, because the two reports share a
+		// substring: "not enabled in this shell" contains "enabled in this shell",
+		// so a one-sided Contains on the shorter phrase passes in both states and
+		// pins neither. Whatever these phrases become, each row has to name
+		// something the other state does not print.
+		{name: "enabled", set: true, value: "1", wantSays: "configured", wantNotSays: "not enabled"},
+		{name: "not enabled", wantSays: "not enabled", wantNotSays: "configured"},
 		// Any value counts as set. The block writes 1, but a user who exported it
 		// by hand should not get a different answer for an equivalent setting.
-		{name: "some other value", set: true, value: "yes", wantSays: "enabled in this shell"},
+		{name: "some other value", set: true, value: "yes", wantSays: "configured", wantNotSays: "not enabled"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if tc.set {
@@ -463,6 +470,9 @@ func TestBobShellStatus(t *testing.T) {
 			}
 			if !strings.Contains(out.String(), tc.wantSays) {
 				t.Errorf("stdout missing %q:\n%s", tc.wantSays, out.String())
+			}
+			if strings.Contains(out.String(), tc.wantNotSays) {
+				t.Errorf("stdout carries the other state's report %q:\n%s", tc.wantNotSays, out.String())
 			}
 			// A status a script cannot pipe is half a status.
 			if errb.Len() != 0 {
@@ -483,7 +493,7 @@ func TestBobShellStatusNeedsNothingButTheEnvironment(t *testing.T) {
 	if code := runBobShell([]string{"status"}, &out, &errb); code != 0 {
 		t.Errorf("exit = %d, want 0", code)
 	}
-	if !strings.Contains(out.String(), "enabled in this shell") {
+	if !strings.Contains(out.String(), "configured") {
 		t.Errorf("status did not answer under an unrecognised shell:\n%s", out.String())
 	}
 }
@@ -928,4 +938,68 @@ func TestBobShellHelpAndUsageErrors(t *testing.T) {
 			})
 		}
 	})
+}
+
+// The "run:" line enable prints is the one thing in its output meant to be COPIED
+// AND EXECUTED, so it has to survive a $HOME with a space in it — which is not
+// exotic: a macOS account named "Ed Snible" produces one, as does every Windows
+// "Documents and Settings" descendant.
+//
+// The break this pins is nastier than a cosmetic one. The rc file is written to the
+// right path, so enable is not wrong about what it did; only the instructions for
+// loading it are wrong, and they fail in the user's own shell minutes later with
+// "no such file or directory: /Users/Ed" — a path the user never typed and cannot
+// map back to this command.
+//
+// Verified by actually running it, rather than by inspecting the string. A
+// field-count check cannot express this: strings.Fields knows nothing about
+// quoting, so a correctly quoted path with a space in it still splits into three
+// fields and the assertion fails on working code. What matters is what a shell
+// does with the line, so the test hands the line to a shell. The quoted-form check
+// alongside it names the fix, so a regression that half-quotes — double quotes,
+// say, which leave $ and backtick live — is caught as well.
+func TestBobShellEnableQuotesThePathItTellsYouToSource(t *testing.T) {
+	home := filepath.Join(t.TempDir(), "Ed Snible")
+	if err := os.Mkdir(home, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("SHELL", "/bin/zsh")
+
+	var out, errb bytes.Buffer
+	if code := runBobShell([]string{"enable"}, &out, &errb); code != 0 {
+		t.Fatalf("exit = %d, want 0\nstderr: %s", code, errb.String())
+	}
+
+	rc := filepath.Join(home, ".zshrc")
+	// The write itself was never the broken half; assert it anyway, so a future
+	// change that stops writing cannot pass this test on its output alone.
+	if _, err := os.Stat(rc); err != nil {
+		t.Fatalf("enable did not write the rc file: %v", err)
+	}
+
+	var sourceLine string
+	for _, line := range strings.Split(out.String(), "\n") {
+		if strings.Contains(line, "source ") {
+			sourceLine = strings.TrimSpace(line)
+			break
+		}
+	}
+	if sourceLine == "" {
+		t.Fatalf("no source line in stdout:\n%s", out.String())
+	}
+	if !strings.Contains(sourceLine, "'"+rc+"'") {
+		t.Errorf("the path is not single-quoted: %q", sourceLine)
+	}
+
+	// Ground truth: run it. `sh -c` resolves the quoting exactly as the user's shell
+	// will, so this fails on an unquoted path (sourcing ".../Ed", which does not
+	// exist) and on a broken quoting scheme, without the test needing to model
+	// either. /bin/sh is POSIX and present wherever these tests run; the rc file
+	// holds only a function definition and an export, which sh parses.
+	cmd := exec.Command("/bin/sh", "-c", sourceLine)
+	if outBytes, err := cmd.CombinedOutput(); err != nil {
+		t.Errorf("a shell could not run the printed command %q: %v\n%s", sourceLine, err, outBytes)
+	}
 }
