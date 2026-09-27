@@ -162,6 +162,11 @@ curl localhost:47601/v1/usage | jq .unpricedBy
 `unpricedBy` keys are `<endpoint> <model>`, which is exactly the pair you need for a
 `pricing:` entry.
 
+The Bob endpoint above is the worked example for [Billing units](#billing-units): it bills in
+credits rather than dollars, so closing its gap means giving that endpoint a `unit:` as well as
+rates. Pricing it without one would record credits as dollars — the figure would look right and be
+neither.
+
 The TUI annotates the same thing from the other direction: `abctl observe`'s cost total
 carries `[bundled]` or `[configured]` when a total is wholly one provenance, and names the
 dominant source when it is mixed. A wholly `authoritative` total is left unannotated,
@@ -302,6 +307,53 @@ pricing:
 `hosts` is a **list** because gateways commonly share a rate card — two replicas, or a
 service name and its external alias, bill identically, and repeating the models block per
 host invites the copies to drift. Each host becomes its own table row.
+
+### Billing units
+
+Rates are in **US dollars unless an endpoint says otherwise**:
+
+```yaml
+pricing:
+  endpoints:
+    - hosts: ["api.us-east.bob.ibm.com"]
+      unit: credits          # absent means USD
+      symbol: "₡"            # optional, display only
+      models:
+        "premium-ide":
+          input_cost_per_million:       2.00
+          output_cost_per_million:      2.00
+          cache_read_cost_per_million:  2.00   # deliberate: this gateway gives no cache discount
+          cache_write_cost_per_million: 2.00
+```
+
+`unit` sits on the **endpoint**, because that is where a gateway's billing is decided. A rate
+resolved for a request carries the unit of the endpoint it resolved on, so nothing downstream has
+to guess which currency a figure is in.
+
+**Figures in different units are never added.** Where a window holds more than one, `abctl cost`
+withholds the combined total, names the units it found, and points you at `--by currency`:
+
+```
+COST — today
+  2 units           1057 requests   298.0M tokens
+  ! this window holds USD and credits, which cannot be added — no combined figure is shown
+    use --by currency for a figure per unit; tokens and requests above are unit-free
+```
+
+A caveat printed *under* a wrong number leaves the wrong number on screen, so the figure is
+withheld rather than annotated. Tokens and requests are still reported: they carry no unit and stay
+comparable across gateways.
+
+`unit` names a currency, so it is letters, digits, `-` and `_` only, at most 16 bytes, and an
+unusable value **fails startup naming the endpoint**. It is compared case-insensitively but stored
+as you typed it, so `abctl pricing` shows back your own spelling.
+
+**A multiplier never crosses units** — scaling credits by 0.76 leaves credits.
+
+Nothing converts between units. There are no exchange rates here: a unit partitions figures, it is
+never an operand.
+
+### Both per-tier units
 
 Both units are accepted per tier: `*_cost_per_million` or `*_cost_per_token`. Setting
 **both** for one tier **fails startup**, naming the tier — they differ by 10^6, and
