@@ -18,6 +18,14 @@ type Entry struct {
 	Model string
 	Rates Rates
 	Prov  Provenance
+	// Currency is the unit Rates are denominated in. EMPTY MEANS CurrencyUSD, matching what an
+	// absent pricing.endpoints[].unit means and what every row already on disk means — one
+	// default, three places, so they cannot disagree.
+	//
+	// It rides on the ENTRY rather than on Rates because it is a property of the endpoint the
+	// rate came from, not of the numbers: Rates is arithmetic, and a unit is what says which
+	// arithmetic is legal.
+	Currency string
 }
 
 // Table is an immutable resolved rate table. Build one with NewTable; never
@@ -45,6 +53,9 @@ type row struct {
 	spec  specificity
 	rates Rates
 	prov  Provenance
+	// currency is the unit rates are denominated in; never empty once NewTable has run,
+	// which is what lets CurrencyFor answer without a second default.
+	currency string
 }
 
 // modelMatcher is one compiled model pattern.
@@ -304,6 +315,10 @@ func NewTable(entries []Entry, mults ...MultiplierRule) (*Table, error) {
 			model: m,
 			rates: rates,
 			prov:  e.Prov,
+			// NORMALISED HERE, once, so no reader downstream needs a second "empty means USD"
+			// branch. The config path validates the spelling; a bundled entry names no unit at
+			// all, which is exactly the default.
+			currency: currencyOrDefault(e.Currency),
 			spec: specificity{
 				namedHost: !anyHost(host),
 				// isIPv6Literal counts as EXACT: matchHost compares such a pattern
@@ -394,6 +409,45 @@ func (t *Table) multiplierFor(endpoint string) (float64, Provenance) {
 		return 1, ProvNone
 	}
 	return best.factor, best.prov
+}
+
+// currencyOrDefault reads an empty unit as CurrencyUSD.
+//
+// ONE PLACE, called where a row is built, so nothing downstream carries its own version of the
+// default. Bundled entries name no unit — they are vendor list, in dollars — and a config that
+// omits the key means the same thing, so both arrive here empty and leave as USD.
+func currencyOrDefault(c string) string {
+	if c == "" {
+		return CurrencyUSD
+	}
+	return c
+}
+
+// CurrencyFor is the unit a figure priced for this (endpoint, model) pair is denominated in.
+//
+// IT FOLLOWS THE SAME ROW Resolve PRICES FROM — bestRow — and that is the whole correctness
+// requirement. Two blocks can match one host, a `hosts: ["*"]` catch-all beside a specific
+// gateway, and the more specific row wins the rate; taking the unit from anywhere else would let
+// a figure be priced at one row's rate and labelled with another's, which is the failure the unit
+// exists to prevent.
+//
+// USD FOR A NIL TABLE AND FOR AN UNMATCHED PAIR, rather than empty. The caller is about to label
+// a figure, and empty already means USD everywhere downstream — so "" would be the same answer
+// written less legibly. Nil is the Kubernetes deployment, where pricing is not wired: it reports
+// the default rather than panicking on the response path, for the reason Resolve answers ProvNone
+// there.
+//
+// A MULTIPLIER CANNOT CHANGE IT. multiplierFor scales a rate WITHIN an endpoint and never crosses
+// units — scaling credits by 0.76 leaves credits — so the unit is settled by the row alone.
+func (t *Table) CurrencyFor(endpoint, model string) string {
+	if t == nil {
+		return CurrencyUSD
+	}
+	best := t.bestRow(endpoint, model)
+	if best == nil {
+		return CurrencyUSD
+	}
+	return currencyOrDefault(best.currency)
 }
 
 // Resolve returns the rates for one (endpoint, model) pair and where they came

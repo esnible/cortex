@@ -618,9 +618,27 @@ func writeCostSummary(snap *usage.Snapshot, stdout io.Writer, agent string) {
 	// surface printed "$-5.00", which reads as a refund nobody issued. Unavailable rather
 	// than clamped to zero, because $0.00 would assert the traffic was free.
 	negative := snap.Priced && t.CostMicros < 0
+	// A CROSS-UNIT TOTAL IS NOT A TOTAL, and unlike every other caveat on this surface the figure
+	// cannot be salvaged by qualifying it. Summing credits into dollars yields a number that is
+	// neither, and it looks exactly like a correct one — larger, never obviously wrong. Measured on
+	// one real day before units existed: $146.3616 of Claude Code spend would have silently
+	// absorbed 0.0774 credits of Bob spend, and one scalar just looks slightly bigger where two
+	// subtotals side by side would look obviously wrong.
+	//
+	// SO THE HEADLINE IS WITHHELD, not annotated. A caveat under a wrong figure leaves the wrong
+	// figure on screen. Same posture as the negative case beside it, and for a stronger reason:
+	// that one is a producer contradicting itself, this one is arithmetic that was never legal.
+	//
+	// TWO OR MORE, never one and never zero: an absent list is the in-memory ring, which does not
+	// compute it, and one unit is every deployment today. Turning either into a refusal would
+	// break summable traffic — see usage.Snapshot.Currencies.
+	mixed := len(snap.Currencies) > 1
 	headline := "cost unavailable"
-	if snap.Priced && !negative {
+	if snap.Priced && !negative && !mixed {
 		headline = costUSD(float64(t.CostMicros) / 1e6)
+	}
+	if mixed {
+		headline = fmt.Sprintf("%d units", len(snap.Currencies))
 	}
 	fmt.Fprintf(stdout, "  %-14s %s requests   %s tokens\n",
 		headline, plainCount(t.Requests), compactTokens(t.Tokens))
@@ -630,6 +648,16 @@ func writeCostSummary(snap *usage.Snapshot, stdout io.Writer, agent string) {
 		// impossible figure. Different problem, different fix.
 		fmt.Fprintln(stdout,
 			"  ! the server reported a negative total, which cannot be spend — no figure is shown")
+	}
+	if mixed {
+		// NAMES THE UNITS, because "2 units" alone tells a reader they have a problem and not
+		// what it is — and these are the names they will have to type into --by or look for in
+		// their pricing config.
+		fmt.Fprintf(stdout,
+			"  ! this window holds %s, which cannot be added — no combined figure is shown\n",
+			strings.Join(snap.Currencies, " and "))
+		fmt.Fprintln(stdout,
+			"    use --by currency for a figure per unit; tokens and requests above are unit-free")
 	}
 	// COST THAT BELONGS TO NO AGENT, disclosed only on the --agent path, where it can exist.
 	//
@@ -1081,7 +1109,7 @@ func tokenSplit(t usage.Counts) string {
 
 // costByAxes names the values --by accepts, in one place so the flag's help and its error
 // message cannot list different sets.
-const costByAxes = "agent, model, endpoint, session, status, plugin or host"
+const costByAxes = "agent, model, endpoint, currency, session, status, plugin or host"
 
 // ledgerServedAxes names the axes a ledger-backed window can break down, for the downgrade
 // message.
@@ -1090,7 +1118,7 @@ const costByAxes = "agent, model, endpoint, session, status, plugin or host"
 // import it — cmd/abctl does not depend on core/cost/ledger, and adding that edge to print a
 // sentence would be the wrong trade. Kept general rather than exhaustive so it degrades into
 // vagueness rather than into a lie if that set grows.
-const ledgerServedAxes = "agent, model and endpoint"
+const ledgerServedAxes = "agent, model, endpoint and currency"
 
 // emptyCostCell is the unpriced cell, matching the TUI's spelling so one figure reads the same
 // on both surfaces. See writeCostBreakdown for why it is never "$0.00".

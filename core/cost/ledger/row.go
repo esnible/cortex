@@ -49,6 +49,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/rossoctl/cortex/core/cost/pricing"
 	"github.com/rossoctl/cortex/core/cost/usage"
 
 	"github.com/rossoctl/cortex/core/pipeline"
@@ -108,16 +109,60 @@ type Row struct {
 	// it, which is the opposite of tidying up. See Fold for what is served from it.
 	Provenance string `json:"provenance,omitempty"`
 
+	// Currency is the unit CostMicros and the per-tier figures are denominated in.
+	//
+	// EMPTY MEANS USD, and that is not a convenience — it is the only reading that does not
+	// relabel history. This field is ADDITIVE under the schema rule at the top of this file, so
+	// every row already on disk decodes with it absent, for as long as cost_ledger.retention_days
+	// keeps them. Pinned by TestRow_AHistoricalRowWithNoCurrencyDecodesAsUSD, which asserts the
+	// DECODE rather than a hand-built struct.
+	//
+	// STORED AS WRITTEN, never normalised on the way in — "" stays "" — for exactly the reason
+	// Agent above stores absence as "" rather than as the display string: this is a durable file,
+	// and rewriting it would destroy the difference between "written before units existed" and
+	// "written by a deployment that said USD". key() normalises at the boundary instead, which is
+	// what keeps the two in one bucket.
+	//
+	// PART OF THE KEY, which is what makes "never sum credits into dollars" fall out of the
+	// folding this package already does rather than needing arithmetic that checks. Two rows
+	// identical but for the unit stay two rows; merged, their CostMicros would be a number that is
+	// neither dollars nor credits.
+	Currency string `json:"currency,omitempty"`
+
 	usage.Counts
+}
+
+// currencyOrUSD reads an absent unit as USD.
+//
+// The one place the default is applied on the READ side, so no caller carries its own version of
+// it. pricing.CurrencyUSD rather than a literal: the config's absent `unit:` and this field's
+// empty string have to mean the same thing, and one constant is how that stays true.
+func (r Row) currencyOrUSD() string {
+	if r.Currency == "" {
+		return pricing.CurrencyUSD
+	}
+	return r.Currency
 }
 
 // key is the in-memory accumulation key. Mirrors the JSON identity fields exactly.
 type key struct {
 	endpoint, model, agent, provenance string
+	// currency is NORMALISED — defaulted and lower-cased — where the others are verbatim, and
+	// both halves of that are load-bearing.
+	//
+	// DEFAULTED, or the day a unit is first configured every endpoint's history splits in two:
+	// yesterday's rows with the field absent, today's saying USD, identical otherwise and reported
+	// as separate series.
+	//
+	// LOWER-CASED, because the config preserves an operator's spelling deliberately — they see
+	// back what they typed — so two endpoints can arrive spelled differently for one unit. Keying
+	// on the raw string would report those as two currencies and refuse to combine figures that
+	// belong together, which is the mirror image of the defect this field prevents.
+	currency string
 }
 
 func (r Row) key() key {
-	return key{r.Endpoint, r.Model, r.Agent, r.Provenance}
+	return key{r.Endpoint, r.Model, r.Agent, r.Provenance, strings.ToLower(r.currencyOrUSD())}
 }
 
 // maxLabelLen bounds one label ON DISK, and it is the same 96 bytes
@@ -315,11 +360,14 @@ const overflowLabel = "(other)"
 // the bound it exists to enforce. The consequence is that a capped minute reports its
 // excess as "(other)" on every axis at once, which reads as "cardinality was capped
 // here" rather than as a plausible endpoint that spent money.
-var overflowKey = key{overflowLabel, overflowLabel, overflowLabel, overflowLabel}
+var overflowKey = key{overflowLabel, overflowLabel, overflowLabel, overflowLabel, overflowLabel}
 
 // overflow rewrites a row's identity onto overflowKey, keeping At and every counter.
 // The dollars are unchanged; only the attribution is coarsened.
 func overflow(r Row) Row {
 	r.Endpoint, r.Model, r.Agent, r.Provenance = overflowLabel, overflowLabel, overflowLabel, overflowLabel
+	// Currency too, for the reason the comment above gives for the other four: a real value kept
+	// here would let the overflow row multiply on that axis and defeat the bound it enforces.
+	r.Currency = overflowLabel
 	return r
 }

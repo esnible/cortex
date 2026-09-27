@@ -2256,3 +2256,79 @@ func TestRunCost_AgentDropsTheWindowsProvenance(t *testing.T) {
 		}
 	})
 }
+
+// A window spanning two units does NOT get a single total.
+//
+// THIS IS THE WHOLE POINT OF BILLING UNITS. Summing credits into dollars produces a number that is
+// neither, and it looks exactly like a correct one — larger, never obviously wrong. Measured on one
+// real day before this existed: $146.3616 of Claude Code spend would have silently absorbed 0.0774
+// credits of Bob spend, and one scalar just looks slightly bigger where two subtotals side by side
+// would look obviously wrong.
+//
+// So the headline is WITHHELD rather than qualified. A caveat under a wrong figure still leaves the
+// wrong figure on screen, and this is the one disclosure on this surface where the number itself
+// cannot be salvaged.
+func TestRunCost_RefusesACombinedTotalAcrossUnits(t *testing.T) {
+	srv := fakeUsageServer(t, `{"window":"today","priced":true,
+		"currencies":["USD","credits"],
+		"totals":{"requests":1057,"costMicros":146439200,"pricedRequests":1055,"priceableRequests":1055}}`)
+	defer srv.Close()
+
+	var out, errOut strings.Builder
+	if code := runCost([]string{"--endpoint", srv.URL}, &out, &errOut); code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr = %s", code, errOut.String())
+	}
+	got := out.String()
+	// The combined figure must not appear in ANY of its spellings.
+	for _, forbidden := range []string{"$146.4392", "$146.44", "146.4392"} {
+		if strings.Contains(got, forbidden) {
+			t.Errorf("a cross-unit total was printed as %q; it is neither dollars nor credits:\n%s",
+				forbidden, got)
+		}
+	}
+	// And it must name BOTH units, or the reader cannot tell what the window actually holds.
+	for _, want := range []string{"USD", "credits"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("output does not name the unit %q:\n%s", want, got)
+		}
+	}
+	// Tokens and requests are still reported: they are unit-free, and they are the one comparison
+	// that stays legal across gateways. Withholding them would be over-refusal.
+	// plainCount, so no thousands separator on this surface — asserted as the figure it actually
+	// prints rather than as the one a reader might expect.
+	if !strings.Contains(got, "1057 requests") {
+		t.Errorf("requests were withheld; they carry no unit and stay comparable:\n%s", got)
+	}
+}
+
+// One unit — every deployment today — prints exactly as it did before.
+//
+// The refusal must be a signal, not furniture. A single-currency window, and a producer that does
+// not report currencies at all (the in-memory ring), both have to keep the headline: turning an
+// absent field into a refusal would break every existing caller on traffic that is perfectly
+// summable.
+func TestRunCost_OneUnitOrNoneStillPrintsTheTotal(t *testing.T) {
+	for _, tc := range []struct{ name, currencies string }{
+		{"the field is absent, as the ring leaves it", ""},
+		{"exactly one unit", `"currencies":["USD"],`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := fakeUsageServer(t, `{"window":"today","priced":true,`+tc.currencies+
+				`"totals":{"requests":318,"costMicros":4170000,"pricedRequests":318,"priceableRequests":318}}`)
+			defer srv.Close()
+
+			var out, errOut strings.Builder
+			if code := runCost([]string{"--endpoint", srv.URL}, &out, &errOut); code != 0 {
+				t.Fatalf("exit = %d, want 0; stderr = %s", code, errOut.String())
+			}
+			got := out.String()
+			if !strings.Contains(got, "$4.17") {
+				t.Errorf("a summable window lost its total:\n%s", got)
+			}
+			if strings.Contains(got, "two units") || strings.Contains(got, "not a figure") {
+				t.Errorf("a summable window was refused:\n%s", got)
+			}
+		})
+	}
+
+}

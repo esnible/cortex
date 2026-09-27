@@ -459,6 +459,7 @@ func (w *Writer) Record(_ string, e *pipeline.SessionEvent) {
 		Agent:  rowLabel(agentLabel(e.Client)),
 		Counts: usage.Counts{Requests: 1},
 	}
+	//
 	// NIL-SAFE, because the guard above admits a row with no extension: an endpoint
 	// inference-parser cannot parse still gets its gateway-reported cost settled, and that
 	// event has no token counts and no model to read. The row is deliberately thin rather
@@ -479,6 +480,29 @@ func (w *Writer) Record(_ string, e *pipeline.SessionEvent) {
 			ReasoningTokens:  tokenCount(inf.ReasoningTokens),
 			Tokens:           tokenCount(inf.TotalTokens),
 			PresentKinds:     inf.PresentKinds,
+		}
+	}
+	// THE UNIT COMES FROM THE RATE TABLE, not from the event, which is why this needed no
+	// threading through core/cost/settle or the event wire: the writer already holds a
+	// pricing.Resolver for the tier split, and the unit is a property of the (endpoint, model) pair
+	// that same resolver answers for. Placed after the block above so the parsed model name is
+	// used where there is one.
+	//
+	// ASKS WITH AN EMPTY MODEL for a response the parser could not read, and that is correct
+	// rather than merely tolerated: CurrencyFor falls back to the endpoint's own row when the model
+	// matches nothing, and such a response still belongs to the gateway it came from — which is
+	// what decides the unit.
+	//
+	// WRITTEN ONLY WHEN IT IS NOT THE DEFAULT, so a single-currency deployment — every deployment
+	// today — adds no bytes per row and its files stay byte-identical to what the previous version
+	// produced. currencyOrUSD reads "" as USD, so nothing is lost; this just declines to spend a
+	// word on every line saying what absence already says.
+	//
+	// NO RESOLVER MEANS NO UNIT, which is the Kubernetes deployment: empty already means USD on
+	// the read side, so the absent case needs no special value and no second branch.
+	if w.rates != nil {
+		if c := w.rates.CurrencyFor(e.Host, r.Model); c != "" && c != pricing.CurrencyUSD {
+			r.Currency = rowLabel(c)
 		}
 	}
 	if e.StatusCode >= 400 || e.Phase == pipeline.SessionDenied {

@@ -63,10 +63,18 @@ const (
 	// which is NOT an agent name; an agent that was reported but is not recognised
 	// lands under its raw User-Agent, so a new coding agent is visible the day someone
 	// runs it rather than after a parser update ships.
-	GroupAgent  Group = "agent"
-	GroupStatus Group = "status"
-	GroupPlugin Group = "plugin"
-	GroupHost   Group = "host"
+	GroupAgent Group = "agent"
+	// GroupCurrency breaks totals down by the BILLING UNIT the figures are denominated in.
+	//
+	// It exists so a deployment whose gateways bill in different units has somewhere to get a
+	// figure per unit, once a combined total has been refused as meaningless. Unlike every other
+	// axis here it is not a property of the traffic but of the RATE that priced it, which is why
+	// the ledger can serve it — Row.Currency is part of the row key — while the in-memory ring
+	// cannot.
+	GroupCurrency Group = "currency"
+	GroupStatus   Group = "status"
+	GroupPlugin   Group = "plugin"
+	GroupHost     Group = "host"
 )
 
 // ParseGroup validates a group parameter. Empty means GroupNone.
@@ -88,6 +96,8 @@ func ParseGroup(s string) (Group, error) {
 		return GroupSession, nil
 	case GroupAgent:
 		return GroupAgent, nil
+	case GroupCurrency:
+		return GroupCurrency, nil
 	case GroupStatus:
 		return GroupStatus, nil
 	case GroupPlugin:
@@ -127,6 +137,24 @@ type Snapshot struct {
 	// Session is the session this covers, or "" for all sessions combined.
 	Session string `json:"session,omitempty"`
 	Group   Group  `json:"group"`
+
+	// Currencies is every distinct unit the rows behind Totals were denominated in, sorted.
+	//
+	// IT TRAVELS BESIDE THE FIGURES BECAUSE IT CANNOT LIVE INSIDE THEM. Counts is a flat
+	// summable aggregate, and it has to stay one — a unit belongs to the grouping key, not to
+	// the numbers, or every consumer would be invited to add across it. So the fact that a
+	// total spans two units is stated here, and a reader decides what it may legally add.
+	//
+	// MORE THAN ONE ENTRY MEANS Totals.CostMicros IS NOT A FIGURE. Summing credits into dollars
+	// produces a number that is neither, and it looks exactly like a correct one — larger, not
+	// obviously wrong. A consumer seeing two entries must refuse to present a single total;
+	// `abctl cost` does, and says which units it found.
+	//
+	// ABSENT OR EMPTY IS THE SINGLE-UNIT CASE, which is every deployment today, and it
+	// deliberately reads as "nothing to worry about" rather than as "unknown": a producer that
+	// does not compute this — the in-memory ring — omits it, and a client must not turn that
+	// into a refusal. One entry is likewise fine. Only two or more is a claim.
+	Currencies []string `json:"currencies,omitempty"`
 	// Buckets runs oldest to newest. For a ring-backed window it always has
 	// Window/BucketWidth entries, including zeroed ones for idle minutes, so a client
 	// can distinguish an idle minute from one that fell off the end of the ring.

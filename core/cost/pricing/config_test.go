@@ -294,3 +294,175 @@ func TestWarnIfUnpinned(t *testing.T) {
 		})
 	}
 }
+
+// unit: names the currency an endpoint's rates are denominated in.
+//
+// ABSENT MEANS USD, which is what every existing config says and what every row already on disk
+// means. That default is not a convenience: it is the same rule the ledger's own schema forces,
+// where a field added today decodes as its zero value for the whole retained history.
+func TestConfig_UnitDefaultsToUSDAndIsCarriedOnTheEntry(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		unit string
+		want string
+	}{
+		{"absent means USD", "", CurrencyUSD},
+		{"explicit USD stays USD", "USD", CurrencyUSD},
+		{"a gateway that bills in credits", "credits", "credits"},
+		// Compared case-insensitively but CASE-PRESERVED, so an operator's spelling is what
+		// they see back in `abctl pricing` rather than a normalised one they never typed.
+		{"case is preserved", "Bobcoins", "Bobcoins"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &Config{Endpoints: []EndpointConfig{{
+				Hosts: []string{"gw.example"},
+				Unit:  tc.unit,
+				Models: map[string]ModelConfig{
+					"m": {TierRates: TierRates{InputCostPerMillion: 2}},
+				},
+			}}}
+			entries, err := cfg.entries()
+			if err != nil {
+				t.Fatalf("entries: %v", err)
+			}
+			if len(entries) != 1 {
+				t.Fatalf("got %d entries, want 1", len(entries))
+			}
+			if entries[0].Currency != tc.want {
+				t.Errorf("Currency = %q, want %q", entries[0].Currency, tc.want)
+			}
+		})
+	}
+}
+
+// A unit that is not an identifier is refused at startup, naming the endpoint.
+//
+// These strings reach a durable ledger row, a terminal and a JSON document, so the same
+// reasoning that caps and sanitises a model name applies: refuse at load, where an operator is
+// looking at the error, rather than write something unreadable into a file retained for a month.
+func TestConfig_RejectsAnUnusableUnit(t *testing.T) {
+	for _, tc := range []struct{ name, unit string }{
+		{"whitespace only", "   "},
+		{"embedded space", "bob coins"},
+		{"control character", "cre\x1bdits"},
+		{"absurdly long", strings.Repeat("c", 40)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := &Config{Endpoints: []EndpointConfig{{
+				Hosts: []string{"gw.example"},
+				Unit:  tc.unit,
+				Models: map[string]ModelConfig{
+					"m": {TierRates: TierRates{InputCostPerMillion: 2}},
+				},
+			}}}
+			_, err := cfg.entries()
+			if err == nil {
+				t.Fatalf("unit %q was accepted; it must be refused at load", tc.unit)
+			}
+			// The endpoint has to be named: a deployment may configure several, and "bad unit"
+			// with no location is a message an operator cannot act on.
+			if !strings.Contains(err.Error(), "gw.example") {
+				t.Errorf("error does not name the endpoint: %v", err)
+			}
+		})
+	}
+}
+
+// Two endpoints may use different units; one endpoint may not use two.
+//
+// The unit sits on the ENDPOINT because that is the level a gateway's billing is decided at, and
+// this is what makes "never sum across units" expressible at all: a rate resolved for a request
+// carries the unit of the endpoint it was resolved on, so the arithmetic never has to guess.
+func TestConfig_UnitIsPerEndpointNotGlobal(t *testing.T) {
+	cfg := &Config{Endpoints: []EndpointConfig{
+		{
+			Hosts:  []string{"api.anthropic.com"},
+			Models: map[string]ModelConfig{"claude": {TierRates: TierRates{InputCostPerMillion: 3}}},
+		},
+		{
+			Hosts:  []string{"api.us-east.bob.ibm.com"},
+			Unit:   "credits",
+			Models: map[string]ModelConfig{"premium-ide": {TierRates: TierRates{InputCostPerMillion: 2}}},
+		},
+	}}
+
+	entries, err := cfg.entries()
+	if err != nil {
+		t.Fatalf("entries: %v", err)
+	}
+	got := map[string]string{}
+	for _, e := range entries {
+		got[e.Host] = e.Currency
+	}
+	if got["api.anthropic.com"] != CurrencyUSD {
+		t.Errorf("anthropic entry = %q, want %q", got["api.anthropic.com"], CurrencyUSD)
+	}
+	if got["api.us-east.bob.ibm.com"] != "credits" {
+		t.Errorf("bob entry = %q, want credits", got["api.us-east.bob.ibm.com"])
+	}
+}
+
+// CurrencyFor answers with the unit of the SAME row Resolve priced from.
+//
+// Not "the unit of the endpoint block", which is subtly different and would be wrong: two blocks
+// can match one host — a `hosts: ["*"]` catch-all beside a specific gateway — and the rate that
+// wins is the more specific row's. Taking the unit from anywhere else lets a figure be priced at
+// one row's rate and labelled with another's, which is the one failure this whole field exists
+// to prevent.
+func TestTable_CurrencyForFollowsTheRowThatPriced(t *testing.T) {
+	tbl, err := Build(&Config{
+		Bundled: boolPtr(false),
+		Endpoints: []EndpointConfig{
+			{
+				// A catch-all in dollars.
+				Models: map[string]ModelConfig{"*": {TierRates: TierRates{InputCostPerMillion: 3}}},
+			},
+			{
+				// A more specific gateway billing in credits.
+				Hosts: []string{"api.us-east.bob.ibm.com"},
+				Unit:  "credits",
+				Models: map[string]ModelConfig{
+					"premium-ide": {TierRates: TierRates{InputCostPerMillion: 2}},
+				},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	if got := tbl.CurrencyFor("api.us-east.bob.ibm.com", "premium-ide"); got != "credits" {
+		t.Errorf("Bob's endpoint resolved %q, want credits", got)
+	}
+	// The catch-all keeps USD, so one credits endpoint does not recolour the deployment.
+	if got := tbl.CurrencyFor("api.anthropic.com", "claude-opus-5"); got != CurrencyUSD {
+		t.Errorf("the catch-all resolved %q, want %s", got, CurrencyUSD)
+	}
+}
+
+// An unpriced pair, and a nil table, answer USD rather than empty.
+//
+// USD IS THE ONLY SAFE ANSWER FOR "I DON'T KNOW". The caller is about to label a figure, and an
+// empty unit would travel to a durable row where empty already means USD — so returning "" would
+// be the same answer written less legibly. A nil Table is the Kubernetes deployment, where
+// pricing is not wired at all: it must report the default rather than panic on the response path,
+// the same reason Resolve answers ProvNone there.
+func TestTable_CurrencyForDefaultsToUSD(t *testing.T) {
+	var nilTable *Table
+	if got := nilTable.CurrencyFor("anywhere", "anything"); got != CurrencyUSD {
+		t.Errorf("nil table resolved %q, want %s", got, CurrencyUSD)
+	}
+	tbl, err := Build(&Config{Bundled: boolPtr(false), Endpoints: []EndpointConfig{{
+		Hosts:  []string{"known.example"},
+		Models: map[string]ModelConfig{"m": {TierRates: TierRates{InputCostPerMillion: 1}}},
+	}}})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if got := tbl.CurrencyFor("unknown.example", "whatever"); got != CurrencyUSD {
+		t.Errorf("an unmatched endpoint resolved %q, want %s", got, CurrencyUSD)
+	}
+}
+
+// boolPtr is the inline `func() *bool {...}()` this file used twice, named once.
+func boolPtr(b bool) *bool { return &b }

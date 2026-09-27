@@ -6,6 +6,7 @@ import (
 	"math"
 	"sort"
 	"strings"
+	"unicode"
 )
 
 // Config is the top-level `pricing:` section of an AuthBridge config.
@@ -50,6 +51,74 @@ type EndpointConfig struct {
 	// An endpoint with a multiplier needs no models block — it scales what already
 	// resolves, including models no entry names.
 	Multiplier *float64 `yaml:"multiplier" json:"multiplier,omitempty"`
+
+	// Unit is the currency these rates are denominated in. Absent means USD.
+	//
+	// ON THE ENDPOINT, because that is the level a gateway's billing is decided at — and it is
+	// what makes "never sum across units" expressible at all. A rate resolved for a request
+	// carries the unit of the endpoint it resolved on, so nothing downstream has to guess which
+	// currency a figure is in.
+	//
+	// ABSENT MEANS USD, and that default is load-bearing rather than merely convenient: it is
+	// what every config written before this field says, and what every row already on disk
+	// means. The ledger's own schema rule forces the same reading — a field added today decodes
+	// as its zero value for the whole retained history — so the two agree by construction
+	// instead of by a comment asking them to.
+	//
+	// Compared case-insensitively and CASE-PRESERVED: an operator sees back the spelling they
+	// typed rather than a normalised one they never chose.
+	Unit string `yaml:"unit" json:"unit,omitempty"`
+
+	// Symbol is an optional display glyph for Unit, e.g. "₡". DISPLAY ONLY — never compared and
+	// never summed on, because the unit NAME is the identity. Absent means the unit's own name
+	// is shown, which is always readable if not always short.
+	Symbol string `yaml:"symbol" json:"symbol,omitempty"`
+}
+
+// CurrencyUSD is the unit every rate is denominated in unless an endpoint says otherwise.
+//
+// A NAMED CONSTANT because it is what an absent EndpointConfig.Unit and an empty
+// ledger.Row.Currency both mean, in three packages — and a literal "USD" repeated across them is
+// three chances to disagree about what the default is.
+const CurrencyUSD = "USD"
+
+// maxUnitLen bounds a unit name. Short on purpose: it identifies a currency rather than
+// describing one, and it is rendered in a table column beside figures.
+//
+// The bound matters because this string travels further than the config file. It reaches a
+// DURABLE ledger row retained for cost_ledger.retention_days, a terminal, and a JSON document —
+// the same three destinations that make ledger.rowLabel cap and sanitise a model name. Refusing
+// at load, where an operator is reading the error, beats writing something unreadable into a
+// file that cannot be edited afterwards.
+const maxUnitLen = 16
+
+// normaliseUnit validates a configured unit and returns it, defaulting to CurrencyUSD.
+//
+// REFUSED RATHER THAN SANITISED, unlike the labels the ledger rewrites, and the asymmetry is
+// deliberate: a model name arrives off the wire with nobody to ask, so it has to be repaired,
+// while a unit is something an operator typed — so the honest answer is an error naming the
+// endpoint. A deployment may configure several, and "bad unit" with no location is a message
+// nobody can act on.
+func normaliseUnit(unit, where string) (string, error) {
+	if unit == "" {
+		return CurrencyUSD, nil
+	}
+	if strings.TrimSpace(unit) == "" {
+		return "", fmt.Errorf("%s: unit is blank; omit the key entirely to mean %s", where, CurrencyUSD)
+	}
+	if len(unit) > maxUnitLen {
+		return "", fmt.Errorf("%s: unit %q is longer than %d bytes; it names a currency, not a description",
+			where, unit, maxUnitLen)
+	}
+	for _, r := range unit {
+		// A space would split a table column and break the one-token reading every consumer
+		// makes of this; a control rune reaches a terminal and a durable file. Letters, digits,
+		// - and _ cover USD, credits, Bobcoins and anything a gateway is likely to invent.
+		if !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '-' && r != '_' {
+			return "", fmt.Errorf("%s: unit %q may contain only letters, digits, - and _", where, unit)
+		}
+	}
+	return unit, nil
 }
 
 // ModelConfig is one model pattern's rates, optionally with long-context
@@ -175,6 +244,12 @@ func (c *Config) entries() ([]Entry, error) {
 				return nil, fmt.Errorf("%s: hosts contains an empty entry; omit the key entirely to mean any endpoint", where)
 			}
 		}
+		// Validated once per endpoint rather than per model: the unit belongs to the endpoint,
+		// so a bad one is one error naming one place, not one per model pattern underneath it.
+		unit, err := normaliseUnit(ep.Unit, where)
+		if err != nil {
+			return nil, err
+		}
 		if len(ep.Models) == 0 {
 			if ep.Multiplier != nil {
 				// A multiplier-only block scales what already resolves, so demanding
@@ -201,10 +276,11 @@ func (c *Config) entries() ([]Entry, error) {
 			}
 			for _, h := range hosts {
 				out = append(out, Entry{
-					Host:  h,
-					Model: pattern,
-					Rates: rates,
-					Prov:  ProvConfigured,
+					Host:     h,
+					Model:    pattern,
+					Rates:    rates,
+					Prov:     ProvConfigured,
+					Currency: unit,
 				})
 			}
 		}

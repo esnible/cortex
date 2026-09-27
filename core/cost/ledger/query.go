@@ -3,8 +3,11 @@ package ledger
 import (
 	"context"
 	"log/slog"
+	"sort"
+	"strings"
 	"time"
 
+	"github.com/rossoctl/cortex/core/cost/pricing"
 	"github.com/rossoctl/cortex/core/cost/usage"
 	"github.com/rossoctl/cortex/core/pipeline"
 )
@@ -442,7 +445,8 @@ func Groupable(group usage.Group) bool {
 	switch group {
 	// Every axis a Row has a field for. GroupMethod is the model series under an older
 	// name — see labelFor.
-	case usage.GroupModel, usage.GroupMethod, usage.GroupEndpoint, usage.GroupAgent:
+	case usage.GroupModel, usage.GroupMethod, usage.GroupEndpoint, usage.GroupAgent,
+		usage.GroupCurrency:
 		return true
 	}
 	// GroupNone included: it asks for no breakdown, so there is nothing to answer and
@@ -486,6 +490,13 @@ func labelFor(r Row, group usage.Group) (string, bool) {
 		v = r.Model
 	case usage.GroupEndpoint:
 		v = r.Endpoint
+	// Currency folds UNCONDITIONALLY, like Agent below and unlike Model above, and through
+	// currencyOrUSD rather than the raw field. Every row has a unit — an absent one means USD —
+	// so there is no "not about this axis" case to drop, and normalising here is what makes a
+	// per-currency table reconcile against the total beside it: rows written before the field
+	// existed belong in the USD bucket, not in a nameless one.
+	case usage.GroupCurrency:
+		v = r.currencyOrUSD()
 	// Agent maps "" to a label instead of dropping the row.
 	//
 	// The non-empty guard is right for model and endpoint: a row with no model is not
@@ -509,4 +520,52 @@ func labelFor(r Row, group usage.Group) (string, bool) {
 		return "", false
 	}
 	return v, v != ""
+}
+
+// CurrenciesIn reports every distinct unit the given rows carry, sorted.
+//
+// IT IS WHAT MAKES REFUSING A CROSS-UNIT TOTAL POSSIBLE. A total only means something when the
+// rows behind it share a unit, and nothing else on a snapshot can say whether they do: usage.Counts
+// is a flat summable aggregate by design, and it must stay that way — a unit belongs to the
+// grouping key, not to the numbers, or every consumer would be invited to sum across it. So the
+// fact travels BESIDE the figures rather than inside them, and a reader decides what it may add.
+//
+// NORMALISED ON THE SAME RULE key() USES — defaulted and case-folded — or this would disagree with
+// the bucketing it describes: a row with no currency and one saying USD are one unit, and
+// "credits" and "Credits" are one unit spelled twice. The CANONICAL spelling returned is the one
+// key() agrees with, so a caller printing this and a caller grouping by currency name the same
+// things.
+//
+// NOTHING FOR AN EMPTY WINDOW, rather than USD: there is no figure to label, and claiming a unit
+// for traffic that does not exist would make the refusal downstream fire on nothing.
+func CurrenciesIn(rows []Row) []string {
+	if len(rows) == 0 {
+		return nil
+	}
+	// Keyed on the folded spelling, valued with the canonical one, so two spellings collapse to
+	// one entry and the entry is the spelling everything else uses.
+	seen := map[string]string{}
+	for _, r := range rows {
+		c := r.currencyOrUSD()
+		folded := strings.ToLower(c)
+		if _, ok := seen[folded]; !ok {
+			// FIRST SPELLING WINS, and USD is special-cased to its constant so a file written
+			// with "usd" does not report a unit an operator never typed. Every other unit is
+			// reported as the deployment spelled it, matching the config's own case-preserving
+			// promise.
+			if folded == strings.ToLower(pricing.CurrencyUSD) {
+				seen[folded] = pricing.CurrencyUSD
+			} else {
+				seen[folded] = c
+			}
+		}
+	}
+	out := make([]string, 0, len(seen))
+	for _, c := range seen {
+		out = append(out, c)
+	}
+	// Sorted so a message naming them reads the same between two reads of the same window; a set
+	// printed in map order is a set nobody can compare against the last run.
+	sort.Strings(out)
+	return out
 }
