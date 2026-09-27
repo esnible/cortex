@@ -494,19 +494,6 @@ func bobWanted(cortexCfgPath, home string) (proxy, caPath string) {
 	return want[envProxy], caPath
 }
 
-// bobBackupNote describes what this particular write will and will not preserve.
-//
-// Three different true statements, because writeSettings makes three different
-// choices and the message used to claim only the first. It writes <path>.bak from
-// the file's current contents ONLY when the file exists AND no .bak is there
-// already — never overwriting, because a second run would otherwise replace the
-// pristine pre-Cortex file with one abctl had already edited.
-//
-// So "a copy is kept as <path>.bak" was false twice over: on a settings file that
-// does not exist yet there is nothing to copy, and when a .bak survives from an
-// earlier run the copy kept is that older one, not this run's. Promising a backup
-// that is not made is worse than promising none — it is the sentence a user leans on
-// before saying yes.
 // bobSetKey writes one top-level key into a settings file, changing nothing else
 // in it — byte for byte. It is the reason bob does not call writeSettings.
 //
@@ -859,6 +846,19 @@ func bobWriteKey(path, key string, value any) error {
 	return os.Rename(tmp, path)
 }
 
+// bobBackupNote describes what this particular write will and will not preserve.
+//
+// Three different true statements, because writeSettings makes three different
+// choices and the message used to claim only the first. It writes <path>.bak from
+// the file's current contents ONLY when the file exists AND no .bak is there
+// already — never overwriting, because a second run would otherwise replace the
+// pristine pre-Cortex file with one abctl had already edited.
+//
+// So "a copy is kept as <path>.bak" was false twice over: on a settings file that
+// does not exist yet there is nothing to copy, and when a .bak survives from an
+// earlier run the copy kept is that older one, not this run's. Promising a backup
+// that is not made is worse than promising none — it is the sentence a user leans on
+// before saying yes.
 func bobBackupNote(settingsPath string) string {
 	// This sentence is a literal claim, and bobWriteKey is what makes it one: it splices
 	// a single member in or out of the existing bytes, so key order, indentation, inline
@@ -1058,6 +1058,27 @@ func bobDisable(settingsPath, wantProxy, caPath string, yes bool, stdout, stderr
 			"  Left alone — abctl removes only values it would have written.\n",
 			settingsPath, bobProxyKey, existing)
 		return 0
+	}
+
+	// A guess plus --yes is not consent. bobUnknown means the config could not be
+	// read, so there was no address to compare against and all that is known is the
+	// value's SHAPE: a loopback http proxy. That describes every local proxy anyone
+	// runs — Squid on 3128, a corporate agent, a dev tunnel — not just Cortex's
+	// 476xx block, because with no config there is no port to compare at all.
+	//
+	// Interactively that is survivable: the prompt prints the value and the user
+	// recognizes their own proxy. --yes removes exactly that safeguard, so a
+	// scripted `disable --yes` would silently delete a stranger's proxy. Refuse
+	// instead, and say which flag turns the guess into an answer. Exit 1, not 0:
+	// the user asked for a removal that did not happen.
+	if yes && bobOwns(s, wantProxy) == bobUnknown {
+		fmt.Fprintf(stderr, "abctl: %s sets %q to %q, which is shaped like a Cortex\n"+
+			"  proxy but cannot be confirmed as one: the Cortex config could not be read,\n"+
+			"  so there is no address to compare against — every loopback http proxy looks\n"+
+			"  like this. Refusing to delete it unattended. Re-run without --yes to see the\n"+
+			"  value and decide, or pass --config with a readable Cortex config.\n",
+			settingsPath, bobProxyKey, s)
+		return 1
 	}
 
 	fmt.Fprintf(stdout, "Removes from %s:\n  %q: %q\n", settingsPath, bobProxyKey, s)

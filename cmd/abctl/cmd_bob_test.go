@@ -659,6 +659,16 @@ func TestBobDisable_RemovesOnlyOurs(t *testing.T) {
 // Both halves are asserted, because removing the value is only half the contract:
 // the user is entitled to know the judgment was made by shape rather than by
 // matching their config.
+//
+// NARROWED to the PROMPTED path. This test used to pass yes=true, and the refusal
+// added for the unattended case broke it — correctly. The two requirements collide
+// only there: "the off switch must not depend on the config" (this test) and "a
+// guess plus --yes is not consent"
+// (TestBobDisable_RefusesToDeleteAGuessUnattended) are both satisfiable, because
+// the safeguard --yes removes is the prompt that names the value. So the contract
+// this test pins is unchanged in substance and now reads: with the config gone,
+// disable still works — it asks first. Removing the prompt is what is refused, not
+// removing the value.
 func TestBobDisable_WithUnreadableConfig(t *testing.T) {
 	settings, cfg := fixture(t, `{"http.proxy": "http://127.0.0.1:47600"}`)
 	if err := os.Remove(cfg); err != nil {
@@ -679,9 +689,16 @@ func TestBobDisable_WithUnreadableConfig(t *testing.T) {
 		t.Errorf("bobOwns with no config = %v, want bobUnknown", got)
 	}
 
+	// Answers yes, standing in for a user who read the printed value and recognized
+	// it. Asserting the prompt happened is what keeps this row distinct from the
+	// unattended one: without it, a fix that dropped the prompt entirely would pass.
+	asked := noPrompt(t, true)
 	var out, errb bytes.Buffer
-	if code := bobDisable(settings, want, ca, true, &out, &errb); code != 0 {
+	if code := bobDisable(settings, want, ca, false, &out, &errb); code != 0 {
 		t.Fatalf("exit %d: %s", code, errb.String())
+	}
+	if *asked != 1 {
+		t.Errorf("prompted %d times, want 1", *asked)
 	}
 	if _, ok := bobDoc(t, settings)[bobProxyKey]; ok {
 		t.Error("disable failed with the config missing, which is when it is most needed")
@@ -1607,5 +1624,169 @@ func movePort(t *testing.T, cfgPath, port string) {
 	}
 	if err := os.WriteFile(cfgPath, []byte(moved), 0o600); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// --yes must not delete a proxy that is only a GUESS.
+//
+// The reviewer's fixture, executed literally before anything was reasoned about:
+// `disable --yes --config /nonexistent` against `{"http.proxy":
+// "http://localhost:3128"}` silently removed Squid's proxy and exited 0.
+//
+// The mechanism is worth stating precisely, because the PR body first understated
+// it. With no readable config, bobWanted returns proxy == "" — so bobOwns has no
+// address to compare against and falls back to judging SHAPE alone, which makes the
+// verdict bobUnknown. Shape is "http, loopback host, no userinfo/path/query": that
+// is EVERY loopback http proxy on ANY port, not just Cortex's 476xx block, because
+// with no config there is no port in hand to compare. Squid on 3128 satisfies it.
+//
+// Interactively that is survivable — bobConfirm prints the value and the user
+// recognizes their own proxy. --yes is precisely the removal of that safeguard, so
+// the two together are the unsafe combination and the one this refuses.
+//
+// The three rows after the first are the regression half: each is a path that MUST
+// still work, and each differs from the refusing row in exactly one respect (the
+// flag, the config, or the value). Without them a fix that simply stopped deleting
+// would pass.
+func TestBobDisable_RefusesToDeleteAGuessUnattended(t *testing.T) {
+	// Not Cortex's port, and not in the 476xx block at all — the whole point is that
+	// the port is irrelevant when there is no config to compare it against.
+	const foreign = "http://localhost:3128"
+
+	// Subtest names deliberately carry NO flag spellings. t.TempDir() names its
+	// directory after the subtest, bobDisable interpolates the settings path into its
+	// message, and an assertion that the message mentions "--yes" then matches the
+	// PATH instead of the prose. That is not hypothetical: it is what a mutation
+	// removing "--yes" from the message survived on, until these rows were renamed.
+	for _, tc := range []struct {
+		name     string
+		settings string
+		// readableConfig false means --config pointed at nothing, which is what makes
+		// bobOwns fall back to shape.
+		readableConfig bool
+		yes            bool
+		wantCode       int
+		wantRemoved    bool
+	}{
+		// The bug. A guess plus --yes is not consent.
+		{"guess, unattended", foreign, false, true, 1, false},
+		// Same guess, same value, WITHOUT --yes: the prompt is the safeguard, so this
+		// path must still reach it. noPrompt answers yes below, standing in for a user
+		// who looked at the printed value and recognized it as Cortex's.
+		{"guess, prompted", foreign, false, false, 0, true},
+		// --yes with a readable config and a matching value: ownership is known, not
+		// guessed, so the refusal must not touch this. This is the scripted path the
+		// feature exists for.
+		{"known ours, unattended", `http://127.0.0.1:47600`, true, true, 0, true},
+		// --yes with a readable config and a foreign value: bobNotOurs, which was
+		// already left alone at exit 0 and must stay that way. Exit 0, not 1 — nothing
+		// is wrong with this file.
+		{"known foreign, unattended", foreign, true, true, 0, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			settings, cfg := fixture(t, `{"http.proxy": "`+tc.settings+`", "editor.fontSize": 13}`)
+
+			// The config path is the only lever that decides known-vs-guessed, so it is
+			// what the table varies. An unreadable path is how a user who has
+			// uninstalled Cortex, or mistyped --config, arrives here.
+			cfgArg := cfg
+			if !tc.readableConfig {
+				cfgArg = filepath.Join(t.TempDir(), "does-not-exist.yaml")
+			}
+			want, ca := bobWanted(cfgArg, t.TempDir())
+
+			// Asserted rather than assumed: if bobWanted ever started guessing a proxy
+			// address, every "guess" row would silently become a "known" row and this
+			// test would keep passing while testing nothing.
+			if tc.readableConfig && want == "" {
+				t.Fatalf("the fixture config did not yield a proxy address, so this row cannot be about known ownership")
+			}
+			if !tc.readableConfig && want != "" {
+				t.Fatalf("an unreadable config yielded proxy %q, so this row cannot be about a guess", want)
+			}
+
+			before, err := os.ReadFile(settings)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			asked := noPrompt(t, true)
+			var out, errb bytes.Buffer
+			code := bobDisable(settings, want, ca, tc.yes, &out, &errb)
+
+			if code != tc.wantCode {
+				t.Errorf("exit = %d, want %d\nstdout: %s\nstderr: %s", code, tc.wantCode, out.String(), errb.String())
+			}
+
+			after, err := os.ReadFile(settings)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, stillSet := bobDoc(t, settings)[bobProxyKey]
+			if removed := !stillSet; removed != tc.wantRemoved {
+				t.Errorf("removed = %v, want %v\n--- before\n%s\n--- after\n%s",
+					removed, tc.wantRemoved, before, after)
+			}
+
+			// A sibling key, to catch a fix that "left the file alone" by rewriting it
+			// wholesale. Present in every row, removed in none.
+			if _, ok := bobDoc(t, settings)[`editor.fontSize`]; !ok {
+				t.Errorf("an unrelated key was lost:\n%s", after)
+			}
+
+			if !tc.wantRemoved {
+				// Byte-identical, not merely still-parsing-the-same: a refusal that
+				// reformatted the file would have written where it said it would not.
+				if !bytes.Equal(before, after) {
+					t.Errorf("the file was rewritten despite no removal:\n--- before\n%s\n--- after\n%s", before, after)
+				}
+				// writeSettings makes a .bak on its first write, so its absence is
+				// independent evidence that nothing was written — the assertion above
+				// would still pass if the file were rewritten to identical bytes.
+				if _, err := os.Stat(settings + ".bak"); err == nil {
+					t.Error("a .bak was created, so something was written")
+				}
+			}
+
+			if tc.wantCode == 1 {
+				// The refusal must be on stderr, and ONLY there: exit 1 with the
+				// explanation on stdout is unreadable in the scripted use this exists
+				// to protect, and a copy on both streams double-prints it for anyone
+				// merging them.
+				//
+				// Asserted as absence-from-stdout rather than as `errb.Len() != 0`.
+				// A length check here is SUBSUMED: every state that empties errb also
+				// fails the three content assertions below, which all read errb — a
+				// mutation copying the refusal to stdout while leaving stderr intact
+				// survived all four, which is how this assertion got its present
+				// shape.
+				if strings.Contains(out.String(), "cannot be confirmed as one") {
+					t.Errorf("the refusal is on stdout too: %q", out.String())
+				}
+				// Naming the value is what lets the user tell "my Squid" from "stale
+				// Cortex" — a bare refusal sends them to the file to find out.
+				if !strings.Contains(errb.String(), tc.settings) {
+					t.Errorf("the refusal does not name the value it declined to delete: %q", errb.String())
+				}
+				// Naming the way out is the difference between a refusal and a dead
+				// end. Both routes are asserted: drop --yes, or supply a config.
+				for _, want := range []string{"--yes", "--config"} {
+					if !strings.Contains(errb.String(), want) {
+						t.Errorf("the refusal does not mention %s: %q", want, errb.String())
+					}
+				}
+				// And it must not have asked: the refusal replaces the prompt under
+				// --yes, it does not precede one.
+				if *asked != 0 {
+					t.Errorf("prompted %d times under --yes", *asked)
+				}
+			}
+
+			// The prompted row is the one that proves the safeguard still exists. If
+			// the refusal had been written to fire regardless of --yes, this would be 0.
+			if tc.name == "guess, prompted" && *asked != 1 {
+				t.Errorf("prompted %d times, want 1 — the guess must still be offered interactively", *asked)
+			}
+		})
 	}
 }
