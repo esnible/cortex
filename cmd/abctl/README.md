@@ -450,6 +450,14 @@ nested `"env"` block. The address is read from `listener.forward_proxy_addr` in
 `~/.cortex/config.yaml` on every run, so a moved port or an IPv6 loopback
 produces the right value rather than a hardcoded 47600.
 
+Nothing else in the file changes, and that is meant literally: the key is spliced
+into the existing bytes rather than re-serialized from a parsed document, so your
+key order, your indent width, your inline arrays and your blank lines between
+groups all survive untouched. A settings.json is hand-curated and often lives in
+a dotfiles repo, where a diff that alphabetizes and reflows the whole file is
+worse than the setting is worth. `disable` takes the line back out the same way,
+so enable-then-disable returns the file byte-for-byte.
+
 ```sh
 abctl configure bob enable      # write the key, print the CA trust command
 abctl configure bob disable     # remove the key, print the optional undo

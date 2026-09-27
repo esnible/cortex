@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -10,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -443,9 +446,9 @@ func bobVerifyNote(caPath string) string {
 	}
 	return "To check that this machine trusts the bridge CA:\n\n" +
 		"    security verify-cert -c " + shellQuote(caPath) + "\n\n" +
-		"  Not run here — status reports, it does not act. A failure does not by itself\n" +
-		"  mean Bob is misconfigured: the CA only matters for hosts the bridge\n" +
-		"  terminates, and it is trusted separately from the proxy setting above.\n"
+		"  A failure does not by itself mean Bob is misconfigured: the CA only matters\n" +
+		"  for hosts the bridge terminates, and it is trusted separately from the\n" +
+		"  proxy setting above.\n"
 }
 
 // bobWanted is the best-effort form of wantedFromConfig, for the two verbs that must
@@ -487,7 +490,307 @@ func bobWanted(cortexCfgPath, home string) (proxy, caPath string) {
 // earlier run the copy kept is that older one, not this run's. Promising a backup
 // that is not made is worse than promising none — it is the sentence a user leans on
 // before saying yes.
+// bobSetKey writes one top-level key into a settings file, changing nothing else
+// in it — byte for byte. It is the reason bob does not call writeSettings.
+//
+// writeSettings round-trips through json.MarshalIndent over a map[string]any, and
+// that is lossy in ways JSON does not consider meaningful but a person reading a
+// diff does: Go sorts map keys, so a hand-grouped file is alphabetized; indentation
+// is normalized to two spaces; and an inline array like [80, 120] is exploded onto
+// one line per element. On a real settings file, adding one key moved
+// workbench.colorTheme from first to last and rewrote ten lines. These files are
+// hand-curated and frequently committed to a dotfiles repo, so a semantically
+// equal but textually large diff is a real cost — and it contradicted the
+// "Nothing else in the file changes" line printed directly above the write.
+//
+// So the edit is textual and surgical, and the parser drives it rather than a
+// regex: json.Decoder reports byte offsets, which is what makes it safe to splice
+// a document this way. A key whose name appears inside some other string value
+// cannot be mistaken for the real member, because the offsets come from the
+// tokenizer, not from a search.
+//
+// value == nil means delete the key. Returns the new file content.
+func bobSetKey(src []byte, key string, value any) ([]byte, error) {
+	start, end, found, err := bobFindMember(src, key)
+	if err != nil {
+		return nil, err
+	}
+
+	if value == nil {
+		if !found {
+			return src, nil
+		}
+		return bobSpliceOut(src, start, end), nil
+	}
+
+	// Encoded the same way either way, so a replaced value and an inserted one are
+	// formatted identically.
+	vb, err := json.Marshal(value)
+	if err != nil {
+		return nil, err
+	}
+	member := append([]byte(strconv.Quote(key)+": "), vb...)
+
+	if found {
+		out := make([]byte, 0, len(src)+len(member))
+		out = append(out, src[:start]...)
+		out = append(out, member...)
+		out = append(out, src[end:]...)
+		return out, nil
+	}
+	return bobInsertMember(src, member)
+}
+
+// bobFindMember locates the byte span of a top-level member, from the opening quote
+// of its name through the last byte of its value. Offsets come from json.Decoder,
+// so they are the tokenizer's view of the document and not a textual guess.
+func bobFindMember(src []byte, key string) (start, end int, found bool, err error) {
+	dec := json.NewDecoder(bytes.NewReader(src))
+	tok, err := dec.Token()
+	if err != nil {
+		return 0, 0, false, err
+	}
+	if d, ok := tok.(json.Delim); !ok || d != '{' {
+		return 0, 0, false, fmt.Errorf("top level is not a JSON object")
+	}
+	for dec.More() {
+		// InputOffset before reading the name is the offset just past the previous
+		// token, so skip whitespace forward to the quote that opens this name.
+		nameStart := int(dec.InputOffset())
+		for nameStart < len(src) && src[nameStart] != '"' {
+			nameStart++
+		}
+		name, err := dec.Token()
+		if err != nil {
+			return 0, 0, false, err
+		}
+		// Reading the value advances the offset to just past it, which is the end of
+		// the whole member. Decoding into json.RawMessage consumes a value of any
+		// shape — object, array, scalar — in one step.
+		var raw json.RawMessage
+		if err := dec.Decode(&raw); err != nil {
+			return 0, 0, false, err
+		}
+		if name == key {
+			return nameStart, int(dec.InputOffset()), true, nil
+		}
+	}
+	return 0, 0, false, nil
+}
+
+// bobSpliceOut removes a member and exactly one of the commas around it, leaving the
+// surrounding layout intact.
+//
+// The subtlety is which whitespace goes with the member. Taking only the member's own
+// bytes leaves its indentation behind as a line of trailing spaces — invisible in a
+// terminal, visible in a diff and to every whitespace linter. So the span removed runs
+// from the start of the member's own LINE (its leading indentation) to just past the
+// newline that ends it. A blank line the user wrote as a grouping separator sits before
+// that indentation and is therefore kept.
+//
+// The comma is the other half: it goes on whichever side has one, preferring the
+// FOLLOWING comma so that removing the last member does not leave a trailing comma,
+// which is invalid JSON.
+func bobSpliceOut(src []byte, start, end int) []byte {
+	// Is the member alone on its line? Only then can the line be taken whole.
+	lineStart := bytes.LastIndexByte(src[:start], '\n') + 1
+	ownLine := len(bytes.TrimSpace(src[lineStart:start])) == 0
+
+	// Walk forward past whitespace to a following comma, if there is one.
+	after := end
+	for after < len(src) && isBobSpace(src[after]) {
+		after++
+	}
+
+	from, to := start, end
+	if after < len(src) && src[after] == ',' {
+		// Not the last member: take the member, the comma, and the rest of its line
+		// including the newline, so the next member keeps its own indentation.
+		to = after + 1
+		if nl := bytes.IndexByte(src[to:], '\n'); nl >= 0 && len(bytes.TrimSpace(src[to:to+nl])) == 0 {
+			to += nl + 1
+		} else if !ownLine {
+			// A single-line document: `{"a": 1, "http.proxy": "...", "b": 2}`. There is
+			// no line to take, and the space that separated this member from the next
+			// one would be left beside the space after the previous comma, making a
+			// double space. Take one of them.
+			for to < len(src) && src[to] == ' ' {
+				to++
+			}
+		}
+		if ownLine {
+			from = lineStart
+			// A member sitting BETWEEN two separators leaves both behind once it is
+			// gone, and two blank lines where the user wrote one is a change to the
+			// file's layout — the thing this function exists not to make. So when the
+			// bytes on each side of the removed line are both separators of the same
+			// kind, one of them goes with it. Same reasoning one line down for the
+			// single-line-document form, where the separator is a space rather than a
+			// newline and removing a middle member would leave a double space.
+			from = bobAbsorbSeparator(src, from, to)
+		}
+	} else {
+		// Last member: take the preceding comma and the whitespace between it and us,
+		// so the member that becomes last does not end with a dangling comma.
+		for from > 0 && isBobSpace(src[from-1]) {
+			from--
+		}
+		if from > 0 && src[from-1] == ',' {
+			from--
+		}
+	}
+
+	out := make([]byte, 0, len(src)-(to-from))
+	out = append(out, src[:from]...)
+	out = append(out, src[to:]...)
+	return out
+}
+
+// bobInsertMember adds a member after the last existing one, matching that member's
+// own indentation so the insertion looks hand-written rather than appended.
+func bobInsertMember(src []byte, member []byte) ([]byte, error) {
+	// The closing brace of the top-level object is the last '}' in the document.
+	closing := bytes.LastIndexByte(src, '}')
+	if closing < 0 {
+		return nil, fmt.Errorf("top level is not a JSON object")
+	}
+
+	// Is the object empty? Then there is no last member to follow.
+	trimmed := bytes.TrimSpace(src[:closing])
+	empty := bytes.HasSuffix(trimmed, []byte("{"))
+
+	// End of the last member, which is where the comma and the new line go.
+	insertAt := closing
+	for insertAt > 0 && isBobSpace(src[insertAt-1]) {
+		insertAt--
+	}
+
+	// The indentation to use: the LAST MEMBER's own, not the closing brace's. Copying
+	// the brace's line is the obvious-looking choice and it is wrong — in a
+	// conventionally formatted file that line is column 0, so every inserted key
+	// landed unindented while every existing one was indented. Read it from where the
+	// last member starts instead, which is the line the new member will sit beside.
+	indent := bobIndentOf(src, insertAt)
+	if indent == "" {
+		// Either an empty object, or a single-line document with no indentation to
+		// copy. Two spaces is the only width this function ever invents, and only
+		// when the file itself shows none.
+		indent = "  "
+	}
+
+	var ins []byte
+	if empty {
+		ins = append(ins, '\n')
+		ins = append(ins, indent...)
+		ins = append(ins, member...)
+		ins = append(ins, '\n')
+	} else {
+		ins = append(ins, ',', '\n')
+		ins = append(ins, indent...)
+		ins = append(ins, member...)
+	}
+
+	out := make([]byte, 0, len(src)+len(ins))
+	out = append(out, src[:insertAt]...)
+	out = append(out, ins...)
+	out = append(out, src[insertAt:]...)
+	return out, nil
+}
+
+// bobIndentOf returns the leading whitespace of the line containing off.
+func bobIndentOf(src []byte, off int) string {
+	lineStart := bytes.LastIndexByte(src[:off], '\n') + 1
+	i := lineStart
+	for i < off && (src[i] == ' ' || src[i] == '\t') {
+		i++
+	}
+	return string(src[lineStart:i])
+}
+
+// bobAbsorbSeparator extends a removal backward over one blank line when the removed
+// span has a blank line on both sides, so a grouping separator is not duplicated.
+func bobAbsorbSeparator(src []byte, from, to int) int {
+	// Is what follows the removed span a blank line?
+	nl := bytes.IndexByte(src[to:], '\n')
+	if nl < 0 || len(bytes.TrimSpace(src[to:to+nl])) != 0 {
+		return from
+	}
+	// Is what precedes it also one? Walk back over the previous line.
+	prevStart := bytes.LastIndexByte(src[:from-1], '\n') + 1
+	if from == 0 || src[from-1] != '\n' || len(bytes.TrimSpace(src[prevStart:from-1])) != 0 {
+		return from
+	}
+	return prevStart
+}
+
+func isBobSpace(c byte) bool {
+	return c == ' ' || c == '\t' || c == '\n' || c == '\r'
+}
+
+// bobWriteKey is bob's replacement for writeSettings: same backup and atomic-rename
+// behaviour, but the content is the original file with one key edited rather than a
+// re-marshal of the whole document. value == nil deletes the key.
+func bobWriteKey(path, key string, value any) error {
+	src, rerr := os.ReadFile(path) //nolint:gosec // operator-supplied path
+	if rerr != nil {
+		if !os.IsNotExist(rerr) {
+			return rerr
+		}
+		// No file yet: start from an empty object so the insert path has a document
+		// to work on. Nothing to back up either.
+		src = []byte("{}\n")
+	} else {
+		// Back the file up ONCE and never overwrite it, matching writeSettings: a
+		// second enable, or an enable/disable pair, must not replace the pristine
+		// pre-Cortex file with one abctl already edited.
+		bak := path + ".bak"
+		if _, serr := os.Stat(bak); os.IsNotExist(serr) {
+			if werr := os.WriteFile(bak, src, 0o600); werr != nil {
+				return fmt.Errorf("writing backup %s: %w", bak, werr)
+			}
+		}
+	}
+
+	// An empty or whitespace-only file is an empty document, the same reading
+	// readSettings gives it.
+	if len(bytes.TrimSpace(src)) == 0 {
+		src = []byte("{}\n")
+	}
+
+	out, err := bobSetKey(src, key, value)
+	if err != nil {
+		return fmt.Errorf("%s: %w", path, err)
+	}
+
+	// Never hand back something that is not valid JSON, whatever the splicing did.
+	// Bob reads this file; a malformed one is worse than a reformatted one.
+	var check map[string]any
+	if jerr := json.Unmarshal(out, &check); jerr != nil {
+		return fmt.Errorf("%s: edit would produce invalid JSON (%w); file left unchanged", path, jerr)
+	}
+
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	// 0600: this file commonly holds API tokens in the same block.
+	if err := os.WriteFile(tmp, out, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
 func bobBackupNote(settingsPath string) string {
+	// This sentence is a literal claim, and bobWriteKey is what makes it one: it splices
+	// a single member in or out of the existing bytes, so key order, indentation, inline
+	// arrays and blank-line grouping all survive. It was NOT true of the first version
+	// of this command, which re-marshalled the parsed document and so silently
+	// alphabetized and reformatted the whole file — see bobWriteKey, and
+	// TestBobEnable_ChangesOneLineAndNoOtherByte, which pins it byte-for-byte.
+	//
+	// The same sentence appears in claude-code's enable, where it still goes through the
+	// shared writeSettings and therefore still overstates what happens. Not changed here:
+	// that is a different command's behaviour and out of this change's scope.
 	const unchanged = "Nothing else in the file changes"
 	bak := settingsPath + ".bak"
 	if _, err := os.Stat(settingsPath); err != nil {
@@ -558,7 +861,17 @@ func bobEnable(settingsPath, cortexCfgPath string, yes bool, stdout, stderr io.W
 				"  instead.\n", settingsPath, bobProxyKey, existing)
 			return 1
 		}
-		// Ours but stale — the proxy moved. Falls through to the write.
+		// Reaching here means bobOwns said bobOurs while the value differs from the
+		// one about to be written — which, now that ownership is an exact host+port
+		// match, only spellings of the same listener can do: "localhost" against
+		// "127.0.0.1", or a differing case. Falls through to the write, which
+		// normalizes it to whatever the config derives. The plan's "ours but stale,
+		// the port moved" case no longer lands here: a differing port is not ours by
+		// that definition, so it is refused as foreign above. That is the safe
+		// direction — enable never overwrites a value it cannot positively claim —
+		// but it does mean a user whose forward_proxy_addr moved must remove the old
+		// value by hand. Noted rather than changed: widening ownership back to a port
+		// range is what the previous review had this command stop doing.
 	default:
 		// A non-string (a number, an object) is not something this command wrote and
 		// not something it can compare. Same refusal as a foreign string.
@@ -585,8 +898,7 @@ func bobEnable(settingsPath, cortexCfgPath string, yes bool, stdout, stderr io.W
 		return exitDeclined
 	}
 
-	doc[bobProxyKey] = proxy
-	if werr := writeSettings(settingsPath, doc); werr != nil {
+	if werr := bobWriteKey(settingsPath, bobProxyKey, proxy); werr != nil {
 		fmt.Fprintf(stderr, "abctl: %v\n", werr)
 		return 1
 	}
@@ -648,8 +960,10 @@ func bobDisable(settingsPath, wantProxy, caPath string, yes bool, stdout, stderr
 		return exitDeclined
 	}
 
-	delete(doc, bobProxyKey)
-	if werr := writeSettings(settingsPath, doc); werr != nil {
+	// nil value means delete. bobWriteKey, not writeSettings: the promise printed
+	// above is that nothing else in the file changes, and a re-marshal would
+	// reorder and reindent every other key.
+	if werr := bobWriteKey(settingsPath, bobProxyKey, nil); werr != nil {
 		fmt.Fprintf(stderr, "abctl: %v\n", werr)
 		return 1
 	}
@@ -660,62 +974,100 @@ func bobDisable(settingsPath, wantProxy, caPath string, yes bool, stdout, stderr
 	return 0
 }
 
+// The two verdicts status can reach, and the first line of every report it writes.
+//
+// Package-level so the tests assert the same strings the code prints rather than a
+// copy: a wording change that updates only one of the two would otherwise pass.
+//
+// Note that bobStatusNo CONTAINS the prefix of bobStatusYes up to "is", so neither may
+// be checked with a prefix or substring test that could accept the other — see
+// TestBobStatus_ThreeStates.
+const (
+	bobStatusYes = "IBM Bob is configured to use the Cortex proxy"
+	bobStatusNo  = "IBM Bob is *NOT* configured to use the Cortex proxy"
+)
+
 func bobStatus(settingsPath, cortexCfgPath, wantProxy, caPath string, stdout io.Writer) int {
-	// Always exit 0: "not enabled" is a successful report, the same call
+	// The first line answers the question someone ran this to ask, in the words they
+	// would use to ask it: is IBM Bob going through Cortex or not. Everything else is
+	// detail under that, and the order is deliberate — this used to open with the raw
+	// `"http.proxy"=...` key and make the reader derive the verdict from it.
+	//
+	// Always exit 0: "not configured" is a successful report, the same call
 	// claudeCodeStatus and bobShellStatus make. A non-zero status here would make
 	// `abctl configure bob status` unusable in a shell conditional for anything but
 	// "is it on".
 	doc, err := readSettings(settingsPath)
 	if err != nil {
-		fmt.Fprintf(stdout, "not enabled (%v)\n", err)
+		// An unreadable or non-JSON settings file cannot be configured, so the verdict
+		// is the same "not" — with the reason, which is the actionable part.
+		fmt.Fprintf(stdout, "%s\n  %v\n", bobStatusNo, err)
 		return 0
 	}
 
+	// Detail lines are collected rather than printed inline, so the verdict and any
+	// WARNING can go first regardless of which branch produced the detail.
+	var detail []string
+	add := func(format string, args ...any) { detail = append(detail, fmt.Sprintf(format, args...)) }
+
+	// Only a value this command recognises as the Cortex proxy is probed for liveness.
+	// Probing a foreign one warns that someone's corporate proxy is down, which is
+	// neither true (it is reachable from somewhere, just not here) nor any of Cortex's
+	// business — and it reads as a complaint about a setting abctl deliberately leaves
+	// alone. An unjudgeable loopback value IS probed: it is the shape abctl writes, and
+	// disable would act on it, so its liveness is informative.
+	verdict, listening := bobStatusNo, ""
 	switch existing := doc[bobProxyKey].(type) {
 	case nil:
-		fmt.Fprintf(stdout, "  %q (unset)\nnot enabled in %s\n", bobProxyKey, settingsPath)
+		add("%q is unset in %s", bobProxyKey, settingsPath)
 	case string:
-		fmt.Fprintf(stdout, "  %q=%s\n", bobProxyKey, existing)
 		switch {
-		case bobOwns(existing, wantProxy) == bobUnknown:
-			// The value cannot be judged without something to compare it against, and
-			// saying "not a Cortex proxy" here would be a claim about the settings
-			// file built on the absence of a config file. Report both facts instead.
-			fmt.Fprintf(stdout, "cannot tell from %s whether that is this machine's Cortex proxy\n"+
-				"  (no readable listener.forward_proxy_addr there; it is a loopback proxy,\n"+
-				"   which is the shape abctl writes, so disable would remove it)\n", cortexCfgPath)
 		case bobOwns(existing, wantProxy) == bobOurs:
-			fmt.Fprintf(stdout, "enabled in %s\n", settingsPath)
+			verdict = bobStatusYes
+			listening = existing
+			add("%q=%s in %s", bobProxyKey, existing, settingsPath)
+		case bobOwns(existing, wantProxy) == bobUnknown:
+			listening = existing
+			// The value cannot be judged without something to compare it against, and
+			// claiming "not a Cortex proxy" here would be a statement about the
+			// settings file resting on the absence of a config file. Report both.
+			add("%q=%s in %s", bobProxyKey, existing, settingsPath)
+			add("that is a loopback proxy, which is the shape abctl writes, but %s is not",
+				cortexCfgPath)
+			add("readable — so whether it is this machine's Cortex proxy cannot be told from here")
 		case wantProxy == "":
-			// Not loopback and no config: nothing here is ours, and there is still no
-			// config to name in the drift message below.
-			fmt.Fprintf(stdout, "not enabled in %s (that is not a local proxy, and %s\n"+
-				"  is not readable)\n", settingsPath, cortexCfgPath)
+			add("%q=%s in %s", bobProxyKey, existing, settingsPath)
+			add("that is not a local proxy, and %s is not readable", cortexCfgPath)
 		case bobIsLoopbackProxy(existing):
 			// Drift: a loopback proxy that is not the one the config names now. Almost
 			// always a Cortex address from before the port moved, which is worth
-			// naming as such — but it is NOT treated as ours by the ownership test, so
-			// disable will leave it alone and say so. Reporting drift is useful;
-			// deleting on a guess is not.
-			fmt.Fprintf(stdout, "not enabled in %s — that is a local proxy, but %s now\n"+
-				"  names %s. Re-run `abctl configure bob enable` to move it.\n",
-				settingsPath, cortexCfgPath, wantProxy)
+			// naming as such — but it is NOT ours by the ownership test, so disable
+			// leaves it alone. Reporting drift is useful; deleting on a guess is not.
+			add("%q=%s in %s", bobProxyKey, existing, settingsPath)
+			add("that is a local proxy, but %s now names %s", cortexCfgPath, wantProxy)
+			add("run `abctl configure bob enable` to move it")
 		default:
-			fmt.Fprintf(stdout, "not enabled in %s (that is not this machine's Cortex proxy,\n"+
-				"  which %s puts at %s)\n", settingsPath, cortexCfgPath, wantProxy)
-		}
-		// Liveness is a separate axis from ownership and is reported separately.
-		// Cortex being stopped is the normal state of a laptop, so this must not read
-		// as a verdict on the setting — the setting is correct either way, and the
-		// answer to "nothing is listening" is `abctl service start`, not an edit here.
-		if bobProxyIsListening(existing) {
-			fmt.Fprintf(stdout, "  something is listening on %s\n", existing)
-		} else {
-			fmt.Fprintf(stdout, "  nothing is listening on %s right now\n", existing)
+			add("%q=%s in %s", bobProxyKey, existing, settingsPath)
+			add("that is not this machine's Cortex proxy, which %s puts at %s",
+				cortexCfgPath, wantProxy)
 		}
 	default:
-		fmt.Fprintf(stdout, "  %q=%v\nnot enabled in %s (that value is a %T, not a string)\n",
-			bobProxyKey, existing, settingsPath, existing)
+		add("%q=%v in %s", bobProxyKey, existing, settingsPath)
+		add("that value is a %T, not a string", existing)
+	}
+
+	fmt.Fprintln(stdout, verdict)
+
+	// Second line, when it applies. Liveness is a separate axis from ownership, and
+	// this is a WARNING rather than part of the verdict because the setting is correct
+	// either way: Cortex being stopped is the normal state of a laptop, and the answer
+	// is `abctl service start`, not an edit to Bob's settings.
+	if listening != "" && !bobProxyIsListening(listening) {
+		fmt.Fprintf(stdout, "WARNING: No proxy is listening at %s\n", listening)
+	}
+
+	for _, line := range detail {
+		fmt.Fprintf(stdout, "  %s\n", line)
 	}
 
 	if note := bobVerifyNote(caPath); note != "" {

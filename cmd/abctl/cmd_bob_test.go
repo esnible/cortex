@@ -80,6 +80,273 @@ func TestBobEnable_WritesHTTPProxy(t *testing.T) {
 }
 
 // The property that matters most: this is the user's own editor configuration.
+// bobHandFormatted is deliberately NOT what json.MarshalIndent would emit, in every
+// way that matters:
+//
+//   - keys are NOT in alphabetical order (workbench first, editor before files)
+//   - indentation is FOUR spaces, not two
+//   - blank lines group related settings
+//   - "editor.rulers" is an inline array on one line
+//
+// Every one of those is something a re-marshal destroys, and the fixture the other
+// tests use cannot see it: bobSettings is two-space and close enough to sorted that a
+// reformat is nearly invisible in it. A settings.json is hand-curated and frequently
+// committed to a dotfiles repo, so this shape is the realistic one.
+const bobHandFormatted = `{
+    "workbench.colorTheme": "Default Dark Modern",
+
+    "editor.rulers": [80, 120],
+    "editor.fontSize": 13,
+    "editor.tabSize": 4,
+
+    "files.autoSave": "onFocusChange",
+    "terminal.integrated.fontSize": 12
+}
+`
+
+// The file must change by exactly the one line that adds the key — asserted on BYTES,
+// not through a parse.
+//
+// This is the test TestBobEnable_PreservesEverythingElse cannot be. That one compares
+// through bobDoc, which json.Unmarshals into a map[string]any, and a map has no key
+// order and carries no whitespace — so every assertion it makes is blind to the entire
+// class of damage a re-marshal does. It passed the whole time enable was alphabetizing
+// the file, reindenting it from four spaces to two, and exploding inline arrays onto
+// one line per element: on a real settings file that rewrote ten lines to add one key.
+//
+// So the assertion here is a line diff of the before and after bytes. Any reordering,
+// any reindentation, any array reflow shows up as extra changed lines and fails.
+func TestBobEnable_ChangesOneLineAndNoOtherByte(t *testing.T) {
+	settings, cfg := fixture(t, bobHandFormatted)
+	before, err := os.ReadFile(settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var out, errb bytes.Buffer
+	if code := bobEnable(settings, cfg, true, &out, &errb); code != 0 {
+		t.Fatalf("exit %d: %s", code, errb.String())
+	}
+
+	after, err := os.ReadFile(settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	added, removed := lineDiff(string(before), string(after))
+	got := string(after)
+
+	// Adding a key to the last member's line also puts a comma on it, so the write
+	// legitimately touches two lines: the new one, and the previous last one gaining
+	// its comma. Nothing beyond that is this command's business.
+	if len(added) != 2 || len(removed) != 1 {
+		t.Errorf("want 1 line replaced by 2 (the comma and the new key), got -%d/+%d:\n--- removed\n%s\n+++ added\n%s",
+			len(removed), len(added), strings.Join(removed, "\n"), strings.Join(added, "\n"))
+	}
+	for _, line := range added {
+		if !strings.Contains(line, bobProxyKey) && !strings.Contains(line, "terminal.integrated.fontSize") {
+			t.Errorf("an unrelated line was rewritten: %q", line)
+		}
+	}
+
+	// The new line must be indented like its siblings, which is a separate claim from
+	// "only one line was added" — an unindented new key is still exactly one new line,
+	// so the count above cannot see it. It is worth its own assertion because it is a
+	// mistake already made here once: reading the indentation from the line holding
+	// the closing brace looks right and is wrong, because in a conventionally
+	// formatted file that line is column 0.
+	if !strings.Contains(got, "\n    \""+bobProxyKey+"\": ") {
+		t.Errorf("the inserted key is not indented like its siblings:\n%s", got)
+	}
+
+	// The specific casualties of a re-marshal, each named so a regression reports
+	// which property it broke rather than just "bytes differ".
+	if !strings.Contains(got, `"editor.rulers": [80, 120]`) {
+		t.Errorf("the inline array was reflowed:\n%s", got)
+	}
+	if !strings.Contains(got, "\n    \"editor.fontSize\": 13,") {
+		t.Errorf("four-space indentation was not preserved:\n%s", got)
+	}
+	if strings.Index(got, "workbench.colorTheme") > strings.Index(got, "editor.fontSize") {
+		t.Errorf("keys were alphabetized — workbench must still come first:\n%s", got)
+	}
+	if !strings.Contains(got, "\"Default Dark Modern\",\n\n    \"editor.rulers\"") {
+		t.Errorf("a blank-line grouping separator was lost:\n%s", got)
+	}
+}
+
+// enable then disable must return the file to the exact bytes it started with.
+//
+// A round trip through a re-marshal is stable — it reformats once and then agrees with
+// itself — so this cannot be checked with the parsing helpers either. Byte equality is
+// the whole claim: a user who enables and changes their mind gets their file back, not
+// a reformatted equivalent of it.
+func TestBobEnableDisable_RoundTripsByteForByte(t *testing.T) {
+	settings, cfg := fixture(t, bobHandFormatted)
+	before, err := os.ReadFile(settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var out, errb bytes.Buffer
+	if code := bobEnable(settings, cfg, true, &out, &errb); code != 0 {
+		t.Fatalf("enable: exit %d: %s", code, errb.String())
+	}
+	proxy, caPath := bobWanted(cfg, t.TempDir())
+	if code := bobDisable(settings, proxy, caPath, true, &out, &errb); code != 0 {
+		t.Fatalf("disable: exit %d: %s", code, errb.String())
+	}
+
+	after, err := os.ReadFile(settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(before) != string(after) {
+		t.Errorf("round trip did not restore the file byte for byte:\n--- before\n%s\n+++ after\n%s", before, after)
+	}
+}
+
+// Removing a key must not leave whitespace nobody wrote, whichever position it held.
+//
+// Each of these is a distinct splice: a middle member takes its own line and one comma,
+// the LAST member has no following comma so it must take the PRECEDING one (a trailing
+// comma is invalid JSON), the only member leaves an empty object, and a member between
+// two blank-line separators must take one of them or the file gains a blank line.
+//
+// The assertions are on bytes and on re-parseability, because "valid JSON" and "no
+// stray whitespace" are different claims and the early implementations of this splicer
+// satisfied the first while failing the second.
+func TestBobDisable_LeavesNoStrayWhitespace(t *testing.T) {
+	for _, tc := range []struct{ name, in, want string }{
+		{
+			name: "middle member",
+			in:   "{\n    \"a\": 1,\n    \"http.proxy\": \"http://127.0.0.1:47600\",\n    \"b\": 2\n}\n",
+			want: "{\n    \"a\": 1,\n    \"b\": 2\n}\n",
+		},
+		{
+			name: "last member takes the preceding comma",
+			in:   "{\n    \"a\": 1,\n    \"http.proxy\": \"http://127.0.0.1:47600\"\n}\n",
+			want: "{\n    \"a\": 1\n}\n",
+		},
+		{
+			name: "only member",
+			in:   "{\n    \"http.proxy\": \"http://127.0.0.1:47600\"\n}\n",
+			want: "{\n}\n",
+		},
+		{
+			name: "between two grouping separators keeps exactly one",
+			in:   "{\n    \"a\": 1,\n\n    \"http.proxy\": \"http://127.0.0.1:47600\",\n\n    \"b\": 2\n}\n",
+			want: "{\n    \"a\": 1,\n\n    \"b\": 2\n}\n",
+		},
+		{
+			name: "single line document",
+			in:   "{\"a\": 1, \"http.proxy\": \"http://127.0.0.1:47600\", \"b\": 2}\n",
+			want: "{\"a\": 1, \"b\": 2}\n",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			settings, cfg := fixture(t, tc.in)
+			proxy, caPath := bobWanted(cfg, t.TempDir())
+
+			var out, errb bytes.Buffer
+			if code := bobDisable(settings, proxy, caPath, true, &out, &errb); code != 0 {
+				t.Fatalf("exit %d: %s", code, errb.String())
+			}
+
+			got, err := os.ReadFile(settings)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(got) != tc.want {
+				t.Errorf("bytes differ:\n got %q\nwant %q", got, tc.want)
+			}
+			// Belt and braces: a splice that produced the right bytes by accident but
+			// broke the document would be caught here too.
+			var doc map[string]any
+			if jerr := json.Unmarshal(got, &doc); jerr != nil {
+				t.Errorf("result is not valid JSON: %v\n%s", jerr, got)
+			}
+			if _, still := doc[bobProxyKey]; still {
+				t.Errorf("the key survived:\n%s", got)
+			}
+		})
+	}
+}
+
+// The offsets driving the splice come from json.Decoder, not from a text search, and
+// this is the case that tells the two apart: the key's own name appears inside another
+// member's string value, and as a nested object's key. A regex or strings.Index
+// implementation edits the wrong one; a tokenizer cannot.
+func TestBobDisable_IgnoresTheKeyNameInsideValuesAndNesting(t *testing.T) {
+	in := "{\n" +
+		"    \"some.note\": \"set \\\"http.proxy\\\": \\\"http://127.0.0.1:47600\\\" to use Cortex\",\n" +
+		"    \"nested\": {\"http.proxy\": \"http://inner.example:1\"},\n" +
+		"    \"http.proxy\": \"http://127.0.0.1:47600\",\n" +
+		"    \"z\": 1\n}\n"
+
+	settings, cfg := fixture(t, in)
+	proxy, caPath := bobWanted(cfg, t.TempDir())
+
+	var out, errb bytes.Buffer
+	if code := bobDisable(settings, proxy, caPath, true, &out, &errb); code != 0 {
+		t.Fatalf("exit %d: %s", code, errb.String())
+	}
+
+	got, err := os.ReadFile(settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc map[string]any
+	if jerr := json.Unmarshal(got, &doc); jerr != nil {
+		t.Fatalf("result is not valid JSON: %v\n%s", jerr, got)
+	}
+
+	if _, still := doc[bobProxyKey]; still {
+		t.Errorf("the real top-level key survived:\n%s", got)
+	}
+	// The decoy in a string value must be untouched, character for character.
+	if note, _ := doc["some.note"].(string); !strings.Contains(note, `"http.proxy"`) {
+		t.Errorf("a mention of the key inside another value was edited: %q", note)
+	}
+	// The nested one is a different member of a different object.
+	nested, _ := doc["nested"].(map[string]any)
+	if nested[bobProxyKey] != "http://inner.example:1" {
+		t.Errorf("a nested object's same-named key was edited: %v", nested)
+	}
+	if doc["z"] != float64(1) {
+		t.Errorf("an unrelated key was lost: %v", doc["z"])
+	}
+}
+
+// lineDiff reports which lines are only in b (added) and only in a (removed), counting
+// duplicates. Good enough to assert "exactly these lines changed" without pulling in a
+// diff library.
+func lineDiff(a, b string) (added, removed []string) {
+	count := map[string]int{}
+	for _, l := range strings.Split(a, "\n") {
+		count[l]++
+	}
+	for _, l := range strings.Split(b, "\n") {
+		if count[l] > 0 {
+			count[l]--
+			continue
+		}
+		added = append(added, l)
+	}
+	seen := map[string]int{}
+	for _, l := range strings.Split(b, "\n") {
+		seen[l]++
+	}
+	for _, l := range strings.Split(a, "\n") {
+		if seen[l] > 0 {
+			seen[l]--
+			continue
+		}
+		removed = append(removed, l)
+	}
+	return added, removed
+}
+
 func TestBobEnable_PreservesEverythingElse(t *testing.T) {
 	settings, cfg := fixture(t, bobSettings)
 	before := bobDoc(t, settings)
@@ -385,13 +652,25 @@ func TestBobDisable_WithUnreadableConfig(t *testing.T) {
 }
 
 // Status reports and never acts: three states, all exit 0, nothing written.
+//
+// The verdict is asserted as the WHOLE FIRST LINE, not as a substring anywhere in the
+// output, because "leads with the verdict" is the property being claimed. This used to
+// open with the raw `"http.proxy"=...` key and leave the reader to derive the answer,
+// and a strings.Contains assertion cannot tell that shape from this one: it passes just
+// as well with the verdict buried on line six. Equality on line one is what fails when
+// something is prepended above it.
+//
+// The negative spelling is checked too, on the "ours" case. "IBM Bob is *NOT*
+// configured..." CONTAINS "IBM Bob is", so a truncated or mis-assembled verdict could
+// satisfy a prefix check while saying the opposite of the truth. The two strings are
+// each other's trap, so each case pins that the other one is absent.
 func TestBobStatus_ThreeStates(t *testing.T) {
 	for _, tc := range []struct {
 		name, settings, want string
 	}{
-		{"absent", `{"editor.fontSize": 13}`, "not enabled"},
-		{"ours", `{"http.proxy": "http://127.0.0.1:47600"}`, "enabled in"},
-		{"foreign", `{"http.proxy": "http://proxy.corp.example.com:3128"}`, "not enabled"},
+		{"absent", `{"editor.fontSize": 13}`, bobStatusNo},
+		{"ours", `{"http.proxy": "http://127.0.0.1:47600"}`, bobStatusYes},
+		{"foreign", `{"http.proxy": "http://proxy.corp.example.com:3128"}`, bobStatusNo},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			settings, cfg := fixture(t, tc.settings)
@@ -405,9 +684,27 @@ func TestBobStatus_ThreeStates(t *testing.T) {
 			if code := bobStatus(settings, cfg, want, ca, &out); code != 0 {
 				t.Fatalf("exit = %d, want 0 — a report is not a verdict", code)
 			}
-			if !strings.Contains(out.String(), tc.want) {
-				t.Errorf("output does not contain %q:\n%s", tc.want, out.String())
+
+			lines := strings.Split(out.String(), "\n")
+			if lines[0] != tc.want {
+				t.Errorf("first line = %q, want %q\nfull output:\n%s", lines[0], tc.want, out.String())
 			}
+			// The other verdict must not appear anywhere: one report, one answer.
+			other := bobStatusYes
+			if tc.want == bobStatusYes {
+				other = bobStatusNo
+			}
+			if strings.Contains(out.String(), other) {
+				t.Errorf("both verdicts present:\n%s", out.String())
+			}
+
+			// The paragraph the message-simplification request asked to be removed. It
+			// said status "does not act", which the exit code and this test's own
+			// byte comparison below already establish.
+			if strings.Contains(out.String(), "Not run here") {
+				t.Errorf("the removed paragraph is back:\n%s", out.String())
+			}
+
 			after, err := os.ReadFile(settings)
 			if err != nil {
 				t.Fatal(err)
@@ -417,6 +714,74 @@ func TestBobStatus_ThreeStates(t *testing.T) {
 			}
 			if _, err := os.Stat(settings + ".bak"); err == nil {
 				t.Error("status left a .bak")
+			}
+		})
+	}
+}
+
+// Liveness is a SEPARATE axis from ownership, and the WARNING line must track only the
+// first. The distinction is not cosmetic: the naive version of this warned that a
+// foreign proxy was down, which is both untrue (a corporate proxy is reachable from
+// somewhere, just not from here) and none of abctl's business — it reads as a complaint
+// about a setting this command deliberately leaves alone.
+//
+// Nothing listens on any of these ports in a test, so "nothing is listening" is the
+// shared condition and the only variable is whose value it is. That is what makes the
+// table a fair comparison: same liveness, different ownership, opposite expectations.
+func TestBobStatus_WarnsOnlyForAProxyItClaims(t *testing.T) {
+	// 47600 is NOT usable for the dead-proxy case: on a developer machine the real
+	// Cortex proxy is listening on it, so the fixture's hardcoded port would make
+	// "ours and nothing listening" quietly depend on whether the author had run
+	// `abctl service stop`. It passed on CI and failed here, which is the wrong way
+	// round for a test about liveness. So the whole table moves to a port the OS just
+	// confirmed is free, in both the config and the settings value — ownership is a
+	// whole host+port match, so the two must move together or the case stops being
+	// about liveness at all.
+	dead := freePort(t)
+
+	for _, tc := range []struct {
+		name, settings string
+		wantWarning    bool
+	}{
+		// Ours and dead: the warning is the whole point — the setting is right and the
+		// service is stopped, which is the normal state of a laptop.
+		{"ours and nothing listening", `{"http.proxy": "http://127.0.0.1:` + dead + `"}`, true},
+		// Not ours: silent. Judging someone else's proxy is out of scope.
+		{"foreign", `{"http.proxy": "http://proxy.corp.example.com:3128"}`, false},
+		// Drifted but still loopback: silent too. The actionable advice is `enable`,
+		// which the detail lines give; a liveness complaint about the stale port on top
+		// of it is noise about a value abctl is already telling the user to replace.
+		{"drifted port", `{"http.proxy": "http://127.0.0.1:47699"}`, false},
+		// Unset: there is no address to probe, so there is nothing to warn about.
+		{"unset", `{"editor.fontSize": 13}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			settings, cfg := fixture(t, tc.settings)
+			movePort(t, cfg, dead)
+
+			var out bytes.Buffer
+			want, ca := bobWanted(cfg, t.TempDir())
+			if code := bobStatus(settings, cfg, want, ca, &out); code != 0 {
+				t.Fatalf("exit = %d, want 0", code)
+			}
+
+			got := out.String()
+			warned := strings.Contains(got, "WARNING: No proxy is listening at ")
+			if warned != tc.wantWarning {
+				t.Errorf("warned = %v, want %v:\n%s", warned, tc.wantWarning, got)
+			}
+			if !tc.wantWarning {
+				return
+			}
+			// When it does fire it must name the address, so the reader knows which
+			// thing to start, and it must be the SECOND line — directly under the
+			// verdict, above the detail — as the request specified.
+			lines := strings.Split(got, "\n")
+			if len(lines) < 2 || !strings.HasPrefix(lines[1], "WARNING: No proxy is listening at ") {
+				t.Errorf("the warning is not on line 2:\n%s", got)
+			}
+			if !strings.Contains(lines[1], "127.0.0.1:"+dead) {
+				t.Errorf("the warning does not name the address: %q", lines[1])
 			}
 		})
 	}
@@ -961,4 +1326,46 @@ func TestBobBackupNote_MatchesWhatWriteSettingsDoes(t *testing.T) {
 			}
 		}
 	})
+}
+
+// freePort returns a TCP port on loopback that nothing is listening on, by binding one
+// and closing it immediately.
+//
+// Inherently a race — the port could be taken between the close and the probe — but a
+// far smaller one than hardcoding 47600, which on a developer machine is occupied by
+// the very service under discussion, deterministically and for the whole session. An
+// ephemeral port the kernel just handed out is not reused that quickly.
+func freePort(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, port, err := net.SplitHostPort(ln.Addr().String())
+	if err != nil {
+		ln.Close()
+		t.Fatal(err)
+	}
+	if err := ln.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return port
+}
+
+// movePort rewrites the fixture config's forward-proxy port, so a test can choose an
+// address instead of inheriting 47600 from the fixture. Same strings.Replace trick
+// TestClaudeCodeEnable_ReadsAddressesFromConfig uses on the same fixture.
+func movePort(t *testing.T, cfgPath, port string) {
+	t.Helper()
+	body, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	moved := strings.Replace(string(body), "127.0.0.1:47600", "127.0.0.1:"+port, 1)
+	if moved == string(body) {
+		t.Fatalf("the fixture config no longer names 127.0.0.1:47600, so the port could not be moved:\n%s", body)
+	}
+	if err := os.WriteFile(cfgPath, []byte(moved), 0o600); err != nil {
+		t.Fatal(err)
+	}
 }
