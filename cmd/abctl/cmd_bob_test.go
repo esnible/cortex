@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -213,6 +214,16 @@ func TestBobEnableDisable_RoundTripsByteForByte(t *testing.T) {
 // comma is invalid JSON), the only member leaves an empty object, and a member between
 // two blank-line separators must take one of them or the file gains a blank line.
 //
+// The SHARED-LINE rows are the ones the single-line row cannot stand in for, and the
+// distinction is what a reviewer found broken. A whole-document single line is not
+// ownLine on either side, so the splicer's "take the rest of the line" arm never fires
+// for it. A member sharing ONE line of a multi-line document is the mixed case: it has
+// a newline after it (so that arm did fire, welding the next line onto this one) and it
+// may still be first on its line (so the leading-indent arm fired too, eating the
+// indentation the surviving key needs). All three placements are pinned — the removed
+// key first on the line, in the middle, and last — because each one exercises a
+// different pair of those arms.
+//
 // The assertions are on bytes and on re-parseability, because "valid JSON" and "no
 // stray whitespace" are different claims and the early implementations of this splicer
 // satisfied the first while failing the second.
@@ -242,6 +253,35 @@ func TestBobDisable_LeavesNoStrayWhitespace(t *testing.T) {
 			name: "single line document",
 			in:   "{\"a\": 1, \"http.proxy\": \"http://127.0.0.1:47600\", \"b\": 2}\n",
 			want: "{\"a\": 1, \"b\": 2}\n",
+		},
+		{
+			// Shares a line to its LEFT, next key on the line below. The reviewer's
+			// case: the newline-taking arm used to fire here and produce
+			// `"b": 2,     "c": 3` — two of the user's lines welded into one.
+			name: "shares a line, next key on the following line",
+			in:   "{\n    \"a\": 1,\n    \"b\": 2, \"http.proxy\": \"http://127.0.0.1:47600\",\n    \"c\": 3\n}\n",
+			want: "{\n    \"a\": 1,\n    \"b\": 2,\n    \"c\": 3\n}\n",
+		},
+		{
+			// Shares a line to its RIGHT. It IS first on its line, so the arm that
+			// removes the line's leading indentation fired and left `{\n "b": 2,` —
+			// the four-space indent replaced by one stray space.
+			name: "shares a line, first on it",
+			in:   "{\n    \"http.proxy\": \"http://127.0.0.1:47600\", \"b\": 2,\n    \"c\": 3\n}\n",
+			want: "{\n    \"b\": 2,\n    \"c\": 3\n}\n",
+		},
+		{
+			// Shares a line on BOTH sides, mid-document: neither line arm may fire.
+			name: "shares a line on both sides",
+			in:   "{\n    \"a\": 1,\n    \"b\": 2, \"http.proxy\": \"http://127.0.0.1:47600\", \"c\": 3\n}\n",
+			want: "{\n    \"a\": 1,\n    \"b\": 2, \"c\": 3\n}\n",
+		},
+		{
+			// Shares a line and is the document's last member, so there is no following
+			// comma: the preceding-comma arm runs on a shared line.
+			name: "shares a line and is last",
+			in:   "{\n    \"a\": 1,\n    \"b\": 2, \"http.proxy\": \"http://127.0.0.1:47600\"\n}\n",
+			want: "{\n    \"a\": 1,\n    \"b\": 2\n}\n",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1043,6 +1083,35 @@ func TestBobOwns(t *testing.T) {
 		{"https", "https://127.0.0.1:19999", want, bobNotOurs},
 		{"socks5", "socks5://127.0.0.1:19999", want, bobNotOurs},
 
+		// Everything outside host and port. url.Parse files these under User, Path,
+		// RawQuery and Fragment, and comparing only Hostname()/Port() reads none of
+		// them — so each of these matched the configured proxy exactly and disable
+		// deleted it. The credentials row is the worst of them: the secret goes out
+		// with the value.
+		//
+		// These are NOT the substring rows above. Those fail a whole-value comparison
+		// on the host; these all carry the right host and the right port, and are
+		// still somebody else's setting.
+		{"credentials", "http://user:secret@127.0.0.1:19999", want, bobNotOurs},
+		{"username only", "http://user@127.0.0.1:19999", want, bobNotOurs},
+		{"a PAC script path", "http://127.0.0.1:19999/proxy.pac", want, bobNotOurs},
+		{"a query", "http://127.0.0.1:19999/?next=evil", want, bobNotOurs},
+		{"a query with no path", "http://127.0.0.1:19999?next=evil", want, bobNotOurs},
+		{"a fragment", "http://127.0.0.1:19999#frag", want, bobNotOurs},
+
+		// The other edge of that gate, and the reason it tests Path against a set
+		// rather than for emptiness: url.Parse gives "" for http://h:p and "/" for
+		// http://h:p/, so treating any non-empty Path as foreign would make a
+		// hand-typed trailing slash unremovable. enable writes the first form; a
+		// user who typed the second still wrote our address.
+		{"trailing slash", "http://127.0.0.1:19999/", want, bobOurs},
+
+		// Same gate on the no-config path, which reaches it through a different
+		// branch: there is no value to compare against, so only the shape decides.
+		{"no config, credentials", "http://user:secret@127.0.0.1:47600", "", bobNotOurs},
+		{"no config, a path", "http://127.0.0.1:47600/proxy.pac", "", bobNotOurs},
+		{"no config, trailing slash", "http://127.0.0.1:47600/", "", bobUnknown},
+
 		// No config to compare against: the third state. A loopback http proxy is
 		// the shape abctl writes, so it is removable; anything else is not.
 		{"no config, loopback", "http://127.0.0.1:47600", "", bobUnknown},
@@ -1063,6 +1132,177 @@ func TestBobOwns(t *testing.T) {
 				t.Errorf("bobOwns(%q, %q) = %v, want %v", tc.val, tc.wantProxy, got, tc.owns)
 			}
 		})
+	}
+}
+
+// A settings file may legally name the same key twice, and every JSON reader that
+// keeps one value keeps the LAST — Go's encoding/json does, and so does VS Code. That
+// makes a duplicate invisible to every decision this command makes: readSettings
+// decodes into a map, so the first value is gone before anything looks at it.
+//
+// The reported failure was disable. It spliced out the FIRST occurrence, left the
+// second in place, and printed "Disabled. IBM Bob no longer routes through Cortex."
+// while Bob was still routed through it — a false statement with exit 0 behind it.
+//
+// So all three verbs refuse instead, and all three are asserted here rather than just
+// the one that was reported: they share bobDuplicateKey, and a regression in it would
+// surface in whichever verb the next reader happens to run.
+//
+// The file is compared byte-for-byte after each run because "refuses" has to mean the
+// file is untouched, not merely that the exit code changed.
+func TestBob_RefusesADuplicateProxyKey(t *testing.T) {
+	// Both occurrences point at Cortex, so nothing here turns on ownership: the
+	// refusal is about not being able to say which member is the setting. A file
+	// where only one of them is ours would let a reader think the check is an
+	// ownership check.
+	const dup = `{
+    "editor.fontSize": 13,
+    "http.proxy": "http://127.0.0.1:47600",
+    "http.proxyStrictSSL": false,
+    "http.proxy": "http://127.0.0.1:47600"
+}`
+
+	// The premise. If encoding/json ever started rejecting a duplicate key, or kept
+	// the first value, the rest of this test would be reasoning about a file shape
+	// that cannot occur — so the shape is verified before it is relied on.
+	t.Run("the premise: a decoder hides the duplicate", func(t *testing.T) {
+		var doc map[string]any
+		if err := json.Unmarshal([]byte(dup), &doc); err != nil {
+			t.Fatalf("the fixture is not valid JSON, so the whole test is vacuous: %v", err)
+		}
+		if len(doc) != 3 {
+			t.Errorf("decoded %d keys, want 3 — a duplicate should collapse", len(doc))
+		}
+	})
+
+	for _, verb := range []string{"enable", "disable", "status"} {
+		t.Run(verb, func(t *testing.T) {
+			settings, cfg := fixture(t, dup)
+			before, err := os.ReadFile(settings)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want, ca := bobWanted(cfg, t.TempDir())
+
+			var out, errb bytes.Buffer
+			var code int
+			switch verb {
+			case "enable":
+				code = bobEnable(settings, cfg, true, &out, &errb)
+			case "disable":
+				code = bobDisable(settings, want, ca, true, &out, &errb)
+			case "status":
+				code = bobStatus(settings, cfg, want, ca, &out)
+			}
+
+			// status reports; the two writers fail. Both are "refused" — the
+			// difference is only whether refusing is this verb's answer or its error.
+			if verb == "status" {
+				if code != 0 {
+					t.Errorf("exit = %d, want 0 — a report is not a verdict", code)
+				}
+				if lines := strings.Split(out.String(), "\n"); lines[0] != bobStatusNo {
+					t.Errorf("first line = %q, want %q\n%s", lines[0], bobStatusNo, out.String())
+				}
+				// Reporting either value as "the setting" would be the guess this
+				// check exists to avoid.
+				if strings.Contains(out.String(), bobStatusYes) {
+					t.Errorf("status claimed the configuration it cannot read:\n%s", out.String())
+				}
+			} else if code != 1 {
+				t.Errorf("exit = %d, want 1", code)
+			}
+
+			// The key must be NAMED. "this file has a problem" sends the reader
+			// looking; the key name and the word duplicate tell them what to delete.
+			said := out.String() + errb.String()
+			for _, want := range []string{strconv.Quote(bobProxyKey), "more than once"} {
+				if !strings.Contains(said, want) {
+					t.Errorf("output does not contain %q:\n%s", want, said)
+				}
+			}
+
+			// The reported symptom, asserted directly so a regression names itself:
+			// disable claimed success over a file it had not fixed.
+			if strings.Contains(said, "no longer routes through Cortex") {
+				t.Errorf("%s claimed the proxy was removed:\n%s", verb, said)
+			}
+
+			after, err := os.ReadFile(settings)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(before, after) {
+				t.Errorf("%s wrote to a file it refused:\n--- before\n%s\n--- after\n%s",
+					verb, before, after)
+			}
+			if _, err := os.Stat(settings + ".bak"); err == nil {
+				t.Errorf("%s left a .bak behind for a write it did not make", verb)
+			}
+		})
+	}
+}
+
+// A duplicate somewhere OTHER than the proxy key is none of this check's business.
+// Refusing on any duplicate at all would make the command unusable on a settings file
+// whose unrelated keys happen to repeat, and the splice only ever touches one member.
+func TestBob_ADuplicateOfAnotherKeyIsNotRefused(t *testing.T) {
+	settings, cfg := fixture(t, `{"editor.fontSize": 13, "editor.fontSize": 14}`)
+	var out, errb bytes.Buffer
+	if code := bobEnable(settings, cfg, true, &out, &errb); code != 0 {
+		t.Fatalf("exit = %d, want 0: %s", code, errb.String())
+	}
+	if got := bobDoc(t, settings)[bobProxyKey]; got == nil {
+		t.Errorf("enable refused a file whose duplicate is not its key:\n%s%s", out.String(), errb.String())
+	}
+}
+
+// The table above pins bobOwns; this pins that disable actually consults it, on the
+// one case where getting it wrong destroys something the user cannot recover.
+//
+// A proxy URL carrying credentials is not a hypothetical shape — it is how an
+// authenticating forward proxy is configured in a settings file, and the password is
+// usually nowhere else. The old ownership test compared only Hostname() and Port(), so
+// `http://user:secret@127.0.0.1:47600` on a machine whose Cortex listens on 47600 was
+// judged ours and deleted, secret included.
+//
+// Written through bobDisable rather than as another bobOwns row because the claim is
+// about the file: a correct verdict that the caller ignores loses the value just the
+// same. The secret is asserted present in the bytes, not merely the key.
+func TestBobDisable_LeavesACredentialBearingProxyAlone(t *testing.T) {
+	const secret = "s3cr3t-not-ours"
+	settings, cfg := fixture(t,
+		`{"http.proxy": "http://corpuser:`+secret+`@127.0.0.1:47600"}`)
+
+	// The port is Cortex's own, and the host is loopback — everything the old check
+	// looked at says this is ours. Only the userinfo says otherwise, which is the
+	// point.
+	want, ca := bobWanted(cfg, t.TempDir())
+
+	before, err := os.ReadFile(settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	var out, errb bytes.Buffer
+	if code := bobDisable(settings, want, ca, true, &out, &errb); code != 0 {
+		t.Fatalf("exit = %d, want 0 — a foreign proxy is not an error: %s", code, errb.String())
+	}
+
+	after, err := os.ReadFile(settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Errorf("disable rewrote a file it does not own:\n--- before\n%s\n--- after\n%s", before, after)
+	}
+	if !bytes.Contains(after, []byte(secret)) {
+		t.Error("the credential is gone from the settings file")
+	}
+	// And it must say so: silently leaving the value would look identical to having
+	// removed it, which is the report the user acts on.
+	if !strings.Contains(out.String(), "http.proxy") {
+		t.Errorf("disable did not name the value it left in place:\n%s", out.String())
 	}
 }
 

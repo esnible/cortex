@@ -268,6 +268,23 @@ func bobOwns(val, wantProxy string) bobOwnership {
 	if u.Scheme != "http" {
 		return bobNotOurs
 	}
+	// Everything enable writes is exactly scheme://host:port — no credentials, no
+	// path, no query, no fragment. So anything carrying one of those was typed by
+	// somebody else, and this is the check that keeps a delete off it. Without it
+	// only Hostname() and Port() were compared, and url.Parse puts the rest in
+	// fields nobody looked at:
+	//
+	//   http://user:secret@localhost:47600  credentials, deleted with the value
+	//   http://localhost:47600/proxy.pac    a PAC script, not our proxy
+	//   http://localhost:47600/?next=evil   a redirector that happens to be local
+	//   http://localhost:47600#frag
+	//
+	// An empty path and a bare "/" both mean "no path": url.Parse gives "" for
+	// http://h:p and "/" for http://h:p/, and enable's own value takes the first
+	// form, so accepting both keeps a hand-typed trailing slash ours.
+	if u.User != nil || (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
+		return bobNotOurs
+	}
 	if wantProxy == "" {
 		// Nothing to compare against. A loopback proxy is shaped like ours and
 		// nothing contradicts it; anything else plainly is not.
@@ -544,6 +561,13 @@ func bobSetKey(src []byte, key string, value any) ([]byte, error) {
 // bobFindMember locates the byte span of a top-level member, from the opening quote
 // of its name through the last byte of its value. Offsets come from json.Decoder,
 // so they are the tokenizer's view of the document and not a textual guess.
+//
+// A document may legally name the same key twice, and both Go and VS Code take the
+// LAST one. Splicing out a single span cannot express "remove both", and removing
+// either one alone leaves the key still set while every message this command prints
+// says it is gone — so this refuses instead, by name. The whole document is scanned
+// rather than returning at the first match, which is what makes the second occurrence
+// visible at all.
 func bobFindMember(src []byte, key string) (start, end int, found bool, err error) {
 	dec := json.NewDecoder(bytes.NewReader(src))
 	tok, err := dec.Token()
@@ -572,10 +596,28 @@ func bobFindMember(src []byte, key string) (start, end int, found bool, err erro
 			return 0, 0, false, err
 		}
 		if name == key {
-			return nameStart, int(dec.InputOffset()), true, nil
+			if found {
+				return 0, 0, false, fmt.Errorf("%q appears more than once at the top level; "+
+					"remove the duplicate first — this command edits one member and cannot "+
+					"say which of them wins", key)
+			}
+			start, end, found = nameStart, int(dec.InputOffset()), true
 		}
 	}
-	return 0, 0, false, nil
+	return start, end, found, nil
+}
+
+// bobTailIsOnlySeparator reports whether what follows a member on its own line is
+// nothing but a comma and whitespace — i.e. no other key shares the line to the right.
+//
+// Separate from a plain TrimSpace check because the member's own trailing comma is
+// part of the separator and not a neighbour.
+func bobTailIsOnlySeparator(tail []byte) bool {
+	t := bytes.TrimSpace(tail)
+	if len(t) > 0 && t[0] == ',' {
+		t = bytes.TrimSpace(t[1:])
+	}
+	return len(t) == 0
 }
 
 // bobSpliceOut removes a member and exactly one of the commas around it, leaving the
@@ -592,9 +634,21 @@ func bobFindMember(src []byte, key string) (start, end int, found bool, err erro
 // FOLLOWING comma so that removing the last member does not leave a trailing comma,
 // which is invalid JSON.
 func bobSpliceOut(src []byte, start, end int) []byte {
-	// Is the member alone on its line? Only then can the line be taken whole.
+	// Is the member alone on its line? Only then can the line be taken whole — and
+	// "alone" means on BOTH sides. A member that is first on its line but shares it
+	// with a later key still may not have its line's leading indentation removed:
+	// that indentation belongs to the key that survives. Checking only the left side
+	// left `{\n    "http.proxy": ..., "b": 2,\n` as `{\n "b": 2,` — the indent gone
+	// and one stray space in its place.
 	lineStart := bytes.LastIndexByte(src[:start], '\n') + 1
-	ownLine := len(bytes.TrimSpace(src[lineStart:start])) == 0
+	lineEnd := bytes.IndexByte(src[start:], '\n')
+	if lineEnd < 0 {
+		lineEnd = len(src)
+	} else {
+		lineEnd += start
+	}
+	ownLine := len(bytes.TrimSpace(src[lineStart:start])) == 0 &&
+		bobTailIsOnlySeparator(src[end:lineEnd])
 
 	// Walk forward past whitespace to a following comma, if there is one.
 	after := end
@@ -604,18 +658,43 @@ func bobSpliceOut(src []byte, start, end int) []byte {
 
 	from, to := start, end
 	if after < len(src) && src[after] == ',' {
-		// Not the last member: take the member, the comma, and the rest of its line
-		// including the newline, so the next member keeps its own indentation.
+		// Not the last member: take the member, the comma, and — only when the member
+		// had the line to itself — the rest of that line including the newline, so the
+		// next member keeps its own indentation.
+		//
+		// The ownLine guard is load-bearing. A member SHARING a line with another key
+		// still has a blank line-tail after its comma when the next key is on the line
+		// below, so without the guard this arm consumed that newline and the following
+		// line's indentation too, welding two lines together:
+		//
+		//   {"a": 1,\n    "b": 2, "http.proxy": "...",\n    "c": 3}
+		//     became   ...\n    "b": 2,     "c": 3\n...
+		//
+		// which is exactly the layout change "Nothing else in the file changes" says
+		// this function does not make. When the member shares its line, only its own
+		// bytes and its comma may go.
 		to = after + 1
-		if nl := bytes.IndexByte(src[to:], '\n'); nl >= 0 && len(bytes.TrimSpace(src[to:to+nl])) == 0 {
+		if nl := bytes.IndexByte(src[to:], '\n'); ownLine && nl >= 0 && len(bytes.TrimSpace(src[to:to+nl])) == 0 {
 			to += nl + 1
 		} else if !ownLine {
-			// A single-line document: `{"a": 1, "http.proxy": "...", "b": 2}`. There is
-			// no line to take, and the space that separated this member from the next
-			// one would be left beside the space after the previous comma, making a
-			// double space. Take one of them.
+			// The member shares its line — either a single-line document,
+			// `{"a": 1, "http.proxy": "...", "b": 2}`, or one line of a multi-line one.
+			// Its own line cannot be taken, and the space that separated this member
+			// from what follows would be left beside the space after the previous
+			// comma, making a double space. Take one of them.
 			for to < len(src) && src[to] == ' ' {
 				to++
+			}
+			// Nothing but the line's end follows: the space just taken was the only
+			// thing between the comma and the newline, so the comma we absorbed leaves
+			// a trailing space behind instead. Walk BACK over the spaces before the
+			// member so the surviving key ends at its own comma. Trailing whitespace is
+			// invisible in a terminal and loud in a diff, and it is what
+			// TestBobDisable_LeavesNoStrayWhitespace forbids.
+			if to < len(src) && src[to] == '\n' {
+				for from > 0 && src[from-1] == ' ' {
+					from--
+				}
 			}
 		}
 		if ownLine {
@@ -805,6 +884,34 @@ func bobBackupNote(settingsPath string) string {
 	return unchanged + "; a copy is kept as " + bak + "\n\n"
 }
 
+// bobDuplicateKey reports whether the settings file names the proxy key more than
+// once at the top level, which readSettings cannot show: it decodes into a map, and a
+// map keeps only the last of two same-named members.
+//
+// Called before anything is printed or prompted. bobWriteKey refuses the same file, so
+// leaving this out still fails safe — but it fails AFTER asking the user to approve a
+// write that then cannot happen, and after status has already reported one of the two
+// values as though it were the setting.
+func bobDuplicateKey(settingsPath string) error {
+	src, err := os.ReadFile(settingsPath)
+	if err != nil {
+		// Unreadable or absent is not this check's business: the caller's own
+		// readSettings reports it, with its own wording.
+		return nil
+	}
+	if len(bytes.TrimSpace(src)) == 0 {
+		return nil
+	}
+	_, _, _, ferr := bobFindMember(src, bobProxyKey)
+	// Only the duplicate verdict is this check's to report. Any other parse failure is
+	// readSettings' to describe, and bob's readSettings arm says more about it than a
+	// tokenizer error would.
+	if ferr != nil && strings.Contains(ferr.Error(), "more than once") {
+		return ferr
+	}
+	return nil
+}
+
 func bobEnable(settingsPath, cortexCfgPath string, yes bool, stdout, stderr io.Writer) int {
 	want, cfg, err := wantedFromConfig(cortexCfgPath)
 	if err != nil {
@@ -826,6 +933,11 @@ func bobEnable(settingsPath, cortexCfgPath string, yes bool, stdout, stderr io.W
 		return 1
 	}
 	proxy := want[envProxy]
+
+	if derr := bobDuplicateKey(settingsPath); derr != nil {
+		fmt.Fprintf(stderr, "abctl: %s: %v\n", settingsPath, derr)
+		return 1
+	}
 
 	doc, err := readSettings(settingsPath)
 	if err != nil {
@@ -921,6 +1033,11 @@ func bobEnable(settingsPath, cortexCfgPath string, yes bool, stdout, stderr io.W
 }
 
 func bobDisable(settingsPath, wantProxy, caPath string, yes bool, stdout, stderr io.Writer) int {
+	if derr := bobDuplicateKey(settingsPath); derr != nil {
+		fmt.Fprintf(stderr, "abctl: %s: %v\n", settingsPath, derr)
+		return 1
+	}
+
 	doc, err := readSettings(settingsPath)
 	if err != nil {
 		fmt.Fprintf(stderr, "abctl: %v\n", err)
@@ -997,6 +1114,15 @@ func bobStatus(settingsPath, cortexCfgPath, wantProxy, caPath string, stdout io.
 	// claudeCodeStatus and bobShellStatus make. A non-zero status here would make
 	// `abctl configure bob status` unusable in a shell conditional for anything but
 	// "is it on".
+	if derr := bobDuplicateKey(settingsPath); derr != nil {
+		// Two values, and no way to say which one Bob uses without reimplementing its
+		// precedence. Reporting either as "the setting" would be a guess, so the
+		// verdict is "not" — this command cannot confirm the configuration — and the
+		// reason is the actionable part. Still exit 0: it is a successful report.
+		fmt.Fprintf(stdout, "%s\n  %s: %v\n", bobStatusNo, settingsPath, derr)
+		return 0
+	}
+
 	doc, err := readSettings(settingsPath)
 	if err != nil {
 		// An unreadable or non-JSON settings file cannot be configured, so the verdict
