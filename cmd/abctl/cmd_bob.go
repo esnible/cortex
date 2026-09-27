@@ -5,11 +5,13 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 
 	"github.com/rossoctl/cortex/core/tlsbridge"
 )
@@ -182,9 +184,11 @@ func runBob(args []string, stdout, stderr io.Writer) int {
 		// enable derives the CA path itself, from the config it already requires.
 		return bobEnable(*settingsPath, *cortexCfgPath, yes, stdout, stderr)
 	case "disable":
-		return bobDisable(*settingsPath, bobCAPath(*cortexCfgPath, home), yes, stdout, stderr)
+		wantProxy, caPath := bobWanted(*cortexCfgPath, home)
+		return bobDisable(*settingsPath, wantProxy, caPath, yes, stdout, stderr)
 	default:
-		return bobStatus(*settingsPath, *cortexCfgPath, bobCAPath(*cortexCfgPath, home), stdout)
+		wantProxy, caPath := bobWanted(*cortexCfgPath, home)
+		return bobStatus(*settingsPath, *cortexCfgPath, wantProxy, caPath, stdout)
 	}
 }
 
@@ -207,8 +211,31 @@ func bobSettingsPath(home string) (string, error) {
 	return filepath.Join(home, bobSettingsRel), nil
 }
 
-// bobIsCortexProxy reports whether an http.proxy value is one abctl wrote,
-// structurally: loopback host, port in Cortex's 476xx block, http scheme.
+// bobOwnership is how sure abctl is that it wrote an http.proxy value.
+//
+// Three states rather than a bool, because the third one exists and a bool made a
+// caller answer it wrongly. Comparing the settings value against the address the
+// config names needs BOTH; with no readable config there is no comparison to make,
+// and a bool forced that case to report "not ours" — so `disable` told a user whose
+// Cortex was uninstalled that Cortex's own default address was "not a Cortex proxy"
+// and left it in the file. The off switch must not be broken by the absence of the
+// thing being switched off, so "cannot tell" is a state callers have to handle
+// rather than a false they can fall into.
+type bobOwnership int
+
+const (
+	// bobNotOurs: parsed fine and is somebody else's — a corporate proxy, a
+	// different port. Never delete.
+	bobNotOurs bobOwnership = iota
+	// bobOurs: matches the address the config names, host and port.
+	bobOurs
+	// bobUnknown: the value is a loopback http proxy, but there is no config to
+	// compare it with. Shaped like something abctl writes and nothing contradicts
+	// it. disable treats this as removable; status says plainly that it is a guess.
+	bobUnknown
+)
+
+// bobOwns judges an http.proxy value against the address the config names.
 //
 // Deliberately NOT isCortexValue, which is the same question asked with
 // strings.Contains. That form matches a substring anywhere, so
@@ -219,34 +246,111 @@ func bobSettingsPath(home string) (string, error) {
 // silently removes someone's corporate proxy. Parsing and comparing Hostname()
 // and Port() whole cannot be fooled by a path or a suffixed host.
 //
-// It also reads nothing from the config, which is what lets disable keep working
-// after forward_proxy_addr moves, after wantedFromLoaded rewrites a bind address
-// to "localhost", and — the case that decides it — when the config is gone
-// entirely. Someone who has uninstalled Cortex and wants Bob working again must
-// not find the off switch broken by the absence of the thing being switched off.
+// wantProxy comes from the config rather than from a port-range heuristic. The
+// heuristic this replaced tested HasPrefix(port, "476") while documenting itself as
+// "Cortex's 476xx block", which is not what a prefix match does: it also accepted
+// 476 and 4769999. Comparing against forward_proxy_addr needs no port convention at
+// all and is right for a user who moved the port.
 //
-// The residual false positive is an unrelated loopback proxy of the user's own
-// on a 476xx port. Accepted: that is a deliberate collision with Cortex's
-// documented port block, disable names the exact value in the prompt before
-// removing it, and writeSettings has already saved a .bak. Exact comparison
-// against the derived value still earns its place in status, which reports drift
-// rather than acting on it.
-func bobIsCortexProxy(val string) bool {
+// With no config, the answer is bobUnknown and not bobNotOurs — see bobOwnership.
+// A loopback http proxy is then removable-on-a-guess, which disable does while
+// naming the value; a non-loopback one is still somebody else's.
+func bobOwns(val, wantProxy string) bobOwnership {
 	u, err := url.Parse(strings.TrimSpace(val))
 	if err != nil || u.Host == "" {
-		return false
+		return bobNotOurs
 	}
 	// http only: it is the only scheme enable ever writes, so anything else is
 	// someone else's value.
 	if u.Scheme != "http" {
+		return bobNotOurs
+	}
+	if wantProxy == "" {
+		// Nothing to compare against. A loopback proxy is shaped like ours and
+		// nothing contradicts it; anything else plainly is not.
+		if bobIsLoopbackProxy(val) {
+			return bobUnknown
+		}
+		return bobNotOurs
+	}
+	w, err := url.Parse(wantProxy)
+	if err != nil || w.Host == "" {
+		if bobIsLoopbackProxy(val) {
+			return bobUnknown
+		}
+		return bobNotOurs
+	}
+	// Host AND port, compared whole. Hostname() is compared case-insensitively
+	// because "LOCALHOST" resolves to the same place, and the loopback spellings are
+	// folded together because wantedFromLoaded itself produces "localhost" from an
+	// empty / 0.0.0.0 / :: bind address — so the config can name the same listener a
+	// different way than the settings file does, and a user who hand-typed
+	// 127.0.0.1 must not be told it is someone else's proxy.
+	if u.Port() == w.Port() && bobSameLoopback(u.Hostname(), w.Hostname()) {
+		return bobOurs
+	}
+	return bobNotOurs
+}
+
+// bobSameLoopback reports whether two hostnames name the same listener.
+//
+// Exact match, or both are loopback spellings. It does NOT resolve names: a DNS
+// lookup would make an ownership test depend on the network, and a resolver that
+// maps some.corp.host to 127.0.0.1 would then hand a foreign proxy our ownership.
+// The three literal spellings are the ones wantedFromLoaded and a hand-edited
+// settings file actually produce.
+func bobSameLoopback(a, b string) bool {
+	a, b = strings.ToLower(a), strings.ToLower(b)
+	if a == b {
+		return true
+	}
+	loopback := func(h string) bool {
+		switch h {
+		case "localhost", "127.0.0.1", "::1", "[::1]":
+			return true
+		}
 		return false
 	}
-	switch u.Hostname() {
-	case "localhost", "127.0.0.1", "::1":
-	default:
+	return loopback(a) && loopback(b)
+}
+
+// bobIsLoopbackProxy reports whether val is an http proxy on this machine.
+//
+// Used ONLY by status, to tell "a local proxy that is not the configured one" —
+// almost always a stale Cortex address from before the port moved — apart from a
+// corporate proxy somewhere else. It is deliberately NOT an ownership test: it says
+// nothing about who wrote the value, so disable must not consult it.
+func bobIsLoopbackProxy(val string) bool {
+	u, err := url.Parse(strings.TrimSpace(val))
+	if err != nil || u.Host == "" || u.Scheme != "http" {
 		return false
 	}
-	return strings.HasPrefix(u.Port(), "476")
+	return bobSameLoopback(u.Hostname(), "localhost") && u.Port() != ""
+}
+
+// bobProxyIsListening reports whether something is accepting connections on the
+// host:port val names. Second, independent signal to the address comparison above.
+//
+// A dial, not a request: the question is "is this address live", and sending an
+// HTTP request to someone else's proxy to find out would be a side effect status
+// has no business causing. Short timeout because this runs in the path of a
+// user-facing report — a firewalled address must not hang the command.
+//
+// Advisory ONLY, and never part of the ownership decision. Cortex being stopped is
+// the normal state of a laptop, so "not listening" cannot be allowed to mean "not
+// ours" — that would make disable refuse to clean up exactly when the user has
+// already uninstalled the thing. It is reported, not acted on.
+func bobProxyIsListening(val string) bool {
+	u, err := url.Parse(strings.TrimSpace(val))
+	if err != nil || u.Host == "" {
+		return false
+	}
+	c, err := net.DialTimeout("tcp", u.Host, 300*time.Millisecond)
+	if err != nil {
+		return false
+	}
+	_ = c.Close()
+	return true
 }
 
 // bobTrustNote is the trust-store step abctl does NOT take, printed for the user
@@ -299,11 +403,20 @@ func bobTrustNote(caPath string) string {
 // optional: a CA left in the store signs nothing but Cortex's own forged leaves,
 // and removing it is tidiness rather than a fix.
 func bobUntrustNote(caPath string) string {
+	q := shellQuote(caPath)
 	if runtime.GOOS == "darwin" {
-		// The keychain has to be named: an add to the System keychain is not undone
-		// by a delete that defaults to the login one. -t drops the trust settings
-		// add-trusted-cert created along with the certificate itself.
-		return "Optionally, remove the bridge CA from the keychain as well:\n\n" +
+		// Two commands, because the add did two things and one undo does not cover
+		// both. `add-trusted-cert -d` writes TRUST SETTINGS to the admin domain, and
+		// `remove-trusted-cert -d` is its documented inverse — the -d has to be
+		// repeated or it removes from the user domain, which the add never wrote to.
+		// `delete-certificate -t` was wrong here on its own: it deletes the
+		// certificate and, per its own usage text, "user trust settings", leaving the
+		// admin-domain trust the add created in place. The keychain must be named on
+		// the delete for the same reason -d is repeated on the remove: an add to the
+		// System keychain is not undone by a delete that defaults to the login one.
+		return "Optionally, undo the trust change as well — the trust settings first,\n" +
+			"  then the certificate:\n\n" +
+			"    sudo security remove-trusted-cert -d " + q + "\n" +
 			"    sudo security delete-certificate -c " + bobCACommonName + " \\\n" +
 			"      -t " + bobSystemKeychain + "\n\n" +
 			"  Safe to leave in place if you expect to re-enable: it only validates\n" +
@@ -335,18 +448,58 @@ func bobVerifyNote(caPath string) string {
 		"  terminates, and it is trusted separately from the proxy setting above.\n"
 }
 
-// bobCAPath is the bridge CA path for a message, best-effort.
+// bobWanted is the best-effort form of wantedFromConfig, for the two verbs that must
+// keep working when the config does not.
 //
-// Best-effort because disable and status must keep working when the config does
-// not: a user who has uninstalled Cortex still needs the off switch, and
-// refusing to print a cleanup hint because the config that named the CA is gone
-// would be a worse answer than printing the conventional path. Only enable
-// requires the config, and it checks that for itself.
-func bobCAPath(cortexCfgPath, home string) string {
-	if want, _, err := wantedFromConfig(cortexCfgPath); err == nil && want[envCACerts] != "" {
-		return want[envCACerts]
+// Returns the proxy URL abctl would write and the CA path it would name, either of
+// which may be "" when the config is missing, unreadable or has no forward proxy.
+// enable does NOT use this — it needs a readable config and refuses without one.
+// disable and status do: a user who has uninstalled Cortex and wants Bob working
+// again must not find the off switch broken by the absence of the thing being
+// switched off, and a status report is more useful than a parse error.
+//
+// The CA falls back to the default location because the trust-store note is only
+// ever printed, so naming the usual path is better than naming none. The proxy does
+// NOT fall back: it feeds the ownership decision, and a guessed address there would
+// be a guess about which values are safe to delete.
+func bobWanted(cortexCfgPath, home string) (proxy, caPath string) {
+	caPath = filepath.Join(home, ".cortex", "ca", "ca.crt")
+	want, _, err := wantedFromConfig(cortexCfgPath)
+	if err != nil {
+		return "", caPath
 	}
-	return filepath.Join(home, ".cortex", "ca", "ca.crt")
+	if want[envCACerts] != "" {
+		caPath = want[envCACerts]
+	}
+	return want[envProxy], caPath
+}
+
+// bobBackupNote describes what this particular write will and will not preserve.
+//
+// Three different true statements, because writeSettings makes three different
+// choices and the message used to claim only the first. It writes <path>.bak from
+// the file's current contents ONLY when the file exists AND no .bak is there
+// already — never overwriting, because a second run would otherwise replace the
+// pristine pre-Cortex file with one abctl had already edited.
+//
+// So "a copy is kept as <path>.bak" was false twice over: on a settings file that
+// does not exist yet there is nothing to copy, and when a .bak survives from an
+// earlier run the copy kept is that older one, not this run's. Promising a backup
+// that is not made is worse than promising none — it is the sentence a user leans on
+// before saying yes.
+func bobBackupNote(settingsPath string) string {
+	const unchanged = "Nothing else in the file changes"
+	bak := settingsPath + ".bak"
+	if _, err := os.Stat(settingsPath); err != nil {
+		// Covers a missing file and an unreadable one alike: in both cases this run
+		// will not produce a .bak, which is the only thing being claimed.
+		return unchanged + ".\n  No backup is made — there is no existing file to copy.\n\n"
+	}
+	if _, err := os.Stat(bak); err == nil {
+		return unchanged + "; " + bak + " already exists and is\n" +
+			"  left as it is, so it still holds the file as first found, not as it is now.\n\n"
+	}
+	return unchanged + "; a copy is kept as " + bak + "\n\n"
 }
 
 func bobEnable(settingsPath, cortexCfgPath string, yes bool, stdout, stderr io.Writer) int {
@@ -392,7 +545,11 @@ func bobEnable(settingsPath, cortexCfgPath string, yes bool, stdout, stderr io.W
 			fmt.Fprintf(stdout, "Already enabled: %s routes IBM Bob through Cortex.\n", settingsPath)
 			return 0
 		}
-		if !bobIsCortexProxy(existing) {
+		// bobNotOurs, not "!= bobOurs": enable reaches here only with a readable
+		// config (it exits 1 above otherwise), so bobUnknown cannot occur — but if
+		// that ever changes, a value abctl cannot judge should fall through to the
+		// write it is about to describe and prompt for, not be refused as foreign.
+		if bobOwns(existing, want[envProxy]) == bobNotOurs {
 			// Refuse rather than overwrite: the overwhelmingly likely owner of a
 			// foreign value is a corporate proxy the user needs, and this command
 			// keeps no record that could restore it.
@@ -422,7 +579,7 @@ func bobEnable(settingsPath, cortexCfgPath string, yes bool, stdout, stderr io.W
 	}
 
 	fmt.Fprintf(stdout, "Sets in %s:\n  %q: %q\n", settingsPath, bobProxyKey, proxy)
-	fmt.Fprintf(stdout, "Nothing else in the file changes; a copy is kept as %s.bak\n\n", settingsPath)
+	fmt.Fprint(stdout, bobBackupNote(settingsPath))
 	if !yes && !bobConfirm(settingsPath, "Write to", stdout) {
 		fmt.Fprintln(stdout, "Not changed.")
 		return exitDeclined
@@ -451,7 +608,7 @@ func bobEnable(settingsPath, cortexCfgPath string, yes bool, stdout, stderr io.W
 	return 0
 }
 
-func bobDisable(settingsPath, caPath string, yes bool, stdout, stderr io.Writer) int {
+func bobDisable(settingsPath, wantProxy, caPath string, yes bool, stdout, stderr io.Writer) int {
 	doc, err := readSettings(settingsPath)
 	if err != nil {
 		fmt.Fprintf(stderr, "abctl: %v\n", err)
@@ -464,7 +621,7 @@ func bobDisable(settingsPath, caPath string, yes bool, stdout, stderr io.Writer)
 		return 0
 	}
 	s, isString := existing.(string)
-	if !isString || !bobIsCortexProxy(s) {
+	if !isString || bobOwns(s, wantProxy) == bobNotOurs {
 		// Exit 0, not 1. "Remove it only if it points at Cortex" is the contract, and
 		// this file already satisfies it — there is nothing for the user to fix, so
 		// reporting a failure would be wrong.
@@ -475,7 +632,17 @@ func bobDisable(settingsPath, caPath string, yes bool, stdout, stderr io.Writer)
 	}
 
 	fmt.Fprintf(stdout, "Removes from %s:\n  %q: %q\n", settingsPath, bobProxyKey, s)
-	fmt.Fprintf(stdout, "Nothing else in the file changes; a copy is kept as %s.bak\n\n", settingsPath)
+	if bobOwns(s, wantProxy) == bobUnknown {
+		// Say it is a guess, because it is: with no readable config there is no
+		// address to compare against, and what is left is that the value is a
+		// loopback http proxy — the shape abctl writes. Removing it is still the
+		// right default (this is the uninstalled-Cortex case, when the off switch
+		// matters most), but the user should know which of the two answers they are
+		// getting, and the prompt below names the value before anything is written.
+		fmt.Fprintf(stdout, "  (no readable config to compare against, so this is judged\n"+
+			"   by shape alone — a loopback proxy, which is what abctl writes)\n")
+	}
+	fmt.Fprint(stdout, bobBackupNote(settingsPath))
 	if !yes && !bobConfirm(settingsPath, "Write to", stdout) {
 		fmt.Fprintln(stdout, "Not changed.")
 		return exitDeclined
@@ -493,7 +660,7 @@ func bobDisable(settingsPath, caPath string, yes bool, stdout, stderr io.Writer)
 	return 0
 }
 
-func bobStatus(settingsPath, cortexCfgPath, caPath string, stdout io.Writer) int {
+func bobStatus(settingsPath, cortexCfgPath, wantProxy, caPath string, stdout io.Writer) int {
 	// Always exit 0: "not enabled" is a successful report, the same call
 	// claudeCodeStatus and bobShellStatus make. A non-zero status here would make
 	// `abctl configure bob status` unusable in a shell conditional for anything but
@@ -510,25 +677,41 @@ func bobStatus(settingsPath, cortexCfgPath, caPath string, stdout io.Writer) int
 	case string:
 		fmt.Fprintf(stdout, "  %q=%s\n", bobProxyKey, existing)
 		switch {
-		case !bobIsCortexProxy(existing):
-			fmt.Fprintf(stdout, "not enabled in %s (that is not a Cortex proxy)\n", settingsPath)
+		case bobOwns(existing, wantProxy) == bobUnknown:
+			// The value cannot be judged without something to compare it against, and
+			// saying "not a Cortex proxy" here would be a claim about the settings
+			// file built on the absence of a config file. Report both facts instead.
+			fmt.Fprintf(stdout, "cannot tell from %s whether that is this machine's Cortex proxy\n"+
+				"  (no readable listener.forward_proxy_addr there; it is a loopback proxy,\n"+
+				"   which is the shape abctl writes, so disable would remove it)\n", cortexCfgPath)
+		case bobOwns(existing, wantProxy) == bobOurs:
+			fmt.Fprintf(stdout, "enabled in %s\n", settingsPath)
+		case wantProxy == "":
+			// Not loopback and no config: nothing here is ours, and there is still no
+			// config to name in the drift message below.
+			fmt.Fprintf(stdout, "not enabled in %s (that is not a local proxy, and %s\n"+
+				"  is not readable)\n", settingsPath, cortexCfgPath)
+		case bobIsLoopbackProxy(existing):
+			// Drift: a loopback proxy that is not the one the config names now. Almost
+			// always a Cortex address from before the port moved, which is worth
+			// naming as such — but it is NOT treated as ours by the ownership test, so
+			// disable will leave it alone and say so. Reporting drift is useful;
+			// deleting on a guess is not.
+			fmt.Fprintf(stdout, "not enabled in %s — that is a local proxy, but %s now\n"+
+				"  names %s. Re-run `abctl configure bob enable` to move it.\n",
+				settingsPath, cortexCfgPath, wantProxy)
 		default:
-			// Drift is reported, never acted on. wantedFromConfig is consulted only
-			// here, and its failure is not this report's failure: the value is still
-			// a Cortex proxy whatever the config says, so an unreadable config
-			// downgrades the answer rather than breaking it.
-			want, _, werr := wantedFromConfig(cortexCfgPath)
-			switch {
-			case werr != nil:
-				fmt.Fprintf(stdout, "enabled in %s (could not read %s to compare: %v)\n",
-					settingsPath, cortexCfgPath, werr)
-			case want[envProxy] != existing:
-				fmt.Fprintf(stdout, "enabled in %s, but %s now names %s —\n"+
-					"  re-run `abctl configure bob enable` to move it.\n",
-					settingsPath, cortexCfgPath, want[envProxy])
-			default:
-				fmt.Fprintf(stdout, "enabled in %s\n", settingsPath)
-			}
+			fmt.Fprintf(stdout, "not enabled in %s (that is not this machine's Cortex proxy,\n"+
+				"  which %s puts at %s)\n", settingsPath, cortexCfgPath, wantProxy)
+		}
+		// Liveness is a separate axis from ownership and is reported separately.
+		// Cortex being stopped is the normal state of a laptop, so this must not read
+		// as a verdict on the setting — the setting is correct either way, and the
+		// answer to "nothing is listening" is `abctl service start`, not an edit here.
+		if bobProxyIsListening(existing) {
+			fmt.Fprintf(stdout, "  something is listening on %s\n", existing)
+		} else {
+			fmt.Fprintf(stdout, "  nothing is listening on %s right now\n", existing)
 		}
 	default:
 		fmt.Fprintf(stdout, "  %q=%v\nnot enabled in %s (that value is a %T, not a string)\n",

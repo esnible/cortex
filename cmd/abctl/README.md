@@ -476,30 +476,65 @@ sudo security add-trusted-cert -d -r trustRoot \
   -k /Library/Keychains/System.keychain ~/.cortex/ca/ca.crt
 ```
 
-`disable` prints the matching `security delete-certificate` and says it is safe
-to leave the certificate in place. `status` suggests `security verify-cert`
-without running it. Off macOS these become a suggestion to add the file to the
-OS trust store, naming the usual Debian and Fedora routes and saying plainly
-that the exact step depends on the distribution.
+`disable` prints the undo, which is **two** commands rather than one, and says
+it is safe to leave the certificate in place:
+
+```sh
+sudo security remove-trusted-cert -d ~/.cortex/ca/ca.crt
+sudo security delete-certificate -c authbridge-tls-bridge-ca \
+  -t /Library/Keychains/System.keychain
+```
+
+`delete-certificate` alone does not undo the `add-trusted-cert` above it. The add
+writes trust settings to the **admin** domain (that is what its `-d` selects);
+`delete-certificate -t` removes the certificate and, per its own usage text,
+*user* trust settings — a different domain, so the admin-domain trust survives it.
+`remove-trusted-cert -d` is the documented inverse of the add, and its `-d` has to
+be repeated for the same reason. The keychain is named on the delete because an
+add to the System keychain is not undone by a delete that defaults to the login
+one.
+
+`status` suggests `security verify-cert` without running it. Off macOS these
+become a suggestion to add or remove the file in the OS trust store, naming the
+usual Debian and Fedora routes and saying plainly that the exact step depends on
+the distribution.
 
 It is `ca.crt` — the single bridge CA — and deliberately **not** the
 `bundle.crt` in the same directory, which holds ~129 certificates and exists for
 tools whose CA setting *replaces* the trust store (`SSL_CERT_FILE` and friends,
 as `abctl exec` sets). The keychain is additive, so `-r trustRoot` on the bundle
 would install explicit machine-wide root trust for ~128 unrelated public CAs,
-and one `delete-certificate` would not take it back.
+and the undo above would not take it back.
 
 ### What it knows, and what it does not
 
-"Enabled" means the key is present and its value is a loopback host on a `476xx`
-port. That is a structural check on the value, not a record abctl keeps: there is
-no state file, so `disable` removes the key only when it still looks like
-something `enable` wrote, and reports anything else — a corporate proxy, a
-non-string value — while leaving it alone. `enable` refuses rather than
-overwriting a foreign value. The cost of having no state file is that a
-pre-existing loopback proxy of your own on a `476xx` port is indistinguishable
-from Cortex's: `disable` would remove it. The prompt names the exact value first,
-and the `.bak` is already written.
+"Enabled" means the value's **host and port both match** `listener.forward_proxy_addr`
+from `~/.cortex/config.yaml` — the address this machine's Cortex actually listens
+on, not a port range. Compared whole via `url.Parse`, so neither a path
+(`http://corp.example.com/?next=127.0.0.1:47600`) nor a suffixed host
+(`localhost:47600.evil.com`) can pass as ours; only `http` counts, since it is the
+only scheme `enable` writes. The loopback spellings are folded together
+(`localhost` / `127.0.0.1` / `::1`) because `forward_proxy_addr` may bind `0.0.0.0`
+while the settings file names `127.0.0.1`, and a hand-typed address must not be
+called someone else's proxy.
+
+That is still not a record abctl keeps — there is no state file. `disable` removes
+the key only when it matches, and reports anything else — a corporate proxy, a
+loopback proxy on a port the config does not name, a non-string value — while
+leaving it alone. `enable` refuses rather than overwriting a foreign value. The
+remaining collision is narrow: your own unrelated proxy on *exactly* the address
+Cortex is configured for. The prompt names the exact value first, and the `.bak`
+is already written.
+
+Ownership has three answers, not two: a config that cannot be read yields
+**cannot tell** rather than "not ours", because a bool would have to guess, and
+guessing "not ours" toward a `delete` is the dangerous direction. `status` says so
+in those words instead of ruling on it.
+
+**Whether anything is listening is a separate question**, reported on its own
+line. A stopped Cortex is the normal state of a laptop and is not a verdict on the
+setting: the setting is right either way, and the answer to "nothing is listening"
+is `abctl service start`, not an edit here.
 
 `http.proxy` governs VS Code's core networking and its extension host. An
 extension that bundles its own HTTP client can still go around it; this is the
