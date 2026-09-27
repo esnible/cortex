@@ -323,12 +323,18 @@ and 3 is what lets an unattended caller tell the two apart — the same code
 unattended caller that omits `--yes` is still a no-op; it is just no longer a
 silent one. Scripted callers should pass `--yes`.
 
-`abctl configure bob` no longer exists — it is `bobshell`, because what gets
-configured is the Bob Shell integration and not Bob itself. This is a breaking
-change and not an alias: the old spelling printed "coming soon" and exited 0,
-and now exits 2 with `unknown agent "bob"`, so a script that ran it and checked
-the status starts failing rather than silently doing nothing. The error names
-`bobshell`, so the fix is visible at the point of failure.
+`bob` and `bobshell` are two different agents, not two spellings of one. `bob`
+configures the IBM Bob **editor** — a VS Code fork, so the lever is `http.proxy`
+in its `settings.json` (below). `bobshell` configures the **shell integration** —
+a `bob` function in your rc file, so typing `bob` at a prompt runs through
+Cortex. Configuring one does not configure the other, and neither name is an
+alias of the other: `abctl configure bob --settings X` is a usage error under
+`bobshell`, and vice versa.
+
+The editor agent briefly did not exist. It was removed on the reasoning that
+what needed configuring was the shell integration and "IBM Bob itself needs no
+configuring", which was right about the binary and wrong about the editor. It is
+back, and the two now stand side by side.
 
 Let `enable` write it rather than pasting the block above. What `enable` appends
 begins with a blank line, which the fence cannot show you: it is invisible when
@@ -425,6 +431,88 @@ bash, zsh and dash alike. (`mise doctor` splits `activated:` from
 `shims_on_path:` for the same reason.)
 
 Both answers exit 0: "not enabled" is a report, not a failure.
+
+## Routing the IBM Bob editor through Cortex (`abctl configure bob`)
+
+IBM Bob is a VS Code fork, so it reads the VS Code proxy setting. `abctl
+configure bob enable` writes exactly one flat, top-level key into Bob's user
+settings:
+
+```json
+{
+  "http.proxy": "http://127.0.0.1:47600"
+}
+```
+
+Flat and dotted, not nested under an `"http"` object — that is the shape VS Code
+reads, and the shape difference from `configure claude-code`, which writes a
+nested `"env"` block. The address is read from `listener.forward_proxy_addr` in
+`~/.cortex/config.yaml` on every run, so a moved port or an IPv6 loopback
+produces the right value rather than a hardcoded 47600.
+
+```sh
+abctl configure bob enable      # write the key, print the CA trust command
+abctl configure bob disable     # remove the key, print the optional undo
+abctl configure bob status      # report, and act on nothing
+```
+
+`enable` and `disable` show the one-line change and ask before writing, keep a
+`.bak` of the file as it was first found, and take `--yes` for unattended use.
+Declined — or with no terminal to ask on — they write nothing and exit **3**, the
+same convention as `configure claude-code` and `configure bobshell`. `--settings
+PATH` and `--config PATH` override either file. Restart Bob afterwards: whether
+it re-reads a proxy change live is unverified, so the message says restart rather
+than guess.
+
+### Certificate trust is printed, never performed
+
+The proxy terminates TLS with a forged leaf, so Bob has to trust Cortex's bridge
+CA or every HTTPS request fails. Installing a root CA is a machine-wide change
+needing `sudo`, and a tool that silently escalates to do it is not what anyone
+wants — so `enable` prints the exact command and stops:
+
+```sh
+sudo security add-trusted-cert -d -r trustRoot \
+  -k /Library/Keychains/System.keychain ~/.cortex/ca/ca.crt
+```
+
+`disable` prints the matching `security delete-certificate` and says it is safe
+to leave the certificate in place. `status` suggests `security verify-cert`
+without running it. Off macOS these become a suggestion to add the file to the
+OS trust store, naming the usual Debian and Fedora routes and saying plainly
+that the exact step depends on the distribution.
+
+It is `ca.crt` — the single bridge CA — and deliberately **not** the
+`bundle.crt` in the same directory, which holds ~129 certificates and exists for
+tools whose CA setting *replaces* the trust store (`SSL_CERT_FILE` and friends,
+as `abctl exec` sets). The keychain is additive, so `-r trustRoot` on the bundle
+would install explicit machine-wide root trust for ~128 unrelated public CAs,
+and one `delete-certificate` would not take it back.
+
+### What it knows, and what it does not
+
+"Enabled" means the key is present and its value is a loopback host on a `476xx`
+port. That is a structural check on the value, not a record abctl keeps: there is
+no state file, so `disable` removes the key only when it still looks like
+something `enable` wrote, and reports anything else — a corporate proxy, a
+non-string value — while leaving it alone. `enable` refuses rather than
+overwriting a foreign value. The cost of having no state file is that a
+pre-existing loopback proxy of your own on a `476xx` port is indistinguishable
+from Cortex's: `disable` would remove it. The prompt names the exact value first,
+and the `.bak` is already written.
+
+`http.proxy` governs VS Code's core networking and its extension host. An
+extension that bundles its own HTTP client can still go around it; this is the
+documented lever, not a guarantee of coverage.
+
+A settings file with comments in it is refused, not rewritten. VS Code permits
+them; the strict JSON reader here does not, and silently stripping a user's
+comments to add one key is the wrong trade.
+
+Only macOS's settings location is known (`~/Library/Application Support/IBM
+Bob/User/settings.json`). Elsewhere `--settings PATH` is required rather than
+guessed — writing a proxy setting into a file nothing reads is a silent no-op,
+which is worse than a refusal that names the flag.
 
 ## Panes
 
