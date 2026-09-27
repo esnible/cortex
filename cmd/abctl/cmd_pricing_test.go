@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -218,4 +219,63 @@ func tail(s string) string {
 		lines = lines[len(lines)-12:]
 	}
 	return strings.Join(lines, "\n")
+}
+
+// The per-Mtok sub-header does not claim dollars when the endpoint bills in something else.
+//
+// It was the literal "$/Mtok", printed four times — an ASSERTION rather than a rendering. Harmless
+// while every endpoint billed in dollars; false the moment one declares `unit: credits`, and a
+// rate quoted in the wrong currency is the silent-wrong-number failure this package exists to
+// remove, arriving through the tool built to inspect it.
+func TestRunPricing_DoesNotClaimDollarsForANonUSDEndpoint(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if _, err := w.Write([]byte(`{"host":"api.us-east.bob.ibm.com","models":[
+			{"model":"premium-ide","provenance":"configured","unit":"credits",
+			 "inputPerMillion":2,"cacheWritePerMillion":2,"cacheReadPerMillion":2,
+			 "outputPerMillion":2}]}`)); err != nil {
+			t.Errorf("write: %v", err)
+		}
+	}))
+	defer srv.Close()
+
+	var out, errOut strings.Builder
+	if code := runPricing([]string{"--stats-url", srv.URL, "--host", "api.us-east.bob.ibm.com"}, &out, &errOut); code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr = %s", code, errOut.String())
+	}
+	got := out.String()
+	if strings.Contains(got, "$/Mtok") {
+		t.Errorf("a credits endpoint's rates are labelled $/Mtok:\n%s", got)
+	}
+	// And the unit it IS in has to appear, or the figures are unlabelled rather than mislabelled —
+	// which is not an improvement.
+	if !strings.Contains(got, "credits") {
+		t.Errorf("output never names the unit the rates are in:\n%s", got)
+	}
+}
+
+// A USD endpoint still says $/Mtok, character for character.
+//
+// The fix must not cost every existing reader the label they already had: this is every deployment
+// today, and replacing "$/Mtok" with a bare "/Mtok" everywhere would make the common case less
+// informative to avoid a lie in the rare one.
+func TestRunPricing_StillSaysDollarsForAUSDEndpoint(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if _, err := w.Write([]byte(`{"host":"api.anthropic.com","models":[
+			{"model":"claude-opus-5","provenance":"bundled",
+			 "inputPerMillion":5,"cacheWritePerMillion":6.25,"cacheReadPerMillion":0.5,
+			 "outputPerMillion":25}]}`)); err != nil {
+			t.Errorf("write: %v", err)
+		}
+	}))
+	defer srv.Close()
+
+	var out, errOut strings.Builder
+	if code := runPricing([]string{"--stats-url", srv.URL, "--host", "api.anthropic.com"}, &out, &errOut); code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr = %s", code, errOut.String())
+	}
+	if got := out.String(); !strings.Contains(got, "$/Mtok") {
+		t.Errorf("a USD endpoint lost its $/Mtok label:\n%s", got)
+	}
 }
