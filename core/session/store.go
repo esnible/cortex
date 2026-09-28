@@ -724,15 +724,17 @@ func (s *Store) ListSessions() []SessionSummary {
 			UpdatedAt:  sess.UpdatedAt,
 			EventCount: len(sess.Events),
 			// A walk, and NOT in TotalTokens' cheap class below: it scans message CONTENT,
-			// the largest payload here. Bounded by iterating in reverse and stopping on the
-			// first unbeatable match (a /rename), so a NAMED session costs one event —
-			// 5.4us against 302us for the worst case on a 300-turn session, see
+			// the largest payload here. Bounded twice over — by iterating in reverse and
+			// stopping on the first unbeatable match (a /rename), and by titleScanEvents
+			// capping how far back it looks at all. A NAMED session costs one event: 278ns
+			// against 228us for the ordinary worst case on a 300-turn session (714us when
+			// quickRank's screen misses every message), see
 			// BenchmarkListSessions_Title.
 			//
 			// That worst case is a session with user text but no /rename, NOT one with no
 			// title at all: rank 2 is always beatable, so the walk cannot terminate, and
 			// every message of every event gets three strings.Index scans. An
-			// assistant-only session is 14x cheaper than that, because a role comparison
+			// assistant-only session is 17x cheaper than that, because a role comparison
 			// rejects each message before any scanning.
 			//
 			// Recomputed per call, so a trim that evicts an early /rename changes this
@@ -741,18 +743,24 @@ func (s *Store) ListSessions() []SessionSummary {
 			// THIS IS THE EXCEPTION TO THE RULE PromptContext STATES BELOW, and it is a real
 			// exception rather than an oversight — stated here because the two comments sit four
 			// lines apart and would otherwise read as a contradiction. That rule rejects an
-			// O(events) walk under the read lock; this is one, and a more expensive one than the
-			// walk it rejects, since a rank-2 session can never terminate early. With maxEvents
-			// unset (core/config/config.go) and ttl defaulting to never, it is unbounded in
-			// practice: the repo's own cited 5078-event session extrapolates to ~5ms of lock hold
-			// per ListSessions, on abctl's two-second poll, in front of a writer that is Append on
-			// the proxy's request path.
+			// O(events) walk under the read lock; this is a walk, and a more expensive one per
+			// event than the one it rejects, since a rank-2 session can never terminate early.
 			//
-			// Not folded at Append yet because the fold is not free either — a title is not
-			// monotonic the way a cost counter is: eviction can UNSET a /rename that Append
-			// already folded in, so the fold needs invalidation on trim rather than an
-			// accumulate-only field. That is the right fix and it is bigger than this change; see
-			// the PR discussion. Until then this is a known cost, not an unnoticed one.
+			// WHAT MAKES IT PERMISSIBLE IS THE CEILING: sessionTitle examines at most
+			// titleScanEvents of the newest events, so the lock hold is O(1) in session length
+			// rather than proportional to it. That matters because maxEvents is unset by default
+			// (core/config/config.go) and ttl defaults to never, so sessions here are unbounded —
+			// unbounded, the repo's own cited 5078-event session extrapolated to ~5ms of lock hold
+			// per ListSessions, on abctl's two-second poll, in front of a writer that is Append on
+			// the proxy's request path. See titleScanEvents for why a ceiling rather than a copy,
+			// and for why it costs almost nothing: every inference request re-sends the whole
+			// conversation, so the newest event already holds the whole session's messages.
+			//
+			// Not folded at Append because the fold is not free either — a title is not monotonic
+			// the way a cost counter is: eviction can UNSET a /rename that Append already folded
+			// in, so the fold needs invalidation on trim rather than an accumulate-only field.
+			// With the ceiling in place the walk is cheap enough that the fold is no longer worth
+			// that complexity.
 			Title: sessionTitle(sess.Events),
 			// Still a walk, and deliberately left as one: it is a pointer deref per event
 			// with no allocation, where the money figures below needed a JSON unmarshal.

@@ -34,6 +34,32 @@ const (
 
 const renamePrefix = "<command-name>/rename</command-name>"
 
+// titleScanEvents caps how many of a session's NEWEST events sessionTitle examines, which is what
+// makes ListSessions' lock hold bounded rather than proportional to the session.
+//
+// A CEILING, NOT A COPY. The call site holds the store's read lock against a writer that is Append
+// on the proxy's request path, and without a bound the walk is O(events × message-content) with
+// maxEvents unset by default and abctl polling every two seconds — ~5ms of lock hold on the repo's
+// cited 5078-event session. Copying the events to walk them unlocked was the other option on the
+// table and is worse: the copy is of exactly the large payload that makes this expensive, so it
+// trades lock hold for an O(content) allocation on every poll, in a package that has just spent a
+// lot of effort deleting that shape from the read path (see core/session/intern.go and
+// core/sessionapi/snapshot.go).
+//
+// COSTS ALMOST NOTHING IN PRACTICE because of what the events contain: every inference request
+// re-sends the whole conversation, so the newest event already holds every message of the session.
+// A /rename from turn 3 of a 5000-turn session is still in the newest event and still found. What
+// the cap can lose is a title that was only ever in an event now older than this window — an
+// intent whose conversation has since been replaced wholesale, or a non-inference event kind. That
+// is the same class of loss the store's own eviction already imposes, and the comment on the call
+// site's Title field already tells clients this figure is recomputed and can change.
+//
+// 64 because the worst case per event is a full conversation's worth of message content, so the
+// product is what matters rather than either factor; this keeps the bound near the cost of the
+// benchmark shape that was measured (BenchmarkListSessions_Title, 300 events) rather than near the
+// unbounded one.
+const titleScanEvents = 64
+
 // sessionTitle names a session from its own events: a /rename envelope if one is present,
 // else a <user_query> block, else the last user message carrying text.
 //
@@ -48,12 +74,19 @@ const renamePrefix = "<command-name>/rename</command-name>"
 // always beatable and so every user message of every event becomes a candidate. Sanitizing at
 // the moment a candidate would REPLACE the incumbent runs it once per improvement — at most
 // three times for a session, since rank only ever descends.
+//
+// BOUNDED BY titleScanEvents, which is what makes the call site's lock hold O(1) rather than
+// O(session). See that constant.
 func sessionTitle(events []pipeline.SessionEvent) string {
 	if len(events) == 0 {
 		return emptySessionTitle
 	}
+	stop := 0
+	if len(events) > titleScanEvents {
+		stop = len(events) - titleScanEvents
+	}
 	best, bestRank := "", rankNone
-	for i := len(events) - 1; i >= 0; i-- {
+	for i := len(events) - 1; i >= stop; i-- {
 		// Reverse, so the FIRST hit at a rank is the LAST one in event order — hence
 		// `>=` rather than `>`: an earlier event must not displace it at equal rank.
 		r, t := titleCandidate(&events[i])
@@ -63,6 +96,12 @@ func sessionTitle(events []pipeline.SessionEvent) string {
 		// Fold BEFORE accepting, so a whitespace-only candidate does not claim the rank. It is
 		// not merely that the title would be blank — claiming rank 0 would also break the walk
 		// and hide a real /rename in an earlier event.
+		//
+		// REDUNDANT TODAY AND KEPT ANYWAY: titleCandidate now folds at its own acceptance points
+		// (it has to — a blank candidate there hides a title in the SAME event), and the fold is
+		// idempotent, so this re-folds an already-folded string of at most maxTitleLen runes. That
+		// costs nothing measurable and keeps this loop's invariant true on its own terms rather
+		// than by trusting its callee, which is what the blank-candidate bug cost twice.
 		t = sanitizeTitle(t)
 		if t == "" {
 			continue
@@ -109,7 +148,7 @@ func titleCandidate(e *pipeline.SessionEvent) (int, string) {
 		return rankNone, ""
 	}
 	msgs := e.Inference.Messages
-	bestRank, bestTitle := rankNone, ""
+	bestRank, bestTitle, bestIdx := rankNone, "", -1
 	// deferredHead is the index one past the newest rank-2 guess not yet settled. The deferred
 	// candidates are scanned lazily below, latest first, because a rank-2 guess can still settle
 	// at rankNone — a message that is nothing but reminders guesses 2 and names nothing — and the
@@ -133,19 +172,39 @@ func titleCandidate(e *pipeline.SessionEvent) (int, string) {
 		if t == "" || r >= bestRank {
 			continue
 		}
-		bestRank, bestTitle = r, t
+		// REJECT A BLANK CANDIDATE BEFORE IT CLAIMS THE RANK. sessionTitle's own blank check cannot
+		// cover this: it sees one answer per event, so a blank winner here does not fall through to
+		// a real title in the SAME event — it discards the event. `<user_query>   </user_query>`
+		// standing after a real ask used to title the session "" rather than the ask, and a blank
+		// /rename arg did the same at rank 0.
+		//
+		// TESTS WITHOUT FOLDING, and that is the whole reason foldsBlank exists. Folding here
+		// instead measured 326µs→635µs on BenchmarkListSessions_Title/user-text: one fold per
+		// RETAINED EVENT rather than one per session, and sanitizeTitle is 2.8µs on a 500-byte
+		// message (101 calls against 1, at maxEvents=100). The winner is folded once, by
+		// sessionTitle, which is where the only affordable fold has always been.
+		if foldsBlank(t) {
+			continue
+		}
+		bestRank, bestTitle, bestIdx = r, t, i
 		if bestRank == rankRename {
 			return bestRank, bestTitle // nothing in this event can outrank it
 		}
 	}
-	// Settle the deferred rank-2 candidates only if nothing better was found. A settled rank-2
-	// from a demoted rank-0/1 guess is no better than these, and these are LATER in event order
-	// whenever both exist — the scan is reverse, so a deferred index recorded first was seen
-	// later in event order. Prefer them, per the last-match rule.
+	// Settle the deferred rank-2 candidates only if nothing better was found — and, at equal rank,
+	// only if the deferred one is LATER in event order, per the last-match rule.
 	//
-	// ONE PASS TOTAL ACROSS BOTH LOOPS, which is what keeps this linear: each message is visited
-	// at most once here, walking back from the newest deferred candidate, and the walk stops at
-	// the first one that names something.
+	// THE INDEX COMPARISON IS NOT REDUNDANT, though the old comment here claimed the reverse scan
+	// made it so. The scan visits messages newest-first, so the FIRST rank-2 guess it meets is the
+	// newest one — but a rank-0/1 guess that titleFrom demotes to rank 2 can sit anywhere, including
+	// after deferredHead, and then it is the later of the two. `["early plain prose", "what does
+	// <user_query> mean here"]` is the whole bug: index 1 guesses rank 1, settles at 2, and is the
+	// last user message — yet the deferred index 0 was returned unconditionally.
+	//
+	// AT MOST TWO PASSES, not one: messages between deferredHead and the end are visited only by
+	// the first loop, but those below it can be visited by both. Still linear — two passes over a
+	// prefix, no retries — which is the property that matters; the old "one pass total" claim was
+	// simply wrong about which messages each loop touches.
 	if deferredHead >= 0 && bestRank >= rankUserMsg {
 		for i := deferredHead - 1; i >= 0; i-- {
 			// No quickRank here. Re-classifying costs a second scan of every message, which is
@@ -156,12 +215,25 @@ func titleCandidate(e *pipeline.SessionEvent) (int, string) {
 			if msgs[i].Role != capabilities.RoleUser {
 				continue
 			}
-			if r, t := titleFrom(msgs[i].Content); t != "" {
-				return r, t
+			r, t := titleFrom(msgs[i].Content)
+			// foldsBlank, NOT sanitizeTitle — see the eager arm above for the 2x this avoids.
+			if foldsBlank(t) {
+				// Named nothing (nothing but reminders, or blank after the fold). Keep walking
+				// back — an earlier message in this same event may still title it, which is the
+				// within-event fall-through TestSessionTitle_DemotedPickFallsBackWithinEvent pins.
+				continue
 			}
-			// Named nothing (nothing but reminders). Keep walking back — an earlier message in
-			// this same event may still title it, which is the within-event fall-through
-			// TestSessionTitle_DemotedPickFallsBackWithinEvent pins.
+			// UNREACHABLE TODAY AND KEPT DELIBERATELY: `r > bestRank` cannot fire, because this
+			// loop only runs when bestRank >= rankUserMsg and titleFrom cannot return worse than
+			// rankUserMsg once foldsBlank has rejected the blanks. Written as the full comparison
+			// anyway so the rule is "better rank wins, then later index wins" in the code and not
+			// only in this comment — a future arm that can settle at a worse rank would otherwise
+			// silently take the wrong branch. Verified dead by mutation: dropping this disjunct
+			// leaves every test passing.
+			if r > bestRank || (r == bestRank && i < bestIdx) {
+				break // the already-settled pick is better ranked, or equally ranked and later
+			}
+			return r, t
 		}
 	}
 	return bestRank, bestTitle
@@ -238,6 +310,21 @@ func quickRank(content string) int {
 // messages whose guess is not reliable — see titleCandidate for which those are.
 func titleFrom(content string) (int, string) {
 	content = stripReminders(content)
+	// A TRANSCRIPT ENVELOPE IS MACHINERY, NOT AN ASK, and it names nothing. Observed live: a
+	// message opening with this tag titled a session `\", \"` — the fold reduced a wall of quoted
+	// JSONL to its punctuation, which is both meaningless and unrecognisable as the session's
+	// subject. Discarded rather than ranked, so the walk reaches a real title behind it, the same
+	// way an argument-less /rename does.
+	//
+	// ANCHORED, and the anchor is the whole rule. Of the user messages in local transcripts that
+	// mention this tag, the only one does so as PROSE — a bug report quoting it, which is a
+	// perfectly good title — so an unanchored match would discard exactly the message a reader
+	// wants. After stripReminders, so a reminder in front of an envelope does not hide it, and
+	// after no trimming: leading whitespace before the tag is not a shape the harness emits, and
+	// tolerating it would start widening the match toward the prose case.
+	if strings.HasPrefix(content, transcriptOpen) {
+		return rankNone, ""
+	}
 	if strings.HasPrefix(content, renamePrefix) {
 		// A /rename envelope is machinery, not prose, so it yields its ARGUMENT OR NOTHING
 		// and never falls through to a lower rank. Falling through was the first attempt and
@@ -267,6 +354,10 @@ func titleFrom(content string) (int, string) {
 const (
 	reminderOpen  = "<system-reminder>"
 	reminderClose = "</system-reminder>"
+	// transcriptOpen is matched as a PREFIX only, and with no attribute tolerance: the opening
+	// tag observed in the harness payload is exactly this, and every widening of the match moves
+	// it toward the prose case that must keep working. See titleFrom.
+	transcriptOpen = "<transcript>"
 )
 
 // stripReminders excises every <system-reminder>…</system-reminder> span and returns what
@@ -364,7 +455,16 @@ func between(s, open, closing string) string {
 // sanitizeTitle folds a title to a single line: every whitespace or control rune becomes at
 // most one U+0020, and the result is clipped to maxTitleLen runes.
 //
-// Applied ONCE, to the winner — not per candidate, which would be O(content) on every hit.
+// Applied ONCE, to the winner — not per candidate and not per event, both of which were measured
+// and rejected. Per candidate cost 326µs→651µs on BenchmarkListSessions_Title/user-text (rank 2
+// never terminates the walk, so every message pays a full O(content) fold); per event, at each of
+// titleCandidate's acceptance points, cost 326µs→635µs for the same reason at retained-event scale.
+// This function is 2.8µs on a 500-byte message, so where the number of calls goes, the cost goes.
+//
+// What still has to happen earlier is the BLANK TEST — a candidate folding to blank must not claim
+// a rank, or it hides a real title in its own event — and foldsBlank does exactly that predicate
+// without building the folded string.
+//
 // Rank never depends on whitespace, so comparing raw strings is safe. And applied to the
 // EXTRACTED title, never the haystack: folding U+0085 to a space turns "<\u0085command-name>"
 // into "< command-name>", which is no longer a tag.
@@ -391,6 +491,23 @@ func sanitizeTitle(s string) string {
 		prevSpace = false
 	}
 	return clipTitle(strings.TrimRight(b.String(), " "))
+}
+
+// foldsBlank reports whether sanitizeTitle(s) would be "" — that is, whether s holds no rune the
+// fold keeps. Exactly sanitizeTitle's own predicate, negated: change one and change both.
+//
+// Separate from sanitizeTitle because titleCandidate must REJECT a blank candidate without folding
+// it. Folding there instead is a 2x on prose (326µs→635µs on BenchmarkListSessions_Title/user-text):
+// sanitizeTitle is 2.8µs on a 500-byte message and titleCandidate runs once per retained event,
+// where sessionTitle folds once per session. This allocates nothing and returns at the first kept
+// rune, so a real message pays one rune's worth of work.
+func foldsBlank(s string) bool {
+	for _, r := range s {
+		if !unicode.IsSpace(r) && !pipeline.IsControlRune(r) {
+			return false
+		}
+	}
+	return true
 }
 
 // clipTitle caps s at maxTitleLen runes.

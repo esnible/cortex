@@ -170,15 +170,29 @@ func BenchmarkRetainedHeap(b *testing.B) {
 //   - named: a /rename in the newest event — rank 0, so the walk breaks immediately. This is
 //     the case that has to be cheap, because it is the common one: every inference request
 //     re-sends the whole conversation, so a /rename from turn 3 is still in the newest event.
+//
 //   - user-text: no /rename, so rank 2 is the best available — and rank 2 is always
 //     beatable, so the walk CANNOT terminate. Every message of every event gets three
 //     strings.Index scans. THIS IS THE WORST CASE, which is not the one you would guess.
-//   - no-title: assistant-only messages. Also a full walk, but 14x cheaper than user-text,
+//
+//   - no-title: assistant-only messages. Also a full walk, but 17x cheaper than user-text,
 //     because a role comparison rejects each message before any content scanning happens.
 //
-// Measured when this was written, at benchTurns=300: named 5.4us, user-text 302us,
-// no-title 22us. The 56x gap between the first and second is what the early break buys,
-// and why the call site can afford this at all.
+//   - demoted: every user message carries an unterminated <user_query>, so quickRank guesses
+//     rank 1 on all of them and titleFrom demotes every one to rank 2. THIS IS THE ACCEPTED
+//     WORST CASE, and it exists because the cost argument for this design is "quickRank screens
+//     cheaply, so titleFrom runs rarely" — a benchmark where the screen always misses is what
+//     prices that claim instead of assuming it.
+//
+// Measured when this was written, at benchTurns=300 and maxEvents=100: named 280ns,
+// user-text 228us, no-title 13us, demoted 714us. The ~800x gap between the first and second is
+// what the early break buys, and why the call site can afford this at all. The 3.1x from
+// user-text to demoted is the price of the screen missing every time — the accepted worst case,
+// and small enough that the screen is an optimization rather than a load-bearing assumption.
+//
+// THE STORE RETAINS 100 EVENTS AND sessionTitle SCANS titleScanEvents (64) OF THEM, deliberately:
+// the retained window has to exceed the scan ceiling or the ceiling is untested here and a
+// regression that removes it would not move these numbers at all.
 //
 // Reported rather than asserted: it is a per-poll cost against abctl's two-second refresh,
 // and the useful comparison is named-vs-user-text on one machine, not an absolute number.
@@ -189,16 +203,23 @@ func BenchmarkListSessions_Title(b *testing.B) {
 		name string
 		role string
 		last string // content of one extra message on the newest event
+		// body, when set, replaces every message's content — the demoted case needs the miss on
+		// ALL of them, not just on one appended message.
+		body string
 	}{
-		{"named", "user", renamePrefix + "<command-args>a name</command-args>"},
-		{"user-text", "user", ""},
-		{"no-title", "assistant", ""},
+		{name: "named", role: "user", last: renamePrefix + "<command-args>a name</command-args>"},
+		{name: "user-text", role: "user"},
+		{name: "no-title", role: "assistant"},
+		// Unterminated: quickRank sees the opening tag (rank 1), titleFrom finds no closing tag
+		// and settles at rank 2. Every message pays a full titleFrom, which is the screen missing
+		// 100% of the time.
+		{name: "demoted", role: "user", body: "what does <user_query> mean in " + strings.Repeat("this code ", 45)},
 		// REMINDER-BEARING, because without it this benchmark never executed stripReminders at
 		// all — the function the second commit exists for — and "parity with baseline" was
 		// measured on a fixture with zero reminder content. That blind spot hid a quadratic retry
 		// cascade: every message here settles to rankNone, which is the shape that drove
 		// titleCandidate's old retry loop to 7.20ms at 800 messages/event.
-		{"reminder-only", "user", "<system-reminder>context, no prompt</system-reminder>"},
+		{name: "reminder-only", role: "user", last: "<system-reminder>context, no prompt</system-reminder>"},
 	} {
 		b.Run(tc.name, func(b *testing.B) {
 			s := New(0, 100, 0)
@@ -207,6 +228,11 @@ func BenchmarkListSessions_Title(b *testing.B) {
 				if tc.role != "user" {
 					for i := range msgs {
 						msgs[i].Role = tc.role
+					}
+				}
+				if tc.body != "" {
+					for i := range msgs {
+						msgs[i].Content = tc.body
 					}
 				}
 				if tc.last != "" && turn == benchTurns {
@@ -233,7 +259,8 @@ func BenchmarkListSessions_Title(b *testing.B) {
 // to 7.20ms at n=800, a clean 4x per doubling and ~1088x the same event with no demotions, all
 // under the store's read lock whose writer side is Append on the request path.
 //
-// The single reverse scan that replaced it is linear: ~2.0x per doubling, 68µs at n=800.
+// The single reverse scan that replaced it is linear: ~2.0x per doubling, 3.5/14/57µs at
+// n=50/200/800.
 //
 // A SEPARATE BENCHMARK rather than another case in the table above, because the table varies
 // turns (events) and this has to vary messages within ONE event — the two axes multiply, and the

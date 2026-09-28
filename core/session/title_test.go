@@ -448,6 +448,12 @@ func TestSessionSummary_TitleOmittedWhenEmpty(t *testing.T) {
 //
 // All three rank arms, because the two better ones are worse: a whitespace-only /rename claimed
 // rank 0, which also BREAKS the walk, so nothing behind it was even examined.
+//
+// EACH CASE RUNS TWICE, in two events and in one, and the two are not the same test. The
+// separate-event form is satisfied by sessionTitle's own fold-then-skip; the same-event form is
+// not, and passed nowhere until titleCandidate grew its own blank test. titleCandidate collapses
+// an event to ONE answer, so a blank winner there does not fall through — it discards the whole
+// event, and userEvent("the real ask", "<user_query>   </user_query>") titled the session "".
 func TestSessionTitle_BlankAfterSanitizeFallsThrough(t *testing.T) {
 	for _, tc := range []struct{ name, blank string }{
 		{"spaces", "   "},
@@ -464,6 +470,12 @@ func TestSessionTitle_BlankAfterSanitizeFallsThrough(t *testing.T) {
 			events := []pipeline.SessionEvent{userEvent("the real ask"), userEvent(tc.blank)}
 			if got := sessionTitle(events); got != "the real ask" {
 				t.Errorf("got %q, want %q — a blank-after-sanitize candidate won", got, "the real ask")
+			}
+		})
+		t.Run(tc.name+" same event", func(t *testing.T) {
+			events := []pipeline.SessionEvent{userEvent("the real ask", tc.blank)}
+			if got := sessionTitle(events); got != "the real ask" {
+				t.Errorf("got %q, want %q — a blank candidate hid a title in its own event", got, "the real ask")
 			}
 		})
 	}
@@ -500,6 +512,176 @@ func TestSessionTitle_DemotedNonEmptyPickKeepsBetterRank(t *testing.T) {
 	msgs := []string{"<user_query>the real ask</user_query>", "what does <user_query> mean here"}
 	if got := sessionTitle([]pipeline.SessionEvent{userEvent(msgs...)}); got != "the real ask" {
 		t.Errorf("got %q, want %q — a demoted pick discarded a better-ranked message", got, "the real ask")
+	}
+}
+
+// A DEMOTED GUESS AND A DEFERRED ONE AT THE SAME RANK: the later message wins, per title.go's
+// last-match rule. Neither test above reaches this, and the reason is worth stating because it is
+// how the bug survived a review: both put a GENUINE <user_query> at index 0, which settles at rank 1
+// and outranks everything, so the deferred-candidate loop never runs at all. Plain prose at index 0
+// is what forces the tie — index 0 defers at rank 2, index 1 guesses rank 1 and titleFrom demotes it
+// to 2, and the two are then equal-ranked with the deferred one EARLIER.
+//
+// titleCandidate used to return the deferred candidate unconditionally here, on a stated invariant
+// that a deferred index is always the later of the two. It is not: the reverse scan meets the newest
+// rank-2 GUESS first, but a rank-0/1 guess can demote to rank 2 from anywhere, including after it.
+func TestSessionTitle_DeferredLosesToLaterDemotedAtEqualRank(t *testing.T) {
+	for _, tc := range []struct{ name, early, late string }{
+		// An unterminated <user_query> is the shape that reaches this: quickRank sees the opening
+		// tag and guesses rank 1, titleFrom finds no closing tag and settles at rank 2.
+		{"unterminated user_query", "early plain prose", "what does <user_query> mean here"},
+		{"tag named mid-sentence", "plain earlier", "later prose mentioning <user_query> tag"},
+		// NOT a case here: a /rename envelope behind prose. quickRank guesses rank 2 for it (the
+		// test below pins that), so both messages defer and the deferred loop's own newest-first
+		// walk picks the later one — it passes with or without the index comparison, which is the
+		// kind of case that hid this bug in the first place.
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := sessionTitle([]pipeline.SessionEvent{userEvent(tc.early, tc.late)})
+			if got != tc.late {
+				t.Errorf("got %q, want %q — an earlier deferred candidate beat a later demoted one at equal rank", got, tc.late)
+			}
+		})
+	}
+}
+
+// bestIdx IS A -1 SENTINEL and it participates in a comparison, so the nothing-settled path needs
+// its own pin: when the eager loop accepts nothing, bestRank is rankNone and every real rank must
+// still beat it rather than tripping the "equally ranked and earlier" break against index -1.
+func TestSessionTitle_DeferredOnlyWithNothingSettled(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		msgs []string
+		want string
+	}{
+		{"single prose", []string{"just prose"}, "just prose"},
+		{"two prose, later wins", []string{"older prose", "newer prose"}, "newer prose"},
+		{"blank then prose", []string{"   ", "real prose"}, "real prose"},
+		{"prose then blank", []string{"real prose", "   "}, "real prose"},
+		{"all blank names nothing", []string{"   ", "\t"}, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := sessionTitle([]pipeline.SessionEvent{userEvent(tc.msgs...)}); got != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// The mirror image: a GENUINELY better-ranked demoted-loop neighbour still wins over a later
+// deferred one, so the index comparison above did not turn into "later always wins".
+func TestSessionTitle_LaterDeferredLosesToBetterRank(t *testing.T) {
+	for _, tc := range []struct{ name, first, second, want string }{
+		{"user_query then prose", "<user_query>the query</user_query>", "plain prose after it", "the query"},
+		{"rename then prose", renameMsg("named"), "plain prose after it", "named"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := sessionTitle([]pipeline.SessionEvent{userEvent(tc.first, tc.second)})
+			if got != tc.want {
+				t.Errorf("got %q, want %q — a later rank-2 message beat a better rank", got, tc.want)
+			}
+		})
+	}
+}
+
+// quickRank DELIBERATELY does not detect a /rename envelope sitting behind prose — only behind a
+// reminder — and that blind spot is only safe while titleFrom tests the prefix too. Pinned so the
+// two functions cannot silently desynchronize: if quickRank ever starts calling such a message
+// rank 0 while titleFrom still refuses it, or vice versa, one of these fails.
+func TestSessionTitle_RenameEnvelopeBehindProseIsRank2(t *testing.T) {
+	content := "please run " + renameMsg("a name") + " for me"
+	if got := quickRank(content); got != rankUserMsg {
+		t.Errorf("quickRank = %d, want %d (rankUserMsg)", got, rankUserMsg)
+	}
+	if got, _ := titleFrom(content); got != rankUserMsg {
+		t.Errorf("titleFrom rank = %d, want %d (rankUserMsg) — desynchronized from quickRank", got, rankUserMsg)
+	}
+	// And it must therefore lose to a real /rename anywhere in the session, not win at rank 0.
+	events := []pipeline.SessionEvent{userEvent(renameMsg("the real name")), userEvent(content)}
+	if got := sessionTitle(events); got != "the real name" {
+		t.Errorf("got %q, want %q — a prose-embedded envelope claimed rank 0", got, "the real name")
+	}
+}
+
+// THE SCAN STOPS AT titleScanEvents, which is what bounds ListSessions' lock hold. Pinned in both
+// directions: a title inside the window is found, one older than it is not — the cap is a real
+// behaviour change and not just a performance note, so it needs a test that fails if someone
+// removes it OR quietly widens it to "whole session".
+func TestSessionTitle_ScanCeiling(t *testing.T) {
+	// A /rename is rank 0 and would otherwise beat everything and break the walk, so it is the
+	// strongest possible candidate to place out of reach.
+	build := func(titleAt int, total int) []pipeline.SessionEvent {
+		evs := make([]pipeline.SessionEvent, 0, total)
+		for i := 0; i < total; i++ {
+			if i == titleAt {
+				evs = append(evs, userEvent(renameMsg("the name")))
+				continue
+			}
+			evs = append(evs, userEvent("filler prose"))
+		}
+		return evs
+	}
+	total := titleScanEvents + 20
+
+	// Newest event inside the window: found.
+	if got := sessionTitle(build(total-1, total)); got != "the name" {
+		t.Errorf("newest event: got %q, want %q", got, "the name")
+	}
+	// Oldest event still inside the window: found.
+	if got := sessionTitle(build(total-titleScanEvents, total)); got != "the name" {
+		t.Errorf("oldest in-window event: got %q, want %q", got, "the name")
+	}
+	// One event past the window: not reached, so the newest filler names it instead.
+	if got := sessionTitle(build(total-titleScanEvents-1, total)); got != "filler prose" {
+		t.Errorf("first out-of-window event: got %q, want %q — the ceiling is not being applied", got, "filler prose")
+	}
+	// A session shorter than the window is walked entirely.
+	if got := sessionTitle(build(0, titleScanEvents)); got != "the name" {
+		t.Errorf("short session: got %q, want %q", got, "the name")
+	}
+}
+
+// A <transcript> ENVELOPE NAMES NOTHING. Observed live: a session titled `\", \"` — the fold
+// reducing a wall of quoted JSONL to its punctuation. Discarded, so the walk reaches a real title
+// behind it.
+func TestSessionTitle_TranscriptEnvelopeDiscarded(t *testing.T) {
+	// The shape from the live report, and a fuller one.
+	for _, tc := range []struct{ name, in string }{
+		{"reported shape", `<transcript> \", \" </transcript>`},
+		{"jsonl body", `<transcript> {"type":"user","message":{"role":"user","content":"hi"}} </transcript>`},
+		{"unterminated", `<transcript> {"type":"user"`},
+		{"reminder in front", "<system-reminder>ctx</system-reminder>" + `<transcript> \", \" </transcript>`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// Alone, it names nothing at all.
+			if got := sessionTitle([]pipeline.SessionEvent{userEvent(tc.in)}); got != "" {
+				t.Errorf("alone: got %q, want %q", got, "")
+			}
+			// Behind a real ask, in the same event and in an earlier one.
+			if got := sessionTitle([]pipeline.SessionEvent{userEvent("the real ask", tc.in)}); got != "the real ask" {
+				t.Errorf("same event: got %q, want %q", got, "the real ask")
+			}
+			two := []pipeline.SessionEvent{userEvent("the real ask"), userEvent(tc.in)}
+			if got := sessionTitle(two); got != "the real ask" {
+				t.Errorf("earlier event: got %q, want %q", got, "the real ask")
+			}
+		})
+	}
+}
+
+// THE ANCHOR IS THE RULE. Of the user messages in local transcripts that mention this tag, the only
+// one is a bug report QUOTING it — which is a perfectly good title — so an unanchored match would
+// discard exactly the message a reader wants. Pinned because "discard anything containing
+// <transcript>" is the obvious next simplification and it is wrong.
+func TestSessionTitle_ProseMentioningTranscriptSurvives(t *testing.T) {
+	for _, in := range []string{
+		"what does <transcript> mean here",
+		"the title comes from a content that begins with <transcript>",
+		"why is <transcript> being discarded",
+	} {
+		if got := sessionTitle([]pipeline.SessionEvent{userEvent(in)}); got != in {
+			t.Errorf("sessionTitle(%q) = %q, want it kept verbatim", in, got)
+		}
 	}
 }
 
