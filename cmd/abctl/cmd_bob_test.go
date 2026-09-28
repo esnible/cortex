@@ -283,6 +283,28 @@ func TestBobDisable_LeavesNoStrayWhitespace(t *testing.T) {
 			in:   "{\n    \"a\": 1,\n    \"b\": 2, \"http.proxy\": \"http://127.0.0.1:47600\"\n}\n",
 			want: "{\n    \"a\": 1,\n    \"b\": 2\n}\n",
 		},
+		{
+			// The member STRADDLES a line break: valid JSON, and what VS Code's own
+			// formatter produces when the value is long enough to wrap. This row is not
+			// about whitespace — it is about not crashing. The splicer measured the
+			// member's line end forward from the KEY, so the first newline it found was
+			// the one inside the member, giving a line end BELOW the value's end and a
+			// `slice bounds out of range [79:46]` panic. `configure bob disable` died on
+			// a settings file that was never malformed, after printing that it was
+			// keeping a .bak.
+			name: "value on the line below its key",
+			in:   "{\n    \"a\": 1,\n    \"http.proxy\":\n        \"http://127.0.0.1:47600\",\n    \"b\": 2\n}\n",
+			want: "{\n    \"a\": 1,\n    \"b\": 2\n}\n",
+		},
+		{
+			// Straddling AND last, so the preceding-comma arm runs on a member whose
+			// own span covers a newline. Separate row because the panic was in code
+			// reached before that arm, so a crash fixed only for the following-comma
+			// case would still show up here.
+			name: "value on the line below its key, and last",
+			in:   "{\n    \"a\": 1,\n    \"http.proxy\":\n        \"http://127.0.0.1:47600\"\n}\n",
+			want: "{\n    \"a\": 1\n}\n",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			settings, cfg := fixture(t, tc.in)
@@ -805,9 +827,9 @@ func TestBobStatus_WarnsOnlyForAProxyItClaims(t *testing.T) {
 		{"ours and nothing listening", `{"http.proxy": "http://127.0.0.1:` + dead + `"}`, true},
 		// Not ours: silent. Judging someone else's proxy is out of scope.
 		{"foreign", `{"http.proxy": "http://proxy.corp.example.com:3128"}`, false},
-		// Drifted but still loopback: silent too. The actionable advice is `enable`,
-		// which the detail lines give; a liveness complaint about the stale port on top
-		// of it is noise about a value abctl is already telling the user to replace.
+		// Drifted but still loopback: silent too. The detail lines already tell the
+		// user how to replace the value (see TestBobStatus_ReportsPortDrift), so a
+		// liveness complaint about the stale port on top of that is noise.
 		{"drifted port", `{"http.proxy": "http://127.0.0.1:47699"}`, false},
 		// Unset: there is no address to probe, so there is nothing to warn about.
 		{"unset", `{"editor.fontSize": 13}`, false},
@@ -855,6 +877,33 @@ func TestBobStatus_ReportsPortDrift(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "47699") || !strings.Contains(out.String(), "47600") {
 		t.Errorf("drift report names neither the stale value nor the current one:\n%s", out.String())
+	}
+
+	// And the advice must be followable. This arm used to say "run `abctl configure
+	// bob enable` to move it" full stop, which enable answers with exit 1: a drifted
+	// PORT is bobNotOurs, and the arm that falls through to the write is a differing
+	// spelling of the same address, not a different one. So status was sending the
+	// user to a command that refuses.
+	//
+	// Pinned as behaviour rather than as wording: run enable on the very value status
+	// just reported, and if it refuses, require that status did not offer a bare
+	// `enable` as the way out. That keeps passing through a rewording and fails again
+	// if either side moves — including if someone later lets enable claim a drifted
+	// value, in which case the bare advice becomes true and this stops objecting.
+	var enableOut, enableErr bytes.Buffer
+	noPrompt(t, true) // enable must not block on a prompt if it gets that far
+	if code := bobEnable(settings, cfg, true, &enableOut, &enableErr); code != 0 {
+		// enable refuses, so the detail lines must not present it as the whole fix.
+		// The bare sentence is the exact shape that was wrong.
+		if strings.Contains(out.String(), "run `abctl configure bob enable` to move it") {
+			t.Errorf("status sends the user to enable, which exits %d on that value:\nstatus:\n%s\nenable stderr:\n%s",
+				code, out.String(), enableErr.String())
+		}
+		// Whatever it says instead has to name the value to move to, or the user is
+		// left guessing which address is current.
+		if !strings.Contains(out.String(), "by hand") && !strings.Contains(out.String(), "remove it") {
+			t.Errorf("status offers no followable way to fix the drift:\n%s", out.String())
+		}
 	}
 }
 

@@ -627,11 +627,18 @@ func bobSpliceOut(src []byte, start, end int) []byte {
 	// left `{\n    "http.proxy": ..., "b": 2,\n` as `{\n "b": 2,` — the indent gone
 	// and one stray space in its place.
 	lineStart := bytes.LastIndexByte(src[:start], '\n') + 1
-	lineEnd := bytes.IndexByte(src[start:], '\n')
+	// Scanned from end, the end of the VALUE, not from start, the start of the key. A
+	// member may straddle a line break — `"http.proxy":\n    "http://..."` is valid
+	// JSON and VS Code's own formatter produces it on a long value — and then the first
+	// newline after the key is INSIDE the member. Measuring from start there yields a
+	// lineEnd below end, and the src[end:lineEnd] slice below panicked on a file that
+	// was never malformed: `slice bounds out of range [79:46]`, from `configure bob
+	// disable`, after it had already printed that it was keeping a .bak.
+	lineEnd := bytes.IndexByte(src[end:], '\n')
 	if lineEnd < 0 {
 		lineEnd = len(src)
 	} else {
-		lineEnd += start
+		lineEnd += end
 	}
 	ownLine := len(bytes.TrimSpace(src[lineStart:start])) == 0 &&
 		bobTailIsOnlySeparator(src[end:lineEnd])
@@ -855,7 +862,7 @@ func bobWriteKey(path, key string, value any) error {
 
 // bobBackupNote describes what this particular write will and will not preserve.
 //
-// Three different true statements, because writeSettings makes three different
+// Three different true statements, because bobWriteKey makes three different
 // choices and the message used to claim only the first. It writes <path>.bak from
 // the file's current contents ONLY when the file exists AND no .bak is there
 // already — never overwriting, because a second run would otherwise replace the
@@ -885,7 +892,7 @@ func bobBackupNote(settingsPath string) string {
 		//
 		// Unreachable from enable and disable since bobNoDocument gates both on the file
 		// existing, so a caller that prints this note has already found one. Kept rather
-		// than deleted: the note's job is to describe writeSettings truthfully for any
+		// than deleted: the note's job is to describe bobWriteKey truthfully for any
 		// path handed to it, and its own test still exercises this arm directly.
 		return unchanged + ".\n  No backup is made — there is no existing file to copy.\n\n"
 	}
@@ -1084,7 +1091,7 @@ func bobEnable(settingsPath, cortexCfgPath string, yes bool, stdout, stderr io.W
 	fmt.Fprintf(stdout, "\nEnabled. %q in %s now points at Cortex — this is the setting\n"+
 		"VS Code forks read for their own networking and their extension host.\n\n",
 		bobProxyKey, settingsPath)
-	// Restart, rather than a claim either way about live pickup: writeSettings is
+	// Restart, rather than a claim either way about live pickup: bobWriteKey is
 	// temp+rename so Bob never sees a half-written file, but whether Bob re-reads a
 	// proxy change without restarting is not something this command has verified.
 	fmt.Fprint(stdout, "Restart Bob so it re-reads its settings.\n\n")
@@ -1270,7 +1277,15 @@ func bobStatus(settingsPath, cortexCfgPath, wantProxy, caPath string, stdout io.
 			// leaves it alone. Reporting drift is useful; deleting on a guess is not.
 			add("%q=%s in %s", bobProxyKey, existing, settingsPath)
 			add("that is a local proxy, but %s now names %s", cortexCfgPath, wantProxy)
-			add("run `abctl configure bob enable` to move it")
+			// NOT "run enable to move it", which is what this line said and what no
+			// user could do: ownership is an exact host+port match, so enable sees a
+			// drifted port as bobNotOurs and refuses it with exit 1 — the one arm that
+			// falls through to the write is a differing SPELLING of the same address
+			// (localhost vs 127.0.0.1), not a different port. Both halves of that
+			// refusal are deliberate, so the advice is what changes: name the two
+			// steps that do work, in the order they work in.
+			add("to move it: change that value to %s by hand, or remove it and run", wantProxy)
+			add("`abctl configure bob enable`")
 		default:
 			add("%q=%s in %s", bobProxyKey, existing, settingsPath)
 			add("that is not this machine's Cortex proxy, which %s puts at %s",

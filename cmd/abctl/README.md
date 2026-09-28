@@ -538,8 +538,9 @@ one, and a bool would have to guess. Guessing "not ours" toward a `delete` is th
 dangerous direction, so it is not a bool. `status` reports "cannot tell" in those
 words rather than ruling on it. `disable` asks before removing such a value and
 refuses under `--yes`, since `--yes` means "do not ask me", not "decide for me".
-`enable` refuses rather than overwriting anything it does not own. Whatever is
-removed, `writeSettings` has already kept the file as a `.bak`.
+`enable` refuses rather than overwriting anything it does not own. Either verb
+prints exactly what it will do to the file, and what it will leave beside it,
+before it does it.
 
 **Whether anything is listening is a separate question**, reported on its own
 line. A stopped Cortex is the normal state of a laptop and is not a verdict on the
