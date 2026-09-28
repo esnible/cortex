@@ -554,8 +554,10 @@ func labelFor(r Row, group usage.Group) (string, bool) {
 // and the reason its comment gives for it — exactly as written.
 //
 // NOT REACHABLE AS THE ONLY ROW, so this cannot empty the list on real traffic: overflow folds
-// only labels PAST the cap, which means a minute that produced one kept maxLabelsPerMinute real
-// rows beside it, each with a real unit.
+// only labels past the cap, so a minute that produced one kept maxLabelsPerMinute-1 real rows
+// beside it, each with a real unit. Minus one because takeLocked reserves the last slot for
+// overflowKey itself — see the comment on that check in writer.go, which is where the reservation
+// and its reason live.
 func CurrenciesIn(rows []Row) []string {
 	if len(rows) == 0 {
 		return nil

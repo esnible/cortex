@@ -2577,3 +2577,111 @@ func tableRow(t *testing.T, out, label string) string {
 	}
 	return hits[0]
 }
+
+// A capped row does not become a billing unit in the --by currency table.
+//
+// THE REGRESSION ROUND 1's OWN FIX INTRODUCED, which is why this fixture is the capped shape and
+// not the tidy one. Making each cell take its row's label as the unit is right for every row the
+// ledger keeps as itself, and wrong for the one it does not: the overflow row carries
+// overflowLabel on every axis at once, so ledger.labelFor answers "(other)" for a minute past
+// maxLabelsPerMinute, and the cell rendered "0.08 (other)". Before that change it read "$0.08",
+// which was correct — the deployment is USD-only. So the fix made this surface worse on exactly
+// the axis it was fixing.
+//
+// ASSERTED IN BOTH DIRECTIONS, because the guard has two ways to be wrong: swallowing a real unit
+// (the credits row must keep its label) and trusting a fake one (the capped row must not get one).
+func TestRunCost_ByCurrencyDoesNotTreatTheOverflowLabelAsAUnit(t *testing.T) {
+	// A USD-only window — every deployment today — with one minute past the cardinality cap.
+	srv := fakeUsageServer(t, `{"window":"today","group":"currency","priced":true,
+		"currencies":["USD"],
+		"totals":{"requests":1057,"costMicros":146439000,"pricedRequests":1057,"priceableRequests":1057},
+		"buckets":[{"at":"2026-09-27T10:00:00Z","series":{
+		   "USD":{"requests":1000,"costMicros":146361600,"pricedRequests":1000,"priceableRequests":1000},
+		   "(other)":{"requests":57,"costMicros":77400,"pricedRequests":57,"priceableRequests":57}}}]}`)
+	defer srv.Close()
+
+	var out, errOut strings.Builder
+	if code := runCost([]string{"--endpoint", srv.URL, "--by", "currency"}, &out, &errOut); code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr = %s", code, errOut.String())
+	}
+	got := out.String()
+
+	other := tableRow(t, got, "(other)")
+	if strings.Contains(other, "0.08 (other)") {
+		t.Errorf("the capped row's figure is labelled with the overflow label, which normaliseUnit "+
+			"could never have accepted as a unit:\n%s", other)
+	}
+	// It falls back to the WINDOW's unit, which for a single-currency deployment is the right
+	// answer and is byte-identical to what this cell rendered before units existed.
+	if !strings.Contains(other, "$0.08") {
+		t.Errorf("the capped row lost the figure it had before billing units:\n%s", other)
+	}
+	if usd := tableRow(t, got, "USD"); !strings.Contains(usd, "$146.36") {
+		t.Errorf("the real unit's row changed:\n%s", usd)
+	}
+}
+
+// And in a MIXED window the capped row is withheld rather than given either unit.
+//
+// The other direction of the same fallthrough: there is no window unit to fall back to, and a
+// capped row folds rows that each had a real unit and may well span two — so its figure is exactly
+// the cross-unit sum the headline refused.
+func TestRunCost_ByCurrencyWithholdsACappedRowOnAMixedWindow(t *testing.T) {
+	srv := fakeUsageServer(t, `{"window":"today","group":"currency","priced":true,
+		"currencies":["USD","credits"],
+		"totals":{"requests":1114,"costMicros":146516400,"pricedRequests":1114,"priceableRequests":1114},
+		"buckets":[{"at":"2026-09-27T10:00:00Z","series":{
+		   "USD":{"requests":1000,"costMicros":146361600,"pricedRequests":1000,"priceableRequests":1000},
+		   "credits":{"requests":57,"costMicros":77400,"pricedRequests":57,"priceableRequests":57},
+		   "(other)":{"requests":57,"costMicros":77400,"pricedRequests":57,"priceableRequests":57}}}]}`)
+	defer srv.Close()
+
+	var out, errOut strings.Builder
+	if code := runCost([]string{"--endpoint", srv.URL, "--by", "currency"}, &out, &errOut); code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr = %s", code, errOut.String())
+	}
+	got := out.String()
+
+	if other := tableRow(t, got, "(other)"); !strings.Contains(other, mixedCostCell) {
+		t.Errorf("a capped row in a mixed window was given a unit rather than withheld:\n%s", other)
+	}
+	// The real units keep their own figures — the guard must not swallow them.
+	if credits := tableRow(t, got, "credits"); !strings.Contains(credits, "0.08 credits") {
+		t.Errorf("the credits row lost its label:\n%s", credits)
+	}
+	if usd := tableRow(t, got, "USD"); !strings.Contains(usd, "$146.36") {
+		t.Errorf("the USD row lost its figure:\n%s", usd)
+	}
+}
+
+// A unit spelled two ways is still that unit's row, not a withheld one.
+//
+// WHY THE MEMBERSHIP TEST FOLDS. Snapshot.Currencies keeps the FIRST spelling it meets and
+// canonicalises only USD, while ledger.labelFor answers with each folded row's own Currency — and
+// Row.key() folds case only WITHIN a minute, so two minutes spelled "Credits" and "credits" reach
+// the client as one entry in Currencies and a series label that may differ from it in case. An
+// exact comparison there would read a real, operator-configured unit as unrecognised and withhold a
+// figure it should label, which is the same over-refusal in miniature that this table exists to
+// avoid.
+func TestRunCost_ByCurrencyMatchesAUnitSpelledADifferentWay(t *testing.T) {
+	srv := fakeUsageServer(t, `{"window":"today","group":"currency","priced":true,
+		"currencies":["Credits"],
+		"totals":{"requests":57,"costMicros":77400,"pricedRequests":57,"priceableRequests":57},
+		"buckets":[{"at":"2026-09-27T10:00:00Z","series":{
+		   "credits":{"requests":57,"costMicros":77400,"pricedRequests":57,"priceableRequests":57}}}]}`)
+	defer srv.Close()
+
+	var out, errOut strings.Builder
+	if code := runCost([]string{"--endpoint", srv.URL, "--by", "currency"}, &out, &errOut); code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr = %s", code, errOut.String())
+	}
+	got := out.String()
+
+	row := tableRow(t, got, "credits")
+	if !strings.Contains(row, "0.08 credits") {
+		t.Errorf("a unit spelled differently from the reported set lost its label:\n%s", row)
+	}
+	if strings.Contains(row, mixedCostCell) {
+		t.Errorf("a real configured unit was withheld as unrecognised:\n%s", row)
+	}
+}

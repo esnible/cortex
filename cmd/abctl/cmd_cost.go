@@ -374,6 +374,15 @@ type costJSON struct {
 	// in credits needs and could not otherwise get from this document. omitempty, so the ring —
 	// which does not compute the field — serialises no key, and a USD-only ledger window names USD
 	// exactly as it names any other unit.
+	//
+	// EXCEPT UNDER --agent, WHERE IT DESCRIBES THE WINDOW AND Totals DESCRIBES ONE AGENT. The
+	// sentence above is the whole truth on every other path; on that one the two fields have
+	// different subjects and no third field says so. scopeToAgent explains why it cannot be
+	// narrowed — deciding one agent's units needs a cross-tabulation a folded Counts has already
+	// summed away — and the human surface prints a line saying whose mixture it is. This one does
+	// not, deliberately: the discrepancy is in the OVER-refusing direction, so a script that
+	// honours the field withholds a figure it could technically have shown and never computes a
+	// wrong one. A field that narrowed by guessing would be the opposite trade.
 	Currencies []string `json:"currencies,omitempty"`
 	// PricedBy counts the priced requests by the provenance of their figure —
 	// "authoritative" when the gateway reported it, otherwise the rate table's level. It
@@ -1142,6 +1151,31 @@ func costIn(v float64, unit string) string {
 //   - ABSENT: the default, i.e. dollars. An empty list is the in-memory ring, which does not
 //     compute the field — not a window with no units — so this preserves today's output for every
 //     ring-served surface rather than withholding figures nobody has reported a problem with.
+//
+// isReportedUnit reports whether a series label is one of the billing units this window carries.
+//
+// THE GUARD BETWEEN A LABEL AND A UNIT. On the currency axis a row's label is its unit for every
+// row the ledger keeps as itself — but not for the overflow row, which carries overflowLabel
+// "(other)" on every axis at once once a minute exceeds maxLabelsPerMinute. That is a cardinality
+// artefact and not a currency: normaliseUnit rejects "(" and ")", so no operator can have
+// configured it.
+//
+// MEMBERSHIP RATHER THAN A CHARSET TEST, because Snapshot.Currencies is the producer's own answer
+// computed from the same rows, and ledger.CurrenciesIn already drops the overflow label from it.
+// Re-deriving "does this look like a unit" from the charset the docs publish would be a second
+// implementation of that judgement, in a package that cannot see the constant either way.
+//
+// FOLDED, matching every other unit comparison here: Currencies canonicalises USD and keeps the
+// first spelling of anything else, while labelFor answers with the folded row's own spelling.
+func isReportedUnit(units []string, label string) bool {
+	for _, u := range units {
+		if strings.EqualFold(u, label) {
+			return true
+		}
+	}
+	return false
+}
+
 func windowUnit(snap *usage.Snapshot) (string, bool) {
 	switch len(snap.Currencies) {
 	case 0:
@@ -1277,9 +1311,26 @@ func writeCostBreakdown(snap *usage.Snapshot, stdout io.Writer, requested usage.
 	// withheld its headline got a per-unit table that mislabelled the credits row as dollars. The
 	// withheld figure was replaced by a wrong one, on the strength of this command's own advice.
 	//
-	// ON THE currency AXIS EVERY ROW KNOWS ITS OWN UNIT, because the row label IS the unit — so this
-	// is the one axis that can print real figures for a mixed window, which is exactly why the
-	// refusal points here.
+	// ON THE currency AXIS A ROW'S LABEL IS USUALLY ITS UNIT — which is what lets this one axis print
+	// real figures for a mixed window, and is exactly why the refusal points here. USUALLY, not
+	// always, and the exception is why isReportedUnit stands between the label and costIn: the
+	// ledger's overflow row carries overflowLabel on EVERY axis at once, currency included, so
+	// ledger.labelFor answers "(other)" for a minute past maxLabelsPerMinute. Handed to costIn
+	// unchecked that rendered "0.08 (other)" — a figure labelled with a cardinality artefact, on the
+	// surface this function exists to stop mislabelling, and worse than the "$0.08" it replaced
+	// because a single-currency deployment's dollars really were dollars.
+	//
+	// THE UNIT SET IS THE AUTHORITY, not a charset rule and not a copy of overflowLabel that
+	// cmd/abctl would have to import. Snapshot.Currencies is what the producer computed from the
+	// same rows, and ledger.CurrenciesIn already excludes the overflow label from it — so asking
+	// "is this label one of the units reported for this window" reuses that decision instead of
+	// restating it.
+	//
+	// AND THE FALLTHROUGH IS THE RIGHT ANSWER, with no case of its own: a capped row in a
+	// single-unit window drops to the window's unit and reads "$0.08" again, which is correct
+	// because that deployment's figures really are all in that unit; in a MIXED window it drops to
+	// mixedCostCell, which is also correct, because a capped row folds rows that each had a real
+	// unit and may well span two.
 	//
 	// ON EVERY OTHER AXIS A ROW MAY ITSELF SPAN UNITS: one agent calling two gateways is a row whose
 	// CostMicros is the cross-unit sum the headline refused, and nothing in a folded series can
@@ -1295,7 +1346,7 @@ func writeCostBreakdown(snap *usage.Snapshot, stdout io.Writer, requested usage.
 		case c.PricedRequests <= 0:
 			// Left as emptyCostCell: nothing could price this row, which outranks any question
 			// about the unit a figure it does not have would be in.
-		case byUnit:
+		case byUnit && isReportedUnit(snap.Currencies, label):
 			cost = costIn(float64(c.CostMicros)/1e6, label)
 		case labelled:
 			cost = costIn(float64(c.CostMicros)/1e6, unit)

@@ -363,8 +363,10 @@ same refusal. One entry is not a caveat — it is the answer to "what unit is th
 unusable value **fails startup naming the endpoint**. It is compared case-insensitively, and stored
 as you typed it *except* for USD: every spelling of the default is stored as `USD`, because that is
 the one unit Cortex has a canonical name for and five separate consumers test a figure against it
-to decide whether it may be labelled `$`. Any other unit keeps your spelling, so `abctl pricing`
-shows back what you typed.
+to decide whether it may be labelled `$`. Any other unit keeps your spelling, so
+`abctl pricing --host <host>` shows back what you typed, beside each row's provenance. The default
+`abctl pricing` table has no unit column and does not show it — the rates endpoint sends it either
+way.
 
 **A multiplier never crosses units** — scaling credits by 0.76 leaves credits.
 
