@@ -1,6 +1,7 @@
 package pricing
 
 import (
+	"encoding/json"
 	"log/slog"
 	"strings"
 	"testing"
@@ -466,3 +467,117 @@ func TestTable_CurrencyForDefaultsToUSD(t *testing.T) {
 
 // boolPtr is the inline `func() *bool {...}()` this file used twice, named once.
 func boolPtr(b bool) *bool { return &b }
+
+// The unit reaches the wire from the PRODUCER side, under the field name a client decodes.
+//
+// cmd/abctl's pricing tests feed hand-written JSON, so they pin the CLIENT's struct tag and say
+// nothing about what this package emits — renaming json:"unit" on either side alone went
+// undetected, and dropping the field from either producer left every test green. This asserts the
+// bytes Describe() and EffectiveFor() actually serialise, which is the only place the two sides
+// meet.
+//
+// BOTH PRODUCERS, because they are separate call sites with separate struct tags: Describe() is
+// the raw table (`abctl pricing`) and EffectiveFor() is the resolved one (`abctl pricing --host`).
+// Only the second was reachable from any existing assertion.
+func TestDescribe_UnitIsSerialisedForBothProducers(t *testing.T) {
+	cfg := &Config{Endpoints: []EndpointConfig{
+		{
+			Hosts:  []string{"api.anthropic.com"},
+			Models: map[string]ModelConfig{"claude": {TierRates: TierRates{InputCostPerMillion: 3}}},
+		},
+		{
+			Hosts: []string{"gw.bob"},
+			Unit:  "credits",
+			Models: map[string]ModelConfig{
+				"premium-ide": {TierRates: TierRates{InputCostPerMillion: 2}},
+			},
+		},
+	}}
+	tbl, err := Build(cfg)
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	// Describe(): the raw table. The credits row must name its unit and the USD row must not.
+	raw, err := json.Marshal(tbl.Describe())
+	if err != nil {
+		t.Fatalf("marshal Describe: %v", err)
+	}
+	if !strings.Contains(string(raw), `"unit":"credits"`) {
+		t.Errorf(`Describe() emitted no "unit":"credits"; a client cannot label the figure:\n%s`, raw)
+	}
+	if strings.Contains(string(raw), `"unit":"USD"`) {
+		t.Errorf(`Describe() spelled the default out; every existing document changes:\n%s`, raw)
+	}
+
+	// EffectiveFor(): the resolved view, per host, and the one abctl --host renders.
+	eff, err := json.Marshal(tbl.EffectiveFor("gw.bob"))
+	if err != nil {
+		t.Fatalf("marshal EffectiveFor: %v", err)
+	}
+	if !strings.Contains(string(eff), `"unit":"credits"`) {
+		t.Errorf(`EffectiveFor("gw.bob") emitted no "unit":"credits":\n%s`, eff)
+	}
+	usd, err := json.Marshal(tbl.EffectiveFor("api.anthropic.com"))
+	if err != nil {
+		t.Fatalf("marshal EffectiveFor: %v", err)
+	}
+	if strings.Contains(string(usd), `"unit"`) {
+		t.Errorf(`EffectiveFor("api.anthropic.com") named a unit for a dollars endpoint:\n%s`, usd)
+	}
+}
+
+// Every spelling of the default resolves to CurrencyUSD, so no consumer's `== CurrencyUSD` drifts.
+//
+// The charset check accepts "usd" by design — it is letters — and five consumers test the result
+// against CurrencyUSD to decide whether a figure may be labelled "$". Four compared
+// case-sensitively, so `unit: usd` read as a NON-default unit: `abctl pricing` printed "per Mtok"
+// over a table of dollars and the ledger wrote a currency field on every row of a deployment that
+// had only ever billed dollars. Canonicalised at this one entrance instead of at each comparison.
+//
+// NON-DEFAULT UNITS ARE STILL CASE-PRESERVED, which is the other half of the property and the
+// direction that would break an operator's own spelling: only USD has a canonical form here.
+func TestConfig_EverySpellingOfTheDefaultCanonicalises(t *testing.T) {
+	for _, tc := range []struct{ unit, want string }{
+		{"USD", CurrencyUSD},
+		{"usd", CurrencyUSD},
+		{"Usd", CurrencyUSD},
+		{"uSd", CurrencyUSD},
+		// Preserved, because this package has no canonical spelling to offer for it.
+		{"credits", "credits"},
+		{"Bobcoins", "Bobcoins"},
+		{"CREDITS", "CREDITS"},
+	} {
+		t.Run(tc.unit, func(t *testing.T) {
+			got, err := normaliseUnit(tc.unit, "pricing.endpoints[0]")
+			if err != nil {
+				t.Fatalf("normaliseUnit(%q): %v", tc.unit, err)
+			}
+			if got != tc.want {
+				t.Errorf("normaliseUnit(%q) = %q, want %q", tc.unit, got, tc.want)
+			}
+		})
+	}
+}
+
+// currencyOrDefault folds too, for a unit that never passed through a config file.
+//
+// Endpoint is EXPORTED and core is consumed outside this repo, so a caller can build one with
+// Currency "usd" having read no YAML. normaliseUnit cannot see that path; this funnel can, and it
+// is the one every consumer's value arrives through.
+func TestCurrencyFor_FoldsADefaultSpellingSetProgrammatically(t *testing.T) {
+	tbl, err := NewTable([]Entry{{
+		Host: "gw", Model: "*", Currency: "usd", Prov: ProvConfigured,
+		Rates: Rates{
+			Base: [numTiers]float64{TierInput: 2e-6},
+			Set:  [numTiers]bool{TierInput: true},
+		},
+	}})
+	if err != nil {
+		t.Fatalf("NewTable: %v", err)
+	}
+	if got := tbl.CurrencyFor("gw", "m"); got != CurrencyUSD {
+		t.Errorf("CurrencyFor = %q, want %s: a programmatic \"usd\" must not read as a foreign unit",
+			got, CurrencyUSD)
+	}
+}

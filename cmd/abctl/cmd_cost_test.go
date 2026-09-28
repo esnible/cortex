@@ -2054,6 +2054,26 @@ func TestRunCost_UnknownByNamesTheAcceptedAxes(t *testing.T) {
 					t.Errorf("error does not name the accepted axis %q:\n%s", want, msg)
 				}
 			}
+			// currency IS ONE OF THEM, pinned in both constants.
+			//
+			// Nothing asserted this, so either list could quietly lose the axis the cross-unit
+			// refusal sends readers to. costByAxes' own godoc says it exists "in one place so the
+			// flag's help and its error message cannot list different sets" — a property no test
+			// held it to. ledgerServedAxes is the same word on the downgrade path, where a reader
+			// who was just refused a combined total is told which axes a ledger window can serve.
+			if !strings.Contains(msg, "currency") {
+				t.Errorf("the accepted axes omit currency, the axis the cross-unit refusal points "+
+					"at:\n%s", msg)
+			}
+			for name, list := range map[string]string{
+				"costByAxes":       costByAxes,
+				"ledgerServedAxes": ledgerServedAxes,
+			} {
+				if !strings.Contains(list, "currency") {
+					t.Errorf("%s = %q, which does not name currency; the refusal would point at "+
+						"an axis this command then rejects", name, list)
+				}
+			}
 		})
 	}
 }
@@ -2255,6 +2275,7 @@ func TestRunCost_AgentDropsTheWindowsProvenance(t *testing.T) {
 			}
 		}
 	})
+
 }
 
 // A window spanning two units does NOT get a single total.
@@ -2325,10 +2346,234 @@ func TestRunCost_OneUnitOrNoneStillPrintsTheTotal(t *testing.T) {
 			if !strings.Contains(got, "$4.17") {
 				t.Errorf("a summable window lost its total:\n%s", got)
 			}
-			if strings.Contains(got, "two units") || strings.Contains(got, "not a figure") {
+			// THE STRINGS PRODUCTION ACTUALLY PRINTS. This read "two units" and "not a figure",
+			// and neither appears anywhere in this command — the headline is "%d units", with a
+			// digit, and the caveat is "which cannot be added". So the assertion guarding the one
+			// direction that breaks existing users could not fail under any input. Both strings
+			// below are lifted from writeCostSummary's own format strings.
+			if strings.Contains(got, " units") || strings.Contains(got, "cannot be added") {
 				t.Errorf("a summable window was refused:\n%s", got)
 			}
 		})
 	}
 
+}
+
+// --by currency labels each cell in the unit its OWN ROW names.
+//
+// THE SURFACE THE REFUSAL POINTS AT. writeCostSummary withholds a mixed window's headline and says
+// "use --by currency for a figure per unit"; every cell in that table was formatted by costUSD,
+// which hard-codes "$", so the credits row came back as "$0.08" — a withheld figure replaced by a
+// wrong one, on the strength of this command's own advice.
+//
+// THE currency AXIS IS THE ONE THAT CAN PRINT FIGURES FOR A MIXED WINDOW, because the row label IS
+// the unit. That is exactly why the refusal names it.
+func TestRunCost_ByCurrencyLabelsEachRowInItsOwnUnit(t *testing.T) {
+	srv := fakeUsageServer(t, `{"window":"today","group":"currency","priced":true,
+		"currencies":["USD","credits"],
+		"totals":{"requests":1057,"costMicros":146439000,"pricedRequests":1057,"priceableRequests":1057},
+		"buckets":[{"at":"2026-09-27T10:00:00Z","series":{
+		   "USD":{"requests":1000,"costMicros":146361600,"pricedRequests":1000,"priceableRequests":1000},
+		   "credits":{"requests":57,"costMicros":77400,"pricedRequests":57,"priceableRequests":57}}}]}`)
+	defer srv.Close()
+
+	var out, errOut strings.Builder
+	if code := runCost([]string{"--endpoint", srv.URL, "--by", "currency"}, &out, &errOut); code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr = %s", code, errOut.String())
+	}
+	got := out.String()
+
+	// Scoped to the row, so a "$" anywhere on it fails. The defect was a "$" in the COST cell,
+	// several columns from the label that names the unit.
+	creditsLine := tableRow(t, got, "credits")
+	if strings.Contains(creditsLine, "$") {
+		t.Errorf("the credits row claims dollars:\n%s", creditsLine)
+	}
+	if !strings.Contains(creditsLine, "0.08 credits") {
+		t.Errorf("the credits row lost its figure or its unit:\n%s", creditsLine)
+	}
+	// And the USD row keeps "$" character-for-character, which is what keeps this from costing
+	// every existing reader the label they had.
+	if usdLine := tableRow(t, got, "USD"); !strings.Contains(usdLine, "$146.36") {
+		t.Errorf("the USD row lost its dollar figure:\n%s", usdLine)
+	}
+}
+
+// On any OTHER axis a mixed window withholds each cell, because a row may itself span units.
+//
+// One agent calling two gateways is a row whose costMicros is the cross-unit sum the headline just
+// refused, and a folded series cannot separate it. So the cell gets the headline's posture rather
+// than a label — withheld, with the units named once under the table.
+func TestRunCost_ByAgentOnAMixedWindowWithholdsTheCostCells(t *testing.T) {
+	srv := fakeUsageServer(t, `{"window":"today","group":"agent","priced":true,
+		"currencies":["USD","credits"],
+		"totals":{"requests":1057,"costMicros":146439000,"pricedRequests":1057,"priceableRequests":1057},
+		"buckets":[{"at":"2026-09-27T10:00:00Z","series":{
+		   "claude-code/2.1.270":{"requests":1000,"costMicros":146361600,"pricedRequests":1000,"priceableRequests":1000},
+		   "bob-shell/2.0.5":{"requests":57,"costMicros":77400,"pricedRequests":57,"priceableRequests":57}}}]}`)
+	defer srv.Close()
+
+	var out, errOut strings.Builder
+	if code := runCost([]string{"--endpoint", srv.URL, "--by", "agent"}, &out, &errOut); code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr = %s", code, errOut.String())
+	}
+	got := out.String()
+
+	if strings.Contains(got, "$146.36") || strings.Contains(got, "$0.08") {
+		t.Errorf("a per-agent cell was labelled in dollars on a mixed window:\n%s", got)
+	}
+	if !strings.Contains(got, mixedCostCell) {
+		t.Errorf("no withheld cell; a figure that may span units was printed anyway:\n%s", got)
+	}
+	// Said once, under the table, naming the units and the axis that resolves them. A column of
+	// "(mixed)" with nothing explaining it reads as a defect in the tool.
+	if !strings.Contains(got, "cannot be added") || !strings.Contains(got, "--by currency") {
+		t.Errorf("the withheld column is unexplained:\n%s", got)
+	}
+}
+
+// A window in ONE non-USD unit prints its total in that unit, not behind a "$".
+//
+// The other half of the same defect, and the one no finding named: a credits-only deployment has
+// exactly one currency, so it is not "mixed", so it took the ordinary headline path and printed
+// costUSD's "$" over credits — with nothing anywhere on the surface to contradict it. A single unit
+// is the case with no refusal to fall back on, which makes the label the only thing carrying the
+// fact.
+func TestRunCost_ASingleNonUSDUnitIsLabelledNotDollared(t *testing.T) {
+	srv := fakeUsageServer(t, `{"window":"today","priced":true,"currencies":["credits"],
+		"totals":{"requests":57,"tokens":38682,"costMicros":77400,"pricedRequests":57,
+		"priceableRequests":57,"avoidedMicros":12000}}`)
+	defer srv.Close()
+
+	var out, errOut strings.Builder
+	if code := runCost([]string{"--endpoint", srv.URL}, &out, &errOut); code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr = %s", code, errOut.String())
+	}
+	got := out.String()
+
+	if strings.Contains(got, "$") {
+		t.Errorf("a credits-only window printed a dollar glyph:\n%s", got)
+	}
+	if !strings.Contains(got, "0.08 credits") {
+		t.Errorf("the headline lost its unit:\n%s", got)
+	}
+	// The saving is money too, and it took costUSD as well.
+	if !strings.Contains(got, "0.01 credits") {
+		t.Errorf("the saving is not labelled in the window's unit:\n%s", got)
+	}
+	// And it is NOT refused: one unit is summable, which is the direction that would break every
+	// deployment that exists today.
+	if strings.Contains(got, "cannot be added") {
+		t.Errorf("a single-unit window was refused:\n%s", got)
+	}
+}
+
+// --json carries the units, so the reader nobody eyeballs can make the same refusal.
+//
+// docs/pricing.md says "figures in different units are never added". The human path withheld and
+// the machine path emitted the sum with no field naming the conflict — for a script, a promise
+// nothing kept. Present for a single unit too, which is how a credits deployment learns what its
+// own total is denominated in.
+func TestRunCost_JSONCarriesTheCurrencies(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		currencies string
+		want       []string
+	}{
+		{"mixed, the case the human path refuses", `"currencies":["USD","credits"],`, []string{"USD", "credits"}},
+		{"a single unit answers \"in what\"", `"currencies":["credits"],`, []string{"credits"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := fakeUsageServer(t, `{"window":"today","priced":true,`+tc.currencies+
+				`"totals":{"requests":1057,"costMicros":146439000,"pricedRequests":1057,"priceableRequests":1057}}`)
+			defer srv.Close()
+
+			var out, errOut strings.Builder
+			if code := runCost([]string{"--endpoint", srv.URL, "--json"}, &out, &errOut); code != 0 {
+				t.Fatalf("exit = %d, want 0; stderr = %s", code, errOut.String())
+			}
+			// Decoded rather than string-matched, so this pins the FIELD a script reads and not
+			// merely the presence of the words somewhere in the document.
+			var doc struct {
+				Currencies []string `json:"currencies"`
+			}
+			if err := json.Unmarshal([]byte(out.String()), &doc); err != nil {
+				t.Fatalf("the document does not decode: %v\n%s", err, out.String())
+			}
+			if len(doc.Currencies) != len(tc.want) {
+				t.Fatalf("currencies = %v, want %v", doc.Currencies, tc.want)
+			}
+			for i := range tc.want {
+				if doc.Currencies[i] != tc.want[i] {
+					t.Errorf("currencies = %v, want %v", doc.Currencies, tc.want)
+				}
+			}
+		})
+	}
+}
+
+// The ring serialises no currencies key at all, so no script starts seeing a field for a window
+// that cannot compute one.
+func TestRunCost_JSONOmitsCurrenciesWhenTheProducerDoesNotReportThem(t *testing.T) {
+	srv := fakeUsageServer(t, `{"window":"today","priced":true,
+		"totals":{"requests":318,"costMicros":4170000,"pricedRequests":318,"priceableRequests":318}}`)
+	defer srv.Close()
+
+	var out, errOut strings.Builder
+	if code := runCost([]string{"--endpoint", srv.URL, "--json"}, &out, &errOut); code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr = %s", code, errOut.String())
+	}
+	if strings.Contains(out.String(), "currencies") {
+		t.Errorf("a ring-served window named a currencies key:\n%s", out.String())
+	}
+}
+
+// --agent on a mixed window says WHOSE mixture it is.
+//
+// scopeToAgent narrows Totals to one agent and carries Currencies over from the whole window, and
+// no client-side arithmetic can narrow the second — a folded per-agent Counts has summed the
+// currency axis away. So the refusal stands, deliberately over-refusing, and this line is what
+// stops a reader taking it as a statement about the agent they asked about.
+func TestRunCost_AgentOnAMixedWindowNamesTheWindowAsTheSource(t *testing.T) {
+	srv := fakeUsageServer(t, `{"window":"today","group":"agent","priced":true,
+		"currencies":["USD","credits"],
+		"totals":{"requests":1057,"costMicros":146439000,"pricedRequests":1057,"priceableRequests":1057},
+		"buckets":[{"at":"2026-09-27T10:00:00Z","series":{
+		   "claude-code/2.1.270":{"requests":1000,"costMicros":146361600,"pricedRequests":1000,"priceableRequests":1000}}}]}`)
+	defer srv.Close()
+
+	var out, errOut strings.Builder
+	code := runCost([]string{"--endpoint", srv.URL, "--agent", "claude-code/2.1.270"}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr = %s", code, errOut.String())
+	}
+	got := out.String()
+
+	if !strings.Contains(got, "window's mixture") {
+		t.Errorf("the refusal does not say it is the window's mixture and not this agent's:\n%s", got)
+	}
+	// Still withheld: the safe direction, since this agent's own traffic may be the mixed part.
+	if strings.Contains(got, "$146.36") {
+		t.Errorf("a per-agent figure was printed from a mixed window:\n%s", got)
+	}
+}
+
+// tableRow returns the breakdown row whose LABEL is exactly label.
+//
+// Matched on the row's first field rather than with Contains, and that is the point: a unit name
+// also appears in the caveat above the table, so "the credits row carries no $" is unprovable by
+// substring — it would read the caveat line and pass for the wrong reason. Scoped to one line
+// because the claim is about one cell, and the USD row of the same table legitimately has a "$".
+func tableRow(t *testing.T, out, label string) string {
+	t.Helper()
+	var hits []string
+	for _, ln := range strings.Split(out, "\n") {
+		if fields := strings.Fields(ln); len(fields) > 0 && fields[0] == label {
+			hits = append(hits, ln)
+		}
+	}
+	if len(hits) != 1 {
+		t.Fatalf("want exactly one table row labelled %q, got %d:\n%s", label, len(hits), out)
+	}
+	return hits[0]
 }

@@ -288,6 +288,24 @@ func scopeToAgent(snap *usage.Snapshot, agent string) (*usage.Snapshot, error) {
 	// residualOf leaves them nil unless the series overshoots, which cannot happen where the
 	// figures reconcile. Where one does arrive it is upstream's bug, and forwarding it says so;
 	// narrowing it to an agent would be inventing a per-agent overshoot nothing computed.
+
+	// Currencies IS CARRIED OVER, AND IT NO LONGER DESCRIBES Totals. Said out loud because it is
+	// the one field on this struct that the narrowing above invalidates, and the honest options are
+	// worse than keeping it.
+	//
+	// The field means "every unit the rows behind Totals were denominated in", and after this copy
+	// Totals is one agent while the list is the whole window. Narrowing it is not available:
+	// deciding which units THIS agent's traffic carries needs a cross-tabulation of agent against
+	// currency, and a folded per-agent Counts has already summed that axis away. Dropping it is
+	// worse than leaving it — this agent's own traffic may well be the mixed part, and an absent
+	// list reads as "single unit", so the surface would print a confident figure that is exactly
+	// the credits-plus-dollars sum this whole change exists to refuse.
+	//
+	// SO THE OVER-REFUSAL IS DELIBERATE, and it is the safe direction: a per-agent figure is
+	// withheld in a mixed window even when that agent billed in one unit. writeCostSummary says
+	// which of the two it is rather than letting the reader assume, because "no figure for this
+	// agent" and "no figure for this window" have different fixes.
+
 	return &scoped, nil
 }
 
@@ -340,6 +358,23 @@ type costJSON struct {
 	// absence as zero spend.
 	Priced bool         `json:"priced"`
 	Totals usage.Counts `json:"totals"`
+	// Currencies names every billing unit the rows behind Totals were denominated in.
+	//
+	// THE ONE DISCLOSURE ON THIS SURFACE WHOSE ABSENCE MAKES A FIGURE WRONG rather than merely
+	// unqualified. The human path refuses to print a headline for a window holding two units,
+	// because credits summed into dollars is a number that is neither and looks correct for being
+	// larger. Without this field the machine path handed a script that same sum with nothing to
+	// say so — and a script is the reader nobody eyeballs, which is the argument PricedBy,
+	// UnpricedBy, IncompleteBy and Degraded are all already on this struct for. docs/pricing.md
+	// says "figures in different units are never added"; for this consumer that was a promise
+	// nothing kept.
+	//
+	// VERBATIM, INCLUDING THE SINGLE-UNIT CASE, rather than only when there is a conflict. One
+	// entry is not a caveat but the answer to "what unit IS this total in", which a script billing
+	// in credits needs and could not otherwise get from this document. omitempty, so the ring —
+	// which does not compute the field — serialises no key, and a USD-only ledger window names USD
+	// exactly as it names any other unit.
+	Currencies []string `json:"currencies,omitempty"`
 	// PricedBy counts the priced requests by the provenance of their figure —
 	// "authoritative" when the gateway reported it, otherwise the rate table's level. It
 	// is what makes CostMicros interpretable rather than merely readable.
@@ -552,6 +587,7 @@ func writeCostJSON(snap *usage.Snapshot, stdout, stderr io.Writer, agent, by str
 		Window:               snap.Window,
 		Priced:               snap.Priced,
 		Totals:               snap.Totals,
+		Currencies:           snap.Currencies,
 		Agent:                agent,
 		Tiers:                tiersJSONOf(snap.Totals),
 		PricedBy:             snap.PricedBy,
@@ -632,10 +668,15 @@ func writeCostSummary(snap *usage.Snapshot, stdout io.Writer, agent string) {
 	// TWO OR MORE, never one and never zero: an absent list is the in-memory ring, which does not
 	// compute it, and one unit is every deployment today. Turning either into a refusal would
 	// break summable traffic — see usage.Snapshot.Currencies.
-	mixed := len(snap.Currencies) > 1
+	// A SINGLE NON-USD UNIT IS NOT MIXED, and was the other half of the same defect: one unit
+	// passes the test above, so a deployment billing only in credits printed its total behind a
+	// "$" with nothing on the surface to contradict it. windowUnit answers both cases from the one
+	// field, and costIn labels the figure in whatever it comes back with.
+	unit, labelled := windowUnit(snap)
+	mixed := !labelled
 	headline := "cost unavailable"
-	if snap.Priced && !negative && !mixed {
-		headline = costUSD(float64(t.CostMicros) / 1e6)
+	if snap.Priced && !negative && labelled {
+		headline = costIn(float64(t.CostMicros)/1e6, unit)
 	}
 	if mixed {
 		headline = fmt.Sprintf("%d units", len(snap.Currencies))
@@ -656,6 +697,15 @@ func writeCostSummary(snap *usage.Snapshot, stdout io.Writer, agent string) {
 		fmt.Fprintf(stdout,
 			"  ! this window holds %s, which cannot be added — no combined figure is shown\n",
 			strings.Join(snap.Currencies, " and "))
+		// WHOSE MIXTURE IT IS, on the --agent path. The list describes the WINDOW; Totals here
+		// describes one agent, and no client-side arithmetic can narrow the first to the second —
+		// see scopeToAgent for why the field is carried over anyway. Without this line a reader who
+		// asked about one agent reads the refusal as a statement about that agent's own traffic and
+		// goes looking for a second gateway it may never have called.
+		if agent != "" {
+			fmt.Fprintln(stdout,
+				"    this is the window's mixture, not necessarily this agent's; a per-agent figure cannot be separated from it")
+		}
 		fmt.Fprintln(stdout,
 			"    use --by currency for a figure per unit; tokens and requests above are unit-free")
 	}
@@ -670,10 +720,14 @@ func writeCostSummary(snap *usage.Snapshot, stdout io.Writer, agent string) {
 	//
 	// It is NOT subtracted from or added to the figure above: this agent's total is this
 	// agent's, and the residual is neither. Stated beside it, not folded into it.
-	if agent != "" && snap.UngroupedCostMicros != nil && *snap.UngroupedCostMicros != 0 {
+	//
+	// SILENT WHEN THE WINDOW IS MIXED, like every other figure here: the residual is a sum over the
+	// same rows the headline was withheld for, so it is the same un-addable quantity and printing
+	// it in any unit would be the mislabel this surface just refused one line above.
+	if agent != "" && labelled && snap.UngroupedCostMicros != nil && *snap.UngroupedCostMicros != 0 {
 		fmt.Fprintf(stdout,
 			"  note  %s of this window is attributed to no agent, so per-agent figures do not sum to the window total\n",
-			costUSD(float64(*snap.UngroupedCostMicros)/1e6))
+			costIn(float64(*snap.UngroupedCostMicros)/1e6, unit))
 	}
 
 	if split := tokenSplit(t); split != "" {
@@ -698,9 +752,13 @@ func writeCostSummary(snap *usage.Snapshot, stdout io.Writer, agent string) {
 	// Silent at zero, on this function's standing rule: a deployment not running tool-prune has
 	// nothing to act on, and a permanent "~$0.00 saved" is the line that teaches an operator
 	// to stop reading these.
-	if t.AvoidedMicros > 0 {
+	//
+	// AND SILENT WHEN THE WINDOW IS MIXED, for the reason the residual above is: a saving summed
+	// across units is not a figure either, and this one is already the most heavily qualified
+	// number on the surface without adding "in no particular currency" to the list.
+	if t.AvoidedMicros > 0 && labelled {
 		fmt.Fprintf(stdout, "  ~%-13s saved   estimate, gross of cache re-warm; not deducted above\n",
-			costUSD(float64(t.AvoidedMicros)/1e6))
+			costIn(float64(t.AvoidedMicros)/1e6, unit))
 	}
 	// THE TOKEN CAVEAT SITS WITH THE TOKEN FIGURES, above the dollar caveats even though the
 	// clamp disclosure below is the more serious claim. That is moneyFigure's rule applied to
@@ -1045,6 +1103,56 @@ func costUSD(v float64) string {
 	return fmt.Sprintf("$%.2f", v)
 }
 
+// costIn formats a money figure in the unit it is actually denominated in.
+//
+// THE GLYPH IS A CLAIM, and costUSD makes it unconditionally. That was a rendering while every
+// endpoint billed in dollars; the moment an endpoint can declare `unit: credits` it is the exact
+// false label this change exists to remove, and it reached every figure on this surface — the
+// headline, the --by cells, the no-agent residual and the saving.
+//
+// THE UNIT NAME TRAILS THE FIGURE rather than leading it, because a unit is an operator's own word
+// and has no agreed prefix form: "credits 0.08" reads as a label, and "0.08 credits" reads as a
+// quantity, which is what it is.
+//
+// SAME SUB-CENT FLOOR, in the unit's own words. costUSD's "<$0.01" exists so a real charge is never
+// printed as the one string this command may not print for an unknown cost, and that reasoning is
+// about the figure being small, not about it being dollars.
+func costIn(v float64, unit string) string {
+	if isDefaultUnit(unit) {
+		return costUSD(v)
+	}
+	if v > 0 && v < 0.005 {
+		return "<0.01 " + unit
+	}
+	return fmt.Sprintf("%.2f %s", v, unit)
+}
+
+// windowUnit reports the unit every figure on this snapshot is denominated in, and whether any
+// figure may be labelled at all.
+//
+// ONE READING OF Snapshot.Currencies, so the four surfaces that print money on this command cannot
+// disagree about what that field licenses. Before this existed only the headline consulted it, and
+// the other three printed "$" over whatever the window held.
+//
+//   - TWO OR MORE: ok false. Nothing here can be labelled, and unlike every other caveat the figure
+//     cannot be salvaged by qualifying it — see writeCostSummary.
+//   - EXACTLY ONE: that unit, whatever it is. This is the case the headline got wrong in the other
+//     direction: a deployment billing only in credits is not mixed, so it printed a "$" figure with
+//     nothing anywhere to contradict it.
+//   - ABSENT: the default, i.e. dollars. An empty list is the in-memory ring, which does not
+//     compute the field — not a window with no units — so this preserves today's output for every
+//     ring-served surface rather than withholding figures nobody has reported a problem with.
+func windowUnit(snap *usage.Snapshot) (string, bool) {
+	switch len(snap.Currencies) {
+	case 0:
+		return pricing.CurrencyUSD, true
+	case 1:
+		return snap.Currencies[0], true
+	default:
+		return "", false
+	}
+}
+
 // compactTokens renders a token count the way a headline has room for: 218.1M, not
 // 218100000.
 //
@@ -1116,13 +1224,26 @@ const costByAxes = "agent, model, endpoint, currency, session, status, plugin or
 //
 // A LITERAL, and it has to be one: ledger.Groupable is the authority and this command cannot
 // import it — cmd/abctl does not depend on core/cost/ledger, and adding that edge to print a
-// sentence would be the wrong trade. Kept general rather than exhaustive so it degrades into
-// vagueness rather than into a lie if that set grows.
+// sentence would be the wrong trade.
+//
+// IT IS EXHAUSTIVE TODAY, which the "kept general so it degrades into vagueness rather than into a
+// lie" this comment used to claim is no longer a description of: naming all four of
+// ledger.Groupable's axes is a list that becomes wrong, not vague, the next time one is added.
+// Since the string cannot import its authority, a test pins the part that matters — that currency
+// is in here at all, because this is the sentence a reader who was just refused a combined total is
+// given. See TestRunCost_UnknownByNamesTheAcceptedAxes.
 const ledgerServedAxes = "agent, model, endpoint and currency"
 
 // emptyCostCell is the unpriced cell, matching the TUI's spelling so one figure reads the same
 // on both surfaces. See writeCostBreakdown for why it is never "$0.00".
 const emptyCostCell = "—"
+
+// mixedCostCell replaces a figure that would span billing units.
+//
+// DISTINCT FROM emptyCostCell, which says nothing could price this traffic. This says the traffic
+// was priced and the figures cannot be added, which is a different fact with a different fix — the
+// first wants a pricing entry, the second wants --by currency.
+const mixedCostCell = "(mixed)"
 
 // writeCostBreakdown prints one row per label, costliest first.
 //
@@ -1149,23 +1270,60 @@ func writeCostBreakdown(snap *usage.Snapshot, stdout io.Writer, requested usage.
 	}
 	usage.SortSeriesLabels(labels, series)
 
+	// WHICH UNIT EACH CELL IS IN, instead of costUSD's unconditional "$".
+	//
+	// This is the surface writeCostSummary's own refusal sends the reader to — "use --by currency
+	// for a figure per unit" — and it was stamping "$" on every row, so the mixed-unit window that
+	// withheld its headline got a per-unit table that mislabelled the credits row as dollars. The
+	// withheld figure was replaced by a wrong one, on the strength of this command's own advice.
+	//
+	// ON THE currency AXIS EVERY ROW KNOWS ITS OWN UNIT, because the row label IS the unit — so this
+	// is the one axis that can print real figures for a mixed window, which is exactly why the
+	// refusal points here.
+	//
+	// ON EVERY OTHER AXIS A ROW MAY ITSELF SPAN UNITS: one agent calling two gateways is a row whose
+	// CostMicros is the cross-unit sum the headline refused, and nothing in a folded series can
+	// separate it. So the cell is withheld rather than labelled — the headline's posture applied per
+	// row, for the same reason.
+	byUnit := requested == usage.GroupCurrency
+	unit, labelled := windowUnit(snap)
 	fmt.Fprintf(stdout, "\n  %-34s %10s %10s %14s\n", strings.ToUpper(asked), "REQUESTS", "TOKENS", "COST")
 	for _, label := range labels {
 		c := series[label]
 		cost := emptyCostCell
-		if c.PricedRequests > 0 {
-			cost = costUSD(float64(c.CostMicros) / 1e6)
+		switch {
+		case c.PricedRequests <= 0:
+			// Left as emptyCostCell: nothing could price this row, which outranks any question
+			// about the unit a figure it does not have would be in.
+		case byUnit:
+			cost = costIn(float64(c.CostMicros)/1e6, label)
+		case labelled:
+			cost = costIn(float64(c.CostMicros)/1e6, unit)
+		default:
+			cost = mixedCostCell
 		}
 		fmt.Fprintf(stdout, "  %-34s %10s %10s %14s\n",
 			label, plainCount(c.Requests), compactTokens(c.Tokens), cost)
 	}
+	// SAID ONCE UNDER THE TABLE, not per row. A column of "(mixed)" with no explanation reads as a
+	// defect in the tool; naming the units and the axis that resolves them is the same disclosure
+	// the summary makes, on the surface where the reader now is.
+	if !byUnit && !labelled {
+		fmt.Fprintf(stdout,
+			"  ! these rows hold %s, which cannot be added — use --by currency for a figure per unit\n",
+			strings.Join(snap.Currencies, " and "))
+	}
 	// The table's own shortfall, said where the table is. This is the case cmd_cost.go's older
 	// comment predicted: "a table summing to less than the headline above it with nothing to
 	// explain the difference".
-	if snap.UngroupedCostMicros != nil && *snap.UngroupedCostMicros != 0 {
+	//
+	// GATED ON labelled AND NOT ON byUnit, because this residual is a window-wide sum: it is what no
+	// row carries, across every unit at once, so the currency axis does not give it a unit of its own
+	// the way it gives each row one.
+	if labelled && snap.UngroupedCostMicros != nil && *snap.UngroupedCostMicros != 0 {
 		fmt.Fprintf(stdout,
 			"  note  %s is attributed to no %s, so these rows do not sum to the total above\n",
-			costUSD(float64(*snap.UngroupedCostMicros)/1e6), asked)
+			costIn(float64(*snap.UngroupedCostMicros)/1e6, unit), asked)
 	}
 }
 

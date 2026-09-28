@@ -279,3 +279,66 @@ func TestRunPricing_StillSaysDollarsForAUSDEndpoint(t *testing.T) {
 		t.Errorf("a USD endpoint lost its $/Mtok label:\n%s", got)
 	}
 }
+
+// A server that spells the default "usd" still gets the dollar label, on both readers.
+//
+// THE CLIENT SIDE OF THE CASE-FOLDING FIX. core canonicalises before it serialises, so a matched
+// pair never sends this — but abctl is a client of whatever proxy it is pointed at, including one
+// older than itself, and both readers here compared against pricing.CurrencyUSD case-sensitively.
+// The symptom is not a wrong figure: it is "per Mtok" over a table of dollars and a provenance cell
+// reading "bundled · usd", which is the same false claim as the one this change removes, inverted.
+//
+// BOTH READERS IN ONE TEST, because they are one question asked twice — the sub-header and the
+// per-row cell — and they disagreeing is the defect isDefaultUnit exists to make impossible.
+func TestRunPricing_ALowercaseUSDFromTheServerIsStillTheDefault(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if _, err := w.Write([]byte(`{"host":"gw.example","models":[
+			{"model":"some-model","provenance":"configured","unit":"usd",
+			 "inputPerMillion":2,"cacheWritePerMillion":2,"cacheReadPerMillion":2,
+			 "outputPerMillion":2}]}`)); err != nil {
+			t.Errorf("write: %v", err)
+		}
+	}))
+	defer srv.Close()
+
+	var out, errOut strings.Builder
+	if code := runPricing([]string{"--stats-url", srv.URL, "--host", "gw.example"}, &out, &errOut); code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr = %s", code, errOut.String())
+	}
+	got := out.String()
+
+	if !strings.Contains(got, "$/Mtok") {
+		t.Errorf(`a "usd" endpoint lost the $/Mtok label; dollars are being called a foreign unit:\n%s`, got)
+	}
+	if strings.Contains(got, "per Mtok") {
+		t.Errorf(`a "usd" endpoint rendered the non-USD sub-header:\n%s`, got)
+	}
+	// And the provenance cell does not append a unit for the default, whatever its spelling.
+	if strings.Contains(got, "· usd") {
+		t.Errorf("the provenance cell names the default as though it were a foreign unit:\n%s", got)
+	}
+}
+
+// The two unit predicates agree, directly, for every spelling that reaches them.
+//
+// Asserted on the functions rather than only through rendered output: the rendering tests above can
+// only reach the pair through one endpoint shape each, and the property is about the predicate.
+func TestIsDefaultUnit_EveryDefaultSpellingAndNoOthers(t *testing.T) {
+	for _, unit := range []string{"", "USD", "usd", "Usd", "uSd"} {
+		if !isDefaultUnit(unit) {
+			t.Errorf("isDefaultUnit(%q) = false, want true", unit)
+		}
+		if got := provenanceCell("configured", unit); got != "configured" {
+			t.Errorf("provenanceCell(%q) = %q, want the bare provenance", unit, got)
+		}
+	}
+	for _, unit := range []string{"credits", "Bobcoins", "USDC", "usdt"} {
+		if isDefaultUnit(unit) {
+			t.Errorf("isDefaultUnit(%q) = true; a real unit was swallowed as the default", unit)
+		}
+		if got := provenanceCell("configured", unit); !strings.Contains(got, unit) {
+			t.Errorf("provenanceCell(%q) = %q, which drops the unit", unit, got)
+		}
+	}
+}

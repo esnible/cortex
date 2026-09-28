@@ -411,13 +411,22 @@ func (t *Table) multiplierFor(endpoint string) (float64, Provenance) {
 	return best.factor, best.prov
 }
 
-// currencyOrDefault reads an empty unit as CurrencyUSD.
+// currencyOrDefault reads an empty unit as CurrencyUSD, and any spelling of USD as CurrencyUSD.
 //
 // ONE PLACE, called where a row is built, so nothing downstream carries its own version of the
 // default. Bundled entries name no unit — they are vendor list, in dollars — and a config that
 // omits the key means the same thing, so both arrive here empty and leave as USD.
+//
+// CASE-FOLDED FOR THE DEFAULT ONLY, so every consumer's `== CurrencyUSD` test is right without
+// each of them remembering to fold. normaliseUnit already canonicalises what an operator types,
+// which covers the config path at its entrance; this covers the rest. Endpoint is an EXPORTED
+// struct and core is consumed outside this repo, so a caller can build one with Currency "usd"
+// having never gone through a YAML file — and four separate sites comparing case-sensitively is
+// what let that spelling read as a non-default unit. Downstream of this funnel the only
+// non-canonical spellings left are units this package has no canonical form for, where the
+// operator's own spelling is the name and is preserved on purpose.
 func currencyOrDefault(c string) string {
-	if c == "" {
+	if c == "" || strings.EqualFold(c, CurrencyUSD) {
 		return CurrencyUSD
 	}
 	return c

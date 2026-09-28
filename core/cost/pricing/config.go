@@ -65,14 +65,23 @@ type EndpointConfig struct {
 	// as its zero value for the whole retained history — so the two agree by construction
 	// instead of by a comment asking them to.
 	//
-	// Compared case-insensitively and CASE-PRESERVED: an operator sees back the spelling they
-	// typed rather than a normalised one they never chose.
+	// Compared case-insensitively and CASE-PRESERVED, except for the default: an operator sees
+	// back the spelling they typed, because for a unit this package has never heard of their
+	// spelling IS the name. USD is the one unit with a canonical form here, so normaliseUnit
+	// returns CurrencyUSD for any spelling of it — see the note there for why folding at the
+	// entrance beats folding at each of the five comparisons.
 	Unit string `yaml:"unit" json:"unit,omitempty"`
 
-	// Symbol is an optional display glyph for Unit, e.g. "₡". DISPLAY ONLY — never compared and
-	// never summed on, because the unit NAME is the identity. Absent means the unit's own name
-	// is shown, which is always readable if not always short.
-	Symbol string `yaml:"symbol" json:"symbol,omitempty"`
+	// NO symbol: KEY. It was declared here as "display only" and nothing ever read it — zero
+	// readers in core, in cmd, or in any test — while being advertised in docs/pricing.md as
+	// though it worked. This change's own reasoning for serving group=currency from the ledger
+	// applies to it verbatim: a key that does nothing is a promise to an operator that nothing
+	// keeps, and it is worse than absent because a config carrying `symbol: "₡"` reads as
+	// configured. It was also the only string here escaping normaliseUnit's bounds, so it
+	// accepted 40 bytes with a control rune in them for a value destined for a terminal.
+	//
+	// Rendering a unit uses its NAME ("0.08 credits"), which is always readable if not always
+	// short. Add a glyph when something renders one, with the same validation Unit gets.
 }
 
 // CurrencyUSD is the unit every rate is denominated in unless an endpoint says otherwise.
@@ -117,6 +126,25 @@ func normaliseUnit(unit, where string) (string, error) {
 		if !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '-' && r != '_' {
 			return "", fmt.Errorf("%s: unit %q may contain only letters, digits, - and _", where, unit)
 		}
+	}
+	// THE DEFAULT IS CANONICALISED, every other unit is kept as typed.
+	//
+	// The case-preserving promise is about units this package cannot know — "credits",
+	// "Bobcoins" — where the operator's spelling is the only name the unit has. USD is different:
+	// it is the one unit that already HAS a canonical spelling here, CurrencyUSD, and five
+	// consumers test against it to decide whether a figure may be labelled "$". Four of those
+	// compared case-sensitively, so `unit: usd` — which the charset check above accepts — read as
+	// a NON-default unit: abctl printed "per Mtok" over a table of dollars, and the ledger wrote
+	// a "currency" field on every row of a deployment that had only ever billed in dollars.
+	//
+	// FOLDED HERE, at the one place a configured unit enters the process, rather than at each
+	// comparison. Four sites folding independently is four chances to miss the fifth, which is
+	// the drift CurrencyUSD's own comment exists to prevent. ledger.CurrenciesIn already makes
+	// exactly this choice for exactly this reason — "USD is special-cased to its constant so a
+	// file written with 'usd' does not report a unit an operator never typed" — so this is that
+	// decision applied one layer earlier, not a new one.
+	if strings.EqualFold(unit, CurrencyUSD) {
+		return CurrencyUSD, nil
 	}
 	return unit, nil
 }

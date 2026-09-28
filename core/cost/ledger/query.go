@@ -538,6 +538,24 @@ func labelFor(r Row, group usage.Group) (string, bool) {
 //
 // NOTHING FOR AN EMPTY WINDOW, rather than USD: there is no figure to label, and claiming a unit
 // for traffic that does not exist would make the refusal downstream fire on nothing.
+//
+// THE OVERFLOW LABEL IS NOT A UNIT, and skipping it is what keeps a single-currency deployment
+// from refusing its own total. overflow() coarsens a capped row's identity onto overflowKey on
+// EVERY axis at once, currency included, and "(other)" is then a value no operator can have
+// configured — normaliseUnit rejects "(" and ")" outright. Counted as a unit it made the second
+// entry that len(Currencies) > 1 tests for, so one minute past maxLabelsPerMinute withheld the
+// headline of a deployment that has only ever billed in dollars, and named "(other)" as the
+// currency it could not add. The cap is a memory bound; it was never a statement about money.
+//
+// FIXED HERE, IN THE READER, rather than by keeping a real unit on the overflow row. A capped row
+// is already on disk carrying currency "(other)" wherever cost_ledger retention reaches back to,
+// so writing the real unit from now on would leave every existing file still refusing. This way
+// repairs the whole retention window, and it leaves overflowKey's all-axes-at-once invariant —
+// and the reason its comment gives for it — exactly as written.
+//
+// NOT REACHABLE AS THE ONLY ROW, so this cannot empty the list on real traffic: overflow folds
+// only labels PAST the cap, which means a minute that produced one kept maxLabelsPerMinute real
+// rows beside it, each with a real unit.
 func CurrenciesIn(rows []Row) []string {
 	if len(rows) == 0 {
 		return nil
@@ -546,6 +564,9 @@ func CurrenciesIn(rows []Row) []string {
 	// one entry and the entry is the spelling everything else uses.
 	seen := map[string]string{}
 	for _, r := range rows {
+		if r.Currency == overflowLabel {
+			continue
+		}
 		c := r.currencyOrUSD()
 		folded := strings.ToLower(c)
 		if _, ok := seen[folded]; !ok {

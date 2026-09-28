@@ -317,7 +317,6 @@ pricing:
   endpoints:
     - hosts: ["api.us-east.bob.ibm.com"]
       unit: credits          # absent means USD
-      symbol: "₡"            # optional, display only
       models:
         "premium-ide":
           input_cost_per_million:       2.00
@@ -335,7 +334,7 @@ withholds the combined total, names the units it found, and points you at `--by 
 
 ```
 COST — today
-  2 units           1057 requests   298.0M tokens
+  2 units        1057 requests   298M tokens
   ! this window holds USD and credits, which cannot be added — no combined figure is shown
     use --by currency for a figure per unit; tokens and requests above are unit-free
 ```
@@ -344,9 +343,28 @@ A caveat printed *under* a wrong number leaves the wrong number on screen, so th
 withheld rather than annotated. Tokens and requests are still reported: they carry no unit and stay
 comparable across gateways.
 
+`--by currency` is then the axis that *can* show figures, because each row names its own unit:
+
+```
+  CURRENCY                             REQUESTS     TOKENS           COST
+  USD                                      1000          0        $146.36
+  credits                                    57          0   0.08 credits
+```
+
+On any other axis a mixed window withholds the cost cells instead — one agent calling two gateways
+is a single row whose figure would be the cross-unit sum, and nothing in a per-axis breakdown can
+separate it. A window in **one** non-USD unit is not mixed and prints its total normally, labelled
+in that unit rather than behind a `$`.
+
+`--json` carries a `currencies` array whenever the producer computes one, so a script can make the
+same refusal. One entry is not a caveat — it is the answer to "what unit is this total in".
+
 `unit` names a currency, so it is letters, digits, `-` and `_` only, at most 16 bytes, and an
-unusable value **fails startup naming the endpoint**. It is compared case-insensitively but stored
-as you typed it, so `abctl pricing` shows back your own spelling.
+unusable value **fails startup naming the endpoint**. It is compared case-insensitively, and stored
+as you typed it *except* for USD: every spelling of the default is stored as `USD`, because that is
+the one unit Cortex has a canonical name for and five separate consumers test a figure against it
+to decide whether it may be labelled `$`. Any other unit keeps your spelling, so `abctl pricing`
+shows back what you typed.
 
 **A multiplier never crosses units** — scaling credits by 0.76 leaves credits.
 

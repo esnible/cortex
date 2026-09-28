@@ -1,6 +1,9 @@
 package pricing
 
-import "sort"
+import (
+	"sort"
+	"strings"
+)
 
 // This file exists because a config file cannot answer the question operators
 // actually have.
@@ -274,8 +277,14 @@ func (t *Table) lowestThresholdFor(endpoint, model string) int {
 // out on every row would change every existing reader's output to say what its absence already
 // says — while a client that finds this field EMPTY may safely print "$". A non-empty value is a
 // claim that the figures beside it are not dollars.
+//
+// FOLDED, so the claim is not made by a spelling. Both callers hand this a value
+// currencyOrDefault has already canonicalised, which is where the property is really
+// established; folding again costs one comparison and makes the predicate right for a caller
+// that has not. Getting it wrong is not a wrong figure but a wrong LABEL — "per Mtok" over a
+// table of dollars — the same false claim as the one this commit removes, in the other direction.
 func nonDefaultCurrency(c string) string {
-	if c == "" || c == CurrencyUSD {
+	if c == "" || strings.EqualFold(c, CurrencyUSD) {
 		return ""
 	}
 	return c

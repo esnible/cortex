@@ -3,6 +3,7 @@ package ledger
 import (
 	"errors"
 	"log/slog"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -500,8 +501,15 @@ func (w *Writer) Record(_ string, e *pipeline.SessionEvent) {
 	//
 	// NO RESOLVER MEANS NO UNIT, which is the Kubernetes deployment: empty already means USD on
 	// the read side, so the absent case needs no special value and no second branch.
+	//
+	// FOLDED RATHER THAN COMPARED EXACTLY, because w.rates is a pricing.Resolver — an EXPORTED
+	// INTERFACE, and core is consumed outside this repo, so what CurrencyFor returns is not this
+	// package's to guarantee. Both in-tree implementations canonicalise (currencyOrDefault), but a
+	// third-party one answering "usd" would put a currency field on every row of a dollars-only
+	// deployment and break the byte-identical promise above. One comparison is cheaper than
+	// relying on an interface's implementers to agree about case.
 	if w.rates != nil {
-		if c := w.rates.CurrencyFor(e.Host, r.Model); c != "" && c != pricing.CurrencyUSD {
+		if c := w.rates.CurrencyFor(e.Host, r.Model); c != "" && !strings.EqualFold(c, pricing.CurrencyUSD) {
 			r.Currency = rowLabel(c)
 		}
 	}

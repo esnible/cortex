@@ -2,7 +2,9 @@ package ledger
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/rossoctl/cortex/core/cost/pricing"
 	"github.com/rossoctl/cortex/core/cost/usage"
@@ -185,5 +187,135 @@ func TestFold_GroupCurrencySeparatesUnitsAndKeepsLegacyRowsInUSD(t *testing.T) {
 	}
 	if got := series["credits"]; got.Requests != 4 || got.CostMicros != 77_400 {
 		t.Errorf("credits = %+v, want Requests 4 and CostMicros 77400", got)
+	}
+}
+
+// A capped minute does not make a single-currency deployment refuse its own total.
+//
+// overflow() coarsens a row onto overflowKey on every axis at once, currency included, so one
+// minute past maxLabelsPerMinute used to put "(other)" into CurrenciesIn beside the real unit — a
+// second entry, which is exactly what len(Currencies) > 1 tests for downstream. The result was a
+// USD-only deployment withholding its headline and naming "(other)" as a currency it could not add
+// to dollars. "(other)" is not a unit an operator can even configure: normaliseUnit rejects "(".
+//
+// ASSERTED AS THE CONSEQUENCE, not as the mechanism. TestOverflow_ResetsCurrencyToo already pins
+// that overflow() rewrites the field, and it stayed green throughout — the bug was never in that
+// rewrite, it was in reading the result as a billing unit, so only a test at this layer sees it.
+func TestCurrenciesIn_TheOverflowLabelIsNotABillingUnit(t *testing.T) {
+	// The shape a capped minute actually produces: real rows, plus the one folded accumulator.
+	rows := []Row{
+		{Endpoint: "anthropic", Currency: "USD", Counts: usage.Counts{Requests: 1}},
+		overflow(Row{Endpoint: "gw", Model: "m", Currency: "USD", Counts: usage.Counts{Requests: 9}}),
+	}
+
+	got := CurrenciesIn(rows)
+
+	if len(got) != 1 || got[0] != pricing.CurrencyUSD {
+		t.Fatalf("CurrenciesIn = %v, want [%s]: a capped minute must not read as a second unit, or "+
+			"every deployment today withholds its total the moment one minute overflows",
+			got, pricing.CurrencyUSD)
+	}
+	for _, c := range got {
+		if c == overflowLabel {
+			t.Errorf("%q is reported as a billing unit; normaliseUnit could never have accepted it",
+				overflowLabel)
+		}
+	}
+}
+
+// A capped row does not hide a REAL second unit that sits beside it.
+//
+// The complement of the test above, and the direction that would break the feature rather than an
+// existing user: skipping the overflow label must not skip the rows around it. A window holding
+// credits and dollars still has to refuse, capped or not.
+func TestCurrenciesIn_SkippingOverflowStillSeesTheRealUnits(t *testing.T) {
+	rows := []Row{
+		{Endpoint: "anthropic", Currency: "USD"},
+		overflow(Row{Endpoint: "gw", Currency: "credits"}),
+		{Endpoint: "bob", Currency: "credits"},
+	}
+
+	got := CurrenciesIn(rows)
+
+	if len(got) != 2 {
+		t.Fatalf("CurrenciesIn = %v, want two units: the overflow exemption must not swallow the "+
+			"real rows beside it", got)
+	}
+}
+
+// The configured unit reaches the row on disk, and the default writes no field at all.
+//
+// THE PRODUCER SIDE OF THE WHOLE FEATURE, end to end through the seam the PR body says needed no
+// threading: config -> Build -> CurrencyFor -> Record -> the bytes -> decode. Nothing covered it,
+// so deleting the writer's entire unit-write block left the suite green, and so did dropping its
+// not-the-default condition.
+//
+// ASSERTED ON THE BYTES, not only on the decoded Row, because both halves of the claim live there:
+// a credits deployment must find "credits" in the file, and a dollars deployment must produce a
+// file with no currency key in it — which is what "a single-currency deployment produces
+// byte-identical files" means and the only form of that claim a test can check.
+func TestRecord_ConfiguredUnitReachesTheRowOnDisk(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		unit string // as written in pricing.endpoints[].unit
+		// wantOnDisk is the currency value the decoded row carries, "" when the field is absent.
+		wantOnDisk     string
+		wantKeyInBytes bool
+	}{
+		{"absent means USD and writes nothing", "", "", false},
+		{"explicit USD writes nothing either", "USD", "", false},
+		// The spelling four consumers used to read as a non-default unit. normaliseUnit
+		// canonicalises it, so it must be as silent on disk as "USD" is.
+		{"a lowercase usd is still the default", "usd", "", false},
+		{"a gateway billing in credits", "credits", "credits", true},
+		{"an operator's own spelling is preserved", "Bobcoins", "Bobcoins", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tbl, err := pricing.Build(&pricing.Config{Endpoints: []pricing.EndpointConfig{{
+				Hosts: []string{"gw"},
+				Unit:  tc.unit,
+				Models: map[string]pricing.ModelConfig{
+					"m": {TierRates: pricing.TierRates{InputCostPerMillion: 2}},
+				},
+			}}})
+			if err != nil {
+				t.Fatalf("Build: %v", err)
+			}
+
+			dir := t.TempDir()
+			now := at
+			w, err := New(dir, WithClock(func() time.Time { return now }), WithPricing(tbl))
+			if err != nil {
+				t.Fatalf("New: %v", err)
+			}
+			t.Cleanup(func() { _ = w.Close() })
+
+			w.Record("s1", costedEvent(t, "gw", "m", 0.25, 100, 50))
+			now = at.Add(time.Minute)
+			if err := w.Flush(); err != nil {
+				t.Fatalf("Flush: %v", err)
+			}
+
+			if got := string(readAllBytes(t, dir)); strings.Contains(got, `"currency"`) != tc.wantKeyInBytes {
+				t.Errorf("currency key present on disk = %v, want %v; line was:\n%s",
+					!tc.wantKeyInBytes, tc.wantKeyInBytes, got)
+			}
+			rows := readAllRows(t, dir)
+			if len(rows) != 1 {
+				t.Fatalf("got %d rows, want 1: %+v", len(rows), rows)
+			}
+			if rows[0].Currency != tc.wantOnDisk {
+				t.Errorf("Row.Currency on disk = %q, want %q", rows[0].Currency, tc.wantOnDisk)
+			}
+			// And the row reads back as the unit a reader will label its figure with, which is the
+			// answer the refusal is computed from — the default spelled out, never empty.
+			wantRead := tc.wantOnDisk
+			if wantRead == "" {
+				wantRead = pricing.CurrencyUSD
+			}
+			if got := rows[0].currencyOrUSD(); got != wantRead {
+				t.Errorf("currencyOrUSD() = %q, want %q", got, wantRead)
+			}
+		})
 	}
 }

@@ -136,7 +136,7 @@ func renderEffective(body []byte, stdout, stderr io.Writer) int {
 	// dollars and became a false claim the moment one could declare `unit: credits`.
 	anyNonUSD := false
 	for _, m := range e.Models {
-		if m.Unit != "" && m.Unit != pricing.CurrencyUSD {
+		if !isDefaultUnit(m.Unit) {
 			anyNonUSD = true
 			break
 		}
@@ -358,13 +358,26 @@ func perMtokLabel(anyNonUSD bool) string {
 	return "$/Mtok"
 }
 
+// isDefaultUnit reports whether a unit off the wire means the default, USD.
+//
+// ONE PREDICATE FOR BOTH READERS — the "$/Mtok" sub-header and the provenance cell — because they
+// are two renderings of one question and they disagreed: each compared against pricing.CurrencyUSD
+// case-sensitively, so a server sending "usd" made both of them call dollars a foreign unit.
+//
+// FOLDED ON THIS SIDE TOO, though core now canonicalises before it serialises. abctl is a client of
+// whatever server it is pointed at, including one older than itself, and a rate label is exactly
+// the kind of cosmetic disagreement nobody would think to look for after a partial upgrade.
+func isDefaultUnit(unit string) bool {
+	return unit == "" || strings.EqualFold(unit, pricing.CurrencyUSD)
+}
+
 // provenanceCell is a row's provenance, with its unit appended when that unit is not the default.
 //
 // The unit sits here because provenance is already the row's "where did this come from" cell, and a
 // currency is part of that answer. Empty means USD — the wire omits the default — so the common row
 // is unchanged.
 func provenanceCell(prov, unit string) string {
-	if unit == "" || unit == pricing.CurrencyUSD {
+	if isDefaultUnit(unit) {
 		return prov
 	}
 	return prov + " · " + unit
