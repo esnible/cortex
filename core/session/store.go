@@ -609,11 +609,18 @@ func (s *Store) ViewPage(sessionID string, before uint64, limit int) *pipeline.S
 // SessionSummary is a metadata-only view of a session, suitable for list
 // endpoints that shouldn't copy the full event backlog.
 type SessionSummary struct {
-	ID          string    `json:"id"`
-	CreatedAt   time.Time `json:"createdAt"`
-	UpdatedAt   time.Time `json:"updatedAt"`
-	EventCount  int       `json:"eventCount"`
-	TotalTokens int       `json:"totalTokens,omitempty"` // sum of Inference.TotalTokens across response events
+	ID         string    `json:"id"`
+	CreatedAt  time.Time `json:"createdAt"`
+	UpdatedAt  time.Time `json:"updatedAt"`
+	EventCount int       `json:"eventCount"`
+	// Title names this session from its own events; see sessionTitle. "(empty session)"
+	// when it has none, absent when nothing in the events named it.
+	//
+	// omitempty on the standing rule CostMicros states below: an unknown value must not
+	// render as a real one. cmd/abctl already treats a blank title as unnamed, so an absent
+	// key reaches it as the falsy value it wants.
+	Title       string `json:"title,omitempty"`
+	TotalTokens int    `json:"totalTokens,omitempty"` // sum of Inference.TotalTokens across response events
 	// CostMicros is what this session's events cost, in millionths of a dollar, summed from
 	// the records the session itself holds.
 	//
@@ -712,6 +719,22 @@ func (s *Store) ListSessions() []SessionSummary {
 			CreatedAt:  sess.CreatedAt,
 			UpdatedAt:  sess.UpdatedAt,
 			EventCount: len(sess.Events),
+			// A walk, and NOT in TotalTokens' cheap class below: it scans message CONTENT,
+			// the largest payload here. Bounded by iterating in reverse and stopping on the
+			// first unbeatable match (a /rename), so a NAMED session costs one event —
+			// 5.4us against 302us for the worst case on a 300-turn session, see
+			// BenchmarkListSessions_Title.
+			//
+			// That worst case is a session with user text but no /rename, NOT one with no
+			// title at all: rank 2 is always beatable, so the walk cannot terminate, and
+			// every message of every event gets three strings.Index scans. An
+			// assistant-only session is 14x cheaper than that, because a role comparison
+			// rejects each message before any scanning.
+			//
+			// Recomputed per call, so a trim that evicts an early /rename changes this
+			// title; maxEvents is unset by default. If this becomes hot, fold it at Append
+			// like PromptContext.
+			Title: sessionTitle(sess.Events),
 			// Still a walk, and deliberately left as one: it is a pointer deref per event
 			// with no allocation, where the money figures below needed a JSON unmarshal.
 			TotalTokens: sumTokens(sess.Events),

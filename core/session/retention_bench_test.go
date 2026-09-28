@@ -160,3 +160,62 @@ func BenchmarkRetainedHeap(b *testing.B) {
 		runtime.KeepAlive(s)
 	}
 }
+
+// BenchmarkListSessions_Title prices the claim the Title call site in ListSessions makes:
+// that the reverse walk stops at the first event carrying a title, so a named session costs
+// one event rather than all of them.
+//
+// Three sub-benchmarks, because one figure cannot show the shape:
+//
+//   - named: a /rename in the newest event — rank 0, so the walk breaks immediately. This is
+//     the case that has to be cheap, because it is the common one: every inference request
+//     re-sends the whole conversation, so a /rename from turn 3 is still in the newest event.
+//   - user-text: no /rename, so rank 2 is the best available — and rank 2 is always
+//     beatable, so the walk CANNOT terminate. Every message of every event gets three
+//     strings.Index scans. THIS IS THE WORST CASE, which is not the one you would guess.
+//   - no-title: assistant-only messages. Also a full walk, but 14x cheaper than user-text,
+//     because a role comparison rejects each message before any content scanning happens.
+//
+// Measured when this was written, at benchTurns=300: named 5.4us, user-text 302us,
+// no-title 22us. The 56x gap between the first and second is what the early break buys,
+// and why the call site can afford this at all.
+//
+// Reported rather than asserted: it is a per-poll cost against abctl's two-second refresh,
+// and the useful comparison is named-vs-user-text on one machine, not an absolute number.
+//
+//	go test ./session/ -bench ListSessions_Title -run '^$'
+func BenchmarkListSessions_Title(b *testing.B) {
+	for _, tc := range []struct {
+		name string
+		role string
+		last string // content of one extra message on the newest event
+	}{
+		{"named", "user", renamePrefix + "<command-args>a name</command-args>"},
+		{"user-text", "user", ""},
+		{"no-title", "assistant", ""},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			s := New(0, 100, 0)
+			for turn := 1; turn <= benchTurns; turn++ {
+				msgs := benchConversation(turn)
+				if tc.role != "user" {
+					for i := range msgs {
+						msgs[i].Role = tc.role
+					}
+				}
+				if tc.last != "" && turn == benchTurns {
+					msgs = append(msgs, pipeline.InferenceMessage{Role: "user", Content: tc.last})
+				}
+				s.Append("bench", pipeline.SessionEvent{
+					Phase:     pipeline.SessionResponse,
+					Inference: &pipeline.InferenceExtension{Messages: msgs},
+				})
+			}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				_ = s.ListSessions()
+			}
+		})
+	}
+}
