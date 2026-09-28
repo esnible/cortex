@@ -580,7 +580,11 @@ abctl is for, and the other three are surfaces you visit and leave.
   (relative), event count, tokens, cost, saved, context. `TITLE` is populated
   from Claude Code's transcripts — see
   [`--skip-claude-metadata`](#naming-sessions-from-claude-code---skip-claude-metadata)
-  — and is empty for a session nothing has harvested. Numerics are right-aligned
+  — and is empty for a session nothing has harvested. The proxy now also derives
+  a title of its own from the session's events and reports it as `title` on
+  `/v1/sessions`; **this pane does not read that field yet**, so a harvested
+  title is still the only thing that fills this column. Reconciling the two is
+  outstanding work. Numerics are right-aligned
   so the digits line up between rows.
 
   `CONTEXT(1M)` is a gauge, not a figure: how full the **conversation's**

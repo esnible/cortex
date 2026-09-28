@@ -135,6 +135,150 @@ func TestSessionTitle_EmptyUserContentSkipped(t *testing.T) {
 	}
 }
 
+// The harness attaches a <system-reminder> block to the user turn it belongs to, so a rank-2
+// candidate that takes the message verbatim titles the session with the reminder and never
+// reaches the prompt. Live payload shape: the reminder leads, the real ask follows.
+func TestSessionTitle_StripsReminder(t *testing.T) {
+	for _, tc := range []struct{ name, in, want string }{
+		{
+			"leading reminder, prompt after",
+			"<system-reminder>Codebase and user instructions are shown below.</system-reminder>test connection",
+			"test connection",
+		},
+		{
+			// 67 of 68 real cases have prose on BOTH sides, which is why the block is spliced
+			// out rather than everything before it being discarded.
+			"prose on both sides",
+			"my question\n<system-reminder>noise</system-reminder>\nand the follow-up",
+			"my question and the follow-up",
+		},
+		{
+			"repeated blocks",
+			"<system-reminder>a</system-reminder>mid<system-reminder>b</system-reminder>tail",
+			"midtail",
+		},
+		{
+			"adjacent blocks",
+			"<system-reminder>a</system-reminder><system-reminder>b</system-reminder>the ask",
+			"the ask",
+		},
+		{
+			"trailing reminder",
+			"the real ask<system-reminder>appended context</system-reminder>",
+			"the real ask",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := sessionTitle([]pipeline.SessionEvent{userEvent(tc.in)})
+			if got != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// A message that is nothing but a reminder names nothing. It must fall through to a real
+// title behind it rather than answering "" — the same mechanism
+// TestSessionTitle_EmptyUserContentSkipped pins for a tool-result message.
+func TestSessionTitle_ReminderOnlyFallsThrough(t *testing.T) {
+	events := []pipeline.SessionEvent{
+		userEvent("the genuine ask"),
+		userEvent("<system-reminder>just context, no prompt</system-reminder>"),
+	}
+	if got := sessionTitle(events); got != "the genuine ask" {
+		t.Errorf("got %q, want %q — a reminder-only message won", got, "the genuine ask")
+	}
+}
+
+// THE SAME FALL-THROUGH, WITHIN ONE EVENT. titleCandidate picks one message cheaply and only
+// then settles its rank, so a pick it has to reject must not take the event down with it —
+// an earlier message in the very same Messages slice can still title it. Every other
+// fall-through case in this file spans two events, where the outer walk covers the mistake;
+// these do not, and a two-pass titleCandidate answered "" for all three.
+func TestSessionTitle_DemotedPickFallsBackWithinEvent(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		msgs []string
+		want string
+	}{
+		{
+			"empty rename args after a real ask",
+			[]string{"a genuine ask", renamePrefix + "<command-args></command-args>"},
+			"a genuine ask",
+		},
+		{
+			"reminder-only message after a real ask",
+			[]string{"another genuine ask", "<system-reminder>ctx</system-reminder>"},
+			"another genuine ask",
+		},
+		{
+			// Two demotions deep: both trailing messages name nothing.
+			"two rejects in a row",
+			[]string{"the real one", "<system-reminder>a</system-reminder>", renamePrefix + "<command-args></command-args>"},
+			"the real one",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := sessionTitle([]pipeline.SessionEvent{userEvent(tc.msgs...)})
+			if got != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// Mirrors TestSessionTitle_UnclosedTag's stated asymmetry: a tag that can appear in ordinary
+// prose must not truncate the title when it closes nothing.
+func TestSessionTitle_UnterminatedReminder(t *testing.T) {
+	in := "what does <system-reminder> mean in this code"
+	if got := sessionTitle([]pipeline.SessionEvent{userEvent(in)}); got != in {
+		t.Errorf("got %q, want the raw string %q", got, in)
+	}
+}
+
+// Why the strip runs before EVERY rank arm and not only the rank-2 one. Both nestings are
+// wrong when it runs later: a reminder inside the query brackets rides along into the title,
+// and a <user_query> inside a reminder — a reminder quoting an earlier turn is enough — gets
+// mistaken for the real ask.
+func TestSessionTitle_ReminderNestedWithUserQuery(t *testing.T) {
+	for _, tc := range []struct{ name, in, want string }{
+		{
+			"reminder outside the query",
+			"<user_query>find the bug</user_query>\n<system-reminder>noise</system-reminder>",
+			"find the bug",
+		},
+		{
+			"reminder inside the query",
+			"<user_query>find <system-reminder>noise</system-reminder>the bug</user_query>",
+			"find the bug",
+		},
+		{
+			"query inside the reminder",
+			"<system-reminder>ctx <user_query>decoy</user_query></system-reminder>real ask",
+			"real ask",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := sessionTitle([]pipeline.SessionEvent{userEvent(tc.in)}); got != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// A /rename tests a PREFIX, so a reminder in front of one hides it entirely unless the strip
+// has already run. The strip's placement at the top of titleFrom is what makes this work.
+func TestSessionTitle_ReminderBeforeRename(t *testing.T) {
+	in := "<system-reminder>noise</system-reminder>" + renameMsg("Fix the parser")
+	events := []pipeline.SessionEvent{
+		userEvent(in),
+		userEvent("a later plain message that must not outrank it"),
+	}
+	if got := sessionTitle(events); got != "Fix the parser" {
+		t.Errorf("got %q, want %q", got, "Fix the parser")
+	}
+}
+
 func TestSessionTitle_Sanitizes(t *testing.T) {
 	for _, tc := range []struct{ name, in, want string }{
 		{"newline and tab fold", "a\nb\tc", "a b c"},

@@ -616,9 +616,13 @@ type SessionSummary struct {
 	// Title names this session from its own events; see sessionTitle. "(empty session)"
 	// when it has none, absent when nothing in the events named it.
 	//
+	// A SUGGESTION, NOT AN IDENTIFIER: derived from the events, recomputed per call, and
+	// nothing addresses a session by it. Eviction can change it between two polls.
+	//
 	// omitempty on the standing rule CostMicros states below: an unknown value must not
-	// render as a real one. cmd/abctl already treats a blank title as unnamed, so an absent
-	// key reaches it as the falsy value it wants.
+	// render as a real one. No consumer reads this yet — abctl's TITLE column still comes
+	// from harvested Claude Code transcripts — so an absent key is what a client that starts
+	// reading it should expect for a session the events never named.
 	Title       string `json:"title,omitempty"`
 	TotalTokens int    `json:"totalTokens,omitempty"` // sum of Inference.TotalTokens across response events
 	// CostMicros is what this session's events cost, in millionths of a dollar, summed from
