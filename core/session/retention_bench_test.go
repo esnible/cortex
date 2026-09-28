@@ -193,6 +193,12 @@ func BenchmarkListSessions_Title(b *testing.B) {
 		{"named", "user", renamePrefix + "<command-args>a name</command-args>"},
 		{"user-text", "user", ""},
 		{"no-title", "assistant", ""},
+		// REMINDER-BEARING, because without it this benchmark never executed stripReminders at
+		// all — the function the second commit exists for — and "parity with baseline" was
+		// measured on a fixture with zero reminder content. That blind spot hid a quadratic retry
+		// cascade: every message here settles to rankNone, which is the shape that drove
+		// titleCandidate's old retry loop to 7.20ms at 800 messages/event.
+		{"reminder-only", "user", "<system-reminder>context, no prompt</system-reminder>"},
 	} {
 		b.Run(tc.name, func(b *testing.B) {
 			s := New(0, 100, 0)
@@ -215,6 +221,40 @@ func BenchmarkListSessions_Title(b *testing.B) {
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
 				_ = s.ListSessions()
+			}
+		})
+	}
+}
+
+// BenchmarkSessionTitle_ReminderFanout measures the axis BenchmarkListSessions_Title does not:
+// MESSAGES PER EVENT, all of them reminder-only, which is the shape that made titleCandidate's
+// old retry loop quadratic. That loop re-scanned the whole Messages slice each time titleFrom
+// refused a pick, so an event where every message is refused cost O(n²) — 31.9µs at n=50 rising
+// to 7.20ms at n=800, a clean 4x per doubling and ~1088x the same event with no demotions, all
+// under the store's read lock whose writer side is Append on the request path.
+//
+// The single reverse scan that replaced it is linear: ~2.0x per doubling, 68µs at n=800.
+//
+// A SEPARATE BENCHMARK rather than another case in the table above, because the table varies
+// turns (events) and this has to vary messages within ONE event — the two axes multiply, and the
+// quadratic one was invisible while only the first was measured.
+//
+//	go test ./session/ -bench SessionTitle_ReminderFanout -run '^$'
+func BenchmarkSessionTitle_ReminderFanout(b *testing.B) {
+	for _, n := range []int{50, 200, 800} {
+		b.Run(fmt.Sprintf("msgs=%d", n), func(b *testing.B) {
+			msgs := make([]pipeline.InferenceMessage, 0, n)
+			for i := 0; i < n; i++ {
+				msgs = append(msgs, pipeline.InferenceMessage{
+					Role:    "user",
+					Content: "<system-reminder>" + strings.Repeat("x", 40) + "</system-reminder>",
+				})
+			}
+			events := []pipeline.SessionEvent{{Inference: &pipeline.InferenceExtension{Messages: msgs}}}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				_ = sessionTitle(events)
 			}
 		})
 	}

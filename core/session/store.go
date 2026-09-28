@@ -736,8 +736,23 @@ func (s *Store) ListSessions() []SessionSummary {
 			// rejects each message before any scanning.
 			//
 			// Recomputed per call, so a trim that evicts an early /rename changes this
-			// title; maxEvents is unset by default. If this becomes hot, fold it at Append
-			// like PromptContext.
+			// title; maxEvents is unset by default.
+			//
+			// THIS IS THE EXCEPTION TO THE RULE PromptContext STATES BELOW, and it is a real
+			// exception rather than an oversight — stated here because the two comments sit four
+			// lines apart and would otherwise read as a contradiction. That rule rejects an
+			// O(events) walk under the read lock; this is one, and a more expensive one than the
+			// walk it rejects, since a rank-2 session can never terminate early. With maxEvents
+			// unset (core/config/config.go) and ttl defaulting to never, it is unbounded in
+			// practice: the repo's own cited 5078-event session extrapolates to ~5ms of lock hold
+			// per ListSessions, on abctl's two-second poll, in front of a writer that is Append on
+			// the proxy's request path.
+			//
+			// Not folded at Append yet because the fold is not free either — a title is not
+			// monotonic the way a cost counter is: eviction can UNSET a /rename that Append
+			// already folded in, so the fold needs invalidation on trim rather than an
+			// accumulate-only field. That is the right fix and it is bigger than this change; see
+			// the PR discussion. Until then this is a known cost, not an unnoticed one.
 			Title: sessionTitle(sess.Events),
 			// Still a walk, and deliberately left as one: it is a pointer deref per event
 			// with no allocation, where the money figures below needed a JSON unmarshal.

@@ -441,3 +441,123 @@ func TestSessionSummary_TitleOmittedWhenEmpty(t *testing.T) {
 		t.Errorf("round-tripped to %q", back.Title)
 	}
 }
+
+// A candidate that SANITIZES to empty names nothing, and accepting one used to lock its rank and
+// discard the real title behind it. The raw-content tests inside titleFrom cannot catch this:
+// whitespace and control runes are non-empty until sanitizeTitle folds them away.
+//
+// All three rank arms, because the two better ones are worse: a whitespace-only /rename claimed
+// rank 0, which also BREAKS the walk, so nothing behind it was even examined.
+func TestSessionTitle_BlankAfterSanitizeFallsThrough(t *testing.T) {
+	for _, tc := range []struct{ name, blank string }{
+		{"spaces", "   "},
+		{"tab", "\t"},
+		{"newline", "\n"},
+		{"nul", "\x00"},
+		{"zero width", "​"},
+		{"line separator", " "},
+		{"rename with blank args", renameMsg("  ")},
+		{"user_query with blank body", "<user_query> </user_query>"},
+		{"rename with control args", renameMsg("\x00")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			events := []pipeline.SessionEvent{userEvent("the real ask"), userEvent(tc.blank)}
+			if got := sessionTitle(events); got != "the real ask" {
+				t.Errorf("got %q, want %q — a blank-after-sanitize candidate won", got, "the real ask")
+			}
+		})
+	}
+}
+
+// A session whose ONLY candidate sanitizes to blank is unnamed — "" and not the blank string,
+// so omitempty drops the field rather than shipping a whitespace title.
+func TestSessionTitle_OnlyBlankCandidateIsUnnamed(t *testing.T) {
+	for _, in := range []string{"   ", "\t\n", renameMsg(" "), "<user_query>​</user_query>"} {
+		if got := sessionTitle([]pipeline.SessionEvent{userEvent(in)}); got != "" {
+			t.Errorf("sessionTitle(%q) = %q, want %q", in, got, "")
+		}
+	}
+}
+
+// quickRank is an upper bound in ONE direction only, and the code used to claim both. An
+// unterminated <user_query> guesses rank 1 and settles at rank 2, so a rank recorded from the
+// guess would outrank a genuine <user_query> elsewhere in the session.
+func TestSessionTitle_UnterminatedUserQueryDoesNotOutrank(t *testing.T) {
+	// The prose mentioning the tag comes LAST, so an unsettled rank-1 guess would win.
+	events := []pipeline.SessionEvent{
+		userEvent("<user_query>the genuine query</user_query>"),
+		userEvent("what does <user_query> mean in this code"),
+	}
+	if got := sessionTitle(events); got != "the genuine query" {
+		t.Errorf("got %q, want %q — an unterminated <user_query> was recorded as rank 1", got, "the genuine query")
+	}
+}
+
+// THE SAME THING WITHIN ONE EVENT, which is where the two-pass pick lost it: titleFrom demoted
+// the pick to a non-empty rank-2 title, and the retry loop only re-picked on EMPTY, so a
+// better-ranked message sitting in front of it was discarded.
+func TestSessionTitle_DemotedNonEmptyPickKeepsBetterRank(t *testing.T) {
+	msgs := []string{"<user_query>the real ask</user_query>", "what does <user_query> mean here"}
+	if got := sessionTitle([]pipeline.SessionEvent{userEvent(msgs...)}); got != "the real ask" {
+		t.Errorf("got %q, want %q — a demoted pick discarded a better-ranked message", got, "the real ask")
+	}
+}
+
+// LAST MATCH IN EVENT ORDER WINS (title.go's stated rule), even when a reminder hides the later
+// match's /rename prefix. quickRank used HasPrefix, so the reminder-prefixed rename guessed rank
+// 2 and the earlier bare rename took it.
+func TestSessionTitle_LaterReminderPrefixedRenameWins(t *testing.T) {
+	msgs := []string{renameMsg("early"), "<system-reminder>n</system-reminder>" + renameMsg("late")}
+	if got := sessionTitle([]pipeline.SessionEvent{userEvent(msgs...)}); got != "late" {
+		t.Errorf("got %q, want %q — a later reminder-prefixed /rename lost to an earlier one", got, "late")
+	}
+	// Across events too, where the outer walk's reverse order should already favour the later.
+	two := []pipeline.SessionEvent{
+		userEvent(renameMsg("early")),
+		userEvent("<system-reminder>n</system-reminder>" + renameMsg("late")),
+	}
+	if got := sessionTitle(two); got != "late" {
+		t.Errorf("across events: got %q, want %q", got, "late")
+	}
+}
+
+// Nested reminder blocks must be matched by DEPTH. Pairing each open with the next close leaked
+// the outer closing tag into the title and dropped the text between the two open tags.
+func TestSessionTitle_NestedReminders(t *testing.T) {
+	for _, tc := range []struct{ name, in, want string }{
+		{
+			"nested block leaves no stray tag",
+			"prose <system-reminder>a<system-reminder>b</system-reminder> outer-tail</system-reminder> real ask",
+			"prose real ask",
+		},
+		{
+			"nested block spanning to the end",
+			"<system-reminder>a<system-reminder>b</system-reminder>c</system-reminder>the ask",
+			"the ask",
+		},
+		{
+			// Unbalanced: two opens, one close. The remainder is kept verbatim, matching the
+			// unterminated policy TestSessionTitle_UnterminatedReminder pins.
+			"unbalanced opens keep the remainder",
+			"<system-reminder>a<system-reminder>b</system-reminder>c",
+			"<system-reminder>a<system-reminder>b</system-reminder>c",
+		},
+		{
+			"three deep",
+			"head <system-reminder>1<system-reminder>2<system-reminder>3</system-reminder></system-reminder></system-reminder> tail",
+			"head tail",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := sessionTitle([]pipeline.SessionEvent{userEvent(tc.in)}); got != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+	// No stray closing tag may survive in any title this function produces.
+	got := sessionTitle([]pipeline.SessionEvent{userEvent(
+		"prose <system-reminder>a<system-reminder>b</system-reminder> t</system-reminder> ask")})
+	if strings.Contains(got, reminderClose) || strings.Contains(got, reminderOpen) {
+		t.Errorf("title leaked a reminder tag: %q", got)
+	}
+}
