@@ -119,10 +119,45 @@ var splitInsideOutputTally = func() int {
 // 1000 input at 7 + 200 cache reads at 3 + 500 output at 23 micros.
 const modelledWholeUSD = (1000*7 + 200*3 + 500*23) / 1e6
 
-// costFixture pairs a parity fixture with the record every listener must produce for it.
+// costFixture pairs a parity fixture with the record every listener must produce for it, and
+// with the token report the session event must carry alongside that record.
 type costFixture struct {
 	fixture
 	want event.Event
+	// wantTokens is the count report the RESPONSE EVENT must carry, nil for a fixture whose path
+	// no parser reads. Asserted separately from want because the two travel separately and
+	// therefore fail separately: the cost record is published into pctx.Extensions.Custom, which
+	// every listener snapshots, while the counts live on the inference extension, which only the
+	// outbound recorders snapshotted. That is not hypothetical — it is why a reverse-proxied turn
+	// served a whole `configured` cost for zero tokens with this table green.
+	//
+	// A CONSUMER NEEDS BOTH AND CANNOT DERIVE EITHER FROM THE OTHER. Money without counts cannot
+	// be attributed or checked; and a count recovered from the money by dividing out the rate is
+	// a restatement of the rate table rather than a measurement — it agrees with itself even on a
+	// mispriced turn. cost/usage reads every token figure it reports off SessionEvent.Inference
+	// (usage.go's foldInto) and nowhere else, so an absent extension is an absent count there.
+	wantTokens *inferenceSummary
+}
+
+// anthropicKinds is what the fixtures below report: uncached input, cache reads and output —
+// and NOT cache writes or reasoning. Written as the bit layout pipeline.InferenceExtension
+// documents (Input=1, CacheRead=2, CacheWrite=4, Output=8, Reasoning=16) rather than as 11,
+// because the claim being pinned is which sub-kinds the provider EXPOSED: a set bit reading
+// zero means "reported none", an unset bit means "never said", and a consumer showing a cache
+// hit rate has to tell those apart.
+const anthropicKinds = 1 | 2 | 8
+
+// anthropicTokens is the count report for the turn every fixture below sends, buffered or
+// streamed: the same tokens the rate table turns into modelledWholeUSD. Shared so that a
+// fixture changing its counters without changing its expectation is a compile-time edit here
+// rather than a silent disagreement.
+var anthropicTokens = &inferenceSummary{
+	Model:           "claude-opus-5",
+	TotalTokens:     1700,
+	InputTokens:     1000,
+	CacheReadTokens: 200,
+	OutputTokens:    500,
+	PresentKinds:    anthropicKinds,
 }
 
 func costFixtures(t *testing.T, direction pipeline.Direction) []costFixture {
@@ -156,6 +191,7 @@ func costFixtures(t *testing.T, direction pipeline.Direction) []costFixture {
 			PromptUSD:  (1000*7 + 200*3) / 1e6,
 			OutputUSD:  500 * 23 / 1e6,
 		},
+		wantTokens: anthropicTokens,
 	}, {
 		// THE GATEWAY'S OWN FIGURE WINS, and the modelled one is computed alongside for drift.
 		// The precedence rule is the reason cost/settle exists, so every listener has to apply it.
@@ -175,6 +211,10 @@ func costFixtures(t *testing.T, direction pipeline.Direction) []costFixture {
 			PromptUSD:  (1000*7 + 200*3) / 1e6,
 			OutputUSD:  500 * 23 / 1e6,
 		},
+		// The gateway's figure winning changes whose number is believed, not what the
+		// response reported. A header must never suppress the counts: they are how the
+		// believed figure gets checked against the modelled one at all.
+		wantTokens: anthropicTokens,
 	}, {
 		// THE STREAMED TURN. Same money as the buffered one, arriving as frames — which is where
 		// the listeners differ most: per-frame dispatch, a terminal frame, and a finalization
@@ -198,6 +238,7 @@ func costFixtures(t *testing.T, direction pipeline.Direction) []costFixture {
 			PromptUSD:  (1000*7 + 200*3) / 1e6,
 			OutputUSD:  500 * 23 / 1e6,
 		},
+		wantTokens: anthropicTokens,
 	}, {
 		// A REFUSED HEADER on a path the parser cannot read. The figure is declined and the
 		// refusal published, so the coverage gap stays nameable instead of looking like a
@@ -219,6 +260,11 @@ func costFixtures(t *testing.T, direction pipeline.Direction) []costFixture {
 			// in the table.
 			Provenance: pricing.ProvNone.String(),
 		},
+		// No counts, and that is the correct report rather than a gap: no parser reads
+		// /v1/embeddings, so nothing populated the extension. Pinned as nil so a future
+		// parser gaining that path has to state its counts here instead of arriving as
+		// an unexplained diff.
+		wantTokens: nil,
 	}, {
 		// THE SPEND THIS SERIES NEWLY ADMITS: an endpoint the parser cannot read, priced from the
 		// gateway's own header. Before cost was settled on every proxied response this figure
@@ -242,6 +288,9 @@ func costFixtures(t *testing.T, direction pipeline.Direction) []costFixture {
 			// No halves: there is no usage to model on a path the parser could not read, and
 			// inventing them from the header would attribute a figure nobody split.
 		},
+		// A believed figure with no counts behind it — the one shape where money without
+		// tokens is honest, and worth pinning next to the shape where it is a defect.
+		wantTokens: nil,
 	}, {
 		// THE SAME STREAMED TURN, CUT MID-EVENT. Envoy's body messages are chunks of a byte
 		// stream, so nothing aligns them with SSE framing, and the event carrying the output
@@ -270,6 +319,9 @@ func costFixtures(t *testing.T, direction pipeline.Direction) []costFixture {
 			PromptUSD:  (1000*7 + 200*3) / 1e6,
 			OutputUSD:  500 * 23 / 1e6,
 		},
+		// The same counts as the un-split fixture, which is the same claim the money makes
+		// one line up: how a body was chunked must not change what the response reported.
+		wantTokens: anthropicTokens,
 	}}
 }
 
@@ -308,6 +360,10 @@ func TestCostRecordParity(t *testing.T) {
 					// ABSOLUTE FIRST. Two listeners agreeing on a wrong figure is what a shared
 					// bug in cost/settle looks like, and a pairwise check cannot see it.
 					assertRecord(t, l.name, *rec, cf.want)
+					// And the counts the figure was computed from, on the same event. Absolute
+					// for the reason above, sharpened: the listeners of ONE DIRECTION shared
+					// this gap, so they agreed with each other while reporting nothing.
+					assertTokens(t, l.name, obs.Inference, cf.wantTokens)
 					records[l.name] = rec
 				}
 				// THEN PAIRWISE, over the whole record rather than the fields named above, so a
@@ -365,6 +421,49 @@ func assertRecord(t *testing.T, listener string, got, want event.Event) {
 	}
 	if got.OutputUSD != want.OutputUSD {
 		t.Errorf("%s: OutputUSD = %v, want %v", listener, got.OutputUSD, want.OutputUSD)
+	}
+}
+
+// assertTokens compares the token report the response event carried, naming the field that
+// broke for the same reason assertRecord does.
+//
+// The absent-report case is called out on its own line rather than left to a struct diff,
+// because it is the failure that does not look like one downstream: a consumer reading
+// SessionEvent.Inference gets nil, reports zero tokens beside a cost that is whole and
+// correct, and nothing in what it serves says a measurement is missing rather than small.
+func assertTokens(t *testing.T, listener string, got, want *inferenceSummary) {
+	t.Helper()
+	if want == nil {
+		if got != nil {
+			t.Errorf("%s: token report = %+v, want none — this path has no parser, so counts here came from somewhere unaccounted for", listener, *got)
+		}
+		return
+	}
+	if got == nil {
+		t.Errorf("%s: the response event carried NO token report, want %+v — the counts the cost was priced from reach no consumer, and a reader sees a whole cost for zero tokens", listener, *want)
+		return
+	}
+	if got.Model != want.Model {
+		t.Errorf("%s: Model = %q, want %q — a count with no model cannot be priced", listener, got.Model, want.Model)
+	}
+	for _, f := range []struct {
+		name      string
+		got, want int
+	}{
+		{"TotalTokens", got.TotalTokens, want.TotalTokens},
+		{"InputTokens", got.InputTokens, want.InputTokens},
+		{"CacheReadTokens", got.CacheReadTokens, want.CacheReadTokens},
+		{"CacheWriteTokens", got.CacheWriteTokens, want.CacheWriteTokens},
+		{"OutputTokens", got.OutputTokens, want.OutputTokens},
+		{"ReasoningTokens", got.ReasoningTokens, want.ReasoningTokens},
+	} {
+		if f.got != f.want {
+			t.Errorf("%s: %s = %d, want %d", listener, f.name, f.got, f.want)
+		}
+	}
+	if got.PresentKinds != want.PresentKinds {
+		t.Errorf("%s: PresentKinds = %#b, want %#b — which sub-kinds the provider exposed, which is what separates a reported zero from a count never stated",
+			listener, got.PresentKinds, want.PresentKinds)
 	}
 }
 

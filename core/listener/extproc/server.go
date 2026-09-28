@@ -357,6 +357,7 @@ func (s *Server) recordInboundSession(pctx *pipeline.Context) {
 		Phase:       pipeline.SessionRequest,
 		RequestID:   pctx.RequestID(),
 		A2A:         pipeline.SnapshotA2A(pctx.Extensions.A2A),
+		Inference:   pipeline.SnapshotInference(pctx.Extensions.Inference),
 		Invocations: pipeline.SnapshotInvocations(pctx.Extensions.Invocations, pipeline.InvocationPhaseRequest),
 		Plugins:     plugins,
 		Identity:    pipeline.SnapshotIdentity(pctx),
@@ -493,12 +494,17 @@ func (s *Server) recordInboundResponseSession(pctx *pipeline.Context) {
 		return
 	}
 	sid := inboundSessionID(pctx)
+	// Inference carries the token counts, and inbound inference is a real shape — an
+	// ext_proc sidecar in front of a model endpoint, the same case a reverse proxy
+	// serves. Omitting it published a priced cost with no counts behind it; see
+	// SnapshotInference for why that reads as free traffic rather than as a gap.
 	ev := pipeline.SessionEvent{
 		At:          time.Now(),
 		Direction:   pipeline.Inbound,
 		Phase:       pipeline.SessionResponse,
 		RequestID:   pctx.RequestID(),
 		A2A:         pipeline.SnapshotA2A(pctx.Extensions.A2A),
+		Inference:   pipeline.SnapshotInference(pctx.Extensions.Inference),
 		Invocations: pipeline.SnapshotInvocations(pctx.Extensions.Invocations, pipeline.InvocationPhaseResponse),
 		Plugins:     plugins,
 		Identity:    pipeline.SnapshotIdentity(pctx),

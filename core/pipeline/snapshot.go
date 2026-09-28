@@ -73,6 +73,16 @@ func snapshotClient(c *EventClient) *EventClient {
 // fields (Completion, FinishReason, *Tokens) get assigned on the live
 // extension during OnResponse; without snapshotting, the request event's
 // view would contain the eventual response's token counts and completion.
+//
+// EVERY RECORDER MUST CALL THIS, IN EITHER DIRECTION. It is the only route by which
+// token counts reach a SessionEvent, and cost/usage reads every figure it reports
+// off SessionEvent.Inference (usage.go's foldInto) — so a recorder that omits it
+// publishes a turn whose counts reach nothing. The omission does not present as
+// one: the cost record travels independently, published into Extensions.Custom and
+// collected by SnapshotPlugins, so a consumer sees a whole, correctly priced cost
+// beside zero tokens with nothing to say a measurement is missing rather than
+// small. The inbound recorders omitted it until inbound inference traffic existed —
+// a reverse proxy in front of a model endpoint — and then it read as free traffic.
 func SnapshotInference(ext *InferenceExtension) *InferenceExtension {
 	if ext == nil {
 		return nil

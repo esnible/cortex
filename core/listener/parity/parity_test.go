@@ -432,6 +432,14 @@ func observationDiff(a, b *observation) string {
 	if !reflect.DeepEqual(a.PluginKeys, b.PluginKeys) {
 		return "PluginKeys: " + jsonPretty(a.PluginKeys) + " vs " + jsonPretty(b.PluginKeys)
 	}
+	// One listener reporting token counts while another does not. Worth saying what
+	// this check CANNOT do, because that is how the gap it was added for survived: two
+	// listeners that both record nothing agree, so a gap shared by a direction's whole
+	// listener set passes here. The inbound pair did exactly that. The absolute
+	// expectation in cost_parity_test.go covers the shared case; this covers the split.
+	if !reflect.DeepEqual(a.Inference, b.Inference) {
+		return "Inference: " + jsonPretty(a.Inference) + " vs " + jsonPretty(b.Inference)
+	}
 	// Compare per-plugin JSON payloads structurally to tolerate
 	// whitespace and map-order differences between listeners.
 	keys := make([]string, 0, len(a.PluginEventJSON))
