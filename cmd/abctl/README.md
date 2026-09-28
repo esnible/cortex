@@ -502,10 +502,11 @@ be repeated for the same reason. The keychain is named on the delete because an
 add to the System keychain is not undone by a delete that defaults to the login
 one.
 
-`status` suggests `security verify-cert` without running it. Off macOS these
-become a suggestion to add or remove the file in the OS trust store, naming the
-usual Debian and Fedora routes and saying plainly that the exact step depends on
-the distribution.
+On macOS, `status` suggests `security verify-cert` without running it. Off
+macOS it suggests nothing: there is no portable check to name, and `enable` and
+`disable` already carry the trust-store guidance for those platforms — naming
+the usual Debian and Fedora routes and saying plainly that the exact step
+depends on the distribution.
 
 It is `ca.crt` — the single bridge CA — and deliberately **not** the
 `bundle.crt` in the same directory, which holds ~129 certificates and exists for
@@ -526,18 +527,19 @@ only scheme `enable` writes. The loopback spellings are folded together
 while the settings file names `127.0.0.1`, and a hand-typed address must not be
 called someone else's proxy.
 
-That is still not a record abctl keeps — there is no state file. `disable` removes
-the key only when it matches, and reports anything else — a corporate proxy, a
-loopback proxy on a port the config does not name, a non-string value — while
-leaving it alone. `enable` refuses rather than overwriting a foreign value. The
-remaining collision is narrow: your own unrelated proxy on *exactly* the address
-Cortex is configured for. The prompt names the exact value first, and the `.bak`
-is already written.
+That is still not a record abctl keeps — there is no state file, so ownership is
+re-decided from the value each time.
 
-Ownership has three answers, not two: a config that cannot be read yields
-**cannot tell** rather than "not ours", because a bool would have to guess, and
-guessing "not ours" toward a `delete` is the dangerous direction. `status` says so
-in those words instead of ruling on it.
+Ownership has three answers, not two. A value that matches is **ours**; a
+corporate proxy, or a non-string value, is **not ours** and is left alone by both
+verbs. The third is **cannot tell**: when there is no address to compare against
+— the config is missing or unreadable — any loopback `http` proxy could be this
+one, and a bool would have to guess. Guessing "not ours" toward a `delete` is the
+dangerous direction, so it is not a bool. `status` reports "cannot tell" in those
+words rather than ruling on it. `disable` asks before removing such a value and
+refuses under `--yes`, since `--yes` means "do not ask me", not "decide for me".
+`enable` refuses rather than overwriting anything it does not own. Whatever is
+removed, `writeSettings` has already kept the file as a `.bak`.
 
 **Whether anything is listening is a separate question**, reported on its own
 line. A stopped Cortex is the normal state of a laptop and is not a verdict on the
@@ -551,6 +553,12 @@ documented lever, not a guarantee of coverage.
 A settings file with comments in it is refused, not rewritten. VS Code permits
 them; the strict JSON reader here does not, and silently stripping a user's
 comments to add one key is the wrong trade.
+
+`enable` and `disable` need a settings document to already exist: a path that is
+missing, empty, or holds only `null` means IBM Bob has not saved settings there,
+and both refuse rather than creating a file at a path nothing reads. The refusal
+names the path, and `--settings` if it is the wrong one. `status` reports the
+Cortex status as unknown there, saying which of the three it found.
 
 Only macOS's settings location is known (`~/Library/Application Support/IBM
 Bob/User/settings.json`). Elsewhere `--settings PATH` is required rather than

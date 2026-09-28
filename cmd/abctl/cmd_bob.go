@@ -336,10 +336,9 @@ func bobSameLoopback(a, b string) bool {
 
 // bobIsLoopbackProxy reports whether val is an http proxy on this machine.
 //
-// Used ONLY by status, to tell "a local proxy that is not the configured one" —
-// almost always a stale Cortex address from before the port moved — apart from a
-// corporate proxy somewhere else. It is deliberately NOT an ownership test: it says
-// nothing about who wrote the value, so disable must not consult it.
+// A shape test, not an ownership test: it says nothing about who wrote the value. Every
+// loopback http proxy satisfies it, Cortex's or not. bobOwns treats that shape as
+// bobUnknown — never as bobOurs — precisely because it cannot tell them apart.
 func bobIsLoopbackProxy(val string) bool {
 	u, err := url.Parse(strings.TrimSpace(val))
 	if err != nil || u.Host == "" || u.Scheme != "http" {
@@ -781,9 +780,17 @@ func bobAbsorbSeparator(src []byte, from, to int) int {
 	if nl < 0 || len(bytes.TrimSpace(src[to:to+nl])) != 0 {
 		return from
 	}
-	// Is what precedes it also one? Walk back over the previous line.
+	// Is what precedes it also one? The from == 0 test comes first because the walk
+	// below slices src[:from-1], which panics on from == 0 rather than reporting it.
+	// Unreachable today — every caller passes a from inside an object, so at least the
+	// opening brace precedes it — which is exactly why the order is worth fixing now
+	// rather than after a new caller makes it reachable.
+	if from == 0 || src[from-1] != '\n' {
+		return from
+	}
+	// Walk back over the previous line.
 	prevStart := bytes.LastIndexByte(src[:from-1], '\n') + 1
-	if from == 0 || src[from-1] != '\n' || len(bytes.TrimSpace(src[prevStart:from-1])) != 0 {
+	if len(bytes.TrimSpace(src[prevStart:from-1])) != 0 {
 		return from
 	}
 	return prevStart
@@ -875,6 +882,11 @@ func bobBackupNote(settingsPath string) string {
 	if _, err := os.Stat(settingsPath); err != nil {
 		// Covers a missing file and an unreadable one alike: in both cases this run
 		// will not produce a .bak, which is the only thing being claimed.
+		//
+		// Unreachable from enable and disable since bobNoDocument gates both on the file
+		// existing, so a caller that prints this note has already found one. Kept rather
+		// than deleted: the note's job is to describe writeSettings truthfully for any
+		// path handed to it, and its own test still exercises this arm directly.
 		return unchanged + ".\n  No backup is made — there is no existing file to copy.\n\n"
 	}
 	if _, err := os.Stat(bak); err == nil {
@@ -912,6 +924,51 @@ func bobDuplicateKey(settingsPath string) error {
 	return nil
 }
 
+// bobNoDocument reports why the settings file cannot be treated as IBM Bob's, or nil.
+//
+// readSettings cannot answer this: it returns an empty map for a missing file, for an
+// empty one, and for a bare `null` alike, so every one of the three reads back as "a
+// settings document that happens to set nothing". They are not the same thing. IBM Bob
+// writes this file the first time it stores a setting, so no document at all means Bob
+// has not run here — most often a --settings typo, or the wrong machine.
+//
+// That matters because the write path only discovers it late: `null` reaches bobSetKey,
+// which rejects a non-object top level, but by then enable has printed what it will set,
+// prompted, and copied the file to .bak. Promising a write that cannot happen is the
+// failure being closed, so this runs before anything is printed.
+//
+// It is deliberately NOT fixed inside readSettings, which claude-code shares: coercing
+// null to an empty document is the right reading for a command that re-marshals the whole
+// file, and changing it there would change that command's behaviour.
+//
+// An unreadable file is not this check's business — readSettings reports it, with its own
+// wording, and "exists but cannot be read" is a different problem from "is not there".
+func bobNoDocument(settingsPath string) error {
+	src, err := os.ReadFile(settingsPath) //nolint:gosec // operator-supplied path
+	if err != nil {
+		if os.IsNotExist(err) {
+			return fmt.Errorf("%s does not exist, so IBM Bob has not saved settings here", settingsPath)
+		}
+		return nil
+	}
+	if len(bytes.TrimSpace(src)) == 0 {
+		return fmt.Errorf("%s is empty, so IBM Bob has not saved settings here", settingsPath)
+	}
+	if bytes.Equal(bytes.TrimSpace(src), []byte("null")) {
+		return fmt.Errorf("%s holds only `null`, which sets nothing", settingsPath)
+	}
+	return nil
+}
+
+// bobNotInstalled is the refusal enable and disable share. One wording for both, because
+// the reason is the same and only the verb differs.
+func bobNotInstalled(what string, reason error, stderr io.Writer) int {
+	fmt.Fprintf(stderr, "abctl: %v.\n"+
+		"  Nothing to %s. Start IBM Bob and change any setting so it writes the file,\n"+
+		"  or pass --settings with the path to a settings.json it does use.\n", reason, what)
+	return 1
+}
+
 func bobEnable(settingsPath, cortexCfgPath string, yes bool, stdout, stderr io.Writer) int {
 	want, cfg, err := wantedFromConfig(cortexCfgPath)
 	if err != nil {
@@ -933,6 +990,10 @@ func bobEnable(settingsPath, cortexCfgPath string, yes bool, stdout, stderr io.W
 		return 1
 	}
 	proxy := want[envProxy]
+
+	if nerr := bobNoDocument(settingsPath); nerr != nil {
+		return bobNotInstalled("enable", nerr, stderr)
+	}
 
 	if derr := bobDuplicateKey(settingsPath); derr != nil {
 		fmt.Fprintf(stderr, "abctl: %s: %v\n", settingsPath, derr)
@@ -1033,6 +1094,10 @@ func bobEnable(settingsPath, cortexCfgPath string, yes bool, stdout, stderr io.W
 }
 
 func bobDisable(settingsPath, wantProxy, caPath string, yes bool, stdout, stderr io.Writer) int {
+	if nerr := bobNoDocument(settingsPath); nerr != nil {
+		return bobNotInstalled("disable", nerr, stderr)
+	}
+
 	if derr := bobDuplicateKey(settingsPath); derr != nil {
 		fmt.Fprintf(stderr, "abctl: %s: %v\n", settingsPath, derr)
 		return 1
@@ -1123,6 +1188,9 @@ func bobDisable(settingsPath, wantProxy, caPath string, yes bool, stdout, stderr
 const (
 	bobStatusYes = "IBM Bob is configured to use the Cortex proxy"
 	bobStatusNo  = "IBM Bob is *NOT* configured to use the Cortex proxy"
+	// A third answer, not a flavour of bobStatusNo: "not configured" is a claim about
+	// Bob's settings, and with no settings document there is nothing to make it about.
+	bobStatusUnknown = "IBM Bob's Cortex status is unknown"
 )
 
 func bobStatus(settingsPath, cortexCfgPath, wantProxy, caPath string, stdout io.Writer) int {
@@ -1135,6 +1203,16 @@ func bobStatus(settingsPath, cortexCfgPath, wantProxy, caPath string, stdout io.
 	// claudeCodeStatus and bobShellStatus make. A non-zero status here would make
 	// `abctl configure bob status` unusable in a shell conditional for anything but
 	// "is it on".
+	// No document means no answer. The verdict this used to print was bobStatusNo with
+	// `"http.proxy" is unset` under it — a positive report about a file that is not
+	// there, indistinguishable from a real Bob that simply is not routed through Cortex.
+	// Saying so is the difference between "Bob is not configured" and "abctl cannot tell
+	// whether Bob is configured", and only the second is true here.
+	if nerr := bobNoDocument(settingsPath); nerr != nil {
+		fmt.Fprintf(stdout, "%s\n  %v\n", bobStatusUnknown, nerr)
+		return 0
+	}
+
 	if derr := bobDuplicateKey(settingsPath); derr != nil {
 		// Two values, and no way to say which one Bob uses without reimplementing its
 		// precedence. Reporting either as "the setting" would be a guess, so the

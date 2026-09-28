@@ -1790,3 +1790,193 @@ func TestBobDisable_RefusesToDeleteAGuessUnattended(t *testing.T) {
 		})
 	}
 }
+
+// bobSetKey has two ways to write a key: splice a new member in, or replace the span of
+// one already there. Every other enable test takes the insert path, because a settings
+// file that already names http.proxy is either identical to what we would write (so
+// enable stops at "Already enabled") or foreign (so it refuses). Replacing needs the
+// narrow middle: ours, and spelled differently.
+//
+// "localhost:47600" in the file against the "127.0.0.1:47600" the config derives is
+// exactly that — bobOwns calls it ours, the strings differ, so enable falls through to
+// a write over an existing member. Reached by no other test in this file: replacing the
+// branch body with panic() leaves the whole suite green.
+func TestBobEnable_ReplacesADifferentSpellingOfTheSameListener(t *testing.T) {
+	settings, cfg := fixture(t, `{
+  "editor.fontSize": 13,
+  "http.proxy": "http://localhost:47600",
+  "http.proxyAuthorization": "keep-me"
+}`)
+	noPrompt(t, true)
+
+	var out, errb bytes.Buffer
+	if code := bobEnable(settings, cfg, true, &out, &errb); code != 0 {
+		t.Fatalf("exit %d: %s", code, errb.String())
+	}
+	// Not "Already enabled": the values differ, so this must be a write.
+	if strings.Contains(out.String(), "Already enabled") {
+		t.Errorf("treated a differing spelling as already correct:\n%s", out.String())
+	}
+
+	doc := bobDoc(t, settings)
+	if got := doc[bobProxyKey]; got != "http://127.0.0.1:47600" {
+		t.Errorf("%s = %v, want the config's spelling", bobProxyKey, got)
+	}
+	// The whole point of replacing rather than inserting: one member, not two. A
+	// splice that appended instead would leave the key named twice, which bobFindMember
+	// then refuses outright on the next run — so this also pins that enable stays
+	// re-runnable.
+	if n := strings.Count(mustRead(t, settings), `"http.proxy"`); n != 1 {
+		t.Errorf("the key appears %d times, want 1", n)
+	}
+	// Its neighbours must survive, and so must its position: a replace that dropped
+	// the surrounding spans would take these with it.
+	for _, want := range []string{`"editor.fontSize": 13`, `"http.proxyAuthorization": "keep-me"`} {
+		if !strings.Contains(mustRead(t, settings), want) {
+			t.Errorf("lost %s:\n%s", want, mustRead(t, settings))
+		}
+	}
+}
+
+// mustRead returns the file's bytes as a string, for the assertions that are about
+// layout rather than about the parsed document.
+func mustRead(t *testing.T, path string) string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b)
+}
+
+// No settings document means IBM Bob has not saved settings here, and all three verbs
+// must say so rather than act.
+//
+// The three shapes are one test because readSettings maps every one of them to the same
+// empty map, which is what made this worth fixing: before bobNoDocument, `null` and a
+// missing file produced byte-identical output, and enable on `null` printed what it
+// would set, prompted, wrote a .bak, and only then failed inside bobSetKey.
+//
+// Subtest names deliberately carry no flag spelling. bobNotInstalled interpolates
+// settingsPath into its message, t.TempDir() names its directory after the subtest, so a
+// name containing "--yes" would make an assertion on that string match the path instead
+// of the prose — which has already silently defeated one mutation in this file's history.
+func TestBobVerbs_RefuseWithoutASettingsDocument(t *testing.T) {
+	for _, tc := range []struct {
+		name, body string
+		write      bool
+	}{
+		{name: "absent", write: false},
+		{name: "empty", body: "", write: true},
+		{name: "only the null literal", body: "null\n", write: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// fixture skips the write on "", which is the absent case; the other two
+			// need the file to exist, so they are written here.
+			settings, cfg := fixture(t, "")
+			if tc.write {
+				if err := os.WriteFile(settings, []byte(tc.body), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			for _, verb := range []struct {
+				what string
+				run  func(stdout, stderr io.Writer) int
+			}{
+				{"enable", func(o, e io.Writer) int { return bobEnable(settings, cfg, true, o, e) }},
+				{"disable", func(o, e io.Writer) int {
+					want, ca := bobWanted(cfg, t.TempDir())
+					return bobDisable(settings, want, ca, true, o, e)
+				}},
+			} {
+				t.Run(verb.what, func(t *testing.T) {
+					asked := noPrompt(t, true)
+					var out, errb bytes.Buffer
+					if code := verb.run(&out, &errb); code != 1 {
+						t.Errorf("exit = %d, want 1\n%s%s", code, out.String(), errb.String())
+					}
+					// The refusal must name the verb it is refusing, so the two are
+					// not one message with the wrong word in it.
+					if !strings.Contains(errb.String(), "Nothing to "+verb.what) {
+						t.Errorf("does not say what it will not do: %q", errb.String())
+					}
+					// Naming the way out, on both routes: make Bob write the file, or
+					// point at one it does use.
+					for _, want := range []string{"Start IBM Bob", "--settings"} {
+						if !strings.Contains(errb.String(), want) {
+							t.Errorf("the refusal omits %q: %q", want, errb.String())
+						}
+					}
+					// The failure being closed: no prompt, and no .bak. Promising a
+					// write and then failing inside the writer is the exact shape
+					// this gate exists to prevent.
+					if *asked != 0 {
+						t.Errorf("prompted %d times before refusing", *asked)
+					}
+					if _, err := os.Stat(settings + ".bak"); err == nil {
+						t.Error("wrote a .bak for a refusal")
+					}
+					// An error is not an answer: nothing on stdout.
+					if out.Len() != 0 {
+						t.Errorf("stdout not empty: %q", out.String())
+					}
+				})
+			}
+
+			t.Run("status", func(t *testing.T) {
+				var out bytes.Buffer
+				// Exit 0: reporting that it cannot tell is a successful report, the
+				// same rule the other two status verdicts follow.
+				want, ca := bobWanted(cfg, t.TempDir())
+				if code := bobStatus(settings, cfg, want, ca, &out); code != 0 {
+					t.Errorf("exit = %d, want 0", code)
+				}
+				if !strings.Contains(out.String(), bobStatusUnknown) {
+					t.Errorf("does not report the status as unknown:\n%s", out.String())
+				}
+				// The distinction the whole change turns on: "unknown" must not be
+				// dressed as a verdict about Bob's settings. Both of the other two
+				// answers are claims this run cannot make.
+				for _, wrong := range []string{bobStatusYes, bobStatusNo} {
+					if strings.Contains(out.String(), wrong) {
+						t.Errorf("also printed a verdict it cannot support (%q):\n%s", wrong, out.String())
+					}
+				}
+			})
+		})
+	}
+}
+
+// The three document shapes must not be reported identically. Their being
+// indistinguishable is what made the old behaviour hard to see: a missing --settings
+// path and a null document produced the same output, so a typo looked like a working
+// run against an unconfigured Bob.
+func TestBobStatus_DistinguishesWhyThereIsNoDocument(t *testing.T) {
+	seen := map[string]string{}
+	for _, tc := range []struct {
+		name, body string
+		write      bool
+	}{
+		{name: "absent", write: false},
+		{name: "empty", body: "", write: true},
+		{name: "only the null literal", body: "null\n", write: true},
+	} {
+		settings, cfg := fixture(t, "")
+		if tc.write {
+			if err := os.WriteFile(settings, []byte(tc.body), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		var out bytes.Buffer
+		want, ca := bobWanted(cfg, t.TempDir())
+		bobStatus(settings, cfg, want, ca, &out)
+		// The path varies per subtest, so compare only the reason line's prose.
+		reason := strings.TrimSpace(strings.TrimPrefix(out.String(), bobStatusUnknown))
+		reason = strings.TrimPrefix(reason, settings)
+		if prev, dup := seen[reason]; dup {
+			t.Errorf("%s reports identically to %s: %q", tc.name, prev, reason)
+		}
+		seen[reason] = tc.name
+	}
+}
