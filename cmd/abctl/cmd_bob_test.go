@@ -194,7 +194,7 @@ func TestBobEnableDisable_RoundTripsByteForByte(t *testing.T) {
 		t.Fatalf("enable: exit %d: %s", code, errb.String())
 	}
 	proxy, caPath := bobWanted(cfg, t.TempDir())
-	if code := bobDisable(settings, proxy, caPath, true, &out, &errb); code != 0 {
+	if code := bobDisable(settings, cfg, proxy, caPath, true, &out, &errb); code != 0 {
 		t.Fatalf("disable: exit %d: %s", code, errb.String())
 	}
 
@@ -305,13 +305,53 @@ func TestBobDisable_LeavesNoStrayWhitespace(t *testing.T) {
 			in:   "{\n    \"a\": 1,\n    \"http.proxy\":\n        \"http://127.0.0.1:47600\"\n}\n",
 			want: "{\n    \"a\": 1\n}\n",
 		},
+		{
+			// A space between the value and the newline, on a LAST member. The
+			// preceding-comma arm walks the cut back over the comma above, which moves
+			// it ABOVE this space — so the space belongs to a member that is gone and
+			// lands on the line that survives: `"a": 1,` became `"a": 1 `, trailing
+			// whitespace on a line the user never touched.
+			//
+			// Not the trigger the review reported, which was whitespace before the
+			// COLON; the "whitespace everywhere a colon allows it" row below is that
+			// layout, and it was already clean. The two are worth keeping apart, since
+			// only one of them can reach this arm.
+			name: "space between the value and the newline, last member",
+			in:   "{\n    \"a\": 1,\n    \"http.proxy\": \"http://127.0.0.1:47600\" \n}\n",
+			want: "{\n    \"a\": 1\n}\n",
+		},
+		{
+			// Same arm, tab instead of space: both are what an editor leaves behind, and
+			// a fix written against ' ' alone would pass the row above and fail here.
+			name: "tab between the value and the newline, last member",
+			in:   "{\n    \"a\": 1,\n    \"http.proxy\": \"http://127.0.0.1:47600\"\t\n}\n",
+			want: "{\n    \"a\": 1\n}\n",
+		},
+		{
+			// The bound on that absorption, in the opposite direction. Widening it to
+			// every whitespace byte — isBobSpace, which includes '\n' — swallows the
+			// newline as well and welds the closing brace onto the surviving line:
+			// `"a": 1}`. Only the horizontal run, only as far as the line's end.
+			name: "space then a blank line, last member",
+			in:   "{\n    \"a\": 1,\n    \"http.proxy\": \"http://127.0.0.1:47600\" \n\n}\n",
+			want: "{\n    \"a\": 1\n\n}\n",
+		},
+		{
+			// The layout the review named, pinned as already-correct rather than fixed:
+			// whitespace before the colon is inside the member's own span, so the splice
+			// takes it with the member and never strands anything. Kept so a future
+			// change to this arm cannot break it silently.
+			name: "whitespace before the colon",
+			in:   "{\n    \"a\": 1,\n    \"http.proxy\"   : \"http://127.0.0.1:47600\"\n}\n",
+			want: "{\n    \"a\": 1\n}\n",
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			settings, cfg := fixture(t, tc.in)
 			proxy, caPath := bobWanted(cfg, t.TempDir())
 
 			var out, errb bytes.Buffer
-			if code := bobDisable(settings, proxy, caPath, true, &out, &errb); code != 0 {
+			if code := bobDisable(settings, cfg, proxy, caPath, true, &out, &errb); code != 0 {
 				t.Fatalf("exit %d: %s", code, errb.String())
 			}
 
@@ -350,7 +390,7 @@ func TestBobDisable_IgnoresTheKeyNameInsideValuesAndNesting(t *testing.T) {
 	proxy, caPath := bobWanted(cfg, t.TempDir())
 
 	var out, errb bytes.Buffer
-	if code := bobDisable(settings, proxy, caPath, true, &out, &errb); code != 0 {
+	if code := bobDisable(settings, cfg, proxy, caPath, true, &out, &errb); code != 0 {
 		t.Fatalf("exit %d: %s", code, errb.String())
 	}
 
@@ -601,7 +641,7 @@ func TestBobDisable_RemovesOnlyOurs(t *testing.T) {
 		settings, cfg := fixture(t, `{"editor.fontSize": 13, "http.proxy": "http://127.0.0.1:47600"}`)
 		want, ca := bobWanted(cfg, t.TempDir())
 		var out, errb bytes.Buffer
-		if code := bobDisable(settings, want, ca, true, &out, &errb); code != 0 {
+		if code := bobDisable(settings, cfg, want, ca, true, &out, &errb); code != 0 {
 			t.Fatalf("exit %d: %s", code, errb.String())
 		}
 		doc := bobDoc(t, settings)
@@ -621,7 +661,7 @@ func TestBobDisable_RemovesOnlyOurs(t *testing.T) {
 			t.Fatal(err)
 		}
 		var out, errb bytes.Buffer
-		if code := bobDisable(settings, want, ca, true, &out, &errb); code != 0 {
+		if code := bobDisable(settings, cfg, want, ca, true, &out, &errb); code != 0 {
 			t.Fatalf("exit = %d, want 0 — a foreign proxy is not an error", code)
 		}
 		after, err := os.ReadFile(settings)
@@ -637,7 +677,7 @@ func TestBobDisable_RemovesOnlyOurs(t *testing.T) {
 		settings, cfg := fixture(t, `{"editor.fontSize": 13}`)
 		want, ca := bobWanted(cfg, t.TempDir())
 		var out, errb bytes.Buffer
-		if code := bobDisable(settings, want, ca, true, &out, &errb); code != 0 {
+		if code := bobDisable(settings, cfg, want, ca, true, &out, &errb); code != 0 {
 			t.Fatalf("exit = %d, want 0", code)
 		}
 		if !strings.Contains(out.String(), "Not enabled") {
@@ -653,7 +693,7 @@ func TestBobDisable_RemovesOnlyOurs(t *testing.T) {
 			t.Fatal(err)
 		}
 		var out, errb bytes.Buffer
-		if code := bobDisable(settings, want, ca, true, &out, &errb); code != 0 {
+		if code := bobDisable(settings, cfg, want, ca, true, &out, &errb); code != 0 {
 			t.Fatalf("exit = %d, want 0", code)
 		}
 		after, err := os.ReadFile(settings)
@@ -716,7 +756,7 @@ func TestBobDisable_WithUnreadableConfig(t *testing.T) {
 	// unattended one: without it, a fix that dropped the prompt entirely would pass.
 	asked := noPrompt(t, true)
 	var out, errb bytes.Buffer
-	if code := bobDisable(settings, want, ca, false, &out, &errb); code != 0 {
+	if code := bobDisable(settings, cfg, want, ca, false, &out, &errb); code != 0 {
 		t.Fatalf("exit %d: %s", code, errb.String())
 	}
 	if *asked != 1 {
@@ -727,6 +767,13 @@ func TestBobDisable_WithUnreadableConfig(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "shape alone") {
 		t.Errorf("disable did not disclose that it judged by shape:\n%s", out.String())
+	}
+	// And WHICH file it could not read. "no readable config to compare against" was
+	// the same sentence whether Cortex is uninstalled or --config was a typo, and only
+	// the second is worth retrying — so the path is the part that tells them apart.
+	// bobStatus's equivalent arm already named it; this one did not.
+	if !strings.Contains(out.String(), cfg) {
+		t.Errorf("disable did not name the config it could not read (%s):\n%s", cfg, out.String())
 	}
 }
 
@@ -943,7 +990,7 @@ func TestBob_DeclinedPromptWritesNothing(t *testing.T) {
 
 		var out, errb bytes.Buffer
 		want, ca := bobWanted(cfg, t.TempDir())
-		if code := bobDisable(settings, want, ca, false, &out, &errb); code != exitDeclined {
+		if code := bobDisable(settings, cfg, want, ca, false, &out, &errb); code != exitDeclined {
 			t.Fatalf("exit = %d, want %d", code, exitDeclined)
 		}
 		after, err := os.ReadFile(settings)
@@ -1045,10 +1092,10 @@ func TestBob_TrustMessageQuotesPaths(t *testing.T) {
 
 // The request named bundle.crt; this implementation deliberately prints ca.crt.
 //
-// bundle.crt holds ~129 certificates and exists only for tools whose CA setting
-// REPLACES the trust store. The macOS keychain is additive, so
+// bundle.crt holds the bridge CA plus every platform root, and exists only for tools
+// whose CA setting REPLACES the trust store. The macOS keychain is additive, so
 // `add-trusted-cert -r trustRoot` on the bundle would install machine-wide explicit
-// root trust for ~128 unrelated public CAs — far broader than asked, and one
+// root trust for every public CA in it — far broader than asked, and one
 // `delete-certificate -c authbridge-tls-bridge-ca` would not reverse it. This pins the
 // deviation so it cannot be "corrected" back to the request's wording.
 func TestBob_TrustMessageNamesCaCrtNotBundle(t *testing.T) {
@@ -1066,7 +1113,7 @@ func TestBob_TrustMessageNamesCaCrtNotBundle(t *testing.T) {
 				continue // prose may mention bundle.crt to explain the choice
 			}
 			if strings.Contains(line, "bundle.crt") {
-				t.Errorf("%s note runs security against the 129-cert bundle:\n%s", name, line)
+				t.Errorf("%s note runs security against the whole-trust-store bundle:\n%s", name, line)
 			}
 		}
 	}
@@ -1256,7 +1303,7 @@ func TestBob_RefusesADuplicateProxyKey(t *testing.T) {
 			case "enable":
 				code = bobEnable(settings, cfg, true, &out, &errb)
 			case "disable":
-				code = bobDisable(settings, want, ca, true, &out, &errb)
+				code = bobDisable(settings, cfg, want, ca, true, &out, &errb)
 			case "status":
 				code = bobStatus(settings, cfg, want, ca, &out)
 			}
@@ -1351,7 +1398,7 @@ func TestBobDisable_LeavesACredentialBearingProxyAlone(t *testing.T) {
 	}
 
 	var out, errb bytes.Buffer
-	if code := bobDisable(settings, want, ca, true, &out, &errb); code != 0 {
+	if code := bobDisable(settings, cfg, want, ca, true, &out, &errb); code != 0 {
 		t.Fatalf("exit = %d, want 0 — a foreign proxy is not an error: %s", code, errb.String())
 	}
 
@@ -1425,7 +1472,7 @@ func TestBob_EnableDisableRoundTripOnANon476xxPort(t *testing.T) {
 	// the address enable derived it from.
 	want, ca := bobWanted(cfg, t.TempDir())
 	var disOut, disErr bytes.Buffer
-	if code := bobDisable(settings, want, ca, true, &disOut, &disErr); code != 0 {
+	if code := bobDisable(settings, cfg, want, ca, true, &disOut, &disErr); code != 0 {
 		t.Fatalf("disable exit %d: %s", code, disErr.String())
 	}
 	if _, ok := bobDoc(t, settings)[bobProxyKey]; ok {
@@ -1761,7 +1808,7 @@ func TestBobDisable_RefusesToDeleteAGuessUnattended(t *testing.T) {
 
 			asked := noPrompt(t, true)
 			var out, errb bytes.Buffer
-			code := bobDisable(settings, want, ca, tc.yes, &out, &errb)
+			code := bobDisable(settings, cfg, want, ca, tc.yes, &out, &errb)
 
 			if code != tc.wantCode {
 				t.Errorf("exit = %d, want %d\nstdout: %s\nstderr: %s", code, tc.wantCode, out.String(), errb.String())
@@ -1816,6 +1863,13 @@ func TestBobDisable_RefusesToDeleteAGuessUnattended(t *testing.T) {
 				// Cortex" — a bare refusal sends them to the file to find out.
 				if !strings.Contains(errb.String(), tc.settings) {
 					t.Errorf("the refusal does not name the value it declined to delete: %q", errb.String())
+				}
+				// Naming the config path, for the same reason the interactive caveat
+				// does: "the Cortex config could not be read" does not say which file,
+				// so a typo'd --config and an uninstalled Cortex read identically.
+				// Only rows that got here through an unreadable config can assert it.
+				if !tc.readableConfig && !strings.Contains(errb.String(), cfg) {
+					t.Errorf("the refusal does not name the config it could not read (%s): %q", cfg, errb.String())
 				}
 				// Naming the way out is the difference between a refusal and a dead
 				// end. Both routes are asserted: drop --yes, or supply a config.
@@ -1936,7 +1990,7 @@ func TestBobVerbs_RefuseWithoutASettingsDocument(t *testing.T) {
 				{"enable", func(o, e io.Writer) int { return bobEnable(settings, cfg, true, o, e) }},
 				{"disable", func(o, e io.Writer) int {
 					want, ca := bobWanted(cfg, t.TempDir())
-					return bobDisable(settings, want, ca, true, o, e)
+					return bobDisable(settings, cfg, want, ca, true, o, e)
 				}},
 			} {
 				t.Run(verb.what, func(t *testing.T) {

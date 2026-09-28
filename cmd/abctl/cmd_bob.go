@@ -188,7 +188,7 @@ func runBob(args []string, stdout, stderr io.Writer) int {
 		return bobEnable(*settingsPath, *cortexCfgPath, yes, stdout, stderr)
 	case "disable":
 		wantProxy, caPath := bobWanted(*cortexCfgPath, home)
-		return bobDisable(*settingsPath, wantProxy, caPath, yes, stdout, stderr)
+		return bobDisable(*settingsPath, *cortexCfgPath, wantProxy, caPath, yes, stdout, stderr)
 	default:
 		wantProxy, caPath := bobWanted(*cortexCfgPath, home)
 		return bobStatus(*settingsPath, *cortexCfgPath, wantProxy, caPath, stdout)
@@ -385,10 +385,11 @@ func bobProxyIsListening(val string) bool {
 // bundle.crt is the file most of abctl's other CA messages name. The keychain is
 // ADDITIVE, so it wants one certificate; bundle.crt exists for the tools whose CA
 // setting REPLACES their trust store, and it holds the bridge CA followed by
-// every platform root (129 certificates on this machine).
-// `add-trusted-cert -r trustRoot` on that file would install explicit root-trust
-// settings for ~128 unrelated public CAs machine-wide, which is both far broader
-// than intended and not undone by the single delete-certificate below. See
+// every platform root. `add-trusted-cert -r trustRoot` on that file would install
+// explicit root-trust settings for every public CA in it machine-wide — a count
+// that varies by machine and by platform, which is the reason not to name one —
+// and that is both far broader than intended and not undone by the single
+// delete-certificate below. See
 // core/tlsbridge/bundle.go's header, which states which file is for which job.
 func bobTrustNote(caPath string) string {
 	q := shellQuote(caPath)
@@ -544,6 +545,12 @@ func bobSetKey(src []byte, key string, value any) ([]byte, error) {
 	return bobInsertMember(src, member)
 }
 
+// errBobDuplicateKey marks the one bobFindMember failure its callers act on: the same
+// top-level key present twice. Every other failure is a tokenizer error that readSettings
+// describes better. A sentinel rather than a substring of the message, so rewording the
+// sentence cannot quietly disable the gate in bobDuplicateKey.
+var errBobDuplicateKey = errors.New("duplicate top-level key")
+
 // bobFindMember locates the byte span of a top-level member, from the opening quote
 // of its name through the last byte of its value. Offsets come from json.Decoder,
 // so they are the tokenizer's view of the document and not a textual guess.
@@ -583,9 +590,12 @@ func bobFindMember(src []byte, key string) (start, end int, found bool, err erro
 		}
 		if name == key {
 			if found {
-				return 0, 0, false, fmt.Errorf("%q appears more than once at the top level; "+
-					"remove the duplicate first — this command edits one member and cannot "+
-					"say which of them wins", key)
+				// Wrapped, not just worded: bobDuplicateKey classifies this verdict and
+				// used to do it by searching the message text, so rewording the sentence
+				// below silently turned that gate off. errors.Is cannot drift that way.
+				return 0, 0, false, fmt.Errorf("%w: %q appears more than once at the top "+
+					"level; remove the duplicate first — this command edits one member and "+
+					"cannot say which of them wins", errBobDuplicateKey, key)
 			}
 			start, end, found = nameStart, int(dec.InputOffset()), true
 		}
@@ -710,6 +720,16 @@ func bobSpliceOut(src []byte, start, end int) []byte {
 		if from > 0 && src[from-1] == ',' {
 			from--
 		}
+		// Anything the user left between the value and the line's end goes too. It is
+		// the member's own tail, but walking back to the preceding comma moves the cut
+		// ABOVE it, so leaving it behind strands it on the line that survives:
+		// `"a": 1,\n    "http.proxy": "..." \n}` became `"a": 1 \n}` — a trailing space
+		// on a line the user did not touch. Only spaces and tabs, and only as far as
+		// the newline: a following blank line is the user's own grouping, and the
+		// ownLine arm above already owns the newline case.
+		for to < len(src) && (src[to] == ' ' || src[to] == '\t') {
+			to++
+		}
 	}
 
 	out := make([]byte, 0, len(src)-(to-from))
@@ -818,6 +838,13 @@ func bobWriteKey(path, key string, value any) error {
 		}
 		// No file yet: start from an empty object so the insert path has a document
 		// to work on. Nothing to back up either.
+		//
+		// Unreachable from enable and disable, for the same reason bobBackupNote's
+		// no-backup arm is: bobNoDocument gates both verbs on the file existing and
+		// being non-empty, so a caller that gets here has already found one. Kept
+		// rather than deleted, on the same terms — bobWriteKey's contract is to edit
+		// whatever path it is handed, and dropping the arm would turn a first write
+		// into an error for any future caller that does not pre-check.
 		src = []byte("{}\n")
 	} else {
 		// Back the file up ONCE and never overwrite it, matching writeSettings: a
@@ -925,7 +952,7 @@ func bobDuplicateKey(settingsPath string) error {
 	// Only the duplicate verdict is this check's to report. Any other parse failure is
 	// readSettings' to describe, and bob's readSettings arm says more about it than a
 	// tokenizer error would.
-	if ferr != nil && strings.Contains(ferr.Error(), "more than once") {
+	if ferr != nil && errors.Is(ferr, errBobDuplicateKey) {
 		return ferr
 	}
 	return nil
@@ -1100,7 +1127,7 @@ func bobEnable(settingsPath, cortexCfgPath string, yes bool, stdout, stderr io.W
 	return 0
 }
 
-func bobDisable(settingsPath, wantProxy, caPath string, yes bool, stdout, stderr io.Writer) int {
+func bobDisable(settingsPath, cortexCfgPath, wantProxy, caPath string, yes bool, stdout, stderr io.Writer) int {
 	if nerr := bobNoDocument(settingsPath); nerr != nil {
 		return bobNotInstalled("disable", nerr, stderr)
 	}
@@ -1122,7 +1149,11 @@ func bobDisable(settingsPath, wantProxy, caPath string, yes bool, stdout, stderr
 		return 0
 	}
 	s, isString := existing.(string)
-	if !isString || bobOwns(s, wantProxy) == bobNotOurs {
+	// One verdict, read three times below. bobOwns is pure and the inputs do not
+	// change between those reads, so the repetition was only an invitation to let
+	// two of them drift apart.
+	owns := bobOwns(s, wantProxy)
+	if !isString || owns == bobNotOurs {
 		// Exit 0, not 1. "Remove it only if it points at Cortex" is the contract, and
 		// this file already satisfies it — there is nothing for the user to fix, so
 		// reporting a failure would be wrong.
@@ -1143,26 +1174,31 @@ func bobDisable(settingsPath, wantProxy, caPath string, yes bool, stdout, stderr
 	// scripted `disable --yes` would silently delete a stranger's proxy. Refuse
 	// instead, and say which flag turns the guess into an answer. Exit 1, not 0:
 	// the user asked for a removal that did not happen.
-	if yes && bobOwns(s, wantProxy) == bobUnknown {
+	if yes && owns == bobUnknown {
+		// Name the config path. Without it the message is the same whether Cortex is
+		// uninstalled or --config was a typo, and only the second is worth retrying —
+		// so the reader needs to see WHICH file was not read to tell them apart.
+		// bobStatus's equivalent arm already names it; this one did not.
 		fmt.Fprintf(stderr, "abctl: %s sets %q to %q, which is shaped like a Cortex\n"+
-			"  proxy but cannot be confirmed as one: the Cortex config could not be read,\n"+
-			"  so there is no address to compare against — every loopback http proxy looks\n"+
-			"  like this. Refusing to delete it unattended. Re-run without --yes to see the\n"+
-			"  value and decide, or pass --config with a readable Cortex config.\n",
-			settingsPath, bobProxyKey, s)
+			"  proxy but cannot be confirmed as one: %s could not be read, so there is no\n"+
+			"  address to compare against — every loopback http proxy looks like this.\n"+
+			"  Refusing to delete it unattended. Re-run without --yes to see the value and\n"+
+			"  decide, or pass --config with a readable Cortex config.\n",
+			settingsPath, bobProxyKey, s, cortexCfgPath)
 		return 1
 	}
 
 	fmt.Fprintf(stdout, "Removes from %s:\n  %q: %q\n", settingsPath, bobProxyKey, s)
-	if bobOwns(s, wantProxy) == bobUnknown {
+	if owns == bobUnknown {
 		// Say it is a guess, because it is: with no readable config there is no
 		// address to compare against, and what is left is that the value is a
 		// loopback http proxy — the shape abctl writes. Removing it is still the
 		// right default (this is the uninstalled-Cortex case, when the off switch
 		// matters most), but the user should know which of the two answers they are
 		// getting, and the prompt below names the value before anything is written.
-		fmt.Fprintf(stdout, "  (no readable config to compare against, so this is judged\n"+
-			"   by shape alone — a loopback proxy, which is what abctl writes)\n")
+		fmt.Fprintf(stdout, "  (%s\n"+
+			"   is not readable, so this is judged by shape alone — a loopback\n"+
+			"   proxy, which is what abctl writes)\n", cortexCfgPath)
 	}
 	fmt.Fprint(stdout, bobBackupNote(settingsPath))
 	if !yes && !bobConfirm(settingsPath, "Write to", stdout) {
@@ -1253,12 +1289,13 @@ func bobStatus(settingsPath, cortexCfgPath, wantProxy, caPath string, stdout io.
 	case nil:
 		add("%q is unset in %s", bobProxyKey, settingsPath)
 	case string:
+		owns := bobOwns(existing, wantProxy)
 		switch {
-		case bobOwns(existing, wantProxy) == bobOurs:
+		case owns == bobOurs:
 			verdict = bobStatusYes
 			listening = existing
 			add("%q=%s in %s", bobProxyKey, existing, settingsPath)
-		case bobOwns(existing, wantProxy) == bobUnknown:
+		case owns == bobUnknown:
 			listening = existing
 			// The value cannot be judged without something to compare it against, and
 			// claiming "not a Cortex proxy" here would be a statement about the

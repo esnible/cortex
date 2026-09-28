@@ -509,11 +509,11 @@ the usual Debian and Fedora routes and saying plainly that the exact step
 depends on the distribution.
 
 It is `ca.crt` — the single bridge CA — and deliberately **not** the
-`bundle.crt` in the same directory, which holds ~129 certificates and exists for
-tools whose CA setting *replaces* the trust store (`SSL_CERT_FILE` and friends,
-as `abctl exec` sets). The keychain is additive, so `-r trustRoot` on the bundle
-would install explicit machine-wide root trust for ~128 unrelated public CAs,
-and the undo above would not take it back.
+`bundle.crt` in the same directory, which holds the bridge CA *plus* every
+platform root and exists for tools whose CA setting *replaces* the trust store
+(`SSL_CERT_FILE` and friends, as `abctl exec` sets). The keychain is additive,
+so `-r trustRoot` on the bundle would install explicit machine-wide root trust
+for every public CA in it, and the undo above would not take that back.
 
 ### What it knows, and what it does not
 
