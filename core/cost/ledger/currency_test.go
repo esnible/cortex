@@ -2,6 +2,7 @@ package ledger
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -92,21 +93,22 @@ func TestRow_CurrencyKeyIsCaseInsensitive(t *testing.T) {
 	}
 }
 
-// The overflow row resets currency along with every other axis.
+// The overflow row coarsens every label and keeps the unit.
 //
-// overflowKey exists to bound cardinality, and it names ALL the identity fields for a stated
-// reason: keeping any real one would let the overflow row multiply on that axis and defeat the
-// bound. A fifth field that kept its value would reintroduce exactly that, one unit per row.
-func TestOverflow_ResetsCurrencyToo(t *testing.T) {
+// Its key names the unit too, so two units past the cap are two overflow rows. One row for both
+// would add credits to dollars, which Row.Currency exists to prevent.
+func TestOverflow_KeepsTheUnit(t *testing.T) {
 	r := overflow(Row{
 		Endpoint: "gw", Model: "m", Agent: "a", Provenance: "configured", Currency: "credits",
 	})
-	if r.Currency != overflowLabel {
-		t.Errorf("Currency = %q after overflow, want %q — the row can multiply per unit otherwise",
-			r.Currency, overflowLabel)
+	if r.Currency != "credits" {
+		t.Errorf("Currency = %q after overflow, want credits", r.Currency)
 	}
-	if r.key() != overflowKey {
-		t.Errorf("overflow row key = %+v, want %+v", r.key(), overflowKey)
+	if r.key() != overflowKeyFor("credits") {
+		t.Errorf("overflow row key = %+v, want %+v", r.key(), overflowKeyFor("credits"))
+	}
+	if overflowKeyFor("credits") == overflowKeyFor("usd") {
+		t.Error("two units share one overflow key, so their figures would be summed into one row")
 	}
 }
 
@@ -192,15 +194,9 @@ func TestFold_GroupCurrencySeparatesUnitsAndKeepsLegacyRowsInUSD(t *testing.T) {
 
 // A capped minute does not make a single-currency deployment refuse its own total.
 //
-// overflow() coarsens a row onto overflowKey on every axis at once, currency included, so one
-// minute past maxLabelsPerMinute used to put "(other)" into CurrenciesIn beside the real unit — a
-// second entry, which is exactly what len(Currencies) > 1 tests for downstream. The result was a
-// USD-only deployment withholding its headline and naming "(other)" as a currency it could not add
-// to dollars. "(other)" is not a unit an operator can even configure: normaliseUnit rejects "(".
-//
-// ASSERTED AS THE CONSEQUENCE, not as the mechanism. TestOverflow_ResetsCurrencyToo already pins
-// that overflow() rewrites the field, and it stayed green throughout — the bug was never in that
-// rewrite, it was in reading the result as a billing unit, so only a test at this layer sees it.
+// Asserted as the consequence: a capped USD row must not read as a second unit, or every
+// deployment that has only billed in dollars withholds its headline the moment one minute
+// overflows.
 func TestCurrenciesIn_TheOverflowLabelIsNotABillingUnit(t *testing.T) {
 	// The shape a capped minute actually produces: real rows, plus the one folded accumulator.
 	rows := []Row{
@@ -223,23 +219,125 @@ func TestCurrenciesIn_TheOverflowLabelIsNotABillingUnit(t *testing.T) {
 	}
 }
 
-// A capped row does not hide a REAL second unit that sits beside it.
+// A unit that appears only past the cap is still reported, and is not added to dollars.
 //
-// The complement of the test above, and the direction that would break the feature rather than an
-// existing user: skipping the overflow label must not skip the rows around it. A window holding
-// credits and dollars still has to refuse, capped or not.
-func TestCurrenciesIn_SkippingOverflowStillSeesTheRealUnits(t *testing.T) {
+// The case a capped minute's unit was lost in: 63 dollar rows fill the accumulator, and the one
+// credits request after them lands in overflow. Exercised through Record rather than on hand-built
+// rows, because it is foldLocked's key choice that decides whether the two units share a row.
+func TestRecord_AUnitSeenOnlyPastTheCapIsReportedAndNotAddedToDollars(t *testing.T) {
+	tbl, err := pricing.Build(&pricing.Config{Endpoints: []pricing.EndpointConfig{{
+		Hosts: []string{"gw.bob"}, Unit: "credits",
+		Models: map[string]pricing.ModelConfig{
+			"premium-ide": {TierRates: pricing.TierRates{InputCostPerMillion: 2}},
+		},
+	}}})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	now := at
+	w, err := New(t.TempDir(), WithClock(func() time.Time { return now }), WithPricing(tbl))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = w.Close() })
+
+	// maxLabelsPerMinute distinct dollar rows: the last one is already past the cap.
+	for i := 0; i < maxLabelsPerMinute; i++ {
+		w.Record("s1", costedEvent(t, "gw", fmt.Sprintf("model-%d", i), 0.25, 100, 50))
+	}
+	w.Record("s1", costedEvent(t, "gw.bob", "premium-ide", 0.10, 100, 50))
+
+	held, _, _ := w.pending()
+	// The bound foldLocked states: maxLabelsPerMinute, plus one for the second unit's overflow row.
+	if len(held) != maxLabelsPerMinute+1 {
+		t.Errorf("held %d rows, want %d: one overflow row per unit, beside maxLabelsPerMinute-1 real ones",
+			len(held), maxLabelsPerMinute+1)
+	}
+	if got := CurrenciesIn(held); len(got) != 2 || got[0] != pricing.CurrencyUSD || got[1] != "credits" {
+		t.Fatalf("CurrenciesIn = %v, want [USD credits]: the only credits traffic is in overflow, and a "+
+			"window that cannot see it presents a dollar total with credits folded in", got)
+	}
+	var usd, credits int64
+	for _, r := range held {
+		switch r.currencyOrUSD() {
+		case "credits":
+			credits += r.CostMicros
+			if r.Endpoint != overflowLabel {
+				t.Errorf("the credits row is %q, want the overflow row: this fixture no longer reaches the cap", r.Endpoint)
+			}
+		default:
+			usd += r.CostMicros
+		}
+	}
+	if credits != 100_000 || usd != int64(maxLabelsPerMinute)*250_000 {
+		t.Errorf("credits = %d, USD = %d micros; want 100000 and %d, each unit summed alone",
+			credits, usd, int64(maxLabelsPerMinute)*250_000)
+	}
+}
+
+// Two spellings of one unit are one group=currency series, under the spelling CurrenciesIn names.
+//
+// Otherwise the per-currency table shows "credits" and "Credits" as two rows while the headline
+// counts one unit, and the table no longer reconciles with the units reported beside it.
+func TestFold_GroupCurrencyFoldsSpellingsLikeCurrenciesIn(t *testing.T) {
 	rows := []Row{
-		{Endpoint: "anthropic", Currency: "USD"},
-		overflow(Row{Endpoint: "gw", Currency: "credits"}),
-		{Endpoint: "bob", Currency: "credits"},
+		{Endpoint: "bob", Currency: "credits", Counts: usage.Counts{Requests: 1, CostMicros: 100}},
+		{Endpoint: "bob2", Currency: "Credits", Counts: usage.Counts{Requests: 2, CostMicros: 200}},
+		{Endpoint: "anthropic", Counts: usage.Counts{Requests: 4, CostMicros: 400}},
 	}
 
-	got := CurrenciesIn(rows)
+	_, series, _, _ := Fold(rows, usage.GroupCurrency)
 
-	if len(got) != 2 {
-		t.Fatalf("CurrenciesIn = %v, want two units: the overflow exemption must not swallow the "+
-			"real rows beside it", got)
+	if len(series) != 2 {
+		t.Fatalf("got %d series, want 2 (USD and credits): %v", len(series), series)
+	}
+	units := CurrenciesIn(rows)
+	for _, u := range units {
+		if _, ok := series[u]; !ok {
+			t.Errorf("CurrenciesIn names %q but no series is keyed by it: %v", u, series)
+		}
+	}
+	if got := series["credits"]; got.Requests != 3 || got.CostMicros != 300 {
+		t.Errorf("credits = %+v, want both spellings in one series (Requests 3, CostMicros 300)", got)
+	}
+}
+
+// A charge for a model the gateway's block does not name is written in the gateway's unit.
+//
+// The bundled table prices this model on every host in dollars. Through a credits gateway it must
+// not: a figure the gateway reports is in credits whichever row the model would have matched, and
+// written as USD it is summed into the dollar total.
+func TestRecord_AModelTheGatewaysBlockDoesNotNameIsWrittenInItsUnit(t *testing.T) {
+	tbl, err := pricing.Build(&pricing.Config{Endpoints: []pricing.EndpointConfig{{
+		Hosts: []string{"gw.bob"}, Unit: "credits",
+		Models: map[string]pricing.ModelConfig{
+			"premium-ide": {TierRates: pricing.TierRates{InputCostPerMillion: 2}},
+		},
+	}}})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	const bundledModel = "claude-4-opus-20250514"
+	if _, prov := tbl.Resolve("api.anthropic.com", bundledModel, 0); prov != pricing.ProvBundled {
+		t.Fatalf("%s is not a bundled model any more (prov %v), so this pins nothing", bundledModel, prov)
+	}
+	now := at
+	dir := t.TempDir()
+	w, err := New(dir, WithClock(func() time.Time { return now }), WithPricing(tbl))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = w.Close() })
+
+	w.Record("s1", costedEvent(t, "gw.bob", bundledModel, 0.25, 100, 50))
+	now = at.Add(time.Minute)
+	if err := w.Flush(); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+
+	rows := readAllRows(t, dir)
+	if len(rows) != 1 || rows[0].Currency != "credits" {
+		t.Fatalf("rows = %+v, want one row in credits", rows)
 	}
 }
 

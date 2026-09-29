@@ -333,8 +333,7 @@ func (s *Server) ledgerSnapshot(ctx context.Context, spec usage.Spec, group usag
 	}
 	totals, series, ungroupedCost, ungroupedAvoided := ledger.Fold(rows, applied)
 	// WHICH UNITS THE TOTAL SPANS, computed from the same rows Fold just summed so the two cannot
-	// describe different traffic. The ring does not report this and does not need to — see
-	// Snapshot.Currencies for why absent reads as the single-unit case rather than as unknown.
+	// describe different traffic. The ring does not report this — see Snapshot.Currencies.
 	currencies := ledger.CurrenciesIn(rows)
 	// Carried onto the totals BEFORE the snapshot is built, not left to
 	// SetUngroupedCost's own assignment below. This response's single bucket is a copy of

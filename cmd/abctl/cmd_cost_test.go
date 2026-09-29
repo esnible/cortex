@@ -2523,9 +2523,8 @@ func TestRunCost_ASingleNonUSDUnitIsLabelledNotDollared(t *testing.T) {
 
 // --json carries the units, so the reader nobody eyeballs can make the same refusal.
 //
-// docs/pricing.md says "figures in different units are never added". The human path withheld and
-// the machine path emitted the sum with no field naming the conflict — for a script, a promise
-// nothing kept. Present for a single unit too, which is how a credits deployment learns what its
+// The human path withheld and the machine path emitted the sum with no field naming the conflict.
+// Present for a single unit too, which is how a credits deployment learns what its
 // own total is denominated in.
 func TestRunCost_JSONCarriesTheCurrencies(t *testing.T) {
 	for _, tc := range []struct {
@@ -2631,20 +2630,16 @@ func tableRow(t *testing.T, out, label string) string {
 	return hits[0]
 }
 
-// A capped row does not become a billing unit in the --by currency table.
+// A series label that is not a reported unit does not become one in the --by currency table.
 //
-// THE REGRESSION ROUND 1's OWN FIX INTRODUCED, which is why this fixture is the capped shape and
-// not the tidy one. Making each cell take its row's label as the unit is right for every row the
-// ledger keeps as itself, and wrong for the one it does not: the overflow row carries
-// overflowLabel on every axis at once, so ledger.labelFor answers "(other)" for a minute past
-// maxLabelsPerMinute, and the cell rendered "0.08 (other)". Before that change it read "$0.08",
-// which was correct — the deployment is USD-only. So the fix made this surface worse on exactly
-// the axis it was fixing.
+// The label is "(other)", the band a capped series folds into, in a window that reports only USD.
+// Taking every row's label as its unit would render "0.08 (other)"; the window's own unit is the
+// right answer, and is what this cell rendered before units existed.
 //
 // ASSERTED IN BOTH DIRECTIONS, because the guard has two ways to be wrong: swallowing a real unit
 // (the credits row must keep its label) and trusting a fake one (the capped row must not get one).
 func TestRunCost_ByCurrencyDoesNotTreatTheOverflowLabelAsAUnit(t *testing.T) {
-	// A USD-only window — every deployment today — with one minute past the cardinality cap.
+	// A USD-only window whose series include a label that is not a unit.
 	srv := fakeUsageServer(t, `{"window":"today","group":"currency","priced":true,
 		"currencies":["USD"],
 		"totals":{"requests":1057,"costMicros":146439000,"pricedRequests":1057,"priceableRequests":1057},

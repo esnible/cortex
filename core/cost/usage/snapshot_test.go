@@ -1077,3 +1077,26 @@ func TestSetUngroupedCost_LeavesTheAvoidedFieldsAlone(t *testing.T) {
 		}
 	}
 }
+
+// group=currency from the ring is served as no grouping, and the response says so.
+//
+// The ring keeps no unit series. Echoing the group claimed a breakdown over an empty series, and
+// published the whole total — every unit's figures added together — as the part it left out.
+func TestSnapshot_TheRingServesGroupCurrencyAsNone(t *testing.T) {
+	now := time.Now().Truncate(BucketWidth)
+	a := New(WithClock(func() time.Time { return now }))
+	a.Record("s1", withCost(t, respEvent(now, 200, time.Second, "claude-opus-5", 1000), 0.25))
+
+	snap := a.Snapshot(10*BucketWidth, BucketWidth, "", GroupCurrency)
+
+	if snap.Totals.CostMicros != 250_000 {
+		t.Fatalf("Totals.CostMicros = %d, want 250000; the fixture recorded nothing", snap.Totals.CostMicros)
+	}
+	if snap.Group != GroupNone {
+		t.Errorf("Group = %q, want %q: the ring has no unit series to serve", snap.Group, GroupNone)
+	}
+	if snap.UngroupedCostMicros != nil {
+		t.Errorf("UngroupedCostMicros = %d, want absent: there is no breakdown to be short of",
+			*snap.UngroupedCostMicros)
+	}
+}

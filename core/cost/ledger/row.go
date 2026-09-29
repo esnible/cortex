@@ -336,7 +336,7 @@ func rowLabel(s string) string {
 // minute at 200 bytes each was measured, with an O(N) walk and allocation in front
 // of the request that closed the minute.
 //
-// FOLDED, NOT DROPPED, past the cap — see overflowKey. A deployment busy enough to
+// FOLDED, NOT DROPPED, past the cap — see overflowKeyFor. A deployment busy enough to
 // exceed 64 joint labels in one minute loses attribution DETAIL and no dollars,
 // which is the right direction; raising this one constant is the fix if a real
 // deployment ever does.
@@ -352,22 +352,26 @@ const maxLabelsPerMinute = 64
 // boundary.
 const overflowLabel = "(other)"
 
-// overflowKey is the one reserved accumulator slot every label past the cap folds
-// into.
+// overflowKeyFor is the reserved accumulator slot every label past the cap folds
+// into, one per unit. currency is the key's own, already normalised.
 //
-// ALL FOUR fields, not just the request-controlled two: the key is a tuple, so
-// keeping any real field would let the overflow row multiply on that axis and defeat
+// ALL FOUR labels, not just the request-controlled two: the key is a tuple, so
+// keeping any real label would let the overflow row multiply on that axis and defeat
 // the bound it exists to enforce. The consequence is that a capped minute reports its
 // excess as "(other)" on every axis at once, which reads as "cardinality was capped
 // here" rather than as a plausible endpoint that spent money.
-var overflowKey = key{overflowLabel, overflowLabel, overflowLabel, overflowLabel, overflowLabel}
+//
+// BUT NOT THE UNIT. One row for two units adds credits to dollars, which is what
+// Row.Currency exists to prevent, and a unit cannot multiply the row the way a label
+// can: it is the rate table's answer, one of the units the table was configured with,
+// not a string a request supplies.
+func overflowKeyFor(currency string) key {
+	return key{overflowLabel, overflowLabel, overflowLabel, overflowLabel, currency}
+}
 
-// overflow rewrites a row's identity onto overflowKey, keeping At and every counter.
-// The dollars are unchanged; only the attribution is coarsened.
+// overflow rewrites a row's labels onto overflowKeyFor's, keeping its unit, At and
+// every counter. The figures are unchanged; only the attribution is coarsened.
 func overflow(r Row) Row {
 	r.Endpoint, r.Model, r.Agent, r.Provenance = overflowLabel, overflowLabel, overflowLabel, overflowLabel
-	// Currency too, for the reason the comment above gives for the other four: a real value kept
-	// here would let the overflow row multiply on that axis and defeat the bound it enforces.
-	r.Currency = overflowLabel
 	return r
 }

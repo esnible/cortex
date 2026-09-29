@@ -22,6 +22,7 @@ import (
 
 	"github.com/rossoctl/cortex/core/cost/event"
 	"github.com/rossoctl/cortex/core/cost/ledger"
+	"github.com/rossoctl/cortex/core/cost/pricing"
 	"github.com/rossoctl/cortex/core/cost/usage"
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/session"
@@ -1546,5 +1547,42 @@ func TestResolutionSpan_TheDefaultResolutionIsAlwaysAccepted(t *testing.T) {
 					offset, span, err)
 			}
 		})
+	}
+}
+
+// A ledger-served window reports the units its total spans.
+//
+// ledgerSnapshot computes Currencies from the rows it folds, and it is what lets a client refuse
+// to present a total that adds credits to dollars — so it has to reach the wire.
+func TestHandleUsage_ALedgerWindowReportsTheUnitsItsTotalSpans(t *testing.T) {
+	tbl, err := pricing.Build(&pricing.Config{Endpoints: []pricing.EndpointConfig{{
+		Hosts: []string{"gw.bob"}, Unit: "credits",
+		Models: map[string]pricing.ModelConfig{
+			"premium-ide": {TierRates: pricing.TierRates{InputCostPerMillion: 2}},
+		},
+	}}})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	at := insideToday(t, 2*time.Minute)
+	led, err := ledger.New(t.TempDir(), ledger.WithClock(func() time.Time { return at }), ledger.WithPricing(tbl))
+	if err != nil {
+		t.Fatalf("ledger.New: %v", err)
+	}
+	t.Cleanup(func() { _ = led.Close() })
+	recordCostedMinute(t, led, at, "gw", "opus", 0.25)
+	recordCostedMinute(t, led, at, "gw.bob", "premium-ide", 0.10)
+	ts, _ := newTestServer(t, WithUsage(usage.New()), WithCostLedger(led))
+
+	status, body := fetchUsage(t, ts.URL, "?window=today")
+	if status != http.StatusOK {
+		t.Fatalf("status = %d, want 200: %s", status, body)
+	}
+	var snap usage.Snapshot
+	if err := json.Unmarshal([]byte(body), &snap); err != nil {
+		t.Fatalf("decode: %v (%s)", err, body)
+	}
+	if want := []string{pricing.CurrencyUSD, "credits"}; !reflect.DeepEqual(snap.Currencies, want) {
+		t.Errorf("currencies = %v, want %v (%s)", snap.Currencies, want, body)
 	}
 }

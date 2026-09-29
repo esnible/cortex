@@ -34,7 +34,7 @@ Neither owns the cost model. One owner of rates means `tool-prune`,
 | A gateway matching a shipped discount rule (see below) | **Nothing.** The discount is applied for you. |
 | Any other gateway that bills below list | Set one `multiplier` — [Discounts](#discounts). |
 | Using non-Anthropic models (OpenAI, Gemini, Bedrock, Vertex) | Add rates — nothing ships for them. [Getting the numbers](#getting-the-numbers). |
-| A gateway billing in something other than dollars | Set its `unit` — [Billing units](#billing-units). Rates still have to be configured; the unit only says what they are denominated in. |
+| A gateway billing in something other than dollars | Set its `unit` — [Billing units](#billing-units). Rates still have to be configured. |
 
 Cortex warns once at startup if you have pinned nothing at all:
 
@@ -181,7 +181,7 @@ install) is the aggregate behind `abctl cost`. Query parameters:
 | Parameter | Values | Notes |
 |---|---|---|
 | `window` | `today`, `month`, `7d`, or a duration (`1h`, `6h`) | `today`, `month` and `7d` are served from the durable ledger. A duration is served from the in-memory ring. |
-| `group` | `none`, `model`, `endpoint`, `session`, `agent`, `status`, `plugin`, `host` (`method` aliases `model`) | See the caveat below. |
+| `group` | `none`, `model`, `endpoint`, `session`, `agent`, `currency`, `status`, `plugin`, `host` (`method` aliases `model`) | See the caveat below. |
 | `resolution` | a duration | Bucket size on a ring-served window. A ledger-backed window is answered as one bucket spanning the whole window and does not read this at all; `bucketSeconds` reports the span actually served. |
 | `session` | a session id | Combining it with a symbolic window (`today`, `month`, `7d`) is rejected with 400. |
 
@@ -202,8 +202,9 @@ order. `unpricedBy` is keyed by `<endpoint> <model>`.
 
 **The response reports the `group` it SERVED, not the one you asked for — and the
 difference is silent.** On a ledger-backed window (`today`, `month`, `7d`) only
-`endpoint`, `agent` and `model` are actually grouped; `host`, `session`, `status`
-and `plugin` fall back to `group: "none"` with no error and HTTP 200. Always read the `group` field
+`endpoint`, `agent`, `model` and `currency` are actually grouped; `host`, `session`, `status`
+and `plugin` fall back to `group: "none"` with no error and HTTP 200. A ring-served window groups
+by every axis but `currency`, which falls back the same way. Always read the `group` field
 back:
 
 ```sh
@@ -325,12 +326,17 @@ pricing:
           cache_write_cost_per_million: 2.00
 ```
 
-`unit` sits on the **endpoint**, because that is where a gateway's billing is decided. A rate
-resolved for a request carries the unit of the endpoint it resolved on, so nothing downstream has
-to guess which currency a figure is in.
+`unit` sits on the **endpoint**, because that is where a gateway's billing is decided, and it
+covers every request to that endpoint: only rates in its unit can price its traffic, so a model no
+block in that unit names is left unpriced there rather than priced from the dollar table. A figure
+the gateway reports itself is labelled with the same unit.
 
-**Figures in different units are never added.** Where a window holds more than one, `abctl cost`
-withholds the combined total, names the units it found, and points you at `--by currency`:
+A `unit` needs a `models` block — a block with only a `multiplier` has no rates for it to apply to
+— and two blocks naming the same host must agree on it. Both **fail startup** otherwise.
+
+**Figures in different units are never added on a window served from the ledger.** Where such a
+window holds more than one, `abctl cost` withholds the combined total, names the units it found, and
+points you at `--by currency`:
 
 ```
 COST — today
@@ -373,9 +379,13 @@ way.
 Nothing converts between units. There are no exchange rates here: a unit partitions figures, it is
 never an operand.
 
-### Both per-tier units
+The in-memory ring does not track units. A window it serves — a duration such as `--window 1h`, or
+any window where no ledger is configured — totals every unit's figures together, and answers
+`--by currency` with no breakdown.
 
-Both units are accepted per tier: `*_cost_per_million` or `*_cost_per_token`. Setting
+### Per-tier rate forms
+
+Both forms are accepted per tier: `*_cost_per_million` or `*_cost_per_token`. Setting
 **both** for one tier **fails startup**, naming the tier — they differ by 10^6, and
 silently picking a winner would misprice by that factor with nothing in the readout to say
 which was honoured.

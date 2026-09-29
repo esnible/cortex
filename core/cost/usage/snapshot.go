@@ -109,7 +109,7 @@ func ParseGroup(s string) (Group, error) {
 	// over an unauthenticated endpoint, and reflecting arbitrary query input
 	// into a response body is how a reflected-content issue starts. The valid
 	// set is short enough that naming it is more useful than quoting the input.
-	return "", errors.New("unknown group (want none, model, endpoint, session, agent, status, plugin or host; method is accepted as an alias for model)")
+	return "", errors.New("unknown group (want none, model, endpoint, session, agent, currency, status, plugin or host; method is accepted as an alias for model)")
 }
 
 // Snapshot is the wire shape of GET /v1/usage.
@@ -150,10 +150,8 @@ type Snapshot struct {
 	// obviously wrong. A consumer seeing two entries must refuse to present a single total;
 	// `abctl cost` does, and says which units it found.
 	//
-	// ABSENT OR EMPTY IS THE SINGLE-UNIT CASE, which is every deployment today, and it
-	// deliberately reads as "nothing to worry about" rather than as "unknown": a producer that
-	// does not compute this — the in-memory ring — omits it, and a client must not turn that
-	// into a refusal. One entry is likewise fine. Only two or more is a claim.
+	// ABSENT MEANS NOT COMPUTED, and a client must not turn that into a refusal. The in-memory ring
+	// omits it, and a ring total can span units. One entry is fine. Only two or more is a claim.
 	Currencies []string `json:"currencies,omitempty"`
 	// Buckets runs oldest to newest. For a ring-backed window it always has
 	// Window/BucketWidth entries, including zeroed ones for idle minutes, so a client
@@ -1242,6 +1240,12 @@ func addCoverageInto(m map[string]int64, k string, v int64, saturated *bool) {
 // a session that has produced no priceable traffic yet is a normal state, and
 // the caller already knows whether the session exists from /v1/sessions.
 func (a *Aggregator) Snapshot(window, resolution time.Duration, sessionID string, group Group) Snapshot {
+	// The ring keeps no unit series, so group=currency is served as no grouping and the response
+	// says so — the rule the ledger applies to an axis it has no column for. Echoing it would claim
+	// a breakdown over an empty series, with the whole total published as the part it left out.
+	if group == GroupCurrency {
+		group = GroupNone
+	}
 	if resolution < BucketWidth {
 		resolution = BucketWidth
 	}

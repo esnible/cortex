@@ -55,9 +55,9 @@ type EndpointConfig struct {
 	// Unit is the currency these rates are denominated in. Absent means USD.
 	//
 	// ON THE ENDPOINT, because that is the level a gateway's billing is decided at — and it is
-	// what makes "never sum across units" expressible at all. A rate resolved for a request
-	// carries the unit of the endpoint it resolved on, so nothing downstream has to guess which
-	// currency a figure is in.
+	// what makes "never sum across units" expressible at all. It covers every request to that
+	// endpoint — see Table.unitFor — so nothing downstream has to guess which currency a figure
+	// is in.
 	//
 	// ABSENT MEANS USD, and that default is load-bearing rather than merely convenient: it is
 	// what every config written before this field says, and what every row already on disk
@@ -255,6 +255,10 @@ func (c *Config) multipliers() []MultiplierRule {
 // entries converts the config's endpoint/model blocks into table rows.
 func (c *Config) entries() ([]Entry, error) {
 	var out []Entry
+	// The unit each host pattern was first priced in, and by which block. See Table.unitFor, which
+	// reads an endpoint's unit off its best-ranked row and so needs every row of one host to agree.
+	type claim struct{ unit, where string }
+	unitOf := map[string]claim{}
 	for i, ep := range c.Endpoints {
 		where := fmt.Sprintf("pricing.endpoints[%d]", i)
 		if len(ep.Hosts) > 0 {
@@ -278,11 +282,28 @@ func (c *Config) entries() ([]Entry, error) {
 		}
 		if len(ep.Models) == 0 {
 			if ep.Multiplier != nil {
+				// A unit is carried on the rows a block's models create, and this block creates
+				// none, so it would be accepted and then label nothing.
+				if !strings.EqualFold(unit, CurrencyUSD) {
+					return nil, fmt.Errorf("%s: unit %q needs a models block; a multiplier-only block has no rates for it to apply to", where, ep.Unit)
+				}
 				// A multiplier-only block scales what already resolves, so demanding
 				// rates here would defeat the point of expressing a discount once.
 				continue
 			}
 			return nil, fmt.Errorf("%s: no models or multiplier configured; an endpoint block with neither prices nothing", where)
+		}
+		for _, h := range hosts {
+			k := strings.ToLower(h)
+			if anyHost(h) {
+				k = "*"
+			}
+			prev, ok := unitOf[k]
+			if !ok {
+				unitOf[k] = claim{unit, where}
+			} else if !strings.EqualFold(prev.unit, unit) {
+				return nil, fmt.Errorf("%s: prices host %q in %q, but %s prices it in %q; one gateway bills in one unit", where, h, unit, prev.where, prev.unit)
+			}
 		}
 		// Sorted so a config with several faults reports the same one across
 		// restarts, instead of whichever map iteration reached first.

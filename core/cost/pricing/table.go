@@ -432,12 +432,15 @@ func currencyOrDefault(c string) string {
 	return c
 }
 
-// CurrencyFor is the unit a figure for this (endpoint, model) pair is denominated in.
+// CurrencyFor is the unit a figure for this (endpoint, model) pair is denominated in: the
+// endpoint's, whatever the model.
 //
-// WHEN A ROW MATCHES THE PAIR, IT FOLLOWS THE SAME ROW Resolve PRICES FROM — bestRow. Two blocks
-// can match one host, a `hosts: ["*"]` catch-all beside a specific gateway, and the more specific
-// row wins the rate; taking the unit from anywhere else would let a figure be priced at one row's
-// rate and labelled with another's, which is the failure the unit exists to prevent.
+// THE MODEL DOES NOT CHANGE IT, because a figure can reach the ledger without any row having
+// priced it — a cost the gateway reported, which settle publishes as authoritative without
+// consulting this table — and that figure is in the gateway's unit. Answering from the row that
+// matched the model labelled such a charge with whichever row happened to match, a catch-all's or
+// a bundled one's, which is USD. bestRow admits only rows in this same unit, so a figure the table
+// did price gets the same answer.
 //
 // USD FOR A NIL TABLE, rather than empty. The caller is about to label a figure, and empty
 // already means USD everywhere downstream — so "" would be the same answer written less legibly. Nil is the Kubernetes deployment, where pricing is not wired: it reports
@@ -445,28 +448,23 @@ func currencyOrDefault(c string) string {
 // there.
 //
 // A MULTIPLIER CANNOT CHANGE IT. multiplierFor scales a rate WITHIN an endpoint and never crosses
-// units — scaling credits by 0.76 leaves credits — so the unit is settled by the row alone.
-//
-// HOST ALONE WHEN NO ROW MATCHES THE MODEL, which is the case a figure can arrive in without any
-// rate at all. bestRow needs both the host and the model to match, so it answers nil for a response
-// whose model the parser could not read — and the only figure such a response can carry is one the
-// GATEWAY reported, which settle publishes as authoritative without consulting this table. That
-// figure is denominated in the gateway's unit. Returning USD for it put a credits charge on disk
-// with no unit, where the read side folds it into the dollar total: a cross-unit sum, which is the
-// one thing this field exists to prevent.
-//
-// SAME RANKING, minus the model test — provenance, then specificity — so a configured row for this
-// gateway beats a bundled catch-all. An endpoint with no rows of its own falls through to whatever
-// covers it, which is USD for every deployment that has configured no unit.
+// units — scaling credits by 0.76 leaves credits.
 func (t *Table) CurrencyFor(endpoint, model string) string {
 	if t == nil {
 		return CurrencyUSD
 	}
-	if best := t.bestRow(endpoint, model); best != nil {
-		return currencyOrDefault(best.currency)
-	}
+	return t.unitFor(endpoint)
+}
+
+// unitFor is the unit an endpoint bills in: that of the best row whose host covers it — bestRow's
+// ranking minus the model test — or USD when none does.
+//
+// Provenance first, so a configured row for this gateway decides over a bundled one; bundled rows
+// are all USD, so an endpoint no configured block covers is USD, which is every deployment that has
+// configured no unit. Config.entries refuses two blocks that name the same host in different units.
+func (t *Table) unitFor(endpoint string) string {
 	if best := t.bestRowForHost(endpoint); best != nil {
-		return currencyOrDefault(best.currency)
+		return best.currency
 	}
 	return CurrencyUSD
 }
@@ -474,10 +472,8 @@ func (t *Table) CurrencyFor(endpoint, model string) string {
 // bestRowForHost is bestRow with the model test dropped: the most specific row whose HOST covers
 // this endpoint, or nil.
 //
-// Only CurrencyFor uses it, and only as a fallback. It answers "what does this gateway bill in",
-// which is a question about the endpoint — the level this config puts `unit:` on — and not about
-// any one model. It must never be used to pick RATES: a row reached without matching the model is
-// the wrong row to price from, which is what bestRow's own comment is about.
+// Only unitFor uses it. It must never be used to pick RATES: a row reached without matching the
+// model is the wrong row to price from, which is what bestRow's own comment is about.
 func (t *Table) bestRowForHost(endpoint string) *row {
 	var best *row
 	for i := range t.rows {
@@ -553,16 +549,20 @@ func (t *Table) Resolve(endpoint, model string, promptTotal int) (Rates, Provena
 // Shared with the describe path rather than reimplemented there: two copies of this
 // ranking would diverge the first time it is touched, and the divergence would be silent
 // — a marker or an annotation attached to a different row than the one being charged.
+//
+// ONLY ROWS IN THE ENDPOINT'S UNIT are candidates — see unitFor. A dollar row pricing traffic to a
+// gateway that bills in credits produces a figure that is neither.
 func (t *Table) bestRow(endpoint, model string) *row {
 	if t == nil {
 		return nil
 	}
+	unit := t.unitFor(endpoint)
 	// Built once per call, not per row: every row matches against the same forms.
 	forms := modelNameForms(strings.ToLower(strings.TrimSpace(model)))
 	var best *row
 	for i := range t.rows {
 		r := &t.rows[i]
-		if !matchHost(r.host, endpoint) || !r.model.match(forms) {
+		if !matchHost(r.host, endpoint) || !r.model.match(forms) || !strings.EqualFold(r.currency, unit) {
 			continue
 		}
 		if best == nil || r.prov > best.prov || (r.prov == best.prov && r.spec.beats(best.spec)) {

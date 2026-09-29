@@ -453,13 +453,11 @@ func TestConfig_UnitIsPerEndpointNotGlobal(t *testing.T) {
 	}
 }
 
-// CurrencyFor answers with the unit of the SAME row Resolve priced from.
+// CurrencyFor answers with the unit of the endpoint, which is also the unit of the row that priced.
 //
-// Not "the unit of the endpoint block", which is subtly different and would be wrong: two blocks
-// can match one host — a `hosts: ["*"]` catch-all beside a specific gateway — and the rate that
-// wins is the more specific row's. Taking the unit from anywhere else lets a figure be priced at
-// one row's rate and labelled with another's, which is the one failure this whole field exists
-// to prevent.
+// Two blocks can match one host — a `hosts: ["*"]` catch-all beside a specific gateway — and the
+// more specific block decides the gateway's unit. The catch-all keeps its own unit for every other
+// endpoint, so one credits gateway does not recolour the deployment.
 func TestTable_CurrencyForFollowsTheRowThatPriced(t *testing.T) {
 	tbl, err := Build(&Config{
 		Bundled: boolPtr(false),
@@ -639,7 +637,7 @@ func TestCurrencyFor_FoldsADefaultSpellingSetProgrammatically(t *testing.T) {
 // reported, which settle publishes without consulting this table, and which is denominated in the
 // gateway's unit — so USD was a mislabel on the one path that has no rate to check it against.
 //
-// BOTH DIRECTIONS. The fallback must not disturb the pair-matched answer, which is the invariant
+// BOTH DIRECTIONS. The model-less answer must match the pair-matched one, which is the invariant
 // CurrencyFor's own comment rests on, so the specific and the catch-all row are both asserted.
 //
 // The "*" block comes FIRST and covers gw.bob too, so only specificity picks gw.bob's own row.
@@ -680,18 +678,13 @@ func TestCurrencyFor_AModellessResponseResolvesTheEndpointsUnit(t *testing.T) {
 	}
 }
 
-// A catch-all that CAN price a model-less response keeps the unit its rate is in.
+// A dollar catch-all does not price a gateway that bills in credits.
 //
-// The complement of the test above, and the boundary of what the host-only fallback is allowed to
-// do. `models: {"*"}` matches an empty model, so bestRow answers, the table prices the response at
-// that row's rate — verified `prov=configured`, 1e-06 — and the figure really is in that row's unit.
-// Labelling it from the endpoint instead would be the mislabel CurrencyFor's own invariant forbids:
-// priced at one row's rate, labelled with another's. So the fallback must NOT run here.
-//
-// A gateway-reported figure on this same shape is still labelled from the catch-all, because
-// CurrencyFor is not told which figure it holds. That is issue #1183, and it needs the caller to
-// pass provenance — not a change to the rule this test pins.
-func TestCurrencyFor_ACatchAllThatPricesTheResponseKeepsItsOwnUnit(t *testing.T) {
+// `models: {"*"}` matches every model on every host, so it used to price gw.bob's traffic in
+// dollars — and a charge the gateway reported itself, in credits, was then labelled with the
+// catch-all's USD. Only rates in the endpoint's own unit may price it, so the catch-all is not a
+// candidate there and keeps pricing every other endpoint.
+func TestCurrencyFor_ADollarCatchAllDoesNotPriceACreditsGateway(t *testing.T) {
 	tbl, err := Build(&Config{Endpoints: []EndpointConfig{
 		{
 			Hosts:  []string{"*"},
@@ -705,16 +698,97 @@ func TestCurrencyFor_ACatchAllThatPricesTheResponseKeepsItsOwnUnit(t *testing.T)
 	if err != nil {
 		t.Fatalf("Build: %v", err)
 	}
-	// The catch-all prices it, so its unit is the honest label.
-	if _, ok := mustResolve(t, tbl, "gw.bob", "").For(TierInput); !ok {
-		t.Fatal("the catch-all no longer prices a model-less response, so this test pins nothing")
+	if _, prov := tbl.Resolve("gw.bob", "", 0); prov != ProvNone {
+		t.Errorf("gw.bob's model-less response resolved %v, want %v: the only row that matches is "+
+			"the dollar catch-all", prov, ProvNone)
 	}
-	if got := tbl.CurrencyFor("gw.bob", ""); got != CurrencyUSD {
-		t.Errorf("CurrencyFor(gw.bob, \"\") = %q, want %s: the row that priced this figure is the "+
-			"catch-all, and its rates are dollars", got, CurrencyUSD)
+	if got := tbl.CurrencyFor("gw.bob", ""); got != "credits" {
+		t.Errorf("CurrencyFor(gw.bob, \"\") = %q, want credits", got)
 	}
-	// The configured pair is unaffected either way.
-	if got := tbl.CurrencyFor("gw.bob", "premium-ide"); got != "credits" {
-		t.Errorf("CurrencyFor(gw.bob, premium-ide) = %q, want credits", got)
+	// The catch-all still prices, in dollars, everywhere else.
+	if _, prov := tbl.Resolve("api.anthropic.com", "claude-opus-5", 0); prov != ProvConfigured {
+		t.Errorf("the catch-all no longer prices api.anthropic.com (prov %v)", prov)
+	}
+	if got := tbl.CurrencyFor("api.anthropic.com", "claude-opus-5"); got != CurrencyUSD {
+		t.Errorf("CurrencyFor(api.anthropic.com) = %q, want %s", got, CurrencyUSD)
+	}
+}
+
+// The gateway's unit covers models its block does not name, and bundled dollar rates do not
+// price them there.
+//
+// The bundled rows match every host. Through a credits gateway they would price a model in dollars
+// that the gateway bills in credits — a figure in neither — and label it USD.
+func TestTable_AGatewaysUnitCoversModelsItsBlockDoesNotName(t *testing.T) {
+	tbl, err := Build(&Config{Endpoints: []EndpointConfig{{
+		Hosts: []string{"gw.bob"}, Unit: "credits",
+		Models: map[string]ModelConfig{"premium-ide": {TierRates: TierRates{InputCostPerMillion: 2}}},
+	}}})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	const bundledModel = "claude-4-opus-20250514"
+	if _, prov := tbl.Resolve("api.anthropic.com", bundledModel, 0); prov != ProvBundled {
+		t.Fatalf("%s resolved %v on api.anthropic.com, want %v; the fixture pins nothing", bundledModel, prov, ProvBundled)
+	}
+	if _, prov := tbl.Resolve("gw.bob", bundledModel, 0); prov != ProvNone {
+		t.Errorf("gw.bob/%s resolved %v, want %v: a dollar row priced a credits gateway", bundledModel, prov, ProvNone)
+	}
+	// The gateway's own rows still price it.
+	if _, prov := tbl.Resolve("gw.bob", "premium-ide", 0); prov != ProvConfigured {
+		t.Errorf("gw.bob/premium-ide resolved %v, want %v", prov, ProvConfigured)
+	}
+	if got := tbl.CurrencyFor("gw.bob", bundledModel); got != "credits" {
+		t.Errorf("CurrencyFor(gw.bob, %s) = %q, want credits", bundledModel, got)
+	}
+	if got := tbl.CurrencyFor("api.anthropic.com", bundledModel); got != CurrencyUSD {
+		t.Errorf("CurrencyFor(api.anthropic.com, %s) = %q, want %s", bundledModel, got, CurrencyUSD)
+	}
+}
+
+// A unit on a block with only a multiplier is refused: the block creates no rates to carry it.
+func TestConfig_AUnitOnAMultiplierOnlyBlockIsRefused(t *testing.T) {
+	f := 0.76
+	_, err := Build(&Config{Endpoints: []EndpointConfig{{
+		Hosts: []string{"gw.bob"}, Unit: "credits", Multiplier: &f,
+	}}})
+	if err == nil || !strings.Contains(err.Error(), "needs a models block") {
+		t.Fatalf("Build = %v, want a refusal naming the models block", err)
+	}
+	// Any spelling of the default is not a unit claim, so it stays accepted.
+	for _, unit := range []string{"", "usd"} {
+		if _, err := Build(&Config{Endpoints: []EndpointConfig{{
+			Hosts: []string{"gw.bob"}, Unit: unit, Multiplier: &f,
+		}}}); err != nil {
+			t.Errorf("unit %q on a multiplier-only block: %v, want accepted", unit, err)
+		}
+	}
+}
+
+// Two blocks naming one host must agree on its unit, or its unit depends on which of their rows
+// happens to rank first.
+func TestConfig_BlocksForOneHostMustAgreeOnTheUnit(t *testing.T) {
+	block := func(hosts []string, unit, model string) EndpointConfig {
+		return EndpointConfig{Hosts: hosts, Unit: unit,
+			Models: map[string]ModelConfig{model: {TierRates: TierRates{InputCostPerMillion: 1}}}}
+	}
+	for _, tc := range []struct {
+		name   string
+		blocks []EndpointConfig
+		ok     bool
+	}{
+		{"one host, two units", []EndpointConfig{
+			block([]string{"gw.bob"}, "credits", "a"), block([]string{"GW.bob"}, "", "b")}, false},
+		{"any-endpoint spelled two ways", []EndpointConfig{
+			block(nil, "credits", "a"), block([]string{"*"}, "", "b")}, false},
+		{"one unit spelled two ways", []EndpointConfig{
+			block([]string{"gw.bob"}, "credits", "a"), block([]string{"gw.bob"}, "Credits", "b")}, true},
+		{"different hosts, different units", []EndpointConfig{
+			block([]string{"gw.bob"}, "credits", "a"), block([]string{"api.anthropic.com"}, "", "b")}, true},
+	} {
+		_, err := Build(&Config{Endpoints: tc.blocks})
+		if (err == nil) != tc.ok || (err != nil && !strings.Contains(err.Error(), "one gateway bills in one unit")) {
+			t.Errorf("%s: Build = %v, want ok=%v", tc.name, err, tc.ok)
+		}
 	}
 }

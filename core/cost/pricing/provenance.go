@@ -66,8 +66,7 @@ type Resolver interface {
 	// ON THIS INTERFACE RATHER THAN AN OPTIONAL ONE TYPE-ASSERTED FOR, deliberately. An optional
 	// interface degrades silently to USD when an implementer forgets it, and "silently labelled
 	// dollars" is the exact defect the unit was added to prevent — a credits figure summed into a
-	// dollar total. Here the compiler asks every implementer the question instead, which is the
-	// same reason ledger.overflowKey names all of its fields rather than most of them.
+	// dollar total. Here the compiler asks every implementer the question instead.
 	CurrencyFor(endpoint, model string) string
 }
 

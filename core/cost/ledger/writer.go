@@ -59,8 +59,8 @@ type batch struct {
 // under the store's write lock, with every other request waiting behind it: it takes a
 // mutex, folds into a map, and hands any IO to one background goroutine over a buffered
 // channel that drops rather than blocks. The work is BOUNDED but not constant — one call
-// in sixty closes a minute and walks the accumulator, which foldLocked caps at
-// maxLabelsPerMinute. Anything added to this path has to keep that bound.
+// in sixty closes a minute and walks the accumulator, which foldLocked caps. Anything
+// added to this path has to keep that bound.
 //
 // OWNERSHIP: while pending() reports a minute, nothing THIS WRITER has put on disk carries
 // that minute or a later one. Three write paths keep it and TestPendingMinute_IsNeverAlsoOnDisk
@@ -484,14 +484,9 @@ func (w *Writer) Record(_ string, e *pipeline.SessionEvent) {
 	}
 	// THE UNIT COMES FROM THE RATE TABLE, not from the event, which is why this needed no
 	// threading through core/cost/settle or the event wire: the writer already holds a
-	// pricing.Resolver for the tier split, and the unit is a property of the (endpoint, model) pair
-	// that same resolver answers for. Placed after the block above so the parsed model name is
-	// used where there is one.
-	//
-	// ASKS WITH AN EMPTY MODEL for a response the parser could not read, and that is correct
-	// rather than merely tolerated: CurrencyFor falls back to the endpoint's own row when the model
-	// matches nothing, and such a response still belongs to the gateway it came from — which is
-	// what decides the unit.
+	// pricing.Resolver for the tier split, and the unit is a property of the endpoint that same
+	// resolver answers for. Asked with the raw model name settle priced with, not r.Model, which
+	// rowLabel may have rewritten.
 	//
 	// WRITTEN ONLY WHEN IT IS NOT THE DEFAULT, so a single-currency deployment — every deployment
 	// today — adds no bytes per row and its files stay byte-identical to what the previous version
@@ -508,7 +503,11 @@ func (w *Writer) Record(_ string, e *pipeline.SessionEvent) {
 	// deployment and break the byte-identical promise above. One comparison is cheaper than
 	// relying on an interface's implementers to agree about case.
 	if w.rates != nil {
-		if c := w.rates.CurrencyFor(e.Host, r.Model); c != "" && !strings.EqualFold(c, pricing.CurrencyUSD) {
+		var model string
+		if e.Inference != nil {
+			model = e.Inference.Model
+		}
+		if c := w.rates.CurrencyFor(e.Host, model); c != "" && !strings.EqualFold(c, pricing.CurrencyUSD) {
 			r.Currency = rowLabel(c)
 		}
 	}
@@ -650,7 +649,7 @@ func (w *Writer) Record(_ string, e *pipeline.SessionEvent) {
 // accumulator (only on the call that closes a minute — see closeMinuteLocked) and at most
 // one non-blocking channel send. No open, no write, no directory listing, no logging — this
 // is the request path the type doc describes. "Bounded" is doing real work in that
-// sentence: it holds only because foldLocked caps the accumulator at maxLabelsPerMinute.
+// sentence: it holds only because foldLocked caps the accumulator.
 func (w *Writer) add(minute time.Time, r Row) {
 	w.mu.Lock()
 	var out batch
@@ -682,13 +681,13 @@ func (w *Writer) add(minute time.Time, r Row) {
 }
 
 // foldLocked accumulates one row into the open minute, capping distinct rows at
-// maxLabelsPerMinute. Caller holds mu.
+// maxLabelsPerMinute, plus one for each further unit that overflows. Caller holds mu.
 //
 // CARDINALITY IS BOUNDED HERE and nowhere else, so this is the only thing standing
 // between a request-chosen model string and unbounded growth of both the map and the
 // batch takeLocked copies out of it under the same lock. Past the cap a row folds
-// into overflowKey rather than being dropped: coarsely-attributed spend is a worse
-// answer than exact spend and a better one than missing spend, and a total that
+// into its unit's overflow row rather than being dropped: coarsely-attributed spend is a
+// worse answer than exact spend and a better one than missing spend, and a total that
 // still adds up is what lets a client's "(other)" band reconcile against it.
 func (w *Writer) foldLocked(r Row) {
 	k := r.key()
@@ -696,11 +695,12 @@ func (w *Writer) foldLocked(r Row) {
 		cur.Add(r.Counts)
 		return
 	}
-	// Reserve the LAST slot for overflowKey, exactly as usage.addLabel does: switching
+	// Reserve the LAST slot for the overflow row, exactly as usage.addLabel does: switching
 	// to it only once the map is already full would make the overflow row itself the
-	// (cap+1)th entry, so the map would settle one over the bound it claims.
+	// (cap+1)th entry, so the map would settle one over the bound it claims. A second unit's
+	// overflow row goes past it — see overflowKeyFor for why units are bounded anyway.
 	if len(w.rows) >= maxLabelsPerMinute-1 {
-		k = overflowKey
+		k = overflowKeyFor(k.currency)
 		if cur, ok := w.rows[k]; ok {
 			cur.Add(r.Counts)
 			return
