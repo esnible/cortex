@@ -346,7 +346,7 @@ var paneKeys = map[paneID]keyGroup{
 		bindings: []keyBinding{
 			{"m", "cycle metric (tokens/requests/errors/latency/cost)"},
 			{"w", "cycle window (10m/1h/6h)"},
-			{"b", "cycle breakdown (none/status/method/plugin/host; not for latency)"},
+			{"b", "cycle breakdown (none/status/method/plugin/host; not for latency or a scope)"},
 			{"s", "toggle session / all sessions"},
 			{"esc", "back"},
 		},
@@ -371,20 +371,26 @@ var paneKeys = map[paneID]keyGroup{
 		purpose: "coding agents seen on the wire, and what each has spent",
 		bindings: []keyBinding{
 			{"↑↓ / jk", "navigate"},
-			{"esc", "back"},
+			// One key both ways, which the footer's label flips to show. Said here too because
+			// the footer only describes the row under the cursor.
+			{"↵", "scope usage + cost to this agent; again clears"},
+			{"esc", "back, keeping the scope"},
 		},
-		// ONE SHORT NOTE, NOT TWO LONG ONES. The first draft spelled out the whole rationale
-		// here and pushed the overlay body from 91 to 103 lines, which
-		// TestHelpOverlayScrollHint_AbsentWhenEverythingFits caught by demanding
-		// helpNoScrollHeight be raised to 106. Raising it would make every reader of every
-		// other pane scroll for this pane's explanation; the argument belongs in
-		// agents_pane.go, and what a reader needs on screen is the two facts that change what
-		// they see.
+		// ONE SHORT NOTE, NOT TWO LONG ONES, and the budget is real rather than stylistic: an
+		// earlier draft pushed the overlay body from 91 to 103 lines and
+		// TestHelpOverlayScrollHint_AbsentWhenEverythingFits demanded helpNoScrollHeight be
+		// raised to 106, which would make every reader of every other pane scroll for this
+		// pane's explanation. The two ↵/esc rows above cost lines too, so this note is shorter
+		// than the one it replaces. The argument belongs in agents_pane.go; what a reader needs
+		// on screen is what changes when they press something.
+		//
+		// IT NO LONGER SAYS "READ-ONLY". It did, on the true-at-the-time grounds that /v1/usage
+		// filters by session and nothing else — so the scope is computed client-side instead,
+		// the same narrowing `abctl cost --agent` uses, and the endpoint's limit now bounds WHICH
+		// views can honour it rather than whether any can.
 		notes: []string{
-			"Opens only when two or more agents have been seen; below that it refuses and names " +
-				"what it found. Read-only, and that is a limit of the API rather than a choice: " +
-				"/v1/usage filters by session and nothing else, so there is no agent scope to " +
-				"apply to the other panes.",
+			"Opens only when two or more agents have been seen. The scope reaches usage and " +
+				"cost; sessions and events carry no agent.",
 		},
 	},
 }

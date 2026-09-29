@@ -102,6 +102,13 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 			if m.usage.metric.isLatency() {
 				break
 			}
+			// Inert under an agent scope, which the footer and the [?] overlay both say. The
+			// scope needs group=agent on the wire, so there is no axis left for this key to
+			// move; dropping it here is what keeps it from refetching against an axis the
+			// scoped narrowing would immediately discard.
+			if m.agentScope != "" {
+				break
+			}
 			// Refetch: the breakdown is a server-side query parameter, not a
 			// client-side filter, so the current snapshot has no series for the
 			// newly selected dimension.
@@ -504,27 +511,10 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 				m.pane = panePipeline
 			}
 		case paneAgents:
-			// Return to whichever pane the user pressed `A` from — a key-opened surface owes
-			// its caller a way back, and without this case esc falls through and the pane is a
-			// dead end reachable only by `q`.
-			//
-			// SAME FALLBACK AS paneCatalog, and for its stated reason rather than by imitation:
-			// Sessions is the one pane that is always a defensible place to land, while the
-			// enum's zero value is the Kubernetes namespace picker, which would look like the
-			// connection had gone away.
-			//
-			// No polling chain to restart, unlike the catalog's case below: this pane fetches
-			// once per open and holds no ticker. Returning INTO Usage still needs its chain
-			// resumed, which is why the shared tail below runs for both.
-			if m.previousPane != paneNone {
-				m.pane = m.previousPane
-				m.previousPane = paneNone
-			} else {
-				m.pane = paneSessions
-			}
-			if m.pane == paneUsage {
-				return m.resumeUsagePolling()
-			}
+			// Leaving WITHOUT touching the scope, which is the difference between this and the
+			// Enter arm below. esc means "back out" on every other pane here, and a key that
+			// silently discarded a scope on the way out would be the one exception.
+			return m.leaveAgentsPane()
 		case paneCatalog:
 			// Return to whichever pane the user pressed `C` from.
 			//
@@ -597,6 +587,28 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 
 	case "enter", "right", "l":
 		switch m.pane {
+		case paneAgents:
+			// Pick the agent the usage and cost views are narrowed to, then LEAVE. The pane is a
+			// picker, so staying on it after a choice would leave the operator looking at the one
+			// surface the choice does not affect.
+			//
+			// A TOGGLE: Enter on the agent already scoped clears the scope instead of re-applying
+			// it. There is no "all agents" row to select, and the alternative was a second binding
+			// that would only ever be pressed on this one pane. helpView says which direction the
+			// key will go, the way the usage pane's [s] does for the session scope.
+			row := m.selectedAgentLabel()
+			if row == "" {
+				return nil
+			}
+			if m.agentScope == row {
+				m.agentScope = ""
+			} else {
+				m.agentScope = row
+			}
+			// Same exit as the esc arm above, including the paneNone → Sessions fallback and the
+			// usage-polling resume. Shared through leaveAgentsPane so the two cannot drift on
+			// where the pane returns to — the scope is the only thing this arm does differently.
+			return m.leaveAgentsPane()
 		case paneSessions:
 			id := m.selectedSessionID()
 			if id == "" {
@@ -863,7 +875,7 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 		if from == paneAgents {
 			from = m.previousPane
 		}
-		return m.fetchAgentRowsCmd(true, from)
+		return m.fetchAgentRowsCmd(agentsOpenOnPress, from)
 
 	case "C":
 		// Open the registered-plugin catalog. Available from any
@@ -1232,6 +1244,12 @@ func (m *model) helpView() string {
 		// [b] is omitted under latency rather than shown as a no-op: a footer that
 		// advertises an inert key is worse than a shorter footer.
 		breakdownHint := "  [b] breakdown"
+		// Omitted under an agent scope for the same reason as under latency: the scope has taken
+		// the wire axis, so there is no second one to break down by, and a footer that advertises
+		// an inert key is worse than a shorter footer.
+		if m.agentScope != "" {
+			breakdownHint = ""
+		}
 		if m.usage.metric.isLatency() {
 			breakdownHint = ""
 		}
@@ -1245,11 +1263,20 @@ func (m *model) helpView() string {
 		}
 		return "[↑↓] nav  [↵] plugin detail  [r] refresh  [esc] back  [?] keys  [q] quit"
 	case paneAgents:
-		// NO [↵] AND NO [r]. There is nothing to drill into — /v1/usage takes no agent
-		// filter, so a selected row cannot scope anything — and the rows are refetched on
-		// every `A`, so a refresh key would duplicate the way in. Advertising either would be
-		// the inert-key problem the usage pane's breakdownHint above avoids.
-		return "[↑↓] nav  [esc] back  [?] keys  [q] quit"
+		// [↵] LABELLED BY WHAT IT WILL DO TO THE ROW UNDER THE CURSOR, because one key goes both
+		// ways: on the agent already scoped it clears the scope, on any other it scopes to that
+		// one. Without the flip the toggle is invisible — an operator standing on the scoped
+		// agent has no way to know Enter will not simply re-apply it. Same idea as the usage
+		// pane's [s], whose label flips between "all sessions" and "this session".
+		//
+		// STILL NO [r]: the rows are refetched by every `A` press, so a refresh key would
+		// duplicate the way in, and advertising it would be the inert-key problem the usage
+		// pane's breakdownHint above avoids.
+		enterHint := "  [↵] scope to this agent"
+		if m.agentScope != "" && m.selectedAgentLabel() == m.agentScope {
+			enterHint = "  [↵] all agents"
+		}
+		return "[↑↓] nav" + enterHint + "  [esc] back  [?] keys  [q] quit"
 	}
 	return "[?] keys  [q] quit"
 }

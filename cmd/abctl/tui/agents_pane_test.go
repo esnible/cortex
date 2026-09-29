@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"errors"
 	"math"
 	"strings"
 	"testing"
@@ -349,7 +350,7 @@ func TestAgentsPane_RecordsTheCallerAtPressTimeNotAtReplyTime(t *testing.T) {
 			// The reader moves before the reply arrives. A reply-time read of m.pane sees this
 			// pane; the press never did.
 			m.pane = tc.movedTo
-			updated, _ := m.Update(agentRowsLoadedMsg{rows: rows, open: true, from: failed.from})
+			updated, _ := m.Update(agentRowsLoadedMsg{rows: rows, open: agentsOpenOnPress, from: failed.from})
 			m = updated.(*model)
 			if m.pane != paneAgents {
 				t.Fatalf("reply did not open the pane: pane = %v", m.pane)
@@ -513,5 +514,95 @@ func TestAgentsPane_NavigationKeysMoveTheCursor(t *testing.T) {
 				t.Errorf("after %v the cursor is on row %d, want %d", tc.keys, got, tc.want)
 			}
 		})
+	}
+}
+
+// errStartupProbe stands in for whatever the endpoint answered. The message is never rendered
+// by the cases that use it — that is the assertion — so its text only has to be identifiable
+// in a failure.
+var errStartupProbe = errors.New("dial tcp 127.0.0.1:1: connect: connection refused")
+
+// Startup lands on AGENTS when two or more agents are on the wire, and nowhere else otherwise.
+//
+// THE GATE IS agentsPaneApplies, which until now had no caller outside its own tests: the rule
+// "fewer than two agents skips the pane" was written, asserted and never consulted. A picker
+// offering one row is a keystroke that cannot change what is displayed, and one agent is still
+// every deployment that has not adopted a second — so entering unconditionally would put a new
+// mandatory step in front of those users to no purpose.
+//
+// SILENT WHEN IT DECLINES. enterAgentsOrRefuse's refusal is written for someone who pressed `A`
+// and is owed an answer; nobody asked for this one, so flashing "only claude-code has been seen"
+// at every startup would be an unsolicited complaint about a normal deployment.
+func TestAgentsPane_StartupEntersOnlyWhereTheGateApplies(t *testing.T) {
+	row := func(label string) agentRow {
+		return agentRow{label: label, Counts: usage.Counts{Requests: 10, PricedRequests: 10}}
+	}
+	for _, tc := range []struct {
+		name string
+		rows []agentRow
+		want paneID
+	}{
+		// The case this feature exists for: a laptop running Claude Code and Bob at once.
+		{"two agents opens the picker", []agentRow{row("claude-code/2.1.270"), row("bob-shell/2.0.5")}, paneAgents},
+		{"three agents opens the picker", []agentRow{row("a/1"), row("b/2"), row("c/3")}, paneAgents},
+		// Every deployment with one coding agent, which is most of them.
+		{"one agent goes straight to sessions", []agentRow{row("claude-code/2.1.270")}, paneSessions},
+		// Reachable rather than theoretical: a proxy that has served no inference yet reports
+		// no agent series at all, and an empty picker is worse than the view behind it.
+		{"no agents goes straight to sessions", nil, paneSessions},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := &model{pane: paneSessions, previousPane: paneNone, agentsTbl: newAgentsTable(), client: deadClient()}
+			updated, _ := m.Update(agentRowsLoadedMsg{rows: tc.rows, open: agentsOpenAtStartup})
+			m = updated.(*model)
+			if m.pane != tc.want {
+				t.Errorf("startup with %d agents landed on %v, want %v", len(tc.rows), m.pane, tc.want)
+			}
+			if m.flash != "" {
+				t.Errorf("startup flashed %q; nobody asked for the agents pane, so a refusal "+
+					"is an unsolicited complaint", m.flash)
+			}
+		})
+	}
+}
+
+// The startup entry records SESSIONS as its caller, so esc goes where the operator expected to
+// be rather than to the pane enum's zero value — which is the Kubernetes namespace picker, and
+// would look like the connection had gone away.
+func TestAgentsPane_StartupEscapesToSessions(t *testing.T) {
+	rows := []agentRow{
+		{label: "claude-code/2.1.270", Counts: usage.Counts{Requests: 10}},
+		{label: "bob-shell/2.0.5", Counts: usage.Counts{Requests: 8}},
+	}
+	m := &model{pane: paneSessions, previousPane: paneNone, agentsTbl: newAgentsTable(), client: deadClient()}
+	updated, _ := m.Update(agentRowsLoadedMsg{rows: rows, open: agentsOpenAtStartup})
+	m = updated.(*model)
+	if m.pane != paneAgents {
+		t.Fatalf("startup did not enter the pane: %v", m.pane)
+	}
+	m.handleKey(tea.KeyMsg{Type: tea.KeyEsc})
+	if m.pane != paneSessions {
+		t.Errorf("esc from the startup picker landed on %v, want paneSessions", m.pane)
+	}
+}
+
+// A failed startup fetch is silent too, and leaves the reader on the sessions pane.
+//
+// The operator did not ask for this fetch, and the pane they ARE looking at reports its own
+// connection trouble — so a second error line about a breakdown nobody requested would be noise
+// on top of the message that matters. The error is still recorded, so pressing `A` later says
+// what happened rather than showing an empty grid.
+func TestAgentsPane_StartupFetchFailureIsSilent(t *testing.T) {
+	m := &model{pane: paneSessions, previousPane: paneNone, agentsTbl: newAgentsTable(), client: deadClient()}
+	updated, _ := m.Update(agentRowsLoadedMsg{err: errStartupProbe, open: agentsOpenAtStartup})
+	m = updated.(*model)
+	if m.pane != paneSessions {
+		t.Errorf("a failed startup fetch moved the reader to %v", m.pane)
+	}
+	if m.flash != "" {
+		t.Errorf("a failed startup fetch flashed %q", m.flash)
+	}
+	if m.agentsErr == nil {
+		t.Error("agentsErr was not recorded; a later `A` press would show an empty pane instead of the reason")
 	}
 }

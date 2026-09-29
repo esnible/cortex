@@ -1,0 +1,287 @@
+package tui
+
+import (
+	"net/http"
+	"net/http/httptest"
+	"net/url"
+	"strings"
+	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/rossoctl/cortex/cmd/abctl/apiclient"
+	"github.com/rossoctl/cortex/core/cost/usage"
+)
+
+// scopedModel is an AGENTS pane standing on the given row, with the given scope already set.
+func scopedModel(t *testing.T, cursor int, scope string) *model {
+	t.Helper()
+	m := &model{
+		pane:               paneAgents,
+		previousPane:       paneSessions,
+		agentScope:         scope,
+		agentsTbl:          newAgentsTable(),
+		client:             deadClient(),
+		pipelineReturnPane: paneNone,
+		agents: []agentRow{
+			{label: "claude-code/2.1.270", Counts: usage.Counts{Requests: 10, PricedRequests: 10}},
+			{label: "bob-shell/2.0.5", Counts: usage.Counts{Requests: 8}},
+		},
+	}
+	m.rebuildAgentsTable()
+	for i := 0; i < cursor; i++ {
+		m.handleKey(tea.KeyMsg{Type: tea.KeyDown})
+	}
+	return m
+}
+
+// Enter scopes the cost and usage views to the row under the cursor, and leaves the pane.
+//
+// LEAVING IS PART OF THE ACTION, not a separate keystroke. The pane is a picker: its whole
+// purpose is choosing what the views behind it show, so staying on it after a choice would leave
+// the operator looking at the one surface the choice does not affect.
+func TestAgentsPane_EnterScopesTheRowUnderTheCursorAndLeaves(t *testing.T) {
+	m := scopedModel(t, 1, "")
+	m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if m.agentScope != "bob-shell/2.0.5" {
+		t.Errorf("agentScope = %q, want the row under the cursor", m.agentScope)
+	}
+	if m.pane != paneSessions {
+		t.Errorf("Enter left the reader on %v, want the caller pane", m.pane)
+	}
+}
+
+// Enter on the agent ALREADY scoped clears the scope instead of re-applying it.
+//
+// ONE KEY, TWO DIRECTIONS, because there is no "all agents" row to select and the alternative
+// was a second binding that would only ever be pressed on this pane. The footer says which
+// direction the key will go — see usageFooter's [s] toggle, which is the same idea for the
+// session scope.
+func TestAgentsPane_EnterOnTheScopedAgentClearsTheScope(t *testing.T) {
+	m := scopedModel(t, 0, "claude-code/2.1.270")
+	m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if m.agentScope != "" {
+		t.Errorf("agentScope = %q, want cleared", m.agentScope)
+	}
+	if m.pane != paneSessions {
+		t.Errorf("Enter left the reader on %v, want the caller pane", m.pane)
+	}
+}
+
+// usageSnapshotJSON is a two-agent group=agent response, the shape /v1/usage serves.
+const usageSnapshotJSON = `{
+  "window":"today","bucketSeconds":60,"group":"agent",
+  "buckets":[
+    {"at":"2026-09-29T10:00:00Z","requests":22,"tokens":2200,"latMeanMs":50,"latSamples":22,
+     "series":{
+       "claude-code/2.1.270":{"requests":14,"tokens":1400},
+       "bob-shell/2.0.5":{"requests":8,"tokens":800}}}],
+  "totals":{"requests":22,"tokens":2200}}`
+
+// A scoped usage fetch asks for the AGENT axis, whatever axis the pane itself is showing.
+//
+// The scope can only be computed from a per-agent series, and /v1/usage takes one group
+// parameter — so while a scope is active the wire axis is not the pane's to choose. The pane's
+// own group is left on the model rather than overwritten, so clearing the scope restores the
+// axis the operator had picked.
+func TestFetchUsage_ScopedAsksForTheAgentAxis(t *testing.T) {
+	var gotQuery string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.RawQuery
+		_, _ = w.Write([]byte(usageSnapshotJSON))
+	}))
+	defer ts.Close()
+
+	m := &model{client: apiclient.New(ts.URL), agentScope: "claude-code/2.1.270"}
+	m.usage.group = usage.GroupModel // the pane's own axis, which must not reach the wire
+	cmd := m.fetchUsage()
+	if cmd == nil {
+		t.Fatal("fetchUsage returned no command with a client set")
+	}
+	msg, ok := cmd().(usageLoadedMsg)
+	if !ok {
+		t.Fatalf("fetchUsage produced %T, want usageLoadedMsg", cmd())
+	}
+	if msg.err != nil {
+		t.Fatalf("fetch errored: %v", msg.err)
+	}
+	q, err := url.ParseQuery(gotQuery)
+	if err != nil {
+		t.Fatalf("unparseable query %q: %v", gotQuery, err)
+	}
+	if got := q.Get("group"); got != string(usage.GroupAgent) {
+		t.Errorf("group = %q, want %q: the scope cannot be computed without the agent series",
+			got, usage.GroupAgent)
+	}
+	if m.usage.group != usage.GroupModel {
+		t.Errorf("the pane's own axis was overwritten to %q; clearing the scope would not "+
+			"restore what the operator picked", m.usage.group)
+	}
+}
+
+// The snapshot the pane receives is already narrowed — totals AND buckets.
+//
+// BOTH, because the pane renders a summary line from Totals and a chart from Buckets. Narrowing
+// only the totals is what usage.KeepBuckets does, and it would title a whole-window chart with
+// one agent's name.
+func TestFetchUsage_ScopedNarrowsTotalsAndBuckets(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(usageSnapshotJSON))
+	}))
+	defer ts.Close()
+
+	m := &model{client: apiclient.New(ts.URL), agentScope: "claude-code/2.1.270"}
+	msg := m.fetchUsage()().(usageLoadedMsg)
+	if msg.err != nil {
+		t.Fatalf("fetch errored: %v", msg.err)
+	}
+	if msg.snap.Totals.Requests != 14 {
+		t.Errorf("Totals.Requests = %d, want this agent's 14 (the window's is 22)",
+			msg.snap.Totals.Requests)
+	}
+	if len(msg.snap.Buckets) != 1 {
+		t.Fatalf("len(Buckets) = %d, want 1", len(msg.snap.Buckets))
+	}
+	if msg.snap.Buckets[0].Requests != 14 {
+		t.Errorf("bucket Requests = %d, want this agent's 14; the chart would draw the whole "+
+			"window under a title naming one agent", msg.snap.Buckets[0].Requests)
+	}
+}
+
+// An unscoped fetch still asks for the pane's own axis. The regression guard for the case
+// above: forcing GroupAgent unconditionally would break every breakdown the pane offers.
+func TestFetchUsage_UnscopedAsksForThePanesOwnAxis(t *testing.T) {
+	var gotQuery string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.RawQuery
+		_, _ = w.Write([]byte(`{"window":"today","group":"model","buckets":[],"totals":{}}`))
+	}))
+	defer ts.Close()
+
+	m := &model{client: apiclient.New(ts.URL)}
+	m.usage.group = usage.GroupModel
+	if _, ok := m.fetchUsage()().(usageLoadedMsg); !ok {
+		t.Fatal("fetchUsage produced the wrong message type")
+	}
+	q, _ := url.ParseQuery(gotQuery)
+	if got := q.Get("group"); got != string(usage.GroupModel) {
+		t.Errorf("group = %q, want the pane's own %q", got, usage.GroupModel)
+	}
+}
+
+// A scope that no longer matches any agent in the window is REPORTED, not silently ignored.
+//
+// The window moves while abctl runs — "today" is a boundary, and an agent that stopped sending
+// falls out of it — so this is reachable without anyone doing anything wrong. Showing the
+// unscoped figures under a scoped title would be the one outcome a reader cannot detect; the
+// error names the agents that ARE in the window, which is what the operator needs in order to
+// pick a different one.
+func TestFetchUsage_ScopeThatMatchesNothingIsReported(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(usageSnapshotJSON))
+	}))
+	defer ts.Close()
+
+	m := &model{client: apiclient.New(ts.URL), agentScope: "an-agent-that-went-away/1.0"}
+	msg := m.fetchUsage()().(usageLoadedMsg)
+	if msg.err == nil {
+		t.Fatal("a scope matching no agent produced no error; the pane would show every agent")
+	}
+	if !strings.Contains(msg.err.Error(), "claude-code/2.1.270") {
+		t.Errorf("error %q does not name the agents in the window", msg.err)
+	}
+}
+
+// The usage title carries the scope, so a narrowed chart is never unlabelled.
+func TestUsageTitle_NamesTheAgentScope(t *testing.T) {
+	m := fitModel(t, paneUsage, 120, 40, nil)
+	m.agentScope = "claude-code/2.1.270"
+	// The TITLE ROW, not the whole view: paneView returns title plus body, and asserting over
+	// both would pass on a label that happened to appear inside the chart.
+	title := strings.SplitN(m.paneView(), "\n", 2)[0]
+	if !strings.Contains(title, "claude-code/2.1.270") {
+		t.Errorf("title %q does not name the scoped agent", title)
+	}
+}
+
+// [b] is omitted from the footer while a scope is active, because it cannot act.
+//
+// The wire axis is the agent's while scoped, so there is no second axis to break down by. Same
+// treatment the footer already gives [b] under latency, and for the same stated reason: a footer
+// that advertises an inert key is worse than a shorter footer.
+func TestUsageFooter_OmitsTheBreakdownKeyWhileScoped(t *testing.T) {
+	m := fitModel(t, paneUsage, 120, 40, nil)
+	if !strings.Contains(m.helpView(), "[b] breakdown") {
+		t.Fatal("the unscoped footer does not offer [b]; this test is measuring the wrong thing")
+	}
+	m.agentScope = "claude-code/2.1.270"
+	if strings.Contains(m.helpView(), "[b] breakdown") {
+		t.Error("the footer still advertises [b] under an agent scope, where it cannot act")
+	}
+}
+
+// [b] does nothing while scoped, rather than refetching against an axis the scope has taken.
+func TestUsageKeys_BreakdownIsInertWhileScoped(t *testing.T) {
+	m := fitModel(t, paneUsage, 120, 40, nil)
+	m.agentScope = "claude-code/2.1.270"
+	before := m.usage.group
+	m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'b'}})
+	if m.usage.group != before {
+		t.Errorf("[b] moved the axis to %q under a scope; the wire axis is the agent's",
+			m.usage.group)
+	}
+}
+
+// Latency under an agent scope says it is unavailable rather than plotting the zeros.
+//
+// THE NARROWING CANNOT CARRY LATENCY. Bucket.Series is map[string]Counts and Counts holds no
+// latency, so a bucket's LatMeanMs describes every agent that shared it — usage.ScopeToAgent
+// zeroes the fields rather than attributing one agent's chart to another's response times. A
+// chart of those zeros would read as "this agent was instant", which is the worst of the three
+// available answers.
+func TestUsagePane_LatencyUnderAScopeSaysItIsUnavailable(t *testing.T) {
+	m := fitModel(t, paneUsage, 120, 40, nil)
+	for !m.usage.metric.isLatency() {
+		m.usage.cycleMetric()
+	}
+	m.agentScope = "claude-code/2.1.270"
+	body := m.renderUsage(m.width, m.bodyHeight)
+	if !strings.Contains(body, "latency") {
+		t.Errorf("the scoped latency view does not mention latency:\n%s", body)
+	}
+	if !strings.Contains(body, "agent") {
+		t.Errorf("the scoped latency view does not say the scope is why:\n%s", body)
+	}
+}
+
+// The AGENTS pane's own title names the scope, so returning to the picker shows what is set.
+func TestAgentsPane_TitleNamesTheActiveScope(t *testing.T) {
+	m := scopedModel(t, 0, "bob-shell/2.0.5")
+	m.width, m.height = 120, 40
+	m.layout()
+	title := strings.SplitN(m.paneView(), "\n", 2)[0]
+	if !strings.Contains(title, "bob-shell/2.0.5") {
+		t.Errorf("AGENTS title %q does not name the active scope", title)
+	}
+}
+
+// The footer says which direction Enter will go, because one key does both.
+//
+// Without this the toggle is invisible: an operator standing on the scoped agent has no way to
+// know Enter will clear rather than re-apply. Mirrors the usage pane's [s], whose label flips
+// between "all sessions" and "this session" for the same reason.
+func TestAgentsPane_FooterSaysWhichWayEnterWillGo(t *testing.T) {
+	// Cursor on the scoped agent: Enter clears.
+	onScoped := scopedModel(t, 0, "claude-code/2.1.270")
+	if got := onScoped.helpView(); !strings.Contains(got, "all agents") {
+		t.Errorf("footer on the scoped row = %q, want it to offer clearing the scope", got)
+	}
+	// Cursor on a different agent: Enter scopes to it.
+	onOther := scopedModel(t, 1, "claude-code/2.1.270")
+	if got := onOther.helpView(); !strings.Contains(got, "scope") {
+		t.Errorf("footer on an unscoped row = %q, want it to offer scoping", got)
+	}
+	if got := onOther.helpView(); strings.Contains(got, "all agents") {
+		t.Errorf("footer on an unscoped row = %q, but Enter there scopes rather than clears", got)
+	}
+}

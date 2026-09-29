@@ -121,6 +121,25 @@ const agentsFetchTimeout = 5 * time.Second
 // `abctl cost` documents.
 const agentsWindow = usage.WindowToday
 
+// agentsOpen says what the reply to a rows fetch is allowed to do with them.
+//
+// AN ENUM RATHER THAN A BOOL because there are three answers, not two, and the third differs
+// from the second only in whether it may speak. `A` is owed an answer either way — a key that
+// appears to do nothing is the defect agentsPaneRefusal exists to prevent. The startup gate is
+// owed the opposite: nobody asked for it, so it enters or it stays quiet.
+type agentsOpen int
+
+const (
+	// agentsOpenNever is a background refresh: update the rows, enter nothing, say nothing.
+	agentsOpenNever agentsOpen = iota
+	// agentsOpenOnPress is an `A` press. It enters, or it flashes the reason it will not.
+	agentsOpenOnPress
+	// agentsOpenAtStartup is the gate run once per connection. It enters when
+	// agentsPaneApplies, and otherwise does nothing AND says nothing — see
+	// startupAgentsGateCmd.
+	agentsOpenAtStartup
+)
+
 // agentRowsLoadedMsg carries a fetched per-agent breakdown back to Update.
 //
 // NOT agentsLoadedMsg, which is TAKEN — by the Kubernetes namespace picker, whose
@@ -128,15 +147,15 @@ const agentsWindow = usage.WindowToday
 type agentRowsLoadedMsg struct {
 	rows []agentRow
 	err  error
-	// open records that the `A` key asked for this, so the reply may enter the pane. A
-	// background refresh sets it false and only updates the table, which is why this is a
-	// field rather than inferred from the current pane: by the time a reply lands the reader
-	// may have moved.
-	open bool
+	// open records who asked, so the reply knows whether it may enter the pane and whether it
+	// may complain. A field rather than something inferred from the current pane: by the time a
+	// reply lands the reader may have moved.
+	open agentsOpen
 	// from is the pane the `A` press came from, captured AT PRESS TIME and carried here for
 	// exactly the reason the field above gives: by the time this reply lands the reader may have
-	// moved, so reading m.pane then records a caller the press never had. Only meaningful with
-	// open:true; a background refresh leaves it paneNone and enters nothing.
+	// moved, so reading m.pane then records a caller the press never had. Meaningless under
+	// agentsOpenNever, which enters nothing; the startup gate passes paneSessions, the pane it
+	// is about to interrupt.
 	from paneID
 }
 
@@ -146,7 +165,7 @@ type agentRowsLoadedMsg struct {
 // group and session, and session is its only scoping parameter. The per-agent split therefore
 // arrives as Bucket.Series and is folded here. That limit is also why this pane is read-only —
 // there is no server-side agent scope to apply to any other pane.
-func (m *model) fetchAgentRowsCmd(open bool, from paneID) tea.Cmd {
+func (m *model) fetchAgentRowsCmd(open agentsOpen, from paneID) tea.Cmd {
 	if m.client == nil {
 		return nil
 	}
@@ -179,6 +198,35 @@ func agentsColumns() []table.Column {
 		{Title: "TOKENS", Width: 10},
 		{Title: "COST", Width: 12},
 	}
+}
+
+// startupAgentsGateCmd asks, once per connection, whether this proxy has enough agents on it to
+// be worth a picker.
+//
+// ONE FETCH FROM initSessionView, which is the single place every entry point converges on:
+// `--endpoint` mode's Init, the pod picker's portForwardReadyMsg, and `[l]`'s local endpoint all
+// call it, and each replaces m.client first. Hooking it there rather than in Init is what makes
+// the gate run again when the operator backs out to the pod picker and enters a DIFFERENT pod —
+// a different proxy has different agents on it, and the answer from the previous one is not an
+// answer about this one. The spend strip's chain is started from the same place for the same
+// reason.
+//
+// NO MEMORY OF PREVIOUS ANSWERS, deliberately: the decision is a pure function of what the
+// window currently shows. The Namespaces → Pods picker remembers nothing either, and a
+// remembered dismissal would go stale exactly when it mattered — the moment a second agent
+// appears is the moment the picker becomes worth showing.
+//
+// THE FIRST FRAME IS NOT BLOCKED. This returns a tea.Cmd like every other fetch, so the sessions
+// pane paints and streams while the answer is in flight; entering AGENTS is something that
+// happens a beat later, if it happens. A gate that waited would add its own latency to every
+// startup, including the majority that it declines.
+func (m *model) startupAgentsGateCmd() tea.Cmd {
+	// paneNone: this gate has no caller pane. It interrupts the sessions view before the
+	// operator has pressed anything, so there is no press-time pane to record — and the esc
+	// arm's paneNone fallback already lands on Sessions, which that arm documents as the one
+	// pane always defensible to land on. The reply handler does not read this field on the
+	// startup path at all; see the agentsOpenAtStartup case in Update for why not.
+	return m.fetchAgentRowsCmd(agentsOpenAtStartup, paneNone)
 }
 
 // newAgentsTable builds an empty per-agent breakdown table.
@@ -248,4 +296,49 @@ func (m *model) enterAgentsOrRefuse(from paneID) (entered bool, refusal string) 
 	m.pane = paneAgents
 	m.rebuildAgentsTable()
 	return true, ""
+}
+
+// selectedAgentLabel is the label of the row under the cursor, or "" when there is none.
+//
+// READ OFF m.agents BY CURSOR INDEX, not out of the rendered table cell: the cell is passed
+// through sanitizeLabel, which is a display transform — a control character or a long label
+// arrives on the wire and leaves that function altered, so scoping to what the cell says could
+// scope to a string no agent ever sent. The two are kept in step by rebuildAgentsTable, which
+// builds the rows from m.agents in order.
+func (m *model) selectedAgentLabel() string {
+	i := m.agentsTbl.Cursor()
+	if i < 0 || i >= len(m.agents) {
+		return ""
+	}
+	return m.agents[i].label
+}
+
+// leaveAgentsPane returns to whichever pane opened the AGENTS pane.
+//
+// ONE EXIT FOR BOTH KEYS — esc backs out, Enter picks an agent and then backs out — so the two
+// cannot drift on where the pane returns to. A key-opened surface owes its caller a way back;
+// without an exit at all this pane was a dead end reachable only by `q`.
+//
+// THE FALLBACK IS SESSIONS, and for paneCatalog's stated reason rather than by imitation:
+// Sessions is the one pane that is always a defensible place to land, while the enum's zero
+// value is the Kubernetes namespace picker, which would look like the connection had gone away.
+// The startup gate leans on this fallback deliberately — it records paneNone because it has no
+// caller pane at all.
+//
+// RETURNING INTO USAGE RESTARTS ITS POLLING CHAIN. This pane holds no ticker of its own, but the
+// usage pane's tick was dropped by its `m.pane != paneUsage` guard while this pane was up, so
+// without the resume its 20s auto-refresh is silently dead. It matters more now than it did:
+// Enter changes what the usage pane is showing, so landing back on a pane that never refetches
+// would leave the new scope unapplied until the operator pressed something.
+func (m *model) leaveAgentsPane() tea.Cmd {
+	if m.previousPane != paneNone {
+		m.pane = m.previousPane
+		m.previousPane = paneNone
+	} else {
+		m.pane = paneSessions
+	}
+	if m.pane == paneUsage {
+		return m.resumeUsagePolling()
+	}
+	return nil
 }

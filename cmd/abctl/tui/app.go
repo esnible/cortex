@@ -42,8 +42,11 @@ const (
 	panePluginDetail
 	paneCatalog
 	paneUsage
-	// paneAgents shows what each CODING AGENT has spent. Read-only: /v1/usage takes no agent
-	// filter, so a selected row cannot scope anything. Not to be confused with paneNamespaces,
+	// paneAgents shows what each CODING AGENT has spent, and picks which one the usage and cost
+	// views are scoped to. The scope is applied CLIENT-SIDE — /v1/usage takes no agent filter, so
+	// the pane fetches group=agent and narrows with usage.ScopeToAgent, which is how
+	// `abctl cost --agent` has always worked. Sessions and events are not scopable at all:
+	// neither carries an agent. Not to be confused with paneNamespaces,
 	// which lists Kubernetes workloads and whose own purpose line used to call them "agents"
 	// too — see paneKeys for how the two are told apart.
 	paneAgents
@@ -723,8 +726,22 @@ type model struct {
 	// /v1/usage grouping and `abctl cost --agent` all say "agent", and a fourth word for the
 	// same thing would be the confusion this feature already had to untangle once. The
 	// Kubernetes sense lives one field up as `namespaces []cluster.AgentNamespace`.
-	agents    []agentRow
-	agentsTbl table.Model
+	agents []agentRow
+	// agentScope is the agent the usage and cost views are narrowed to, or "" for all of them.
+	//
+	// A LABEL, not an index into m.agents: the rows are refetched on every `A` press and on the
+	// startup gate, and their order is by cost, so an index would silently come to mean a
+	// different agent the moment spending changed. The label is also what usage.ScopeToAgent
+	// takes and what `abctl cost --agent` accepts, so the TUI's scope and the CLI's flag are the
+	// same string — an operator can copy one into the other.
+	//
+	// NOT PERSISTED across runs. Every other view choice here is (see Settings), and this one
+	// deliberately is not: the set of agents on a proxy is a property of what is running right
+	// now, and a scope restored from yesterday would narrow to an agent that may not be in the
+	// window at all — which is the error case the fetch has to report rather than a state worth
+	// restoring into.
+	agentScope string
+	agentsTbl  table.Model
 	// agentsErr is the last fetch failure, shown in the pane rather than swallowed: an empty
 	// breakdown and an unreachable endpoint look identical otherwise.
 	agentsErr error
@@ -862,6 +879,10 @@ func (m *model) initSessionView() tea.Cmd {
 	return tea.Batch(
 		m.loadSessionsCmd(),
 		m.loadPipelineCmd(),
+		// Asks whether this proxy is running enough agents to be worth a picker. Batched, so
+		// it costs the first frame nothing; see startupAgentsGateCmd for why it hangs off
+		// initSessionView rather than Init.
+		m.startupAgentsGateCmd(),
 		streamPump(m.streamCh),
 		tickCmd(),
 		refreshTickCmd(),
@@ -1314,10 +1335,33 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.agents = msg.rows
 		}
 		switch {
-		case !msg.open:
+		case msg.open == agentsOpenNever:
 			// A background refresh. Repaint only if the reader is standing on the pane;
 			// otherwise the rows are just kept warm.
 			if m.pane == paneAgents {
+				m.rebuildAgentsTable()
+			}
+		case msg.open == agentsOpenAtStartup:
+			// THE GATE, and the one path here that is allowed to decline in silence. Nobody
+			// asked for this fetch: the operator asked for the sessions view and got it, so a
+			// refusal sentence about a pane they never requested is noise, and an error line
+			// about it competes with the connection message the pane they ARE looking at will
+			// print for itself. m.agentsErr is set above either way, so a later `A` press
+			// reports what happened rather than showing an empty grid.
+			//
+			// agentsPaneApplies rather than enterAgentsOrRefuse: the refusal STRING is written
+			// for someone owed an answer, and this caller is not one. The two agree by test,
+			// so consulting the predicate cannot drift from the sentence.
+			if msg.err == nil && agentsPaneApplies(m.agents) {
+				// paneNone, and msg.from is deliberately NOT read here. The gate has no caller
+				// pane to return to — it interrupted the sessions view before the operator
+				// pressed anything — and the esc arm's existing paneNone fallback already lands
+				// on Sessions, which that arm documents as the one pane always defensible to
+				// land on. Reading msg.from instead would put the correctness of esc in an
+				// argument supplied a round trip earlier, where a test driving this message
+				// cannot see what production passes.
+				m.previousPane = paneNone
+				m.pane = paneAgents
 				m.rebuildAgentsTable()
 			}
 		case msg.err != nil:
@@ -2179,11 +2223,23 @@ func (m *model) paneView() string {
 			scope = m.usage.session
 		}
 		title = fmt.Sprintf("abctl · %s · usage · %s", m.endpoint, scope)
+		// The agent scope goes in the TITLE, not only in the footer, because it changes what
+		// every figure on the pane means. A narrowed chart that looked like the whole window
+		// would be wrong in the one direction a reader cannot check.
+		if m.agentScope != "" {
+			title += " · agent=" + sanitizeLabel(m.agentScope)
+		}
 		body = m.renderUsage(m.width, m.bodyHeight)
 	case paneAgents:
 		// The window is in the title because the figures are a day's, not a lifetime's, and
 		// this pane has no window cycle of its own to make that discoverable.
 		title = fmt.Sprintf("abctl · %s · agents · %s", m.endpoint, agentsWindow)
+		// Which agent is currently scoped, so returning to the picker shows the state rather
+		// than only the choices. The footer's Enter label says what the key will do to the row
+		// under the cursor; this says what is set, whatever the cursor is on.
+		if m.agentScope != "" {
+			title += " · scoped to " + sanitizeLabel(m.agentScope)
+		}
 		switch {
 		case m.agentsErr != nil:
 			// Named, not blank: an unreachable endpoint and a quiet day look identical

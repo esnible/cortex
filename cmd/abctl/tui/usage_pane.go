@@ -144,10 +144,33 @@ func (m *model) fetchUsage() tea.Cmd {
 	session := m.usage.session
 	group := m.usage.group
 	req := m.usage.reqSeq
+	// THE SCOPE IS CAPTURED HERE, with the rest of the request, rather than read off the model
+	// inside the closure: this runs on another goroutine, and a scope changed while the request
+	// was in flight would narrow the reply to an agent the request was not grouped for.
+	scope := m.agentScope
+	if scope != "" {
+		// The agent axis is not the pane's to choose while a scope is active: /v1/usage takes one
+		// group parameter, and the narrowing below needs the per-agent series. m.usage.group is
+		// left alone rather than overwritten, so clearing the scope restores the axis the
+		// operator had picked.
+		group = usage.GroupAgent
+	}
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		snap, err := client.GetUsage(ctx, window, resolution, session, group)
+		if err == nil && scope != "" {
+			// NarrowBuckets, not KeepBuckets: this pane renders a chart from Buckets, and
+			// narrowing only the totals would title a whole-window chart with one agent's name.
+			// The cost is that the narrowed buckets carry no latency — see the renderUsage
+			// branch that says so rather than plotting the zeros.
+			//
+			// A FAILURE IS REPORTED, not swallowed. A scope stops matching on its own as the
+			// window moves past an agent's last request, and showing every agent under a scoped
+			// title is the one outcome a reader cannot detect. The error names the agents that
+			// are in the window.
+			snap, err = usage.ScopeToAgent(snap, scope, usage.NarrowBuckets)
+		}
 		return usageLoadedMsg{snap: snap, req: req, err: err}
 	}
 }
@@ -330,6 +353,22 @@ func (m *model) renderUsage(width, height int) string {
 		b.WriteString("  Loading…\n")
 	case m.usage.snap == nil:
 		b.WriteString("  (no data)\n")
+	case m.agentScope != "" && m.usage.metric.isLatency():
+		// SAID HERE RATHER THAN LEFT TO renderWhiskers, which would answer "no latency samples
+		// in this window" — true of the narrowed snapshot and false about the window, and it
+		// would send the reader looking for traffic that is there. usage.ScopeToAgent zeroes the
+		// latency fields because Bucket.Series is map[string]Counts and Counts carries no
+		// latency, so a bucket's mean describes every agent that shared it. There is no
+		// per-agent latency on the wire to offer instead, which is why this names the way out
+		// rather than suggesting a different window.
+		b.WriteString("  (latency is not available per agent)\n")
+		b.WriteString("\n")
+		b.WriteString("  Response times are recorded per bucket, across every agent that\n")
+		b.WriteString("  shared it, so they cannot be attributed to one. Clear the agent\n")
+		b.WriteString("  scope with [A] to plot latency for all of them.\n")
+		b.WriteString("\n")
+		b.WriteString(renderUsageSummary(m.usage.snap))
+		b.WriteString("\n")
 	default:
 		for _, line := range renderUsageChart(m.usage.snap, m.usage.metric, m.usage.group, width, usageChartHeight(height)) {
 			b.WriteString(line)
