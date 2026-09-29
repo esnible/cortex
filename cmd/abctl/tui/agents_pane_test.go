@@ -489,6 +489,10 @@ func TestAgentsPane_NavigationKeysMoveTheCursor(t *testing.T) {
 		{"k comes back", []string{"j", "j", "k"}, 1},
 		// The clamps, which are bubbles' own behavior and are asserted so a future dispatch
 		// arm that reimplemented the movement by hand could not quietly run off either end.
+		// The two are not equally strong, and it is worth knowing which: the bottom clamp also
+		// fails outright when the arm is missing (want 2, no dispatch leaves the cursor at 0),
+		// but the top clamp's want IS the no-dispatch value, so it can only catch a hand-rolled
+		// reimplementation — never a missing arm. The five rows above are what cover dispatch.
 		{"up on the first row stays put", []string{"up"}, 0},
 		{"down past the last row stays on it", []string{"down", "down", "down", "down"}, 2},
 	} {

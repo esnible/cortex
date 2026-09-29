@@ -134,26 +134,25 @@ func fitModel(t *testing.T, p paneID, w, h int, events []pipeline.SessionEvent) 
 	// comment on m.catalog records it — and the agents table shipped with the identical defect,
 	// nothing in layout() sizing it at all.
 	//
-	// A LABEL IS A USER-AGENT, so it is request-controlled and unbounded. The first few are real
-	// shapes (a version suffix, a vendor prefix) and one runs deliberately past any column
-	// width, because a label that cannot overflow the AGENT column would leave the assertion
-	// measuring only the columns' declared widths.
+	// ONE NON-EMPTY ROW IS THE WHOLE REQUIREMENT, and the rest of this fixture is realism
+	// rather than reach. bubbles truncates every cell to its column width and pads its
+	// viewport up to its Height, so neither a label's length nor the number of rows can move
+	// what either half of this invariant measures. Both halves were mutated to check that:
+	// shortening the overlong label to "ag/1.0" reproduces the width failure byte-identically,
+	// and cutting the rows to four reproduces the height failures at every size and filter
+	// state. What the width half measures is the FITTED COLUMN WIDTHS — which is why it is
+	// deleting the SetColumns call, not any cell's content, that fails it.
 	//
-	// MORE ROWS THAN THE SHORTEST BODY BUDGET, padded out for the same reason the catalog
-	// fixture carries 30 plugins: the height half of this invariant is only measurable when the
-	// table has more rows than the terminal can show. Four agents fit inside every size in
-	// fitSizes, so a table left at bubbles' default height would still have rendered short.
+	// The labels stay real shapes anyway — a version suffix, a vendor prefix, and one
+	// request-controlled User-Agent running past any column — because a fixture that reads
+	// like production is worth keeping, not because the assertion needs them.
 	labels := []string{
 		"claude-code/2.1.270",
 		"bob-shell/2.0.5",
 		"cursor/1.2.3",
 		"some-agent/9.9.9 (an unrecognised User-Agent that keeps going well past any column)",
 	}
-	for i := 0; i < 30; i++ {
-		label := labels[i%len(labels)]
-		if i >= len(labels) {
-			label = fmt.Sprintf("agent-%02d/1.0.0", i)
-		}
+	for i, label := range labels {
 		m.agents = append(m.agents, agentRow{
 			label: label,
 			Counts: usage.Counts{

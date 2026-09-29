@@ -1360,9 +1360,11 @@ func (m *model) layout() {
 	setTableHeight(&m.catalogTbl, bodyH)
 	// The agents table had the catalog's bug, whose comment above is this one's history: nothing
 	// sized it anywhere, so it kept bubbles' table.New default for the life of the process and
-	// rendered past the bottom of any shorter terminal. TestLayout_EveryPaneFitsTheTerminal
-	// covered this pane no better than it covered the catalog — it left m.agents empty, so the
-	// measurement only ever saw the "(no agent traffic in this window)" line.
+	// rendered past the bottom of any shorter terminal. The catalog's blind spot was an empty
+	// fixture; this one was a size larger, and it is the class that will recur:
+	// TestLayout_EveryPaneFitsTheTerminal enumerates the panes it measures in a HAND-WRITTEN
+	// map, and paneAgents was simply not in it — so no fixture could have helped, and adding a
+	// pane means adding it to that map too.
 	setTableHeight(&m.agentsTbl, bodyH)
 	m.detailVp.Width = m.width
 	m.detailVp.Height = bodyH
