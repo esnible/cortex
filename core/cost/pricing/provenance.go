@@ -61,6 +61,13 @@ func (p Provenance) String() string {
 // apply a long-context premium.
 type Resolver interface {
 	Resolve(endpoint, model string, promptTotal int) (Rates, Provenance)
+	// CurrencyFor is the unit a figure for this pair is denominated in, never empty.
+	//
+	// ON THIS INTERFACE RATHER THAN AN OPTIONAL ONE TYPE-ASSERTED FOR, deliberately. An optional
+	// interface degrades silently to USD when an implementer forgets it, and "silently labelled
+	// dollars" is the exact defect the unit was added to prevent — a credits figure summed into a
+	// dollar total. Here the compiler asks every implementer the question instead.
+	CurrencyFor(endpoint, model string) string
 }
 
 // ProvenanceFromString is the inverse of String, for a level that has been through JSON.

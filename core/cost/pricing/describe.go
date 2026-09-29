@@ -1,6 +1,9 @@
 package pricing
 
-import "sort"
+import (
+	"sort"
+	"strings"
+)
 
 // This file exists because a config file cannot answer the question operators
 // actually have.
@@ -23,6 +26,15 @@ type RowView struct {
 	Host       string `json:"host,omitempty"`
 	Model      string `json:"model"`
 	Provenance string `json:"provenance"`
+	// Unit is the currency these rates are denominated in. OMITTED WHEN USD, so a
+	// single-currency deployment's document is unchanged and a reader who has never configured a
+	// unit is not shown a column of "USD".
+	//
+	// It is here because `abctl pricing` printed "$/Mtok" as a literal sub-header — an assertion
+	// rather than a rendering — and once an endpoint can bill in credits that literal becomes
+	// false. A rate quoted in the wrong currency is the silent-wrong-number failure this package
+	// exists to remove, arriving through the tool built to inspect it.
+	Unit string `json:"unit,omitempty"`
 
 	InputPerMillion      float64 `json:"inputPerMillion,omitempty"`
 	CacheWritePerMillion float64 `json:"cacheWritePerMillion,omitempty"`
@@ -62,6 +74,8 @@ type EffectiveRates struct {
 	Model      string `json:"model"`
 	Provenance string `json:"provenance"`
 	Unpriced   bool   `json:"unpriced,omitempty"`
+	// Unit is the currency these rates are denominated in; omitted when USD. See RowView.Unit.
+	Unit string `json:"unit,omitempty"`
 
 	// LongContextAbove is the prompt-token count past which DIFFERENT rates apply, or
 	// 0 when this model has none.
@@ -119,9 +133,11 @@ func (t *Table) Describe() Description {
 	for i := range t.rows {
 		r := &t.rows[i]
 		row := RowView{
-			Host:                 r.host,
-			Model:                r.model.pattern,
-			Provenance:           r.prov.String(),
+			Host:       r.host,
+			Model:      r.model.pattern,
+			Provenance: r.prov.String(),
+			// Omitted for the default so the common document is byte-identical to before.
+			Unit:                 nonDefaultCurrency(r.currency),
 			InputPerMillion:      perM(r.rates, TierInput),
 			CacheWritePerMillion: perM(r.rates, TierCacheWrite),
 			CacheReadPerMillion:  perM(r.rates, TierCacheRead),
@@ -186,7 +202,10 @@ func (t *Table) EffectiveFor(host string) Effective {
 
 	for _, m := range models {
 		rates, prov := t.Resolve(host, m, 0)
-		e := EffectiveRates{Model: m, Provenance: prov.String(), Unpriced: prov == ProvNone}
+		e := EffectiveRates{
+			Model: m, Provenance: prov.String(), Unpriced: prov == ProvNone,
+			Unit: nonDefaultCurrency(t.CurrencyFor(host, m)),
+		}
 		// Read from the UNFLATTENED row: Resolve has already folded the applicable
 		// threshold into Base, so the thresholds are only visible on the row itself.
 		if lo := t.lowestThresholdFor(host, m); lo > 0 {
@@ -248,4 +267,23 @@ func (t *Table) lowestThresholdFor(endpoint, model string) int {
 		}
 	}
 	return lowest
+}
+
+// nonDefaultCurrency is c unless c is the default, in which case "".
+//
+// OMITTING USD IS THE POINT. Every deployment today is USD-only, and a document that spelled it
+// out on every row would change every existing reader's output to say what its absence already
+// says — while a client that finds this field EMPTY may safely print "$". A non-empty value is a
+// claim that the figures beside it are not dollars.
+//
+// FOLDED, so the claim is not made by a spelling. Both callers hand this a value
+// currencyOrDefault has already canonicalised, which is where the property is really
+// established; folding again costs one comparison and makes the predicate right for a caller
+// that has not. Getting it wrong is not a wrong figure but a wrong LABEL — "per Mtok" over a
+// table of dollars — the same false claim as the one this commit removes, in the other direction.
+func nonDefaultCurrency(c string) string {
+	if c == "" || strings.EqualFold(c, CurrencyUSD) {
+		return ""
+	}
+	return c
 }

@@ -1849,8 +1849,9 @@ func TestRunCost_ByAgentPrintsARowPerAgent(t *testing.T) {
 // An unpriced row renders "—", and a row priced at a rate of zero renders "$0.00".
 //
 // THE WHOLE POINT OF THE COLUMN, and it takes three rows to state. bob-shell here sent 8
-// requests and nothing could price them — it bills in credits, which the cost model cannot
-// represent — and "$0.00" would assert that its traffic was free. Distinguishing "no rate
+// requests and nothing could price them — no rates ship for it — and "$0.00" would assert that
+// its traffic was free. (Not "because it bills in credits": a credits endpoint with rates
+// configured prices normally. An absent RATE is what leaves a row unpriced.) Distinguishing "no rate
 // configured" from "cost was zero" is the rule this codebase keeps everywhere a figure may be
 // unknown.
 //
@@ -2054,6 +2055,26 @@ func TestRunCost_UnknownByNamesTheAcceptedAxes(t *testing.T) {
 					t.Errorf("error does not name the accepted axis %q:\n%s", want, msg)
 				}
 			}
+			// currency IS ONE OF THEM, pinned in both constants.
+			//
+			// Nothing asserted this, so either list could quietly lose the axis the cross-unit
+			// refusal sends readers to. costByAxes' own godoc says it exists "in one place so the
+			// flag's help and its error message cannot list different sets" — a property no test
+			// held it to. ledgerServedAxes is the same word on the downgrade path, where a reader
+			// who was just refused a combined total is told which axes a ledger window can serve.
+			if !strings.Contains(msg, "currency") {
+				t.Errorf("the accepted axes omit currency, the axis the cross-unit refusal points "+
+					"at:\n%s", msg)
+			}
+			for name, list := range map[string]string{
+				"costByAxes":       costByAxes,
+				"ledgerServedAxes": ledgerServedAxes,
+			} {
+				if !strings.Contains(list, "currency") {
+					t.Errorf("%s = %q, which does not name currency; the refusal would point at "+
+						"an axis this command then rejects", name, list)
+				}
+			}
 		})
 	}
 }
@@ -2253,6 +2274,541 @@ func TestRunCost_AgentDropsTheWindowsProvenance(t *testing.T) {
 				t.Errorf("--agent printed the window's caveat %q beside one agent's figure:\n%s",
 					leaked, got)
 			}
+		}
+	})
+}
+
+// A window spanning two units does NOT get a single total.
+//
+// THIS IS THE WHOLE POINT OF BILLING UNITS. Summing credits into dollars produces a number that is
+// neither, and it looks exactly like a correct one — larger, never obviously wrong. Measured on one
+// real day before this existed: $146.3616 of Claude Code spend would have silently absorbed 0.0774
+// credits of Bob spend, and one scalar just looks slightly bigger where two subtotals side by side
+// would look obviously wrong.
+//
+// So the headline is WITHHELD rather than qualified. A caveat under a wrong figure still leaves the
+// wrong figure on screen, and this is the one disclosure on this surface where the number itself
+// cannot be salvaged.
+func TestRunCost_RefusesACombinedTotalAcrossUnits(t *testing.T) {
+	srv := fakeUsageServer(t, `{"window":"today","priced":true,
+		"currencies":["USD","credits"],
+		"totals":{"requests":1057,"costMicros":146439200,"pricedRequests":1055,"priceableRequests":1055}}`)
+	defer srv.Close()
+
+	var out, errOut strings.Builder
+	if code := runCost([]string{"--endpoint", srv.URL}, &out, &errOut); code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr = %s", code, errOut.String())
+	}
+	got := out.String()
+	// The combined figure must not appear in ANY of its spellings.
+	for _, forbidden := range []string{"$146.4392", "$146.44", "146.4392"} {
+		if strings.Contains(got, forbidden) {
+			t.Errorf("a cross-unit total was printed as %q; it is neither dollars nor credits:\n%s",
+				forbidden, got)
+		}
+	}
+	// And it must name BOTH units, or the reader cannot tell what the window actually holds.
+	for _, want := range []string{"USD", "credits"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("output does not name the unit %q:\n%s", want, got)
+		}
+	}
+	// Tokens and requests are still reported: they are unit-free, and they are the one comparison
+	// that stays legal across gateways. Withholding them would be over-refusal.
+	// plainCount, so no thousands separator on this surface — asserted as the figure it actually
+	// prints rather than as the one a reader might expect.
+	if !strings.Contains(got, "1057 requests") {
+		t.Errorf("requests were withheld; they carry no unit and stay comparable:\n%s", got)
+	}
+}
+
+// One unit — every deployment today — prints exactly as it did before.
+//
+// The refusal must be a signal, not furniture. A single-currency window, and a producer that does
+// not report currencies at all (the in-memory ring), both have to keep the headline: turning an
+// absent field into a refusal would break every existing caller on traffic that is perfectly
+// summable.
+func TestRunCost_OneUnitOrNoneStillPrintsTheTotal(t *testing.T) {
+	for _, tc := range []struct{ name, currencies string }{
+		{"the field is absent, as the ring leaves it", ""},
+		{"exactly one unit", `"currencies":["USD"],`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := fakeUsageServer(t, `{"window":"today","priced":true,`+tc.currencies+
+				`"totals":{"requests":318,"costMicros":4170000,"pricedRequests":318,"priceableRequests":318}}`)
+			defer srv.Close()
+
+			var out, errOut strings.Builder
+			if code := runCost([]string{"--endpoint", srv.URL}, &out, &errOut); code != 0 {
+				t.Fatalf("exit = %d, want 0; stderr = %s", code, errOut.String())
+			}
+			got := out.String()
+			if !strings.Contains(got, "$4.17") {
+				t.Errorf("a summable window lost its total:\n%s", got)
+			}
+			// THE STRINGS PRODUCTION ACTUALLY PRINTS. This read "two units" and "not a figure",
+			// and neither appears anywhere in this command — the headline is "%d units", with a
+			// digit, and the caveat is "which cannot be added". So the assertion guarding the one
+			// direction that breaks existing users could not fail under any input. Both strings
+			// below are lifted from writeCostSummary's own format strings.
+			if strings.Contains(got, " units") || strings.Contains(got, "cannot be added") {
+				t.Errorf("a summable window was refused:\n%s", got)
+			}
+		})
+	}
+}
+
+// --by currency labels each cell in the unit its OWN ROW names.
+//
+// THE SURFACE THE REFUSAL POINTS AT. writeCostSummary withholds a mixed window's headline and says
+// "use --by currency for a figure per unit"; every cell in that table was formatted by costUSD,
+// which hard-codes "$", so the credits row came back as "$0.08" — a withheld figure replaced by a
+// wrong one, on the strength of this command's own advice.
+//
+// THE currency AXIS IS THE ONE THAT CAN PRINT FIGURES FOR A MIXED WINDOW, because the row label IS
+// the unit. That is exactly why the refusal names it.
+func TestRunCost_ByCurrencyLabelsEachRowInItsOwnUnit(t *testing.T) {
+	srv := fakeUsageServer(t, `{"window":"today","group":"currency","priced":true,
+		"currencies":["USD","credits"],
+		"totals":{"requests":1057,"costMicros":146439000,"pricedRequests":1057,"priceableRequests":1057},
+		"buckets":[{"at":"2026-09-27T10:00:00Z","series":{
+		   "USD":{"requests":1000,"costMicros":146361600,"pricedRequests":1000,"priceableRequests":1000},
+		   "credits":{"requests":57,"costMicros":77400,"pricedRequests":57,"priceableRequests":57}}}]}`)
+	defer srv.Close()
+
+	var out, errOut strings.Builder
+	if code := runCost([]string{"--endpoint", srv.URL, "--by", "currency"}, &out, &errOut); code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr = %s", code, errOut.String())
+	}
+	got := out.String()
+
+	// Scoped to the row, so a "$" anywhere on it fails. The defect was a "$" in the COST cell,
+	// several columns from the label that names the unit.
+	creditsLine := tableRow(t, got, "credits")
+	if strings.Contains(creditsLine, "$") {
+		t.Errorf("the credits row claims dollars:\n%s", creditsLine)
+	}
+	if !strings.Contains(creditsLine, "0.08 credits") {
+		t.Errorf("the credits row lost its figure or its unit:\n%s", creditsLine)
+	}
+	// And the USD row keeps "$" character-for-character, which is what keeps this from costing
+	// every existing reader the label they had.
+	if usdLine := tableRow(t, got, "USD"); !strings.Contains(usdLine, "$146.36") {
+		t.Errorf("the USD row lost its dollar figure:\n%s", usdLine)
+	}
+}
+
+// On any OTHER axis a mixed window withholds each cell, because a row may itself span units.
+//
+// One agent calling two gateways is a row whose costMicros is the cross-unit sum the headline just
+// refused, and a folded series cannot separate it. So the cell gets the headline's posture rather
+// than a label — withheld, with the units named once under the table.
+func TestRunCost_ByAgentOnAMixedWindowWithholdsTheCostCells(t *testing.T) {
+	srv := fakeUsageServer(t, `{"window":"today","group":"agent","priced":true,
+		"currencies":["USD","credits"],
+		"totals":{"requests":1057,"costMicros":146439000,"pricedRequests":1057,"priceableRequests":1057},
+		"buckets":[{"at":"2026-09-27T10:00:00Z","series":{
+		   "claude-code/2.1.270":{"requests":1000,"costMicros":146361600,"pricedRequests":1000,"priceableRequests":1000},
+		   "bob-shell/2.0.5":{"requests":57,"costMicros":77400,"pricedRequests":57,"priceableRequests":57}}}]}`)
+	defer srv.Close()
+
+	var out, errOut strings.Builder
+	if code := runCost([]string{"--endpoint", srv.URL, "--by", "agent"}, &out, &errOut); code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr = %s", code, errOut.String())
+	}
+	got := out.String()
+
+	if strings.Contains(got, "$146.36") || strings.Contains(got, "$0.08") {
+		t.Errorf("a per-agent cell was labelled in dollars on a mixed window:\n%s", got)
+	}
+	if !strings.Contains(got, mixedCostCell) {
+		t.Errorf("no withheld cell; a figure that may span units was printed anyway:\n%s", got)
+	}
+	// Said once, under the table, naming the units and the axis that resolves them. A column of
+	// "(mixed)" with nothing explaining it reads as a defect in the tool.
+	//
+	// SCOPED TO THE TABLE'S OWN OUTPUT, not asserted against the whole document, and that is the
+	// point rather than a tidiness preference. Two rounds of this test picked a STRING meant to be
+	// unique to writeCostBreakdown and both were wrong: "cannot be added" and then "use --by
+	// currency for a figure per unit" are each printed by writeCostSummary too, which runs first — so
+	// the assertion passed on the summary's caveat while the breakdown's was suppressed. Choosing a
+	// third string would be the same bet a third time. breakdownSection removes the possibility
+	// instead: nothing the summary prints is inside what it returns, so a shared phrase cannot
+	// satisfy these assertions however the wording drifts.
+	section := breakdownSection(t, got, "agent")
+	if !strings.Contains(section, "these rows hold") {
+		t.Errorf("the withheld column is unexplained by the table's own caveat:\n%s", got)
+	}
+	if !strings.Contains(section, "use --by currency for a figure per unit") {
+		t.Errorf("the withheld column does not point at the axis that resolves it:\n%s", got)
+	}
+}
+
+// breakdownSection is the part of `abctl cost` output that writeCostBreakdown produced.
+//
+// EXISTS BECAUSE THE TWO SURFACES SHARE VOCABULARY. writeCostSummary prints a caveat naming the
+// same units and pointing at the same flag, immediately above this table, and it runs first — so a
+// Contains over the whole document cannot tell which surface satisfied it. That is not hypothetical:
+// it is how one mutant went from killed to surviving between rounds, and then how its replacement
+// assertion was dead on arrival.
+//
+// CUT AT THE TABLE HEADER, which writeCostBreakdown emits as the uppercased axis name beside
+// REQUESTS / TOKENS / COST, and everything from there on belongs to the table — its rows, its
+// caveat and its residual note. Located by content rather than by a line offset, so it survives any
+// edit to the summary above it.
+//
+// FAILS LOUDLY when the header is absent, for the DIAGNOSTIC and not for the outcome. An earlier
+// draft of this comment claimed the Fatalf is what stops an empty section passing vacuously; it is
+// not, and the claim was the same kind of unchecked assertion this helper was written to remove.
+// Returning "" would already fail both Contains assertions below — so the test fails either way,
+// and this only replaces "missing: these rows hold" with the reason the section was empty. Its
+// mutant is therefore equivalent by construction, and is recorded as such rather than chased with
+// a fixture that reaches it.
+func breakdownSection(t *testing.T, out, asked string) string {
+	t.Helper()
+	lines := strings.Split(out, "\n")
+	for i, ln := range lines {
+		if strings.Contains(ln, strings.ToUpper(asked)) && strings.Contains(ln, "REQUESTS") {
+			section := strings.Join(lines[i:], "\n")
+			// The scoping is the property, so it is asserted rather than assumed: the summary's own
+			// caveat must be OUTSIDE what this returns, or the helper gives the false confidence it
+			// was written to replace.
+			if strings.Contains(section, "no combined figure is shown") {
+				t.Fatalf("breakdownSection captured writeCostSummary's caveat, so anything asserted "+
+					"inside it may be the summary's:\n%s", section)
+			}
+			return section
+		}
+	}
+	t.Fatalf("no %s breakdown table in the output, so the table's own caveat cannot be asserted:\n%s",
+		asked, out)
+	return ""
+}
+
+// A window in ONE non-USD unit prints its total in that unit, not behind a "$".
+//
+// The other half of the same defect, and the one no finding named: a credits-only deployment has
+// exactly one currency, so it is not "mixed", so it took the ordinary headline path and printed
+// costUSD's "$" over credits — with nothing anywhere on the surface to contradict it. A single unit
+// is the case with no refusal to fall back on, which makes the label the only thing carrying the
+// fact.
+func TestRunCost_ASingleNonUSDUnitIsLabelledNotDollared(t *testing.T) {
+	srv := fakeUsageServer(t, `{"window":"today","priced":true,"currencies":["credits"],
+		"totals":{"requests":57,"tokens":38682,"costMicros":77400,"pricedRequests":57,
+		"priceableRequests":57,"avoidedMicros":12000}}`)
+	defer srv.Close()
+
+	var out, errOut strings.Builder
+	if code := runCost([]string{"--endpoint", srv.URL}, &out, &errOut); code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr = %s", code, errOut.String())
+	}
+	got := out.String()
+
+	if strings.Contains(got, "$") {
+		t.Errorf("a credits-only window printed a dollar glyph:\n%s", got)
+	}
+	if !strings.Contains(got, "0.08 credits") {
+		t.Errorf("the headline lost its unit:\n%s", got)
+	}
+	// The saving is money too, and it took costUSD as well.
+	if !strings.Contains(got, "0.01 credits") {
+		t.Errorf("the saving is not labelled in the window's unit:\n%s", got)
+	}
+	// And it is NOT refused: one unit is summable, which is the direction that would break every
+	// deployment that exists today.
+	if strings.Contains(got, "cannot be added") {
+		t.Errorf("a single-unit window was refused:\n%s", got)
+	}
+}
+
+// --json carries the units, so the reader nobody eyeballs can make the same refusal.
+//
+// The human path withheld and the machine path emitted the sum with no field naming the conflict.
+// Present for a single unit too, which is how a credits deployment learns what its
+// own total is denominated in.
+func TestRunCost_JSONCarriesTheCurrencies(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		currencies string
+		want       []string
+	}{
+		{"mixed, the case the human path refuses", `"currencies":["USD","credits"],`, []string{"USD", "credits"}},
+		{"a single unit answers \"in what\"", `"currencies":["credits"],`, []string{"credits"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			srv := fakeUsageServer(t, `{"window":"today","priced":true,`+tc.currencies+
+				`"totals":{"requests":1057,"costMicros":146439000,"pricedRequests":1057,"priceableRequests":1057}}`)
+			defer srv.Close()
+
+			var out, errOut strings.Builder
+			if code := runCost([]string{"--endpoint", srv.URL, "--json"}, &out, &errOut); code != 0 {
+				t.Fatalf("exit = %d, want 0; stderr = %s", code, errOut.String())
+			}
+			// Decoded rather than string-matched, so this pins the FIELD a script reads and not
+			// merely the presence of the words somewhere in the document.
+			var doc struct {
+				Currencies []string `json:"currencies"`
+			}
+			if err := json.Unmarshal([]byte(out.String()), &doc); err != nil {
+				t.Fatalf("the document does not decode: %v\n%s", err, out.String())
+			}
+			if len(doc.Currencies) != len(tc.want) {
+				t.Fatalf("currencies = %v, want %v", doc.Currencies, tc.want)
+			}
+			for i := range tc.want {
+				if doc.Currencies[i] != tc.want[i] {
+					t.Errorf("currencies = %v, want %v", doc.Currencies, tc.want)
+				}
+			}
+		})
+	}
+}
+
+// The ring serialises no currencies key at all, so no script starts seeing a field for a window
+// that cannot compute one.
+func TestRunCost_JSONOmitsCurrenciesWhenTheProducerDoesNotReportThem(t *testing.T) {
+	srv := fakeUsageServer(t, `{"window":"today","priced":true,
+		"totals":{"requests":318,"costMicros":4170000,"pricedRequests":318,"priceableRequests":318}}`)
+	defer srv.Close()
+
+	var out, errOut strings.Builder
+	if code := runCost([]string{"--endpoint", srv.URL, "--json"}, &out, &errOut); code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr = %s", code, errOut.String())
+	}
+	if strings.Contains(out.String(), "currencies") {
+		t.Errorf("a ring-served window named a currencies key:\n%s", out.String())
+	}
+}
+
+// --agent on a mixed window says WHOSE mixture it is.
+//
+// scopeToAgent narrows Totals to one agent and carries Currencies over from the whole window, and
+// no client-side arithmetic can narrow the second — a folded per-agent Counts has summed the
+// currency axis away. So the refusal stands, deliberately over-refusing, and this line is what
+// stops a reader taking it as a statement about the agent they asked about.
+func TestRunCost_AgentOnAMixedWindowNamesTheWindowAsTheSource(t *testing.T) {
+	srv := fakeUsageServer(t, `{"window":"today","group":"agent","priced":true,
+		"currencies":["USD","credits"],
+		"totals":{"requests":1057,"costMicros":146439000,"pricedRequests":1057,"priceableRequests":1057},
+		"buckets":[{"at":"2026-09-27T10:00:00Z","series":{
+		   "claude-code/2.1.270":{"requests":1000,"costMicros":146361600,"pricedRequests":1000,"priceableRequests":1000}}}]}`)
+	defer srv.Close()
+
+	var out, errOut strings.Builder
+	code := runCost([]string{"--endpoint", srv.URL, "--agent", "claude-code/2.1.270"}, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr = %s", code, errOut.String())
+	}
+	got := out.String()
+
+	if !strings.Contains(got, "window's mixture") {
+		t.Errorf("the refusal does not say it is the window's mixture and not this agent's:\n%s", got)
+	}
+	// Still withheld: the safe direction, since this agent's own traffic may be the mixed part.
+	if strings.Contains(got, "$146.36") {
+		t.Errorf("a per-agent figure was printed from a mixed window:\n%s", got)
+	}
+}
+
+// tableRow returns the breakdown row whose LABEL is exactly label.
+//
+// Matched on the row's first field rather than with Contains, and that is the point: a unit name
+// also appears in the caveat above the table, so "the credits row carries no $" is unprovable by
+// substring — it would read the caveat line and pass for the wrong reason. Scoped to one line
+// because the claim is about one cell, and the USD row of the same table legitimately has a "$".
+func tableRow(t *testing.T, out, label string) string {
+	t.Helper()
+	var hits []string
+	for _, ln := range strings.Split(out, "\n") {
+		if fields := strings.Fields(ln); len(fields) > 0 && fields[0] == label {
+			hits = append(hits, ln)
+		}
+	}
+	if len(hits) != 1 {
+		t.Fatalf("want exactly one table row labelled %q, got %d:\n%s", label, len(hits), out)
+	}
+	return hits[0]
+}
+
+// A series label that is not a reported unit does not become one in the --by currency table.
+//
+// The label is "(other)", the band a capped series folds into, in a window that reports only USD.
+// Taking every row's label as its unit would render "0.08 (other)"; the window's own unit is the
+// right answer, and is what this cell rendered before units existed.
+//
+// ASSERTED IN BOTH DIRECTIONS, because the guard has two ways to be wrong: swallowing a real unit
+// (the credits row must keep its label) and trusting a fake one (the capped row must not get one).
+func TestRunCost_ByCurrencyDoesNotTreatTheOverflowLabelAsAUnit(t *testing.T) {
+	// A USD-only window whose series include a label that is not a unit.
+	srv := fakeUsageServer(t, `{"window":"today","group":"currency","priced":true,
+		"currencies":["USD"],
+		"totals":{"requests":1057,"costMicros":146439000,"pricedRequests":1057,"priceableRequests":1057},
+		"buckets":[{"at":"2026-09-27T10:00:00Z","series":{
+		   "USD":{"requests":1000,"costMicros":146361600,"pricedRequests":1000,"priceableRequests":1000},
+		   "(other)":{"requests":57,"costMicros":77400,"pricedRequests":57,"priceableRequests":57}}}]}`)
+	defer srv.Close()
+
+	var out, errOut strings.Builder
+	if code := runCost([]string{"--endpoint", srv.URL, "--by", "currency"}, &out, &errOut); code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr = %s", code, errOut.String())
+	}
+	got := out.String()
+
+	other := tableRow(t, got, "(other)")
+	if strings.Contains(other, "0.08 (other)") {
+		t.Errorf("the capped row's figure is labelled with the overflow label, which normaliseUnit "+
+			"could never have accepted as a unit:\n%s", other)
+	}
+	// It falls back to the WINDOW's unit, which for a single-currency deployment is the right
+	// answer and is byte-identical to what this cell rendered before units existed.
+	if !strings.Contains(other, "$0.08") {
+		t.Errorf("the capped row lost the figure it had before billing units:\n%s", other)
+	}
+	if usd := tableRow(t, got, "USD"); !strings.Contains(usd, "$146.36") {
+		t.Errorf("the real unit's row changed:\n%s", usd)
+	}
+}
+
+// And in a MIXED window the capped row is withheld rather than given either unit.
+//
+// The other direction of the same fallthrough: there is no window unit to fall back to, and a
+// capped row folds rows that each had a real unit and may well span two — so its figure is exactly
+// the cross-unit sum the headline refused.
+func TestRunCost_ByCurrencyWithholdsACappedRowOnAMixedWindow(t *testing.T) {
+	srv := fakeUsageServer(t, `{"window":"today","group":"currency","priced":true,
+		"currencies":["USD","credits"],
+		"totals":{"requests":1114,"costMicros":146516400,"pricedRequests":1114,"priceableRequests":1114},
+		"buckets":[{"at":"2026-09-27T10:00:00Z","series":{
+		   "USD":{"requests":1000,"costMicros":146361600,"pricedRequests":1000,"priceableRequests":1000},
+		   "credits":{"requests":57,"costMicros":77400,"pricedRequests":57,"priceableRequests":57},
+		   "(other)":{"requests":57,"costMicros":77400,"pricedRequests":57,"priceableRequests":57}}}]}`)
+	defer srv.Close()
+
+	var out, errOut strings.Builder
+	if code := runCost([]string{"--endpoint", srv.URL, "--by", "currency"}, &out, &errOut); code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr = %s", code, errOut.String())
+	}
+	got := out.String()
+
+	if other := tableRow(t, got, "(other)"); !strings.Contains(other, mixedCostCell) {
+		t.Errorf("a capped row in a mixed window was given a unit rather than withheld:\n%s", other)
+	}
+	// The real units keep their own figures — the guard must not swallow them.
+	if credits := tableRow(t, got, "credits"); !strings.Contains(credits, "0.08 credits") {
+		t.Errorf("the credits row lost its label:\n%s", credits)
+	}
+	if usd := tableRow(t, got, "USD"); !strings.Contains(usd, "$146.36") {
+		t.Errorf("the USD row lost its figure:\n%s", usd)
+	}
+}
+
+// A unit spelled two ways is still that unit's row, not a withheld one.
+//
+// WHY THE MEMBERSHIP TEST FOLDS. Snapshot.Currencies keeps the FIRST spelling it meets and
+// canonicalises only USD, while ledger.labelFor answers with each folded row's own Currency — and
+// Row.key() folds case only WITHIN a minute, so two minutes spelled "Credits" and "credits" reach
+// the client as one entry in Currencies and a series label that may differ from it in case. An
+// exact comparison there would read a real, operator-configured unit as unrecognised and withhold a
+// figure it should label, which is the same over-refusal in miniature that this table exists to
+// avoid.
+func TestRunCost_ByCurrencyMatchesAUnitSpelledADifferentWay(t *testing.T) {
+	srv := fakeUsageServer(t, `{"window":"today","group":"currency","priced":true,
+		"currencies":["Credits"],
+		"totals":{"requests":57,"costMicros":77400,"pricedRequests":57,"priceableRequests":57},
+		"buckets":[{"at":"2026-09-27T10:00:00Z","series":{
+		   "credits":{"requests":57,"costMicros":77400,"pricedRequests":57,"priceableRequests":57}}}]}`)
+	defer srv.Close()
+
+	var out, errOut strings.Builder
+	if code := runCost([]string{"--endpoint", srv.URL, "--by", "currency"}, &out, &errOut); code != 0 {
+		t.Fatalf("exit = %d, want 0; stderr = %s", code, errOut.String())
+	}
+	got := out.String()
+
+	row := tableRow(t, got, "credits")
+	if !strings.Contains(row, "0.08 credits") {
+		t.Errorf("a unit spelled differently from the reported set lost its label:\n%s", row)
+	}
+	if strings.Contains(row, mixedCostCell) {
+		t.Errorf("a real configured unit was withheld as unrecognised:\n%s", row)
+	}
+}
+
+// The widest unit pricing accepts is rendered in full, on both surfaces.
+//
+// %-14s ON THE HEADLINE WAS SIZED FOR costUSD, whose widest output is "$12345.67". costIn can now
+// place a figure plus a space plus up to pricing's maxUnitLen (16) there, so the widest legal
+// headline is ~25 columns. Go's %-14s pads and never truncates, so what happens is that the tail of
+// that one line shifts right — measured, and asserted here rather than left to be rediscovered:
+// widening the field by 11 columns would cost every USD deployment, which is all of them.
+//
+// THE TABLE'S COST CELL IS THE LAST COLUMN, so a long unit lengthens its own row and moves nothing.
+// Both directions matter, so both are checked: nothing truncated, and the sibling USD row unmoved.
+func TestRunCost_TheWidestLegalUnitIsNeverTruncated(t *testing.T) {
+	// 16 bytes, all charset-legal. That is pricing's maxUnitLen today, but maxUnitLen is
+	// UNEXPORTED and cmd/abctl cannot import it, so this literal does not track it and must not
+	// claim to: raising the bound to 24 leaves this test green. The bound itself is pinned where it
+	// is visible, by the accepted/refused boundary rows in pricing's own config_test.go; this
+	// fixture only has to be wide enough to overflow a 14-column field, which 16 is.
+	const widest = "Bobcoins12345678"
+
+	t.Run("headline shifts but does not truncate", func(t *testing.T) {
+		srv := fakeUsageServer(t, `{"window":"today","priced":true,"currencies":["`+widest+`"],
+			"totals":{"requests":1057,"tokens":298000000,"costMicros":12345670000,
+			"pricedRequests":1057,"priceableRequests":1057}}`)
+		defer srv.Close()
+		var out, errOut strings.Builder
+		if code := runCost([]string{"--endpoint", srv.URL}, &out, &errOut); code != 0 {
+			t.Fatalf("exit = %d, want 0; stderr = %s", code, errOut.String())
+		}
+		got := out.String()
+		if !strings.Contains(got, "12345.67 "+widest) {
+			t.Errorf("the headline truncated the unit or the figure:\n%s", got)
+		}
+		// The unit-free counts survive the shift — they are what the line still has to carry.
+		if !strings.Contains(got, "1057 requests") || !strings.Contains(got, "298M tokens") {
+			t.Errorf("the shifted tail lost a figure:\n%s", got)
+		}
+	})
+
+	t.Run("table row lengthens without moving its siblings", func(t *testing.T) {
+		srv := fakeUsageServer(t, `{"window":"today","group":"currency","priced":true,
+			"currencies":["`+widest+`","USD"],
+			"totals":{"requests":1057,"costMicros":146439000,"pricedRequests":1057,"priceableRequests":1057},
+			"buckets":[{"at":"2026-09-27T10:00:00Z","series":{
+			   "USD":{"requests":1000,"costMicros":146361600,"pricedRequests":1000,"priceableRequests":1000},
+			   "`+widest+`":{"requests":57,"costMicros":12345670000,"pricedRequests":57,"priceableRequests":57}}}]}`)
+		defer srv.Close()
+		var out, errOut strings.Builder
+		if code := runCost([]string{"--endpoint", srv.URL, "--by", "currency"}, &out, &errOut); code != 0 {
+			t.Fatalf("exit = %d, want 0; stderr = %s", code, errOut.String())
+		}
+		got := out.String()
+		if row := tableRow(t, got, widest); !strings.Contains(row, "12345.67 "+widest) {
+			t.Errorf("the widest unit's cell was truncated:\n%s", row)
+		}
+		// The USD row is the invariant: the long row must not have shifted it. AGAINST THE HEADER,
+		// not against a column number and not with HasSuffix.
+		//
+		// HasSuffix was the first attempt and it cannot fail for this: it pins where the figure
+		// ENDS THE STRING, not where it sits. `%14s` right-aligns, so widening that field moves the
+		// figure from column 73 to 79 and the row still ends with it — both mutants survived.
+		// A literal 73 would work and would be a constant nothing derives.
+		//
+		// The header and the rows are printed from TWO SEPARATE format literals, three lines apart
+		// in writeCostBreakdown, and that is the drift this guards: unequal length means the columns
+		// have stopped lining up, and equal length survives a deliberate re-widening of BOTH.
+		//
+		// NOT a proof of alignment — a width-preserving permutation of the header's own fields would
+		// pass. It catches every widening, which is the drift a format-string edit actually causes.
+		usd := tableRow(t, got, "USD")
+		header := tableRow(t, got, "CURRENCY")
+		if len(usd) != len(header) {
+			t.Errorf("the USD row is %d columns and its header is %d, so the table no longer lines "+
+				"up:\n%q\n%q", len(usd), len(header), header, usd)
+		}
+		if !strings.Contains(usd, "$146.36") {
+			t.Errorf("the USD row lost its figure:\n%q", usd)
 		}
 	})
 }

@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/rossoctl/cortex/core/cost/pricing"
 )
 
 // runPricing renders the rates the running proxy is actually using.
@@ -108,6 +110,7 @@ type effective struct {
 		Model      string  `json:"model"`
 		Provenance string  `json:"provenance"`
 		Unpriced   bool    `json:"unpriced"`
+		Unit       string  `json:"unit,omitempty"`
 		LongCtx    int     `json:"longContextAbove"`
 		AboveIn    float64 `json:"aboveInputPerMillion"`
 		AboveCW    float64 `json:"aboveCacheWritePerMillion"`
@@ -128,7 +131,18 @@ func renderEffective(body []byte, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintf(stdout, "Rates in effect for %s\n\n", e.Host)
 	fmt.Fprintf(stdout, "  %-30s %9s %9s %9s %9s  %s\n", "model", "input", "cache-wr", "cache-rd", "output", "provenance")
-	fmt.Fprintf(stdout, "  %-30s %9s %9s %9s %9s\n", "", "$/Mtok", "$/Mtok", "$/Mtok", "$/Mtok")
+	// PER Mtok IN WHOSE CURRENCY, taken from the rows rather than asserted. This line read
+	// "$/Mtok" as a literal, four times, which was a rendering while every endpoint billed in
+	// dollars and became a false claim the moment one could declare `unit: credits`.
+	anyNonUSD := false
+	for _, m := range e.Models {
+		if !isDefaultUnit(m.Unit) {
+			anyNonUSD = true
+			break
+		}
+	}
+	perMtok := perMtokLabel(anyNonUSD)
+	fmt.Fprintf(stdout, "  %-30s %9s %9s %9s %9s\n", "", perMtok, perMtok, perMtok, perMtok)
 	var breakpoints []int
 	for _, m := range e.Models {
 		if m.Unpriced {
@@ -136,7 +150,8 @@ func renderEffective(body []byte, stdout, stderr io.Writer) int {
 			continue
 		}
 		fmt.Fprintf(stdout, "  %-30s %9s %9s %9s %9s  %s\n", m.Model,
-			rate(m.In), rate(m.CW), rate(m.CR), rate(m.Out), m.Provenance)
+			rate(m.In), rate(m.CW), rate(m.CR), rate(m.Out),
+			provenanceCell(m.Provenance, m.Unit))
 		// The above-threshold rates, discount already applied, on a continuation line.
 		// Naming the breakpoint alone still left the operator to work out what their long
 		// sessions cost — by reading the raw table and applying the factor by hand, which
@@ -321,4 +336,49 @@ func anyConfigured(e effective) bool {
 		}
 	}
 	return false
+}
+
+// perMtokLabel is the per-million-tokens sub-header for the units present in a table.
+//
+// "$/Mtok" WHEN EVERY ROW IS USD, character for character as before — which is every deployment
+// today. Replacing it with a bare "/Mtok" everywhere would make the common case less informative
+// in order to avoid a lie in the rare one.
+//
+// "per Mtok" AS SOON AS ONE ROW IS NOT, because no single currency in this header can be right for
+// every row once they differ, and naming one of them would mislabel the others. The unit then
+// rides on each ROW instead, beside its provenance, where it is per-figure and cannot be wrong.
+//
+// A SUB-HEADER RATHER THAN A NEW COLUMN, deliberately: the unit is absent from every row in the
+// overwhelmingly common case, and a permanently empty column costs every reader width to say
+// nothing.
+func perMtokLabel(anyNonUSD bool) string {
+	if anyNonUSD {
+		return "per Mtok"
+	}
+	return "$/Mtok"
+}
+
+// isDefaultUnit reports whether a unit off the wire means the default, USD.
+//
+// ONE PREDICATE FOR BOTH READERS — the "$/Mtok" sub-header and the provenance cell — because they
+// are two renderings of one question, and an exact comparison makes them disagree: a server
+// sending "usd" would have both of them call dollars a foreign unit.
+//
+// FOLDED ON THIS SIDE TOO, though core now canonicalises before it serialises. abctl is a client of
+// whatever server it is pointed at, including one older than itself, and a rate label is exactly
+// the kind of cosmetic disagreement nobody would think to look for after a partial upgrade.
+func isDefaultUnit(unit string) bool {
+	return unit == "" || strings.EqualFold(unit, pricing.CurrencyUSD)
+}
+
+// provenanceCell is a row's provenance, with its unit appended when that unit is not the default.
+//
+// The unit sits here because provenance is already the row's "where did this come from" cell, and a
+// currency is part of that answer. Empty means USD — the wire omits the default — so the common row
+// is unchanged.
+func provenanceCell(prov, unit string) string {
+	if isDefaultUnit(unit) {
+		return prov
+	}
+	return prov + " · " + unit
 }

@@ -6,6 +6,7 @@ import (
 	"math"
 	"sort"
 	"strings"
+	"unicode"
 )
 
 // Config is the top-level `pricing:` section of an AuthBridge config.
@@ -50,6 +51,100 @@ type EndpointConfig struct {
 	// An endpoint with a multiplier needs no models block — it scales what already
 	// resolves, including models no entry names.
 	Multiplier *float64 `yaml:"multiplier" json:"multiplier,omitempty"`
+
+	// Unit is the currency these rates are denominated in. Absent means USD.
+	//
+	// ON THE ENDPOINT, because that is the level a gateway's billing is decided at — and it is
+	// what makes "never sum across units" expressible at all. It covers every request to that
+	// endpoint — see Table.unitFor — so nothing downstream has to guess which currency a figure
+	// is in.
+	//
+	// ABSENT MEANS USD, and that default is load-bearing rather than merely convenient: it is
+	// what every config written before this field says, and what every row already on disk
+	// means. The ledger's own schema rule forces the same reading — a field added today decodes
+	// as its zero value for the whole retained history — so the two agree by construction
+	// instead of by a comment asking them to.
+	//
+	// Compared case-insensitively and CASE-PRESERVED, except for the default: an operator sees
+	// back the spelling they typed, because for a unit this package has never heard of their
+	// spelling IS the name. USD is the one unit with a canonical form here, so normaliseUnit
+	// returns CurrencyUSD for any spelling of it — see the note there for why folding at the
+	// entrance beats folding at each of the five comparisons.
+	Unit string `yaml:"unit" json:"unit,omitempty"`
+
+	// NO symbol: KEY, and this is the reason not to add one speculatively. A display glyph here
+	// would be a key with no reader, which is the failure this same change cites when it insists
+	// group=currency actually be served by the ledger: a key that does nothing is a promise to an
+	// operator that nothing keeps, and it is worse than absent because a config carrying
+	// `symbol: "₡"` reads as configured.
+	//
+	// It would also reach a terminal unvalidated, which is what maxUnitLen exists to prevent for
+	// Unit.
+	//
+	// Rendering a unit uses its NAME ("0.08 credits"), which is always readable if not always
+	// short. Add a glyph when something renders one, with the same validation Unit gets.
+}
+
+// CurrencyUSD is the unit every rate is denominated in unless an endpoint says otherwise.
+//
+// A NAMED CONSTANT because it is what an absent EndpointConfig.Unit and an empty
+// ledger.Row.Currency both mean, in three packages — and a literal "USD" repeated across them is
+// three chances to disagree about what the default is.
+const CurrencyUSD = "USD"
+
+// maxUnitLen bounds a unit name. Short on purpose: it identifies a currency rather than
+// describing one, and it is rendered in a table column beside figures.
+//
+// The bound matters because this string travels further than the config file. It reaches a
+// DURABLE ledger row retained for cost_ledger.retention_days, a terminal, and a JSON document —
+// the same three destinations that make ledger.rowLabel cap and sanitise a model name. Refusing
+// at load, where an operator is reading the error, beats writing something unreadable into a
+// file that cannot be edited afterwards.
+const maxUnitLen = 16
+
+// normaliseUnit validates a configured unit and returns it, defaulting to CurrencyUSD.
+//
+// REFUSED RATHER THAN SANITISED, unlike the labels the ledger rewrites, and the asymmetry is
+// deliberate: a model name arrives off the wire with nobody to ask, so it has to be repaired,
+// while a unit is something an operator typed — so the honest answer is an error naming the
+// endpoint. A deployment may configure several, and "bad unit" with no location is a message
+// nobody can act on.
+func normaliseUnit(unit, where string) (string, error) {
+	if unit == "" {
+		return CurrencyUSD, nil
+	}
+	if strings.TrimSpace(unit) == "" {
+		return "", fmt.Errorf("%s: unit is blank; omit the key entirely to mean %s", where, CurrencyUSD)
+	}
+	if len(unit) > maxUnitLen {
+		return "", fmt.Errorf("%s: unit %q is longer than %d bytes; it names a currency, not a description",
+			where, unit, maxUnitLen)
+	}
+	for _, r := range unit {
+		// A space would split a table column and break the one-token reading every consumer
+		// makes of this; a control rune reaches a terminal and a durable file. Letters, digits,
+		// - and _ cover USD, credits, Bobcoins and anything a gateway is likely to invent.
+		if !unicode.IsLetter(r) && !unicode.IsDigit(r) && r != '-' && r != '_' {
+			return "", fmt.Errorf("%s: unit %q may contain only letters, digits, - and _", where, unit)
+		}
+	}
+	// THE DEFAULT IS CANONICALISED, every other unit is kept as typed.
+	//
+	// The case-preserving promise is about units this package cannot know — "credits",
+	// "Bobcoins" — where the operator's spelling is the only name the unit has. USD is different:
+	// it is the one unit that already HAS a canonical spelling here, CurrencyUSD, and five
+	// consumers test against it to decide whether a figure may be labelled "$".
+	//
+	// FOLDED HERE, at the one place a configured unit enters the process, rather than at each
+	// comparison. Five sites folding independently are five chances to miss the sixth, which is
+	// the drift CurrencyUSD's own comment exists to prevent. ledger.CurrenciesIn already makes
+	// exactly this choice for exactly this reason — "USD is special-cased to its constant so a
+	// file written with 'usd' does not report a unit an operator never typed" — so this is that
+	// decision applied one layer earlier, not a new one.
+	if strings.EqualFold(unit, CurrencyUSD) {
+		return CurrencyUSD, nil
+	}
+	return unit, nil
 }
 
 // ModelConfig is one model pattern's rates, optionally with long-context
@@ -160,6 +255,10 @@ func (c *Config) multipliers() []MultiplierRule {
 // entries converts the config's endpoint/model blocks into table rows.
 func (c *Config) entries() ([]Entry, error) {
 	var out []Entry
+	// The unit each host pattern was first priced in, and by which block. See Table.unitFor, which
+	// reads an endpoint's unit off its best-ranked row and so needs every row of one host to agree.
+	type claim struct{ unit, where string }
+	unitOf := map[string]claim{}
 	for i, ep := range c.Endpoints {
 		where := fmt.Sprintf("pricing.endpoints[%d]", i)
 		if len(ep.Hosts) > 0 {
@@ -175,13 +274,36 @@ func (c *Config) entries() ([]Entry, error) {
 				return nil, fmt.Errorf("%s: hosts contains an empty entry; omit the key entirely to mean any endpoint", where)
 			}
 		}
+		// Validated once per endpoint rather than per model: the unit belongs to the endpoint,
+		// so a bad one is one error naming one place, not one per model pattern underneath it.
+		unit, err := normaliseUnit(ep.Unit, where)
+		if err != nil {
+			return nil, err
+		}
 		if len(ep.Models) == 0 {
 			if ep.Multiplier != nil {
+				// A unit is carried on the rows a block's models create, and this block creates
+				// none, so it would be accepted and then label nothing.
+				if !strings.EqualFold(unit, CurrencyUSD) {
+					return nil, fmt.Errorf("%s: unit %q needs a models block; a multiplier-only block has no rates for it to apply to", where, ep.Unit)
+				}
 				// A multiplier-only block scales what already resolves, so demanding
 				// rates here would defeat the point of expressing a discount once.
 				continue
 			}
 			return nil, fmt.Errorf("%s: no models or multiplier configured; an endpoint block with neither prices nothing", where)
+		}
+		for _, h := range hosts {
+			k := strings.ToLower(h)
+			if anyHost(h) {
+				k = "*"
+			}
+			prev, ok := unitOf[k]
+			if !ok {
+				unitOf[k] = claim{unit, where}
+			} else if !strings.EqualFold(prev.unit, unit) {
+				return nil, fmt.Errorf("%s: prices host %q in %q, but %s prices it in %q; one gateway bills in one unit", where, h, unit, prev.where, prev.unit)
+			}
 		}
 		// Sorted so a config with several faults reports the same one across
 		// restarts, instead of whichever map iteration reached first.
@@ -201,10 +323,11 @@ func (c *Config) entries() ([]Entry, error) {
 			}
 			for _, h := range hosts {
 				out = append(out, Entry{
-					Host:  h,
-					Model: pattern,
-					Rates: rates,
-					Prov:  ProvConfigured,
+					Host:     h,
+					Model:    pattern,
+					Rates:    rates,
+					Prov:     ProvConfigured,
+					Currency: unit,
 				})
 			}
 		}

@@ -48,6 +48,17 @@ func (r *Registry) Resolve(endpoint, model string, promptTotal int) (Rates, Prov
 	return r.tab.Load().Resolve(endpoint, model, promptTotal)
 }
 
+// CurrencyFor delegates to the live table, defaulting to CurrencyUSD for a nil Registry.
+//
+// Same posture as Resolve above: a binary built without pricing wiring must report the default
+// rather than crash on the response path.
+func (r *Registry) CurrencyFor(endpoint, model string) string {
+	if r == nil {
+		return CurrencyUSD
+	}
+	return r.tab.Load().CurrencyFor(endpoint, model)
+}
+
 // Cost resolves and prices in one call — the shape every consumer actually wants.
 //
 // Provenance collapses to ProvNone whenever ok is false, including when a row DID

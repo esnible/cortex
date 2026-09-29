@@ -18,6 +18,14 @@ type Entry struct {
 	Model string
 	Rates Rates
 	Prov  Provenance
+	// Currency is the unit Rates are denominated in. EMPTY MEANS CurrencyUSD, matching what an
+	// absent pricing.endpoints[].unit means and what every row already on disk means — one
+	// default, three places, so they cannot disagree.
+	//
+	// It rides on the ENTRY rather than on Rates because it is a property of the endpoint the
+	// rate came from, not of the numbers: Rates is arithmetic, and a unit is what says which
+	// arithmetic is legal.
+	Currency string
 }
 
 // Table is an immutable resolved rate table. Build one with NewTable; never
@@ -45,6 +53,9 @@ type row struct {
 	spec  specificity
 	rates Rates
 	prov  Provenance
+	// currency is the unit rates are denominated in; never empty once NewTable has run,
+	// which is what lets CurrencyFor answer without a second default.
+	currency string
 }
 
 // modelMatcher is one compiled model pattern.
@@ -304,6 +315,10 @@ func NewTable(entries []Entry, mults ...MultiplierRule) (*Table, error) {
 			model: m,
 			rates: rates,
 			prov:  e.Prov,
+			// NORMALISED HERE, once, so no reader downstream needs a second "empty means USD"
+			// branch. The config path validates the spelling; a bundled entry names no unit at
+			// all, which is exactly the default.
+			currency: currencyOrDefault(e.Currency),
 			spec: specificity{
 				namedHost: !anyHost(host),
 				// isIPv6Literal counts as EXACT: matchHost compares such a pattern
@@ -396,6 +411,83 @@ func (t *Table) multiplierFor(endpoint string) (float64, Provenance) {
 	return best.factor, best.prov
 }
 
+// currencyOrDefault reads an empty unit as CurrencyUSD, and any spelling of USD as CurrencyUSD.
+//
+// ONE PLACE, called where a row is built, so nothing downstream carries its own version of the
+// default. Bundled entries name no unit — they are vendor list, in dollars — and a config that
+// omits the key means the same thing, so both arrive here empty and leave as USD.
+//
+// CASE-FOLDED FOR THE DEFAULT ONLY, so every consumer's `== CurrencyUSD` test is right without
+// each of them remembering to fold. normaliseUnit already canonicalises what an operator types,
+// which covers the config path at its entrance; this covers the rest. Endpoint is an EXPORTED
+// struct and core is consumed outside this repo, so a caller can build one with Currency "usd"
+// having never gone through a YAML file — and every site that compares exactly would read that
+// spelling as a non-default unit. Downstream of this funnel the only
+// non-canonical spellings left are units this package has no canonical form for, where the
+// operator's own spelling is the name and is preserved on purpose.
+func currencyOrDefault(c string) string {
+	if c == "" || strings.EqualFold(c, CurrencyUSD) {
+		return CurrencyUSD
+	}
+	return c
+}
+
+// CurrencyFor is the unit a figure for this (endpoint, model) pair is denominated in: the
+// endpoint's, whatever the model.
+//
+// THE MODEL DOES NOT CHANGE IT, because a figure can reach the ledger without any row having
+// priced it — a cost the gateway reported, which settle publishes as authoritative without
+// consulting this table — and that figure is in the gateway's unit. Answering from the row that
+// matched the model labelled such a charge with whichever row happened to match, a catch-all's or
+// a bundled one's, which is USD. bestRow admits only rows in this same unit, so a figure the table
+// did price gets the same answer.
+//
+// USD FOR A NIL TABLE, rather than empty. The caller is about to label a figure, and empty
+// already means USD everywhere downstream — so "" would be the same answer written less legibly. Nil is the Kubernetes deployment, where pricing is not wired: it reports
+// the default rather than panicking on the response path, for the reason Resolve answers ProvNone
+// there.
+//
+// A MULTIPLIER CANNOT CHANGE IT. multiplierFor scales a rate WITHIN an endpoint and never crosses
+// units — scaling credits by 0.76 leaves credits.
+func (t *Table) CurrencyFor(endpoint, model string) string {
+	if t == nil {
+		return CurrencyUSD
+	}
+	return t.unitFor(endpoint)
+}
+
+// unitFor is the unit an endpoint bills in: that of the best row whose host covers it — bestRow's
+// ranking minus the model test — or USD when none does.
+//
+// Provenance first, so a configured row for this gateway decides over a bundled one; bundled rows
+// are all USD, so an endpoint no configured block covers is USD, which is every deployment that has
+// configured no unit. Config.entries refuses two blocks that name the same host in different units.
+func (t *Table) unitFor(endpoint string) string {
+	if best := t.bestRowForHost(endpoint); best != nil {
+		return best.currency
+	}
+	return CurrencyUSD
+}
+
+// bestRowForHost is bestRow with the model test dropped: the most specific row whose HOST covers
+// this endpoint, or nil.
+//
+// Only unitFor uses it. It must never be used to pick RATES: a row reached without matching the
+// model is the wrong row to price from, which is what bestRow's own comment is about.
+func (t *Table) bestRowForHost(endpoint string) *row {
+	var best *row
+	for i := range t.rows {
+		r := &t.rows[i]
+		if !matchHost(r.host, endpoint) {
+			continue
+		}
+		if best == nil || r.prov > best.prov || (r.prov == best.prov && r.spec.beats(best.spec)) {
+			best = r
+		}
+	}
+	return best
+}
+
 // Resolve returns the rates for one (endpoint, model) pair and where they came
 // from, already flattened for a prompt of promptTotal tokens.
 //
@@ -457,16 +549,20 @@ func (t *Table) Resolve(endpoint, model string, promptTotal int) (Rates, Provena
 // Shared with the describe path rather than reimplemented there: two copies of this
 // ranking would diverge the first time it is touched, and the divergence would be silent
 // — a marker or an annotation attached to a different row than the one being charged.
+//
+// ONLY ROWS IN THE ENDPOINT'S UNIT are candidates — see unitFor. A dollar row pricing traffic to a
+// gateway that bills in credits produces a figure that is neither.
 func (t *Table) bestRow(endpoint, model string) *row {
 	if t == nil {
 		return nil
 	}
+	unit := t.unitFor(endpoint)
 	// Built once per call, not per row: every row matches against the same forms.
 	forms := modelNameForms(strings.ToLower(strings.TrimSpace(model)))
 	var best *row
 	for i := range t.rows {
 		r := &t.rows[i]
-		if !matchHost(r.host, endpoint) || !r.model.match(forms) {
+		if !matchHost(r.host, endpoint) || !r.model.match(forms) || !strings.EqualFold(r.currency, unit) {
 			continue
 		}
 		if best == nil || r.prov > best.prov || (r.prov == best.prov && r.spec.beats(best.spec)) {
