@@ -232,6 +232,11 @@ func BenchmarkListSessions_Title(b *testing.B) {
 			}
 			b.ReportAllocs()
 			b.ResetTimer()
+			// EVERY CASE ABOVE IS EXPECTED TO MEASURE THE SAME THING, and that is the assertion
+			// this benchmark makes: the fixture shapes bear on Append, not on the loop below.
+			// Store.Append folds the title into entry.Title, so ListSessions reads a field and no
+			// content shape can reach it. Five figures agreeing is the evidence; if one diverges
+			// from the others, the reverse walk that used to cost 280ns–714µs here is back.
 			for i := 0; i < b.N; i++ {
 				_ = s.ListSessions()
 			}

@@ -407,9 +407,8 @@ func (s *Store) Append(sessionID string, event pipeline.SessionEvent) {
 	// Equal/After chain: tens of nanoseconds, no allocation, NO DECODE. Splitting it to hoist the
 	// extraction would add an exported type for plumbing alone and save nothing measurable.
 	sess.context.Add(&event)
-	// AND THE TITLE — but NOT on the same terms, and an earlier revision of this comment claimed
-	// otherwise. The candidate was extracted ABOVE THE LOCK, because unlike context.Add it scans
-	// message content; see the hoist for the measurement. What is left here is the comparison.
+	// AND THE TITLE — but NOT on the same terms as context.Add: the candidate was extracted ABOVE
+	// THE LOCK, because unlike context.Add it scans message content. Only the comparison is here.
 	//
 	// Read from &event, the local parameter, so the fold outlives the events it was read from — see
 	// entry.Title, and entry.context just above for why sourcing the candidate from the stored slice
@@ -421,21 +420,26 @@ func (s *Store) Append(sessionID string, event pipeline.SessionEvent) {
 	// new prose message equals the rank of the last.
 	//
 	// THE BLANK SCREEN IS REDUNDANT AND NO TEST CAN SHOW IT, which is worth saying rather than
-	// leaving as a surviving mutant for the next reader to re-derive. titleCandidate returns ""
-	// only ever paired with rankNone (enumerated: every blank-folding shape — empty, whitespace,
-	// reminder-only, an empty <user_query> — comes back as rankNone), and rankNone is the value a
-	// fresh entry is initialised to, so `rankNone < rankNone` is false and the rank test alone
-	// already rejects it. Deleting `titleText != ""` changes no behaviour today; it is kept as a
-	// local statement of what the fold requires, so a future titleCandidate that starts returning
-	// a blank at a real rank fails here instead of storing one.
+	// leaving a surviving mutant for the next reader to re-derive. titleCandidate returns "" only
+	// ever paired with rankNone (every blank-folding shape — empty, whitespace, reminder-only, an
+	// empty <user_query> — comes back as rankNone), and a fresh entry initialises to rankNone, so
+	// `rankNone < rankNone` is false and the rank test alone rejects it. Kept as a local statement
+	// of what the fold requires: a future titleCandidate returning a blank at a real rank fails
+	// here instead of storing one.
 	if titleText != "" && (titleRank < sess.titleRank || (titleRank == sess.titleRank && titleRank == rankRename)) {
-		// sanitizeTitle STAYS UNDER THE LOCK, deliberately, and it is the one part of this worth
-		// leaving. It runs only on a candidate that has already beaten the held rank — so at most
-		// once per rank improvement per session, not once per event — and under first-wins a session
-		// improves its rank at most three times in its life unless it is being renamed. Hoisting it
-		// would mean sanitizing every event's candidate including the ones about to be discarded,
-		// which is strictly more work on the same path: 938µs on a 190KB candidate, paid per append
-		// rather than per improvement.
+		// sanitizeTitle STAYS UNDER THE LOCK, and what makes that safe is that it is O(maxTitleLen)
+		// rather than O(candidate): it stops at 80 emitted runes, so a 190KB candidate costs 328ns,
+		// not 916µs.
+		//
+		// A CALL-COUNTING ARGUMENT IS NOT ENOUGH HERE, which is why the cap and not the count is what
+		// this rests on. "At most once per rank improvement" bounds the fold at three times per
+		// session under first-wins — except for /rename, which the second disjunct lets win
+		// repeatedly and which the client controls. Flooding /rename with a 190KB argument paid
+		// ~938µs of write-lock hold per append, unbounded in repetitions; measured on that flood with
+		// a concurrent reader, mean ListSessions latency is 205µs uncapped against 16.4µs capped.
+		//
+		// Hoisting it above the lock would still be wrong, just cheaply so: it would fold every
+		// event's candidate including the ones about to be discarded on rank.
 		if t := sanitizeTitle(titleText); t != "" {
 			sess.Title, sess.titleRank = t, titleRank
 		}

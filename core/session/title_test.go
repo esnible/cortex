@@ -155,6 +155,36 @@ func TestSessionTitle_LastUserMessage(t *testing.T) {
 	}
 }
 
+// THE EAGER LOOP'S ROLE GUARD, which the mixed-role case in TestSessionTitle_LastUserMessage does
+// not reach. That one uses plain prose, which is a rank-2 guess and so is filtered by the DEFERRED
+// arm's guard; the eager loop only ever sees rank-0 and rank-1 guesses. So the envelope has to be
+// on the non-user message for this guard to be the thing rejecting it.
+//
+// WHY IT MATTERS MORE HERE THAN AT RANK 2: these are the two ranks that beat ordinary prose, and
+// rank 0 is sticky even against a later /rename's override. A model echoing a /rename envelope or
+// quoting a <user_query> back — which is exactly what an assistant summarising a conversation
+// does — would otherwise name the session, and at rank 0 nothing in the session could displace it.
+func TestSessionTitle_NonUserRoleCannotTitleAtAnyRank(t *testing.T) {
+	for _, tc := range []struct{ name, payload string }{
+		{"rename envelope", renameMsg("a name the model echoed")},
+		{"user_query", "<user_query>a question the model quoted</user_query>"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// The non-user message is LAST and outranks the prose, so only the role check can
+			// keep it from winning.
+			events := []pipeline.SessionEvent{{Inference: &pipeline.InferenceExtension{
+				Messages: []pipeline.InferenceMessage{
+					{Role: "user", Content: "the real ask"},
+					{Role: "assistant", Content: tc.payload},
+				},
+			}}}
+			if got := foldTitle(t, events...); got != "the real ask" {
+				t.Errorf("got %q, want %q — an assistant message titled the session", got, "the real ask")
+			}
+		})
+	}
+}
+
 // The trap the literal spec walks into. A user-role message carrying a tool result or an
 // image flattens to Content == "" (pipeline.InferenceMessage.ContentBytes documents it,
 // TestInferenceParser_AnthropicMessages_RequestContentBytes pins it) — and it is the LAST
@@ -590,6 +620,13 @@ func TestSessionTitle_BlankAfterSanitizeFallsThrough(t *testing.T) {
 		{"line separator", " "},
 		{"rename with blank args", renameMsg("  ")},
 		{"user_query with blank body", "<user_query> </user_query>"},
+		// ZERO-LENGTH, not whitespace, and the two reached the generic arm by different routes
+		// until this was fixed. between() returns "" for an empty body and for an absent tag
+		// alike, so an empty envelope fell through and the session was titled with the literal
+		// markup "<user_query></user_query>" — non-blank, so foldsBlank could not reject it, and
+		// under first-wins it then blocked the real ask permanently. The whitespace row above was
+		// always safe via foldsBlank, which is exactly what hid this.
+		{"user_query with empty body", "<user_query></user_query>"},
 		{"rename with control args", renameMsg("\x00")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
