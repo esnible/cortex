@@ -234,13 +234,17 @@ func TestScopeToAgent_NarrowBucketsZeroesLatencyItCannotAttribute(t *testing.T) 
 // thing to try and is not what Bob sends. Sorted because a set printed in map order is a set a
 // reader cannot diff against yesterday's.
 func TestScopeToAgent_UnknownAgentNamesTheKnownOnesInOrder(t *testing.T) {
-	_, err := ScopeToAgent(scopeFixture(), "bob", KeepBuckets)
-	if err == nil {
-		t.Fatal("ScopeToAgent accepted an agent that is not in the window")
-	}
 	want := "no agent \"bob\" in the today window; seen: bob-shell/2.0.5, claude-code/2.1.270"
-	if err.Error() != want {
-		t.Errorf("error = %q, want %q", err, want)
+	// REPEATED, because the order under test comes out of a map walk: over two labels, one call
+	// comes out sorted by chance often enough to pass with the sort deleted.
+	for i := 0; i < 64; i++ {
+		_, err := ScopeToAgent(scopeFixture(), "bob", KeepBuckets)
+		if err == nil {
+			t.Fatal("ScopeToAgent accepted an agent that is not in the window")
+		}
+		if err.Error() != want {
+			t.Fatalf("call %d: error = %q, want %q", i, err, want)
+		}
 	}
 }
 
@@ -251,7 +255,7 @@ func TestScopeToAgent_EmptyWindowSaysSoRatherThanListingNothing(t *testing.T) {
 	if err == nil {
 		t.Fatal("ScopeToAgent accepted an agent against an empty window")
 	}
-	want := "no agent traffic in the today window, so --agent \"bob\" matches nothing"
+	want := "no agent traffic in the today window, so \"bob\" matches nothing"
 	if err.Error() != want {
 		t.Errorf("error = %q, want %q", err, want)
 	}

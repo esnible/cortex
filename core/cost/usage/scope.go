@@ -57,7 +57,7 @@ func ScopeToAgent(snap *Snapshot, agent string, buckets BucketScope) (*Snapshot,
 		// order is a set a reader cannot diff against yesterday's.
 		sort.Strings(known)
 		if len(known) == 0 {
-			return nil, fmt.Errorf("no agent traffic in the %s window, so --agent %q matches nothing",
+			return nil, fmt.Errorf("no agent traffic in the %s window, so %q matches nothing",
 				snap.Window, agent)
 		}
 		return nil, fmt.Errorf("no agent %q in the %s window; seen: %s",

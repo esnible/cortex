@@ -588,9 +588,7 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 	case "enter", "right", "l":
 		switch m.pane {
 		case paneAgents:
-			// Pick the agent the usage pane is narrowed to, then LEAVE. The pane is a
-			// picker, so staying on it after a choice would leave the operator looking at the one
-			// surface the choice does not affect.
+			// Pick the agent the usage pane is narrowed to, then LEAVE: the pane is a picker.
 			//
 			// A TOGGLE: Enter on the agent already scoped clears the scope instead of re-applying
 			// it. There is no "all agents" row to select, and the alternative was a second binding

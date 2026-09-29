@@ -166,9 +166,7 @@ func (m *model) fetchUsage() tea.Cmd {
 			// branch that says so rather than plotting the zeros.
 			//
 			// A FAILURE IS REPORTED, not swallowed. A scope stops matching on its own as the
-			// window moves past an agent's last request, and showing every agent under a scoped
-			// title is the one outcome a reader cannot detect. The error names the agents that
-			// are in the window.
+			// window moves past an agent's last request.
 			snap, err = usage.ScopeToAgent(snap, scope, usage.NarrowBuckets)
 		}
 		return usageLoadedMsg{snap: snap, req: req, err: err}
@@ -330,11 +328,14 @@ func (m *model) renderUsage(width, height int) string {
 	// entirely — displaying "by status" over a bucket-wide mean would assert a
 	// breakdown that does not exist. The selection is kept, not cleared, so it is
 	// still there when the operator cycles back to a count metric.
+	//
+	// Likewise under an agent scope: the scope has taken the wire axis, so there is no
+	// second one to break down by.
 	grouping := "ungrouped"
 	switch {
 	case m.usage.metric.isLatency():
 		grouping = "no breakdown for latency"
-	case m.usage.group != "" && m.usage.group != usage.GroupNone:
+	case m.agentScope == "" && m.usage.group != "" && m.usage.group != usage.GroupNone:
 		grouping = "by " + string(m.usage.group)
 	}
 	b.WriteString(fmt.Sprintf("  USAGE — %s — %s @ %s — %s — %s\n\n",

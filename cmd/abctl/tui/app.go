@@ -1357,12 +1357,14 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// agentsPaneApplies rather than enterAgentsOrRefuse: the refusal STRING is written
 			// for someone owed an answer, and this caller is not one. The two agree by test,
 			// so consulting the predicate cannot drift from the sentence.
-			if msg.err == nil && agentsPaneApplies(m.agents) {
+			//
+			// ONLY FROM SESSIONS: the reply lands a round trip after the view opened, and an
+			// operator who has already moved is left where they are.
+			if msg.err == nil && m.pane == paneSessions && agentsPaneApplies(m.agents) {
 				// paneNone, and msg.from is deliberately NOT read here. The gate has no caller
-				// pane to return to — it interrupted the sessions view before the operator
-				// pressed anything — and the esc arm's existing paneNone fallback already lands
-				// on Sessions, which that arm documents as the one pane always defensible to
-				// land on. Reading msg.from instead would put the correctness of esc in an
+				// pane to return to — it interrupted the sessions view — and the esc arm's
+				// existing paneNone fallback already lands on Sessions, which that arm documents
+				// as the one pane always defensible to land on. Reading msg.from instead would put the correctness of esc in an
 				// argument supplied a round trip earlier, where a test driving this message
 				// cannot see what production passes.
 				m.previousPane = paneNone
@@ -2228,9 +2230,8 @@ func (m *model) paneView() string {
 			scope = m.usage.session
 		}
 		title = fmt.Sprintf("abctl · %s · usage · %s", m.endpoint, scope)
-		// The agent scope goes in the TITLE, not only in the footer, because it changes what
-		// every figure on the pane means. A narrowed chart that looked like the whole window
-		// would be wrong in the one direction a reader cannot check.
+		// The agent scope goes in the TITLE because it changes what every figure on the pane
+		// means.
 		if m.agentScope != "" {
 			title += " · agent=" + sanitizeLabel(m.agentScope)
 		}

@@ -37,9 +37,7 @@ func scopedModel(t *testing.T, cursor int, scope string) *model {
 
 // Enter scopes the usage pane to the row under the cursor, and leaves the pane.
 //
-// LEAVING IS PART OF THE ACTION, not a separate keystroke. The pane is a picker: its whole
-// purpose is choosing what the views behind it show, so staying on it after a choice would leave
-// the operator looking at the one surface the choice does not affect.
+// LEAVING IS PART OF THE ACTION, not a separate keystroke: the pane is a picker.
 func TestAgentsPane_EnterScopesTheRowUnderTheCursorAndLeaves(t *testing.T) {
 	m := scopedModel(t, 1, "")
 	m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
@@ -172,10 +170,9 @@ func TestFetchUsage_UnscopedAsksForThePanesOwnAxis(t *testing.T) {
 // A scope that no longer matches any agent in the window is REPORTED, not silently ignored.
 //
 // The window moves while abctl runs — "today" is a boundary, and an agent that stopped sending
-// falls out of it — so this is reachable without anyone doing anything wrong. Showing the
-// unscoped figures under a scoped title would be the one outcome a reader cannot detect; the
-// error names the agents that ARE in the window, which is what the operator needs in order to
-// pick a different one.
+// falls out of it — so this is reachable without anyone doing anything wrong. The error names
+// the agents that ARE in the window, which is what the operator needs in order to pick a
+// different one.
 func TestFetchUsage_ScopeThatMatchesNothingIsReported(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte(usageSnapshotJSON))
@@ -217,6 +214,21 @@ func TestUsageFooter_OmitsTheBreakdownKeyWhileScoped(t *testing.T) {
 	m.agentScope = "claude-code/2.1.270"
 	if strings.Contains(m.helpView(), "[b] breakdown") {
 		t.Error("the footer still advertises [b] under an agent scope, where it cannot act")
+	}
+}
+
+// Nor does the header claim a breakdown while scoped. The pane's own axis stays on the model, so
+// printing it would put "by model" over a chart the scope has left ungrouped.
+func TestUsageHeader_ClaimsNoBreakdownWhileScoped(t *testing.T) {
+	m := fitModel(t, paneUsage, 120, 40, nil)
+	m.usage.group = usage.GroupModel
+	header := func() string { return strings.SplitN(m.renderUsage(m.width, m.bodyHeight), "\n", 2)[0] }
+	if !strings.Contains(header(), "by model") {
+		t.Fatalf("the unscoped header %q does not show the breakdown; this test is measuring the wrong thing", header())
+	}
+	m.agentScope = "claude-code/2.1.270"
+	if got := header(); !strings.Contains(got, "ungrouped") {
+		t.Errorf("the scoped header %q claims a breakdown the chart is not showing", got)
 	}
 }
 

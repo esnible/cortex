@@ -605,6 +605,25 @@ func TestAgentsPane_StartupEscapesToSessions(t *testing.T) {
 	}
 }
 
+// The gate interrupts Sessions and nothing else. Its reply lands a round trip after the view
+// opened, so an operator can already have moved; one who has is left where they are, with the
+// return pane they had, rather than pulled into the picker with an esc that lands on Sessions.
+func TestAgentsPane_StartupLeavesAnOperatorWhoHasMoved(t *testing.T) {
+	rows := []agentRow{
+		{label: "claude-code/2.1.270", Counts: usage.Counts{Requests: 10}},
+		{label: "bob-shell/2.0.5", Counts: usage.Counts{Requests: 8}},
+	}
+	for _, start := range []paneID{paneUsage, paneEvents, paneAgents} {
+		m := &model{pane: start, previousPane: panePipeline, agentsTbl: newAgentsTable(), client: deadClient()}
+		updated, _ := m.Update(agentRowsLoadedMsg{rows: rows, open: agentsOpenAtStartup})
+		m = updated.(*model)
+		if m.pane != start || m.previousPane != panePipeline {
+			t.Errorf("a startup reply arriving on %v moved the operator to %v (previousPane %v)",
+				start, m.pane, m.previousPane)
+		}
+	}
+}
+
 // A failed startup fetch is silent too, and leaves the reader on the sessions pane.
 //
 // The operator did not ask for this fetch, and the pane they ARE looking at reports its own
