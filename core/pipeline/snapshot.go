@@ -83,6 +83,22 @@ func snapshotClient(c *EventClient) *EventClient {
 // beside zero tokens with nothing to say a measurement is missing rather than
 // small. The inbound recorders omitted it until inbound inference traffic existed —
 // a reverse proxy in front of a model endpoint — and then it read as free traffic.
+//
+// The leak described above is, on today's paths, defended a second time downstream —
+// session.Interner.InternEvent clones the extension inside Store.Append, so the store holds
+// its own copy whether or not the recorder took one. Measured, not assumed: the parity suite
+// stays green against a recorder that keeps the live pointer. That is a reason to keep calling
+// this at every site rather than a reason to stop — the alternative makes each recorder's
+// correctness depend on the internals of another package, and on that package continuing to
+// clone. The counts claim above is unaffected either way: a recorder that passes nil here
+// reports nothing, and no downstream copy can restore a figure that was never attached.
+//
+// Five recorders in this tree are exempt, and the exemptions are listed here rather
+// than left to be rediscovered: the four SessionDenied recorders and
+// forwardproxy.recordTunnelOpened. A denied request was never forwarded, so it has no
+// counts and no listener records protocol extensions on a deny; a CONNECT tunnel's
+// bytes are opaque, so there is nothing to parse. Anything else that builds a
+// SessionEvent and skips this call is the bug above, not a sixth exemption.
 func SnapshotInference(ext *InferenceExtension) *InferenceExtension {
 	if ext == nil {
 		return nil

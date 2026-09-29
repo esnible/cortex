@@ -148,9 +148,11 @@ type costFixture struct {
 const anthropicKinds = 1 | 2 | 8
 
 // anthropicTokens is the count report for the turn every fixture below sends, buffered or
-// streamed: the same tokens the rate table turns into modelledWholeUSD. Shared so that a
-// fixture changing its counters without changing its expectation is a compile-time edit here
-// rather than a silent disagreement.
+// streamed: the same tokens the rate table turns into modelledWholeUSD. Shared so that a fixture
+// changing its counters without changing its expectation is one failing expectation here rather
+// than a silent disagreement. Not a compile error — the counters live in JSON string literals,
+// so nothing couples them to this var at compile time; the coupling is that every fixture reads
+// the same expectation, so the edit shows up once and loudly instead of per-fixture or not at all.
 var anthropicTokens = &inferenceSummary{
 	Model:           "claude-opus-5",
 	TotalTokens:     1700,
@@ -344,6 +346,16 @@ func TestCostRecordParity(t *testing.T) {
 		}
 		for _, cf := range costFixtures(t, direction) {
 			t.Run(fmt.Sprintf("%s/%s", direction, cf.name), func(t *testing.T) {
+				// THE REQUEST PHASE FIRST, because the response pass below cannot speak for it.
+				// Of the five recording sites this suite guards, three append a response and two
+				// append a request, and the request pair was covered only by observationDiff's
+				// pairwise comparison — the one check parity_test.go documents as blind to a gap
+				// shared by a direction's whole listener set, which is the exact shape of the bug
+				// this suite was extended for. Measured: dropping `Inference:` from both inbound
+				// REQUEST recorders left ./listener/parity/ green before this pass existed.
+				for _, l := range listeners {
+					assertRequestPhase(t, l, cf)
+				}
 				// Collected in this scope for the reason parity_test.go's loop explains: a
 				// comparison assembled inside a subtest closure compares nothing the moment the
 				// subtests run in parallel, and passes.
@@ -385,6 +397,78 @@ func TestCostRecordParity(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// assertRequestPhase pins what the REQUEST event must carry, which is deliberately not what the
+// response event carries. What it buys is the two inbound REQUEST recorders: before this pass
+// they rode on observationDiff's pairwise comparison alone, and deleting `Inference:` from both
+// of them left ./listener/parity/ green.
+//
+// Measured on both inbound listeners rather than assumed: Model is set from the request body,
+// every count is 0, and PresentKinds is 0 — "the provider never said", which is the honest report
+// for a turn that has not been answered yet. PresentKinds is NOT populated at request time.
+//
+// WHAT THIS DOES NOT PIN, stated here so a reader does not infer coverage that is absent: it is
+// not sensitive to the Snapshot call itself. Replacing pipeline.SnapshotInference(…) with the bare
+// pctx.Extensions.Inference at both request sites leaves this suite green, because Store.Append →
+// session.Interner.InternEvent takes `cp := *e.Inference` of its own, so the store holds a copy
+// either way and the response's later assignments cannot reach an appended event through it. The
+// snapshot is still the contract, and dropping it would make a recorder's correctness depend on an
+// implementation detail of another package rather than on its own call — but no test in this tree
+// distinguishes the snapshot from the live pointer,
+// and a comment claiming these zeros do would be the same shape of defect as the bug this suite
+// was extended for: a guard that reports success.
+func assertRequestPhase(t *testing.T, l listenerRun, cf costFixture) {
+	t.Helper()
+	// A SECOND CLAIM THIS TABLE CANNOT MAKE, for the same reason as the one in the header
+	// comment above and worth stating rather than skipping quietly: on the two wantTokens: nil
+	// fixtures ext_proc records no REQUEST event at all, because its inbound gate appends only
+	// when something plugin-shaped happened and an unparsed path produces nothing — while both
+	// proxies append unconditionally. finalizeObservation treats a missing event as a fixture
+	// bug unless the fixture opted into pipelineRefusedPreRun, so asking for the request phase
+	// there fails on the recording gate rather than on anything about tokens. The claim is not
+	// lost: no parser read the path, so no extension exists in EITHER phase, and the response
+	// pass already pins that with an absolute nil.
+	if cf.wantTokens == nil {
+		return
+	}
+	obs := l.run(t, cf.fixture, pipeline.SessionRequest)
+	if obs == nil {
+		t.Fatalf("%s: no request event recorded, so the request-phase snapshot cannot be checked at all", l.name)
+	}
+	got := obs.Inference
+	if got == nil {
+		t.Errorf("%s: the request event carried NO token report, want Model %q with zero counts — the model is known at request time, and a recorder that omits the snapshot here omits it on the response too",
+			l.name, cf.wantTokens.Model)
+		return
+	}
+	if got.Model != cf.wantTokens.Model {
+		t.Errorf("%s: request-phase Model = %q, want %q — the model is parsed from the request body, so this is what attribution has to work from before a reply exists",
+			l.name, got.Model, cf.wantTokens.Model)
+	}
+	// Zero is the assertion, not a placeholder: a count here double-counts the turn for any
+	// consumer that folds both phases. Deliberately not phrased as a snapshot failure — see the
+	// doc comment on what this cannot see.
+	for _, f := range []struct {
+		name string
+		got  int
+	}{
+		{"TotalTokens", got.TotalTokens},
+		{"InputTokens", got.InputTokens},
+		{"CacheReadTokens", got.CacheReadTokens},
+		{"CacheWriteTokens", got.CacheWriteTokens},
+		{"OutputTokens", got.OutputTokens},
+		{"ReasoningTokens", got.ReasoningTokens},
+	} {
+		if f.got != 0 {
+			t.Errorf("%s: request-phase %s = %d, want 0 — the response's counts are on the request event, so a turn folded over both phases counts them twice",
+				l.name, f.name, f.got)
+		}
+	}
+	if got.PresentKinds != 0 {
+		t.Errorf("%s: request-phase PresentKinds = %#b, want 0 — no sub-kind has been reported yet, and a set bit reading zero means the provider stated a zero",
+			l.name, got.PresentKinds)
 	}
 }
 

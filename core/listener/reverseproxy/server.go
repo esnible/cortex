@@ -579,12 +579,12 @@ func (s *Server) modifyResponse(resp *http.Response) error {
 	// but the status code and plugin invocations are always meaningful.
 	plugins := pipeline.SnapshotPlugins(pctx.Extensions.Custom)
 	// Always pair every inbound request with a response row (carries StatusCode).
-	// Inference is the token report, and it is what a cost consumer reads: without it
-	// this listener served a whole `configured` cost for zero tokens, because the cost
-	// record reaches the event through Plugins and only the counts were dropped. See
-	// SnapshotInference.
 	if s.Sessions != nil {
 		sid := inboundSessionID(pctx)
+		// Inference is the token report, and it is what a cost consumer reads: without it
+		// this listener served a whole `configured` cost for zero tokens, because the cost
+		// record reaches the event through Plugins and only the counts were dropped. See
+		// SnapshotInference.
 		s.Sessions.Append(sid, pipeline.SessionEvent{
 			At:          time.Now(),
 			Direction:   pipeline.Inbound,
