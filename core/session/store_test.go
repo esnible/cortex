@@ -1449,14 +1449,13 @@ func TestAppend_UnterminatedReminderDoesNotBlockTheTitle(t *testing.T) {
 	s := New(time.Hour, 0, 0)
 	defer s.Close()
 
-	// The review's probe, verbatim.
+	// The review's probe, verbatim. Asserting the whole message pins the regression too: what the
+	// bug served was "why is" — the head up to the open tag — and equality against the full probe
+	// already excludes it, so a separate check for that fragment would be unreachable.
 	const probe = "why is <system-reminder> leaking into my session titles?"
 	s.Append("sess", titleEvent(probe))
 	if got := titleOf(t, s, "sess"); got != probe {
 		t.Errorf("got %q, want the message unchanged %q", got, probe)
-	}
-	if got := titleOf(t, s, "sess"); got == "why is" {
-		t.Fatal("the truncated fragment is being served")
 	}
 
 	// A /rename still overrides it, which is the one thing first-wins allows.

@@ -440,6 +440,31 @@ func TestSessionTitle_UnclosedTag(t *testing.T) {
 	if got := foldTitle(t, events...); got != "the genuine ask" {
 		t.Errorf("got %q, want %q", got, "the genuine ask")
 	}
+
+	// A CLOSED-BUT-EMPTY PAIR INSIDE PROSE IS STILL PROSE, and these two rows exist because the
+	// guard that discards a bare <user_query></user_query> was first written as an unanchored
+	// Contains — which read any message merely CONTAINING a close as a terminated envelope and
+	// discarded it. That is the same overreach this test already guards for the unclosed tag, one
+	// shape further along: both messages below are ordinary questions about the markup, and under
+	// Append's first-wins fold a discarded one cannot title its session at all.
+	//
+	// The second row is order-blind rather than unanchored: its close PRECEDES its open, so no
+	// envelope is present in any reading. Contains cannot tell, equality can.
+	for _, in := range []string{
+		"why does <user_query></user_query> render empty in my logs?",
+		"closing </user_query> before opening <user_query>",
+	} {
+		if got := candidateTitle(userEvent(in)); got != in {
+			t.Errorf("got %q, want the message unchanged %q", got, in)
+		}
+	}
+	// The contrast that makes the anchor legible: the SAME tag pair as the whole message really is
+	// machinery, and still yields nothing. Surrounding whitespace does not make it prose.
+	for _, in := range []string{"<user_query></user_query>", "  <user_query></user_query>\n"} {
+		if got := candidateTitle(userEvent(in)); got != "" {
+			t.Errorf("got %q, want %q — a bare envelope leaked as a title", got, "")
+		}
+	}
 }
 
 // An argument-less /rename names nothing. If it claimed rank 0 with "", it would end the
@@ -478,6 +503,25 @@ func TestSessionTitle_ClipsToMaxTitleLen(t *testing.T) {
 		in := strings.Repeat("y", maxTitleLen)
 		if got := candidateTitle(userEvent(in)); got != in {
 			t.Errorf("a title exactly at the cap was altered: %d runes", utf8.RuneCountInString(got))
+		}
+	})
+
+	// ONE RUNE OVER THE CAP, which is the side the other fixtures skip: they jump from exactly
+	// maxTitleLen to 190,000 and to 200 CJK runes, so a stop that fired one rune late was pinned only
+	// by how many runes came out, never by WHICH. The last input rune is given a distinct identity
+	// here so the assertion is that it is absent and the 80 before it survive intact — the same
+	// off-by-one discipline as the combining-mark triple below, one rune from the boundary.
+	t.Run("one rune over the cap drops exactly that rune", func(t *testing.T) {
+		in := strings.Repeat("y", maxTitleLen) + "Z"
+		got := candidateTitle(userEvent(in))
+		if n := utf8.RuneCountInString(got); n != maxTitleLen {
+			t.Errorf("clipped to %d runes, want %d", n, maxTitleLen)
+		}
+		if want := strings.Repeat("y", maxTitleLen); got != want {
+			t.Errorf("got %q, want the first %d runes with the 81st dropped", got, maxTitleLen)
+		}
+		if strings.Contains(got, "Z") {
+			t.Errorf("the 81st rune survived the cap: %q", got)
 		}
 	})
 

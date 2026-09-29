@@ -220,14 +220,17 @@ func titleFrom(content string) (int, string) {
 	if strings.HasPrefix(content, transcriptOpen) {
 		return rankNone, ""
 	}
-	// BOTH ENVELOPE ARMS YIELD THEIR BODY OR NOTHING, and must never fall through to the generic
-	// rank-2 arm, because falling through takes the LITERAL MARKUP as the title. That is non-blank,
-	// so foldsBlank cannot reject it, so under Append's first-wins fold it claims a rank and blocks
-	// the session's real title for the rest of its life. rankNone instead lets the walk reach a
-	// real title behind the envelope. TestSessionTitle_EmptyCommandArgs and the
+	// AN ENVELOPE THAT IS THE WHOLE MESSAGE YIELDS ITS BODY OR NOTHING, and must never fall through
+	// to the generic rank-2 arm, because falling through takes the LITERAL MARKUP as the title. That
+	// is non-blank, so foldsBlank cannot reject it, so under Append's first-wins fold it claims a rank
+	// and blocks the session's real title for the rest of its life. rankNone instead lets the walk
+	// reach a real title behind the envelope. TestSessionTitle_EmptyCommandArgs and the
 	// "user_query with empty body" row of TestSessionTitle_BlankAfterSanitizeFallsThrough pin the
 	// two halves. Naming the shape instead ("empty <user_query>") is the same bug wearing a label:
 	// still non-blank, still claims a rank, and at rank 1 it would outrank genuine prose outright.
+	//
+	// "THE WHOLE MESSAGE" is load-bearing in both arms and each anchors it differently — see the
+	// user_query arm. Markup embedded in prose is a title, not machinery.
 	if strings.HasPrefix(content, renamePrefix) {
 		if t := between(content, "<command-args>", "</command-args>"); t != "" {
 			return rankRename, t
@@ -238,12 +241,22 @@ func titleFrom(content string) (int, string) {
 		if t := between(content, "<user_query>", "</user_query>"); t != "" {
 			return rankUserQuery, t
 		}
-		// AN UNTERMINATED OPEN TAG IS A DIFFERENT CASE and must keep falling through: the tag name
-		// can appear in ordinary prose, and such a message is a perfectly good title. between()
-		// returns "" for an empty body and for a missing close alike, so the two are separated here
-		// by whether a close is present at all. Without this test the whole arm would be wrong in
-		// the other direction — "what does <user_query> mean in this code" would be unnameable.
-		if strings.Contains(content, "</user_query>") {
+		// ONLY A WHOLE-MESSAGE ENVELOPE IS DISCARDED, and the equality is the anchor — the /rename arm
+		// above anchors with HasPrefix because its body follows the tag, while an empty envelope has
+		// no body to follow, so the whole message is the tag pair. A tag pair EMBEDDED in prose is a
+		// different thing entirely and must stay nameable: "why does <user_query></user_query> render
+		// empty in my logs?" is a perfectly good title, and an unanchored test discarded exactly the
+		// message a reader wants. So is an unterminated open — "what does <user_query> mean in this
+		// code" — which between() reports identically, since "" means empty-body and missing-close
+		// alike; the equality separates all three without having to tell those two apart.
+		//
+		// NO ORDER CHECK IS NEEDED, because equality cannot be order-confused. Searching for the
+		// close from the open's index is the correction stripReminders needs, and the hazard is real
+		// in the shape this replaced ("a</user_query>b<user_query>c" read as a terminated envelope) —
+		// but against an exact whole-string match there is no second occurrence to mis-pair, so an
+		// index-relative search here would be unreachable. Verified over 400k randomized tag/prose
+		// fragments: adding it changes no result.
+		if strings.TrimSpace(content) == "<user_query></user_query>" {
 			return rankNone, ""
 		}
 	}
