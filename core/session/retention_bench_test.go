@@ -160,3 +160,126 @@ func BenchmarkRetainedHeap(b *testing.B) {
 		runtime.KeepAlive(s)
 	}
 }
+
+// BenchmarkListSessions_Title prices what /v1/sessions pays for the Title field, and its whole
+// point now is that EVERY CASE IS THE SAME PRICE. The title is folded by Store.Append into
+// entry.Title, so ListSessions reads a field; the content shapes below cannot move it.
+//
+// It used to measure a reverse walk over the retained events, under s.mu.RLock() whose writer side
+// is Append on the proxy request path — named 280ns, user-text 228µs, no-title 13µs, demoted 714µs
+// at benchTurns=300 and maxEvents=100, a ~2500x spread driven entirely by attacker-supplied content.
+// A review then measured 38.1s of lock hold on a 190KB message of nested <system-reminder> opens,
+// which is what moved the fold to the writer. Now: ~165ns across all five cases.
+//
+// KEPT, RATHER THAN DELETED WITH THE WALK IT PRICED, because a flat row of five figures is the
+// assertion — it is the cheapest available evidence that no content shape reaches the read path any
+// more. If any case here diverges from the others again, the walk is back.
+//
+// The cases are still named for the shapes they exercise, which now bear on Append rather than on
+// this benchmark: named (a /rename in the newest event, rank 0), user-text (rank 2, unbeatable so
+// nothing terminates early), no-title (assistant-only, rejected on the role comparison), demoted
+// (quickRank guesses rank 1 and titleFrom demotes every one — the screen missing 100% of the time),
+// reminder-only (the shape that drove the old quadratic retry cascade).
+//
+// Reported rather than asserted: it is a per-poll cost against abctl's two-second refresh, and
+// five figures agreeing on one machine is the useful reading, not an absolute number.
+//
+//	go test ./session/ -bench ListSessions_Title -run '^$'
+func BenchmarkListSessions_Title(b *testing.B) {
+	for _, tc := range []struct {
+		name string
+		role string
+		last string // content of one extra message on the newest event
+		// body, when set, replaces every message's content — the demoted case needs the miss on
+		// ALL of them, not just on one appended message.
+		body string
+	}{
+		{name: "named", role: "user", last: renamePrefix + "<command-args>a name</command-args>"},
+		{name: "user-text", role: "user"},
+		{name: "no-title", role: "assistant"},
+		// Unterminated: quickRank sees the opening tag (rank 1), titleFrom finds no closing tag
+		// and settles at rank 2. Every message pays a full titleFrom, which is the screen missing
+		// 100% of the time.
+		{name: "demoted", role: "user", body: "what does <user_query> mean in " + strings.Repeat("this code ", 45)},
+		// REMINDER-BEARING, because without it this benchmark never executed stripReminders at
+		// all — the function the second commit exists for — and "parity with baseline" was
+		// measured on a fixture with zero reminder content. That blind spot hid a quadratic retry
+		// cascade: every message here settles to rankNone, which is the shape that drove
+		// titleCandidate's old retry loop to 7.20ms at 800 messages/event.
+		{name: "reminder-only", role: "user", last: "<system-reminder>context, no prompt</system-reminder>"},
+	} {
+		b.Run(tc.name, func(b *testing.B) {
+			s := New(0, 100, 0)
+			for turn := 1; turn <= benchTurns; turn++ {
+				msgs := benchConversation(turn)
+				if tc.role != "user" {
+					for i := range msgs {
+						msgs[i].Role = tc.role
+					}
+				}
+				if tc.body != "" {
+					for i := range msgs {
+						msgs[i].Content = tc.body
+					}
+				}
+				if tc.last != "" && turn == benchTurns {
+					msgs = append(msgs, pipeline.InferenceMessage{Role: "user", Content: tc.last})
+				}
+				s.Append("bench", pipeline.SessionEvent{
+					Phase:     pipeline.SessionResponse,
+					Inference: &pipeline.InferenceExtension{Messages: msgs},
+				})
+			}
+			b.ReportAllocs()
+			b.ResetTimer()
+			// EVERY CASE ABOVE IS EXPECTED TO MEASURE THE SAME THING, and that is the assertion
+			// this benchmark makes: the fixture shapes bear on Append, not on the loop below.
+			// Store.Append folds the title into entry.Title, so ListSessions reads a field and no
+			// content shape can reach it. Five figures agreeing is the evidence; if one diverges
+			// from the others, the reverse walk that used to cost 280ns–714µs here is back.
+			for i := 0; i < b.N; i++ {
+				_ = s.ListSessions()
+			}
+		})
+	}
+}
+
+// BenchmarkSessionTitle_ReminderFanout measures the axis BenchmarkListSessions_Title does not:
+// MESSAGES PER EVENT, all of them reminder-only, which is the shape that made titleCandidate's
+// old retry loop quadratic. That loop re-scanned the whole Messages slice each time titleFrom
+// refused a pick, so an event where every message is refused cost O(n²) — 31.9µs at n=50 rising
+// to 7.20ms at n=800, a clean 4x per doubling and ~1088x the same event with no demotions, all
+// under the store's read lock whose writer side is Append on the request path.
+//
+// The single reverse scan that replaced it is linear: ~2.0x per doubling, 3.5/14/57µs at
+// n=50/200/800.
+//
+// A SEPARATE BENCHMARK rather than another case in the table above, because the table varies
+// turns (events) and this has to vary messages within ONE event — the two axes multiply, and the
+// quadratic one was invisible while only the first was measured.
+//
+// CALLS titleCandidate, which is the function Append actually runs per event — so this measures the
+// production walk and not a test-only wrapper around it. (It used to call a per-session picker that
+// looped over events; that has been deleted, and nothing is lost here, because the axis this varies
+// is messages WITHIN one event.)
+//
+//	go test ./session/ -bench SessionTitle_ReminderFanout -run '^$'
+func BenchmarkSessionTitle_ReminderFanout(b *testing.B) {
+	for _, n := range []int{50, 200, 800} {
+		b.Run(fmt.Sprintf("msgs=%d", n), func(b *testing.B) {
+			msgs := make([]pipeline.InferenceMessage, 0, n)
+			for i := 0; i < n; i++ {
+				msgs = append(msgs, pipeline.InferenceMessage{
+					Role:    "user",
+					Content: "<system-reminder>" + strings.Repeat("x", 40) + "</system-reminder>",
+				})
+			}
+			event := pipeline.SessionEvent{Inference: &pipeline.InferenceExtension{Messages: msgs}}
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				_, _ = titleCandidate(&event)
+			}
+		})
+	}
+}

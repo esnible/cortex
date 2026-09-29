@@ -88,6 +88,39 @@ type entry struct {
 	// the pin rule. applyTrim reshapes this and Events together for that second reason.
 	money []eventMoney
 
+	// Title is this session's name and titleRank the rank that named it, folded by Append and
+	// read by ListSessions. See the rank constants in title.go for the ranks themselves.
+	//
+	// FIRST-WINS, EXCEPT THAT A /rename ALWAYS OVERRIDES: Append replaces these when a candidate
+	// ranks strictly better, and additionally when an equally-ranked candidate is a rename. So
+	// ordinary conversation names a session by its FIRST prompt and the name then stays put,
+	// while an explicit /rename can rename it at any time, repeatedly.
+	//
+	// FIRST-WINS ACROSS EVENTS, LAST-WINS WITHIN ONE, and the two rules meeting here is deliberate
+	// rather than an inconsistency to reconcile. titleCandidate scans one event's messages in
+	// REVERSE, so within a single inference request — which carries the whole conversation — the
+	// newest user message is the ask. The fold then keeps whichever event named the session first.
+	// A session is therefore named by its first prompt and keeps that name, while the messages of
+	// any one request are read newest-first. TestSessionTitle_LastUserMessage asserts both halves
+	// side by side, because reading either one alone suggests the other.
+	//
+	// AN EXTREMUM, NOT A SUM, so this is in context's class below and not cost's: nothing is
+	// accumulated, so a trim has nothing to subtract, and it is NOT maintained in lockstep with
+	// Events. A /rename therefore OUTLIVES the event that carried it — evicting that event leaves
+	// the name in place, where the previous recompute-per-call demoted it back to later prose.
+	// That is the intended behavior (a user who names a session expects the name to stick) and it
+	// is the same property TestAppend_PromptContextSurvivesATrim pins for context.
+	//
+	// FOLDED AT APPEND BECAUSE THE READ PATH CANNOT AFFORD IT. Picking the title per call means
+	// walking the retained events and their message CONTENT — the largest payload here — under
+	// s.mu.RLock(), whose writer side is Append on the proxy's request path with caller-supplied
+	// content. Measured on a 190KB message of nested <system-reminder> opens: 593ms of lock hold,
+	// and 38.1s with a ceiling on how many events are examined, since bounding the count does not
+	// bound the cost of any one of them. Folding here is two integers and a string, and leaves the
+	// read path a field read — see ListSessions, and stripReminders for the quadratic part.
+	Title     string
+	titleRank int
+
 	// context is the CONTEXT gauge's answer for this session: the main-agent turn that RANKS
 	// HIGHEST under the rule's total order, in prompt tokens — the LATEST such turn where the
 	// client states its role, the one with the MOST MESSAGES where it does not. Maintained by
@@ -281,6 +314,31 @@ func (s *Store) Append(sessionID string, event pipeline.SessionEvent) {
 	// of every session on abctl's two-second poll; see entry.cost.
 	money := moneyOf(&event)
 
+	// BEFORE THE LOCK FOR THE SAME REASON, and unlike sess.context.Add below — see the comment
+	// there, which correctly declines to hoist a phase check and a couple of int adds. This is not
+	// that: titleCandidate walks every message of the event and, for each one whose rank is worth
+	// settling, scans its CONTENT (stripReminders plus the tag extractions). That is the largest
+	// payload on this path and it is attacker-supplied.
+	//
+	// MEASURED BOTH WAYS, because "it scans content" is not on its own an argument. One goroutine
+	// appending the 190KB nested-open fixture in a loop, against a concurrent ListSessions:
+	//
+	//   candidate extracted inside the lock:   reader mean 259µs, worst 2.51ms
+	//   candidate extracted here (this line):  reader mean 319ns, worst 28.1µs
+	//
+	// ~810x on the mean. Note what did NOT change: serial Append stayed at ~578µs, because the scan
+	// is O(content) and cannot be made cheap — the work moved off the critical section rather than
+	// going away, which is the whole claim. It belongs here because it is a pure function of the
+	// local event and touches no store state.
+	//
+	// WHY THAT MATTERS HERE RATHER THAN BEING A MICRO-OPTIMISATION: Append is called synchronously
+	// from the reverseproxy, forwardproxy and extproc request paths, so this lock sits in front of
+	// live proxied traffic, and the writer side excludes every reader and every other appender.
+	//
+	// Only the candidate's EXTRACTION is hoisted, which is the expensive half; the rank comparison
+	// and sanitizeTitle both stay under the lock, for the reason given at the fold site below.
+	titleRank, titleText := titleCandidate(&event)
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -291,6 +349,10 @@ func (s *Store) Append(sessionID string, event pipeline.SessionEvent) {
 		sess = &entry{
 			ID:        sessionID,
 			CreatedAt: now,
+			// NOT THE ZERO VALUE: rankRename is 0, so a zero-valued titleRank would claim this
+			// session had already been renamed and no candidate could ever beat it — the first
+			// prose message would be unnameable. rankNone is the "nothing has named it" rank.
+			titleRank: rankNone,
 		}
 		s.sessions[sessionID] = sess
 	}
@@ -346,6 +408,43 @@ func (s *Store) Append(sessionID string, event pipeline.SessionEvent) {
 	// Equal/After chain: tens of nanoseconds, no allocation, NO DECODE. Splitting it to hoist the
 	// extraction would add an exported type for plumbing alone and save nothing measurable.
 	sess.context.Add(&event)
+	// AND THE TITLE — but NOT on the same terms as context.Add: the candidate was extracted ABOVE
+	// THE LOCK, because unlike context.Add it scans message content. Only the comparison is here.
+	//
+	// Read from &event, the local parameter, so the fold outlives the events it was read from — see
+	// entry.Title, and entry.context just above for why sourcing the candidate from the stored slice
+	// is what breaks that property.
+	//
+	// THE SECOND DISJUNCT IS THE WHOLE RULE, not a tie-break detail: without it a re-rename is
+	// silently ignored, because the equal rank never beats the one already held. Widening it to a
+	// plain `<=` instead is the opposite failure — the title then shifts on every turn, since each
+	// new prose message equals the rank of the last.
+	//
+	// THE BLANK SCREEN IS REDUNDANT AND NO TEST CAN SHOW IT, which is worth saying rather than
+	// leaving a surviving mutant for the next reader to re-derive. titleCandidate returns "" only
+	// ever paired with rankNone (every blank-folding shape — empty, whitespace, reminder-only, an
+	// empty <user_query> — comes back as rankNone), and a fresh entry initialises to rankNone, so
+	// `rankNone < rankNone` is false and the rank test alone rejects it. Kept as a local statement
+	// of what the fold requires: a future titleCandidate returning a blank at a real rank fails
+	// here instead of storing one.
+	if titleText != "" && (titleRank < sess.titleRank || (titleRank == sess.titleRank && titleRank == rankRename)) {
+		// sanitizeTitle STAYS UNDER THE LOCK, and what makes that safe is that it is O(maxTitleLen)
+		// rather than O(candidate): it stops at 80 emitted runes, so a 190KB candidate costs 328ns,
+		// not 916µs.
+		//
+		// A CALL-COUNTING ARGUMENT IS NOT ENOUGH HERE, which is why the cap and not the count is what
+		// this rests on. "At most once per rank improvement" bounds the fold at three times per
+		// session under first-wins — except for /rename, which the second disjunct lets win
+		// repeatedly and which the client controls. Flooding /rename with a 190KB argument paid
+		// ~938µs of write-lock hold per append, unbounded in repetitions; measured on that flood with
+		// a concurrent reader, mean ListSessions latency is 205µs uncapped against 16.4µs capped.
+		//
+		// Hoisting it above the lock would still be wrong, just cheaply so: it would fold every
+		// event's candidate including the ones about to be discarded on rank.
+		if t := sanitizeTitle(titleText); t != "" {
+			sess.Title, sess.titleRank = t, titleRank
+		}
+	}
 	sess.UpdatedAt = now
 	s.activeID = sessionID
 
@@ -606,14 +705,40 @@ func (s *Store) ViewPage(sessionID string, before uint64, limit int) *pipeline.S
 	return view
 }
 
-// SessionSummary is a metadata-only view of a session, suitable for list
-// endpoints that shouldn't copy the full event backlog.
+// SessionSummary is a per-session view for list endpoints: counters, money figures and
+// timestamps rather than the event backlog.
+//
+// "METADATA-ONLY" WOULD NOW BE WRONG, and the phrase used to be here: Title carries up to
+// maxTitleLen runes of VERBATIM USER PROMPT. This is not a new exposure — /v1/sessions/{id}
+// returns whole request and response bodies on the same unauthenticated listener, which the
+// session API documents as its trust model — but a reader deciding how this endpoint may be
+// exposed should not be told by this comment that no content reaches it. Note in particular
+// core/config/config.go's tls_bridge guard, which forces the session API to loopback on the
+// rationale that it "may carry decrypted request/response bodies": that guard keys off the
+// bridge, not off this field, and nothing here should be read as having considered whether
+// it wants widening.
 type SessionSummary struct {
-	ID          string    `json:"id"`
-	CreatedAt   time.Time `json:"createdAt"`
-	UpdatedAt   time.Time `json:"updatedAt"`
-	EventCount  int       `json:"eventCount"`
-	TotalTokens int       `json:"totalTokens,omitempty"` // sum of Inference.TotalTokens across response events
+	ID         string    `json:"id"`
+	CreatedAt  time.Time `json:"createdAt"`
+	UpdatedAt  time.Time `json:"updatedAt"`
+	EventCount int       `json:"eventCount"`
+	// Title names this session from its own events, absent when nothing in them named it.
+	// Folded by Append; see entry.Title for the rule and titleFrom for the ranks.
+	//
+	// A SUGGESTION, NOT AN IDENTIFIER: derived from the events and nothing addresses a
+	// session by it.
+	//
+	// FIRST-WINS, EXCEPT THAT A /rename ALWAYS OVERRIDES. Two consequences a client may rely
+	// on, both the opposite of what this field promised while it was recomputed per call:
+	// ordinary conversation does NOT re-title the session on every turn, and a /rename is not
+	// lost when the event carrying it is evicted.
+	//
+	// omitempty on the standing rule CostMicros states below: an unknown value must not
+	// render as a real one. No consumer reads this yet — abctl's TITLE column still comes
+	// from harvested Claude Code transcripts — so an absent key is what a client that starts
+	// reading it should expect for a session the events never named.
+	Title       string `json:"title,omitempty"`
+	TotalTokens int    `json:"totalTokens,omitempty"` // sum of Inference.TotalTokens across response events
 	// CostMicros is what this session's events cost, in millionths of a dollar, summed from
 	// the records the session itself holds.
 	//
@@ -712,6 +837,17 @@ func (s *Store) ListSessions() []SessionSummary {
 			CreatedAt:  sess.CreatedAt,
 			UpdatedAt:  sess.UpdatedAt,
 			EventCount: len(sess.Events),
+			// Read, not computed — like the money figures below and for the same reason,
+			// squared. Append folds this; see entry.Title for the rule (first-wins, except
+			// that a /rename always overrides), for why the name outlives the event that
+			// carried it, and for the measurements that put the fold there rather than here.
+			//
+			// A FIELD READ, so no content shape can reach it: the 190KB nested-reminder fixture
+			// that costs 38.1s to walk reads in 1.6µs. BenchmarkListSessions_Title measures five
+			// shapes that agree at ~165ns, which is the standing evidence against a walk
+			// reappearing here — they would diverge immediately if one did. This obeys the rule
+			// PromptContext states below, which rejects an O(events) walk under the read lock.
+			Title: sess.Title,
 			// Still a walk, and deliberately left as one: it is a pointer deref per event
 			// with no allocation, where the money figures below needed a JSON unmarshal.
 			TotalTokens: sumTokens(sess.Events),
