@@ -101,9 +101,8 @@ func TestScopeToAgent_DropsTheProvenanceMapsAndKeepsTheReadFacts(t *testing.T) {
 	}
 }
 
-// KeepBuckets is the contract `abctl cost` depends on: it prints window totals, and passing it
-// a snapshot whose per-bucket series had been flattened would leave `--agent --by <axis>` with
-// nothing to break down. So the buckets and their Series come through untouched.
+// KeepBuckets is the mode `abctl cost` asks for: it prints window totals and reads no buckets,
+// so it wants no per-bucket work done. The buckets and their Series come through untouched.
 func TestScopeToAgent_KeepBucketsLeavesTheSeriesIntact(t *testing.T) {
 	got, err := ScopeToAgent(scopeFixture(), "claude-code/2.1.270", KeepBuckets)
 	if err != nil {
@@ -219,10 +218,9 @@ func TestScopeToAgent_EmptyWindowSaysSoRatherThanListingNothing(t *testing.T) {
 
 // The caller's snapshot is never mutated: both modes hand back a copy.
 //
-// NarrowBuckets is the mode that makes this load-bearing. It rewrites per-bucket counts, and
-// the TUI holds one fetched snapshot and re-derives a scoped view from it whenever the scope
-// changes — so narrowing in place would make the second scope read the first one's figures,
-// with no way back to the window's own.
+// NarrowBuckets is the mode that makes this load-bearing: it rewrites per-bucket counts, so
+// narrowing in place would leave the caller holding one agent's figures with no way back to the
+// window's own.
 func TestScopeToAgent_DoesNotMutateTheCallersSnapshot(t *testing.T) {
 	snap := scopeFixture()
 	if _, err := ScopeToAgent(snap, "claude-code/2.1.270", NarrowBuckets); err != nil {

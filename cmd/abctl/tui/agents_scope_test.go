@@ -35,7 +35,7 @@ func scopedModel(t *testing.T, cursor int, scope string) *model {
 	return m
 }
 
-// Enter scopes the cost and usage views to the row under the cursor, and leaves the pane.
+// Enter scopes the usage pane to the row under the cursor, and leaves the pane.
 //
 // LEAVING IS PART OF THE ACTION, not a separate keystroke. The pane is a picker: its whole
 // purpose is choosing what the views behind it show, so staying on it after a choice would leave

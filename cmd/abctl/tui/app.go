@@ -42,8 +42,8 @@ const (
 	panePluginDetail
 	paneCatalog
 	paneUsage
-	// paneAgents shows what each CODING AGENT has spent, and picks which one the usage and cost
-	// views are scoped to. The scope is applied CLIENT-SIDE — /v1/usage takes no agent filter, so
+	// paneAgents shows what each CODING AGENT has spent, and picks which one the usage pane is
+	// scoped to. The scope is applied CLIENT-SIDE — /v1/usage takes no agent filter, so
 	// the pane fetches group=agent and narrows with usage.ScopeToAgent, which is how
 	// `abctl cost --agent` has always worked. Sessions and events are not scopable at all:
 	// neither carries an agent. Not to be confused with paneNamespaces,
@@ -727,7 +727,12 @@ type model struct {
 	// same thing would be the confusion this feature already had to untangle once. The
 	// Kubernetes sense lives one field up as `namespaces []cluster.AgentNamespace`.
 	agents []agentRow
-	// agentScope is the agent the usage and cost views are narrowed to, or "" for all of them.
+	// agentScope is the agent the usage pane is narrowed to, or "" for all of them.
+	//
+	// THE USAGE PANE AND NOTHING ELSE. The spend band and its drawer fetch on their own chains
+	// with their own axes and do not read this field, and `abctl cost --agent` is a separate
+	// process. Scoping those is a separate change; until then this must not be described as
+	// scoping "cost", which reads as covering the most prominent money figure on screen.
 	//
 	// A LABEL, not an index into m.agents: the rows are refetched on every `A` press and on the
 	// startup gate, and their order is by cost, so an index would silently come to mean a

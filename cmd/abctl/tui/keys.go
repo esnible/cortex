@@ -588,7 +588,7 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 	case "enter", "right", "l":
 		switch m.pane {
 		case paneAgents:
-			// Pick the agent the usage and cost views are narrowed to, then LEAVE. The pane is a
+			// Pick the agent the usage pane is narrowed to, then LEAVE. The pane is a
 			// picker, so staying on it after a choice would leave the operator looking at the one
 			// surface the choice does not affect.
 			//

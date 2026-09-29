@@ -154,8 +154,8 @@ type agentRowsLoadedMsg struct {
 	// from is the pane the `A` press came from, captured AT PRESS TIME and carried here for
 	// exactly the reason the field above gives: by the time this reply lands the reader may have
 	// moved, so reading m.pane then records a caller the press never had. Meaningless under
-	// agentsOpenNever, which enters nothing; the startup gate passes paneSessions, the pane it
-	// is about to interrupt.
+	// agentsOpenNever, which enters nothing, and unread on the startup path — see that arm in
+	// Update for why it does not consult this field.
 	from paneID
 }
 
@@ -163,8 +163,8 @@ type agentRowsLoadedMsg struct {
 //
 // group=agent AND NO AGENT FILTER, because /v1/usage has none: it reads window, resolution,
 // group and session, and session is its only scoping parameter. The per-agent split therefore
-// arrives as Bucket.Series and is folded here. That limit is also why this pane is read-only —
-// there is no server-side agent scope to apply to any other pane.
+// arrives as Bucket.Series and is folded here, and the scope the pane sets is applied to the
+// fetched snapshot rather than requested — see usage.ScopeToAgent.
 func (m *model) fetchAgentRowsCmd(open agentsOpen, from paneID) tea.Cmd {
 	if m.client == nil {
 		return nil

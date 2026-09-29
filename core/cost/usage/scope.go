@@ -37,8 +37,7 @@ const (
 // two drifting: `abctl cost`'s negative-total refusal, coverage-gap disclosure and
 // incomplete-read admission each read one agent's numbers, and the TUI's chart reads the same
 // narrowing. Which fields do NOT survive, and why, is stated at each narrowing below. A COPY,
-// never the caller's snapshot mutated in place — the TUI holds one fetched snapshot and
-// re-derives a scoped view from it whenever the scope changes.
+// never the caller's snapshot mutated in place.
 //
 // The fold is FoldSeriesAcrossWindow, the same one abctl's AGENTS pane uses, so the figure
 // printed by the CLI and the row shown in the pane cannot disagree.

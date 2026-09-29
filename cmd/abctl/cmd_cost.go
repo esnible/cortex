@@ -206,10 +206,8 @@ Flags:
 	}
 
 	if *agent != "" {
-		// KeepBuckets, not NarrowBuckets: nothing on this path reads Buckets at all. The only
-		// reader of them here is writeCostBreakdown, and it is reachable only under --by, which
-		// the check at the top of this function refuses alongside --agent — so narrowing would
-		// be work whose result no writer looks at. abctl's usage pane passes the other value
+		// KeepBuckets, not NarrowBuckets: this command prints window totals, so it needs no
+		// per-bucket narrowing and pays for none. abctl's usage pane passes the other value
 		// because it renders a chart from the buckets themselves. See usage.BucketScope for why
 		// this is a parameter rather than a default.
 		scoped, err := usage.ScopeToAgent(snap, *agent, usage.KeepBuckets)

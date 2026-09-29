@@ -373,7 +373,7 @@ var paneKeys = map[paneID]keyGroup{
 			{"↑↓ / jk", "navigate"},
 			// One key both ways, which the footer's label flips to show. Said here too because
 			// the footer only describes the row under the cursor.
-			{"↵", "scope usage + cost to this agent; again clears"},
+			{"↵", "scope the usage pane to this agent; again clears"},
 			{"esc", "back, keeping the scope"},
 		},
 		// ONE SHORT NOTE, NOT TWO LONG ONES, and the budget is real rather than stylistic: an
@@ -389,8 +389,8 @@ var paneKeys = map[paneID]keyGroup{
 		// the same narrowing `abctl cost --agent` uses, and the endpoint's limit now bounds WHICH
 		// views can honour it rather than whether any can.
 		notes: []string{
-			"Opens only when two or more agents have been seen. The scope reaches usage and " +
-				"cost; sessions and events carry no agent.",
+			"Opens only when two or more agents have been seen. It scopes the usage pane " +
+				"only — not the spend band, and not sessions or events, which carry no agent.",
 		},
 	},
 }
