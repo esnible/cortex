@@ -786,9 +786,21 @@ func TestConfig_BlocksForOneHostMustAgreeOnTheUnit(t *testing.T) {
 		{"different hosts, different units", []EndpointConfig{
 			block([]string{"gw.bob"}, "credits", "a"), block([]string{"api.anthropic.com"}, "", "b")}, true},
 	} {
-		_, err := Build(&Config{Endpoints: tc.blocks})
+		tbl, err := Build(&Config{Endpoints: tc.blocks})
 		if (err == nil) != tc.ok || (err != nil && !strings.Contains(err.Error(), "one gateway bills in one unit")) {
 			t.Errorf("%s: Build = %v, want ok=%v", tc.name, err, tc.ok)
+		}
+		if err != nil {
+			continue
+		}
+		// An accepted config prices every block's model on its own host, whichever spelling of the
+		// unit that host's best row carries.
+		for _, b := range tc.blocks {
+			for m := range b.Models {
+				if _, prov := tbl.Resolve(b.Hosts[0], m, 0); prov == ProvNone {
+					t.Errorf("%s: %s/%s is unpriced", tc.name, b.Hosts[0], m)
+				}
+			}
 		}
 	}
 }
