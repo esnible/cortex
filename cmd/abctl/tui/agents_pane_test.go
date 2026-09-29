@@ -1,13 +1,18 @@
 package tui
 
 import (
+	"context"
 	"errors"
 	"math"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/rossoctl/cortex/cmd/abctl/apiclient"
 	"github.com/rossoctl/cortex/core/cost/usage"
 )
 
@@ -566,9 +571,12 @@ func TestAgentsPane_StartupEntersOnlyWhereTheGateApplies(t *testing.T) {
 	}
 }
 
-// The startup entry records SESSIONS as its caller, so esc goes where the operator expected to
-// be rather than to the pane enum's zero value — which is the Kubernetes namespace picker, and
-// would look like the connection had gone away.
+// esc from the startup picker lands on Sessions, so the operator ends up where they were headed
+// rather than on the pane enum's zero value — the Kubernetes namespace picker, which would look
+// like the connection had gone away.
+//
+// It gets there through leaveAgentsPane's paneNone fallback rather than by recording a caller:
+// the gate has no caller pane, which is what that function's doc says it leans on.
 func TestAgentsPane_StartupEscapesToSessions(t *testing.T) {
 	rows := []agentRow{
 		{label: "claude-code/2.1.270", Counts: usage.Counts{Requests: 10}},
@@ -593,7 +601,17 @@ func TestAgentsPane_StartupEscapesToSessions(t *testing.T) {
 // on top of the message that matters. The error is still recorded, so pressing `A` later says
 // what happened rather than showing an empty grid.
 func TestAgentsPane_StartupFetchFailureIsSilent(t *testing.T) {
-	m := &model{pane: paneSessions, previousPane: paneNone, agentsTbl: newAgentsTable(), client: deadClient()}
+	m := &model{pane: paneSessions, previousPane: paneNone, agentsTbl: newAgentsTable(), client: deadClient(),
+		// TWO ROWS, so the error is the only thing that can hold the pane back. With none, the
+		// gate's OTHER conjunct (agentsPaneApplies) is already false and the assertion passes
+		// whatever the error handling does — measured: deleting `msg.err == nil` from the gate
+		// left the whole package green. These rows stand for a previous pod's, which is how the
+		// state is reachable: m.agents survives a failed fetch and the gate re-runs per
+		// connection, so without the guard the picker opens showing another proxy's agents.
+		agents: []agentRow{
+			{label: "claude-code/2.1.270", Counts: usage.Counts{Requests: 10}},
+			{label: "bob-shell/2.0.5", Counts: usage.Counts{Requests: 8}},
+		}}
 	updated, _ := m.Update(agentRowsLoadedMsg{err: errStartupProbe, open: agentsOpenAtStartup})
 	m = updated.(*model)
 	if m.pane != paneSessions {
@@ -604,5 +622,66 @@ func TestAgentsPane_StartupFetchFailureIsSilent(t *testing.T) {
 	}
 	if m.agentsErr == nil {
 		t.Error("agentsErr was not recorded; a later `A` press would show an empty pane instead of the reason")
+	}
+}
+
+// initSessionView ARMS the gate. Without this nothing asserted the wiring, only the handler.
+//
+// THE FOUR TESTS ABOVE INJECT agentRowsLoadedMsg STRAIGHT INTO Update, which verifies what the
+// reply does and never that anything sends it. Measured: replacing the `m.startupAgentsGateCmd(),`
+// line in initSessionView with a no-op left the whole package green — so the PR's headline
+// behaviour, "the picker opens itself at startup", had no test that it is ever reached in
+// production. `grep -rn startupAgentsGateCmd --include=*_test.go` returned nothing.
+//
+// initSessionView IS THE RIGHT SEAM, not Init: it is the one place every entry point converges on
+// (--endpoint mode's Init, the pod picker's portForwardReadyMsg, and [l]'s local endpoint), and it
+// is where the gate has to live for a second pod's connection to re-run it.
+//
+// THE BATCH IS FANNED OUT CONCURRENTLY WITH A DEADLINE, because tea.Batch's leaves include a 1s
+// tick and an SSE pump that never returns on their own. Running them in sequence would hang on
+// the first blocker rather than reaching the gate's fetch.
+func TestInitSessionView_ArmsTheStartupAgentsGate(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Only /v1/usage matters here; the batch's other leaves may 404 harmlessly.
+		_, _ = w.Write([]byte(`{"window":"today","group":"agent","buckets":[{"at":"2026-09-29T10:00:00Z",` +
+			`"requests":18,"series":{"claude-code/2.1.270":{"requests":10},"bob-shell/2.0.5":{"requests":8}}}],` +
+			`"totals":{"requests":18}}`))
+	}))
+	defer ts.Close()
+
+	m := &model{client: apiclient.New(ts.URL), agentsTbl: newAgentsTable(), pane: paneSessions}
+	m.parentCtx = context.Background()
+	m.ctx, m.cancel = context.WithCancel(m.parentCtx)
+	defer m.cancel()
+
+	cmd := m.initSessionView()
+	if cmd == nil {
+		t.Fatal("initSessionView returned no command")
+	}
+	batch, ok := cmd().(tea.BatchMsg)
+	if !ok {
+		t.Fatalf("initSessionView produced %T, want tea.BatchMsg", cmd())
+	}
+	got := make(chan agentRowsLoadedMsg, len(batch))
+	for _, leaf := range batch {
+		if leaf == nil {
+			continue
+		}
+		go func(c tea.Cmd) {
+			if msg, ok := c().(agentRowsLoadedMsg); ok {
+				got <- msg
+			}
+		}(leaf)
+	}
+	select {
+	case msg := <-got:
+		// The VALUE, not just the arrival: a gate armed with agentsOpenOnPress would flash a
+		// refusal at every single-agent startup, which is the behaviour agentsOpenAtStartup
+		// exists to avoid.
+		if msg.open != agentsOpenAtStartup {
+			t.Errorf("the startup fetch carried open=%v, want agentsOpenAtStartup", msg.open)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("no agentRowsLoadedMsg came out of initSessionView's batch — the startup gate is not armed")
 	}
 }
