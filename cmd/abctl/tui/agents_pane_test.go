@@ -592,6 +592,13 @@ func TestAgentsPane_StartupEscapesToSessions(t *testing.T) {
 	if m.pane != paneAgents {
 		t.Fatalf("startup did not enter the pane: %v", m.pane)
 	}
+	// paneNone, asserted directly. Landing on Sessions is the same observable outcome whether the
+	// arm recorded paneNone and leaveAgentsPane fell back, or the arm recorded paneSessions
+	// itself — so the esc assertion below cannot tell the documented mechanism from the other one.
+	if m.previousPane != paneNone {
+		t.Errorf("the gate recorded previousPane=%v, want paneNone: it has no caller pane, and the "+
+			"esc arm's fallback is what the comment above credits", m.previousPane)
+	}
 	m.handleKey(tea.KeyMsg{Type: tea.KeyEsc})
 	if m.pane != paneSessions {
 		t.Errorf("esc from the startup picker landed on %v, want paneSessions", m.pane)

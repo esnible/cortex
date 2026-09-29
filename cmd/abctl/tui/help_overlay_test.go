@@ -697,3 +697,30 @@ func TestHelpOverlayDoesNotStealFilterInput(t *testing.T) {
 		t.Fatal("`?` should open the overlay once the filter input is unfocused")
 	}
 }
+
+// The AGENTS note discloses what the scope does NOT reach.
+//
+// THIS PR RE-BROKE THE SAME CLAIM TWICE — six prose sites in round 1, then the PR title in round 2 —
+// because "the scope covers cost" is the natural thing to write and nothing mechanical contradicted
+// it. app.go's agentScope doc states the norm ("this must not be described as scoping 'cost'"); a
+// norm in a comment is not a guard, and a mutant reverting this note to the pre-round-1 wording
+// survived the whole package.
+//
+// ASSERTS THE DISCLOSURE, NOT THE ABSENCE OF A WORD. Banning "cost" would fire on a site that had
+// become correctly qualified, which is the failure mode that turns a guard into a nuisance. The
+// property worth pinning is that the note names the surface the scope does not reach — the spend
+// band — because that is the one an operator is looking at when they press the key.
+func TestPaneKeys_TheAgentsNoteSaysWhatTheScopeDoesNotReach(t *testing.T) {
+	g, ok := paneKeys[paneAgents]
+	if !ok {
+		t.Fatal("paneKeys has no entry for paneAgents")
+	}
+	joined := strings.Join(g.notes, " ")
+	if joined == "" {
+		t.Fatal("the AGENTS group carries no notes; the disclosure has nowhere to live")
+	}
+	if !strings.Contains(joined, "spend band") {
+		t.Errorf("the AGENTS note does not name the spend band, which the scope does NOT reach:\n  %s",
+			joined)
+	}
+}
