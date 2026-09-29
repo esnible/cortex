@@ -1150,7 +1150,22 @@ Layered on top of all of them:
 | `C` | any session-view pane (not the picker) | open the registered-plugin catalog. Was `P` until the pipeline took that letter |
 | `r` | catalog | refresh the catalog from `/v1/plugins` |
 | `A` | any session-view pane (not the picker) | open the per-agent cost breakdown — what each coding agent has spent today. Capital `A` because lowercase `a` cycles the spend drawer's axis. Refetches on every press, then **refuses below two agents** and says which one it found: a one-row breakdown restates a total already on screen. Not in the footer for that reason; the `?` overlay names it |
-| `Esc` | agents | back to the pane `A` was pressed on |
+| `↑↓` / `jk` | agents | move the cursor |
+| `↵` | agents | scope the usage and cost views to the agent under the cursor, and leave. Pressing it again **on the agent already scoped clears the scope** — there is no "all agents" row, so one key goes both ways and the footer's label flips to say which. The scope reaches usage and cost only: sessions and events carry no agent, and the spend band and drawer keep showing every agent |
+| `Esc` | agents | back to the pane `A` was pressed on, leaving the scope as it is |
+
+**The picker also opens itself at startup**, once per connection, when two or more
+agents have been seen in the window — the same two-agent rule `A` applies, so a
+one-agent proxy goes straight to the sessions pane and says nothing. Nothing is
+remembered between runs: a second agent appearing is exactly when the picker
+becomes worth showing, so a remembered dismissal would go stale then.
+
+While a scope is active, two things on the usage pane change and both say so:
+`[b]` disappears from the footer, because the scope needs `group=agent` on the
+wire and there is no second axis left to break down by; and the latency metric
+reports that it is unavailable per agent rather than plotting zeroes. Response
+times are recorded per bucket across every agent that shared it, so
+`/v1/usage` carries nothing that could attribute them to one.
 | `e` | pipeline | edit pipeline subtree in `$EDITOR` |
 | `y` | edit/diff | apply the edit |
 | `N` | edit/diff | abort the edit |
