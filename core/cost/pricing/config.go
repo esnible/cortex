@@ -78,9 +78,8 @@ type EndpointConfig struct {
 	// operator that nothing keeps, and it is worse than absent because a config carrying
 	// `symbol: "₡"` reads as configured.
 	//
-	// It would also be the one string in this struct outside normaliseUnit's bounds — unvalidated,
-	// unbounded, and destined for a terminal and a durable ledger row, which is exactly what
-	// maxUnitLen exists to prevent for Unit.
+	// It would also reach a terminal unvalidated, which is what maxUnitLen exists to prevent for
+	// Unit.
 	//
 	// Rendering a unit uses its NAME ("0.08 credits"), which is always readable if not always
 	// short. Add a glyph when something renders one, with the same validation Unit gets.
@@ -134,10 +133,9 @@ func normaliseUnit(unit, where string) (string, error) {
 	// The case-preserving promise is about units this package cannot know — "credits",
 	// "Bobcoins" — where the operator's spelling is the only name the unit has. USD is different:
 	// it is the one unit that already HAS a canonical spelling here, CurrencyUSD, and five
-	// consumers test against it to decide whether a figure may be labelled "$". Without this fold
-	// `unit: usd` — which the charset check above accepts — reads as a NON-default unit at every
-	// one of them that compares exactly: abctl prints "per Mtok" over a table of dollars, and the
-	// ledger writes a "currency" field on every row of a deployment that only ever billed dollars.
+	// consumers test against it to decide whether a figure may be labelled "$". Each of them folds
+	// too, so none depends on this alone — but five independent folds are five chances to miss the
+	// sixth, and `unit: usd` is a spelling the charset check above accepts.
 	//
 	// FOLDED HERE, at the one place a configured unit enters the process, rather than at each
 	// comparison. Five sites folding independently are five chances to miss the sixth, which is

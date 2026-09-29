@@ -2801,8 +2801,11 @@ func TestRunCost_TheWidestLegalUnitIsNeverTruncated(t *testing.T) {
 		// A literal 73 would work and would be a constant nothing derives.
 		//
 		// The header and the rows are printed from TWO SEPARATE format literals, three lines apart
-		// in writeCostBreakdown, and that is the drift this guards: equal length means the columns
-		// still line up, and it stays true if someone deliberately re-widens BOTH.
+		// in writeCostBreakdown, and that is the drift this guards: unequal length means the columns
+		// have stopped lining up, and equal length survives a deliberate re-widening of BOTH.
+		//
+		// NOT a proof of alignment — a width-preserving permutation of the header's own fields would
+		// pass. It catches every widening, which is the drift a format-string edit actually causes.
 		usd := tableRow(t, got, "USD")
 		header := tableRow(t, got, "CURRENCY")
 		if len(usd) != len(header) {

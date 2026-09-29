@@ -341,7 +341,7 @@ func TestConfig_UnitDefaultsToUSDAndIsCarriedOnTheEntry(t *testing.T) {
 // These strings reach a durable ledger row, a terminal and a JSON document, so the same
 // reasoning that caps and sanitises a model name applies: refuse at load, where an operator is
 // looking at the error, rather than write something unreadable into a file retained for a month.
-// maxUnitLen is 16, and two things outside this package restate that number.
+// maxUnitLen is 16, and four things outside this package restate that number or derive from it.
 //
 // A LITERAL, DELIBERATELY. The boundary cases below derive their fixtures from maxUnitLen, which
 // makes them test the BEHAVIOUR at the bound and leaves them green when the bound moves — verified:
@@ -351,14 +351,20 @@ func TestConfig_UnitDefaultsToUSDAndIsCarriedOnTheEntry(t *testing.T) {
 // What the number is load-bearing FOR, neither of which the compiler connects:
 //   - docs/pricing.md tells operators a unit is "at most 16 bytes";
 //   - cmd/abctl's TestRunCost_TheWidestLegalUnitIsNeverTruncated uses a 16-byte fixture as its
-//     worst case, and cannot import an unexported constant to check it.
+//     worst case, and cannot import an unexported constant to check it;
+//   - cmd_cost.go's headline-geometry comment writes "up to maxUnitLen (16)";
+//   - and DERIVES "~25 columns" from it, so that figure moves too.
+//
+// The last two are the ones the first draft of this comment missed, and one of them sits three
+// lines above where that draft wrote the count.
 //
 // Changing the bound is fine; changing it silently is not. This is the tripwire that makes it a
 // decision, and its failure message is the checklist.
 func TestConfig_MaxUnitLenIsSixteen(t *testing.T) {
 	if maxUnitLen != 16 {
-		t.Errorf("maxUnitLen = %d, not 16. That is allowed, but three things have to move with it: "+
-			"docs/pricing.md's \"at most 16 bytes\", cmd/abctl's widest-unit fixture, and this test.",
+		t.Errorf("maxUnitLen = %d, not 16. That is allowed, but five things have to move with it: "+
+			"docs/pricing.md's \"at most 16 bytes\", cmd/abctl's widest-unit fixture, cmd_cost.go's "+
+			"\"up to maxUnitLen (16)\" and the \"~25 columns\" it derives, and this test.",
 			maxUnitLen)
 	}
 }

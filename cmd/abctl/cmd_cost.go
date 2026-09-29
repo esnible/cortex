@@ -691,7 +691,8 @@ func writeCostSummary(snap *usage.Snapshot, stdout io.Writer, agent string) {
 		headline = fmt.Sprintf("%d units", len(snap.Currencies))
 	}
 	// %-14s IS A MINIMUM, NOT A BUDGET, and it was sized for a figure of costUSD's magnitude
-	// ("$12345.67" is 9 columns; costUSD has no clamp, so it has no widest output). costIn can now
+	// ("$12345.67" is 9 columns; costUSD clamps only at the BOTTOM, to "<$0.01", so it has no
+	// upper bound). costIn can now
 	// place a figure plus a space plus up to maxUnitLen (16) here, so
 	// the widest legal headline is ~25 columns and the tail of this ONE line shifts right.
 	// Measured, not assumed: "12345.67 Bobcoins12345678 1057 requests   298M tokens". Nothing is
