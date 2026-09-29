@@ -377,10 +377,15 @@ func (m *model) renderUsage(width, height int) string {
 			b.WriteString(line)
 			b.WriteString("\n")
 		}
-		b.WriteString("\n")
+		// The note takes the blank row above the summary rather than adding one: it is
+		// conditional, so usagePaneChromeRows cannot count it.
+		if note := costUngroupedRow(m.usage.snap, m.agentScope); note != "" {
+			b.WriteString(note)
+		} else {
+			b.WriteString("\n")
+		}
 		b.WriteString(renderUsageSummary(m.usage.snap))
 		b.WriteString("\n")
-		b.WriteString(costUngroupedRow(m.usage.snap, m.agentScope))
 		if !m.usage.lastFetch.IsZero() {
 			b.WriteString(fmt.Sprintf("\n  updated %s ago (every %s)\n",
 				time.Since(m.usage.lastFetch).Truncate(time.Second), usagePollInterval))
@@ -431,7 +436,6 @@ func costUngroupedRow(snap *usage.Snapshot, scope string) string {
 	if micros == 0 || negativeCost(micros) {
 		return ""
 	}
-	return fmt.Sprintf("  note  %s of this window is attributed to no agent, "+
-		"so per-agent figures do not sum to the window total\n",
+	return fmt.Sprintf("  note  %s of this window is attributed to no agent\n",
 		formatUSDTotalMicros(micros))
 }

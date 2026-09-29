@@ -299,6 +299,25 @@ func TestUsagePane_ScopedSummaryDisclosesTheCostNoAgentCarries(t *testing.T) {
 	}
 }
 
+// The note row is conditional, so usagePaneChromeRows does not count it and
+// TestUsageChartHeight_MatchesTheRenderedChrome, which renders unscoped, cannot see it. Both
+// sizes fit the terminal unscoped; the scoped pane with a residual must fit them too.
+func TestUsagePane_TheScopedNoteFitsWhereTheUnscopedPaneDoes(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		w, h int
+	}{{"80x26", 80, 26}, {"120x26", 120, 26}} {
+		m := fitModel(t, paneUsage, tc.w, tc.h, cursorRowsFixture(60))
+		residual := int64(750_000)
+		m.usage.snap.UngroupedCostMicros = &residual
+		m.agentScope = "claude-code/2.1.270"
+		if !strings.Contains(m.View(), "attributed to no agent") {
+			t.Fatalf("%s: the fixture does not reach the note row", tc.name)
+		}
+		assertFits(t, m, "scoped usage "+tc.name)
+	}
+}
+
 // UNSCOPED, the pane says nothing about the residual: the COST cell and the residual then describe
 // the same window, and there is no shortfall between them to explain.
 //
