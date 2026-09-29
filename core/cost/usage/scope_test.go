@@ -101,6 +101,43 @@ func TestScopeToAgent_DropsTheProvenanceMapsAndKeepsTheReadFacts(t *testing.T) {
 	}
 }
 
+// The two whole-window residuals SURVIVE the narrowing, because a residual is a fact about the
+// window rather than about an agent — and because callers are already reading one off this
+// function's result: `abctl cost` prints UngroupedCostMicros at writeCostSummary's --agent note,
+// and abctl's usage pane prints it through tui.costUngroupedRow.
+//
+// PINNED HERE BECAUSE EVERY GUARD IT HAD WAS IN A CONSUMER. Measured on this tree: nilling
+// UngroupedCostMicros in ScopeToAgent fails two cmd/abctl tests, and nilling
+// UngroupedAvoidedMicros failed nothing at all — so for the avoided residual this assertion is
+// the only thing between a one-line "cleanup" and a silently retracted disclosure.
+//
+// BOTH BUCKET MODES, because the two callers pass different ones and the residual is a
+// window-level figure either way — narrowing the buckets is not a reason to drop it.
+//
+// DISTINCT VALUES, neither of them a figure the fixture already carries: a shared number would
+// let a narrowing that copied the wrong field into both satisfy both assertions.
+func TestScopeToAgent_KeepsTheWindowResidualsForTheCallerToDisclose(t *testing.T) {
+	snap := scopeFixture()
+	snap.UngroupedCostMicros = ptr(int64(777))
+	snap.UngroupedAvoidedMicros = ptr(int64(555))
+	for _, buckets := range []BucketScope{KeepBuckets, NarrowBuckets} {
+		got, err := ScopeToAgent(snap, "claude-code/2.1.270", buckets)
+		if err != nil {
+			t.Fatalf("ScopeToAgent(%v): %v", buckets, err)
+		}
+		if got.UngroupedCostMicros == nil || *got.UngroupedCostMicros != 777 {
+			t.Errorf("UngroupedCostMicros = %v under bucket mode %v, want 777 — the residual is a "+
+				"window fact, and writeCostSummary's --agent note reads it off this snapshot",
+				got.UngroupedCostMicros, buckets)
+		}
+		if got.UngroupedAvoidedMicros == nil || *got.UngroupedAvoidedMicros != 555 {
+			t.Errorf("UngroupedAvoidedMicros = %v under bucket mode %v, want 555 — and nothing "+
+				"else in this repo would have failed on its loss",
+				got.UngroupedAvoidedMicros, buckets)
+		}
+	}
+}
+
 // KeepBuckets is the mode `abctl cost` asks for: it reads only window totals ON ITS SCOPED PATH,
 // so it wants no per-bucket work done there. The buckets and their Series come through untouched.
 //

@@ -88,13 +88,36 @@ func ScopeToAgent(snap *Snapshot, agent string, buckets BucketScope) (*Snapshot,
 	// READ and the retention configuration, which are the same facts whichever agent is scoped
 	// to. Dropping them would hide a short sum behind a narrower question.
 	//
-	// SeriesOvershootMicros and SeriesAvoidedOvershootMicros stay too, and they are the two the
-	// "every" above has to account for rather than pass over. Both are defect reports about a
+	// SeriesOvershootMicros and SeriesAvoidedOvershootMicros stay too, and they are among the
+	// fields the "every" above has to account for rather than pass over. Both are defect reports about a
 	// breakdown — the series summed to MORE than the total — so they belong with Degraded rather
 	// than with the provenance maps. A correct producer never sends either on this path:
 	// residualOf leaves them nil unless the series overshoots, which cannot happen where the
 	// figures reconcile. Where one does arrive it is upstream's bug, and forwarding it says so;
 	// narrowing it to an agent would be inventing a per-agent overshoot nothing computed.
+	//
+	// UngroupedCostMicros and UngroupedAvoidedMicros STAY, and they are the two fields this
+	// narrowing hands on with a DUTY ATTACHED rather than settles. Both are whole-window
+	// residuals — the part of a total that NO series entry carries — so under a scope they
+	// describe traffic belonging to no agent while the Totals beside them describe one agent.
+	//
+	// KEPT rather than dropped, because unlike the by-model maps above there IS a correct
+	// reading available: a residual is a fact about the WINDOW, true whichever agent is scoped
+	// to, which is the same argument that keeps DaysOutsideRetention. Dropping them would also
+	// retract a disclosure already being made — `abctl cost` reads UngroupedCostMicros off the
+	// snapshot this function returns, at writeCostSummary's --agent note.
+	//
+	// THE DISCLOSURE ITSELF IS THE CALLER'S DUTY, and it is the one thing this function cannot
+	// discharge for it: rewriting Totals is what creates the obligation, and only the caller
+	// knows whether it renders a money figure at all. A surface that renders one under a scope
+	// has to say what it leaves out, or a reader who scopes to each agent in turn and sums the
+	// figures finds a shortfall with nothing to explain it. `abctl cost` does this in
+	// writeCostSummary; abctl's usage pane does it in tui.costUngroupedRow.
+	//
+	// THE SURVIVAL IS PINNED IN THIS PACKAGE because every guard it had was a module away, in
+	// the consumer: dropping UngroupedCostMicros here fails two cmd/abctl tests, and dropping
+	// UngroupedAvoidedMicros failed nothing at all — measured, both ways. See
+	// TestScopeToAgent_KeepsTheWindowResidualsForTheCallerToDisclose.
 
 	// Currencies IS CARRIED OVER, AND IT NO LONGER DESCRIBES Totals. Said out loud because it is
 	// the one field on this struct that the narrowing above invalidates, and the honest options are

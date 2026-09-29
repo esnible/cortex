@@ -254,6 +254,103 @@ func TestUsagePane_LatencyUnderAScopeSaysItIsUnavailable(t *testing.T) {
 	}
 }
 
+// The scoped pane STATES THE RESIDUAL its COST cell leaves out.
+//
+// usage.Snapshot.UngroupedCostMicros is a whole-window figure and survives usage.ScopeToAgent, so
+// under a scope the pane holds a COST cell describing one agent beside a residual describing no
+// agent. `abctl cost` has disclosed this at writeCostSummary's --agent note for as long as --agent
+// has existed; the usage pane is the surface that gained the same duty when it gained a scope, and
+// it had nothing to say about it.
+//
+// BOTH RENDER BRANCHES, because both print the summary and so both print its COST cell: the default
+// one, and the latency one that prints the summary after saying latency is unavailable per agent. A
+// disclosure added to one and not the other is the failure this covers.
+//
+// THE AMOUNT IS AN INDEPENDENT LITERAL rather than formatUSDTotalMicros(residual): asserting
+// against the producer's own output would pass on whatever figure it chose to render, including the
+// window total. 750_000 micros is $0.75, and it is distinct from the fixture's 55_000 total, so a
+// note built from the wrong field cannot satisfy this.
+func TestUsagePane_ScopedSummaryDisclosesTheCostNoAgentCarries(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		latency bool
+	}{
+		{name: "count metric, the default branch"},
+		{name: "latency metric, the branch that says latency is unavailable", latency: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := fitModel(t, paneUsage, 120, 40, nil)
+			if tc.latency {
+				for !m.usage.metric.isLatency() {
+					m.usage.cycleMetric()
+				}
+			}
+			residual := int64(750_000)
+			m.usage.snap.UngroupedCostMicros = &residual
+			m.agentScope = "claude-code/2.1.270"
+			body := m.renderUsage(m.width, m.bodyHeight)
+			if !strings.Contains(body, "$0.75") {
+				t.Errorf("the scoped summary does not state the residual amount:\n%s", body)
+			}
+			if !strings.Contains(body, "attributed to no agent") {
+				t.Errorf("the scoped summary names an amount without saying what it is:\n%s", body)
+			}
+		})
+	}
+}
+
+// UNSCOPED, the pane says nothing about the residual: the COST cell and the residual then describe
+// the same window, and there is no shortfall between them to explain.
+//
+// THE COMPANION THAT MAKES THE TEST ABOVE MEAN SOMETHING. An unconditional note would satisfy that
+// one and be wrong on every unscoped window, which is the pane's normal state.
+func TestUsagePane_UnscopedSummarySaysNothingAboutTheResidual(t *testing.T) {
+	m := fitModel(t, paneUsage, 120, 40, nil)
+	residual := int64(750_000)
+	m.usage.snap.UngroupedCostMicros = &residual
+	if body := m.renderUsage(m.width, m.bodyHeight); strings.Contains(body, "attributed to no agent") {
+		t.Errorf("the unscoped pane disclosed a residual that describes the very window it is showing:\n%s", body)
+	}
+}
+
+// The states with nothing to say say nothing, rather than a note reading "$0.00" or a negative.
+//
+// A ZERO RESIDUAL is the ordinary case on a reconcilable window — the series accounts for every
+// dollar — and a note for it would train an operator to ignore the line. AN ABSENT field is a
+// producer that computed no residual at all. A NEGATIVE cannot arrive, because usage's residualOf
+// routes one to SeriesOvershootMicros, so refusing it is this surface's impossible-figure rule and
+// not a formatting fix: formatUSDTotalMicros renders a negative as a four-decimal figure perfectly
+// well, and the note would then assert a negative residual in prose.
+func TestCostUngroupedRow_SaysNothingWhereThereIsNothingToSay(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		micros int64
+		absent bool
+		noSnap bool
+		scope  string
+	}{
+		{name: "a residual, but no scope", micros: 750_000},
+		{name: "scoped, the producer computed no residual", absent: true, scope: "claude-code/2.1.270"},
+		{name: "scoped, the series accounts for every dollar", micros: 0, scope: "claude-code/2.1.270"},
+		{name: "scoped, an impossible negative residual", micros: -150_000, scope: "claude-code/2.1.270"},
+		{name: "scoped, no snapshot fetched yet", noSnap: true, scope: "claude-code/2.1.270"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var snap *usage.Snapshot
+			if !tc.noSnap {
+				snap = &usage.Snapshot{}
+				if !tc.absent {
+					micros := tc.micros
+					snap.UngroupedCostMicros = &micros
+				}
+			}
+			if got := costUngroupedRow(snap, tc.scope); got != "" {
+				t.Errorf("costUngroupedRow = %q, want the empty string", got)
+			}
+		})
+	}
+}
+
 // The AGENTS pane's own title names the scope, so returning to the picker shows what is set.
 func TestAgentsPane_TitleNamesTheActiveScope(t *testing.T) {
 	m := scopedModel(t, 0, "bob-shell/2.0.5")
