@@ -2428,17 +2428,62 @@ func TestRunCost_ByAgentOnAMixedWindowWithholdsTheCostCells(t *testing.T) {
 	// Said once, under the table, naming the units and the axis that resolves them. A column of
 	// "(mixed)" with nothing explaining it reads as a defect in the tool.
 	//
-	// ASSERTED ON THE BREAKDOWN'S OWN WORDING — "these rows hold" — and not on "cannot be added",
-	// which writeCostSummary also prints above this table for the same window. That looser string
-	// let the assertion pass on the SUMMARY's caveat while the breakdown's was suppressed, which is
-	// how mutant byUnit_always_true survived a round after being killed: a test satisfied by a
-	// different surface than the one it names.
-	if !strings.Contains(got, "these rows hold") {
+	// SCOPED TO THE TABLE'S OWN OUTPUT, not asserted against the whole document, and that is the
+	// point rather than a tidiness preference. Two rounds of this test picked a STRING meant to be
+	// unique to writeCostBreakdown and both were wrong: "cannot be added" and then "use --by
+	// currency for a figure per unit" are each printed by writeCostSummary too, which runs first — so
+	// the assertion passed on the summary's caveat while the breakdown's was suppressed. Choosing a
+	// third string would be the same bet a third time. breakdownSection removes the possibility
+	// instead: nothing the summary prints is inside what it returns, so a shared phrase cannot
+	// satisfy these assertions however the wording drifts.
+	section := breakdownSection(t, got, "agent")
+	if !strings.Contains(section, "these rows hold") {
 		t.Errorf("the withheld column is unexplained by the table's own caveat:\n%s", got)
 	}
-	if !strings.Contains(got, "use --by currency for a figure per unit") {
+	if !strings.Contains(section, "use --by currency for a figure per unit") {
 		t.Errorf("the withheld column does not point at the axis that resolves it:\n%s", got)
 	}
+}
+
+// breakdownSection is the part of `abctl cost` output that writeCostBreakdown produced.
+//
+// EXISTS BECAUSE THE TWO SURFACES SHARE VOCABULARY. writeCostSummary prints a caveat naming the
+// same units and pointing at the same flag, immediately above this table, and it runs first — so a
+// Contains over the whole document cannot tell which surface satisfied it. That is not hypothetical:
+// it is how one mutant went from killed to surviving between rounds, and then how its replacement
+// assertion was dead on arrival.
+//
+// CUT AT THE TABLE HEADER, which writeCostBreakdown emits as the uppercased axis name beside
+// REQUESTS / TOKENS / COST, and everything from there on belongs to the table — its rows, its
+// caveat and its residual note. Located by content rather than by a line offset, so it survives any
+// edit to the summary above it.
+//
+// FAILS LOUDLY when the header is absent, for the DIAGNOSTIC and not for the outcome. An earlier
+// draft of this comment claimed the Fatalf is what stops an empty section passing vacuously; it is
+// not, and the claim was the same kind of unchecked assertion this helper was written to remove.
+// Returning "" would already fail both Contains assertions below — so the test fails either way,
+// and this only replaces "missing: these rows hold" with the reason the section was empty. Its
+// mutant is therefore equivalent by construction, and is recorded as such rather than chased with
+// a fixture that reaches it.
+func breakdownSection(t *testing.T, out, asked string) string {
+	t.Helper()
+	lines := strings.Split(out, "\n")
+	for i, ln := range lines {
+		if strings.Contains(ln, strings.ToUpper(asked)) && strings.Contains(ln, "REQUESTS") {
+			section := strings.Join(lines[i:], "\n")
+			// The scoping is the property, so it is asserted rather than assumed: the summary's own
+			// caveat must be OUTSIDE what this returns, or the helper gives the false confidence it
+			// was written to replace.
+			if strings.Contains(section, "no combined figure is shown") {
+				t.Fatalf("breakdownSection captured writeCostSummary's caveat, so anything asserted "+
+					"inside it may be the summary's:\n%s", section)
+			}
+			return section
+		}
+	}
+	t.Fatalf("no %s breakdown table in the output, so the table's own caveat cannot be asserted:\n%s",
+		asked, out)
+	return ""
 }
 
 // A window in ONE non-USD unit prints its total in that unit, not behind a "$".
