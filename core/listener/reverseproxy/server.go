@@ -437,6 +437,7 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 			Phase:       pipeline.SessionRequest,
 			RequestID:   pctx.RequestID(),
 			A2A:         pipeline.SnapshotA2A(pctx.Extensions.A2A),
+			Inference:   pipeline.SnapshotInference(pctx.Extensions.Inference),
 			Invocations: pipeline.SnapshotInvocations(pctx.Extensions.Invocations, pipeline.InvocationPhaseRequest),
 			Plugins:     plugins,
 			Identity:    pipeline.SnapshotIdentity(pctx),
@@ -580,12 +581,17 @@ func (s *Server) modifyResponse(resp *http.Response) error {
 	// Always pair every inbound request with a response row (carries StatusCode).
 	if s.Sessions != nil {
 		sid := inboundSessionID(pctx)
+		// Inference is the token report, and it is what a cost consumer reads: without it
+		// this listener served a whole `configured` cost for zero tokens, because the cost
+		// record reaches the event through Plugins and only the counts were dropped. See
+		// SnapshotInference.
 		s.Sessions.Append(sid, pipeline.SessionEvent{
 			At:          time.Now(),
 			Direction:   pipeline.Inbound,
 			Phase:       pipeline.SessionResponse,
 			RequestID:   pctx.RequestID(),
 			A2A:         pipeline.SnapshotA2A(pctx.Extensions.A2A),
+			Inference:   pipeline.SnapshotInference(pctx.Extensions.Inference),
 			Invocations: pipeline.SnapshotInvocations(pctx.Extensions.Invocations, pipeline.InvocationPhaseResponse),
 			Plugins:     plugins,
 			Identity:    pipeline.SnapshotIdentity(pctx),
@@ -734,12 +740,16 @@ func (s *Server) recordInboundResponseEvent(pctx *pipeline.Context, statusCode i
 		pctx.Extensions.A2A.SessionID != session.DefaultSessionID {
 		s.Sessions.Rekey(session.DefaultSessionID, pctx.Extensions.A2A.SessionID)
 	}
+	// Inference as in the buffered path, and this is the one most inference traffic
+	// takes: the counts arrive on the closing frames, so onClose runs after the fold
+	// has finished and the snapshot is the whole turn.
 	s.Sessions.Append(sid, pipeline.SessionEvent{
 		At:          time.Now(),
 		Direction:   pipeline.Inbound,
 		Phase:       pipeline.SessionResponse,
 		RequestID:   pctx.RequestID(),
 		A2A:         pipeline.SnapshotA2A(pctx.Extensions.A2A),
+		Inference:   pipeline.SnapshotInference(pctx.Extensions.Inference),
 		Invocations: pipeline.SnapshotInvocations(pctx.Extensions.Invocations, pipeline.InvocationPhaseResponse),
 		Plugins:     plugins,
 		Identity:    pipeline.SnapshotIdentity(pctx),

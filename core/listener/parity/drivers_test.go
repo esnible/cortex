@@ -128,6 +128,33 @@ type observation struct {
 	// PluginEventJSON pins the raw JSON per plugin key so a snapshot
 	// difference between listeners surfaces as a value diff.
 	PluginEventJSON map[string]string
+	// Inference is the token report the event carried, nil when it carried none.
+	//
+	// IT IS NOT A RESTATEMENT OF THE COST RECORD, which travels separately in
+	// PluginEventJSON: the record is written into pctx.Extensions.Custom and every
+	// listener snapshots that, while the counts live on the inference extension and
+	// were snapshotted only by the outbound recorders. So a listener could — and did
+	// — publish a whole, correctly priced cost on an event whose counts were absent,
+	// with this suite green: cost/usage reads every token figure off
+	// SessionEvent.Inference and nothing else (usage.go's foldInto), so the consumer
+	// saw money for zero tokens. Comparing the money without the counts is what let
+	// that through.
+	Inference *inferenceSummary
+}
+
+// inferenceSummary is the token report, flattened to the fields a cost or usage
+// consumer reads. Model included because a count with no model cannot be priced,
+// and PresentKinds because it is what separates "used no cache" from "reported no
+// cache" downstream — a zero and an absence that a bare count conflates.
+type inferenceSummary struct {
+	Model            string
+	TotalTokens      int
+	InputTokens      int
+	CacheReadTokens  int
+	CacheWriteTokens int
+	OutputTokens     int
+	ReasoningTokens  int
+	PresentKinds     uint8
 }
 
 // errorSummary mirrors pipeline.EventError so listener drift in the
@@ -208,6 +235,18 @@ func observe(t *testing.T, store *session.Store, wantDir pipeline.Direction, wan
 				Reason:  inv.Reason,
 				Details: inv.Details,
 			})
+		}
+	}
+	if ev.Inference != nil {
+		obs.Inference = &inferenceSummary{
+			Model:            ev.Inference.Model,
+			TotalTokens:      ev.Inference.TotalTokens,
+			InputTokens:      ev.Inference.InputTokens,
+			CacheReadTokens:  ev.Inference.CacheReadTokens,
+			CacheWriteTokens: ev.Inference.CacheWriteTokens,
+			OutputTokens:     ev.Inference.OutputTokens,
+			ReasoningTokens:  ev.Inference.ReasoningTokens,
+			PresentKinds:     ev.Inference.PresentKinds,
 		}
 	}
 	for k, raw := range ev.Plugins {

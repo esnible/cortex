@@ -73,6 +73,32 @@ func snapshotClient(c *EventClient) *EventClient {
 // fields (Completion, FinishReason, *Tokens) get assigned on the live
 // extension during OnResponse; without snapshotting, the request event's
 // view would contain the eventual response's token counts and completion.
+//
+// EVERY RECORDER MUST CALL THIS, IN EITHER DIRECTION. It is the only route by which
+// token counts reach a SessionEvent, and cost/usage reads every figure it reports
+// off SessionEvent.Inference (usage.go's foldInto) — so a recorder that omits it
+// publishes a turn whose counts reach nothing. The omission does not present as
+// one: the cost record travels independently, published into Extensions.Custom and
+// collected by SnapshotPlugins, so a consumer sees a whole, correctly priced cost
+// beside zero tokens with nothing to say a measurement is missing rather than
+// small. The inbound recorders omitted it until inbound inference traffic existed —
+// a reverse proxy in front of a model endpoint — and then it read as free traffic.
+//
+// The leak described above is, on today's paths, defended a second time downstream —
+// session.Interner.InternEvent clones the extension inside Store.Append, so the store holds
+// its own copy whether or not the recorder took one. Measured, not assumed: the parity suite
+// stays green against a recorder that keeps the live pointer. That is a reason to keep calling
+// this at every site rather than a reason to stop — the alternative makes each recorder's
+// correctness depend on the internals of another package, and on that package continuing to
+// clone. The counts claim above is unaffected either way: a recorder that passes nil here
+// reports nothing, and no downstream copy can restore a figure that was never attached.
+//
+// Five recorders in this tree are exempt, and the exemptions are listed here rather
+// than left to be rediscovered: the four SessionDenied recorders and
+// forwardproxy.recordTunnelOpened. A denied request was never forwarded, so it has no
+// counts and no listener records protocol extensions on a deny; a CONNECT tunnel's
+// bytes are opaque, so there is nothing to parse. Anything else that builds a
+// SessionEvent and skips this call is the bug above, not a sixth exemption.
 func SnapshotInference(ext *InferenceExtension) *InferenceExtension {
 	if ext == nil {
 		return nil
