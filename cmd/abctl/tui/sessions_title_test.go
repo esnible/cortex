@@ -148,6 +148,21 @@ func newTitleModel(t *testing.T, meta map[string]SessionMetadata, ids ...string)
 	}
 }
 
+// newServedTitleModel is newTitleModel with titles on the SERVER summaries too.
+//
+// A sibling rather than a wider newTitleModel: the 50-odd existing callers are all about harvested
+// titles, and threading an empty map through every one of them would say nothing. served is keyed
+// by session id; an id absent from it lists with no title, which is what a proxy that derived none
+// sends.
+func newServedTitleModel(t *testing.T, meta map[string]SessionMetadata, served map[string]string, ids ...string) *model {
+	t.Helper()
+	m := newTitleModel(t, meta, ids...)
+	for i := range m.sessions {
+		m.sessions[i].Title = served[m.sessions[i].ID]
+	}
+	return m
+}
+
 // titleRow finds the row for one session id. Keyed on cell 0, which is the id by contract —
 // sessionsColumns' comment and selectedSessionID both depend on that.
 func titleRow(t *testing.T, m *model, id string) table.Row {
@@ -211,7 +226,7 @@ func TestSessionsPane_ProseTitleTruncatesFromTheRight(t *testing.T) {
 	// And at a width where it does NOT fit, the cut takes the tail and keeps the opening
 	// words, which is the side this test is named for.
 	titleW := sessionsColumnWidth(sessionsColumnsFor(90), "TITLE")
-	cut := m.sessionTitleCell("s1", titleW)
+	cut := m.sessionTitleCell("s1", "", titleW)
 	if lipgloss.Width(cut) > titleW {
 		t.Errorf("TITLE is %d columns against a %d-column cell: %q", lipgloss.Width(cut), titleW, cut)
 	}
@@ -629,7 +644,7 @@ func TestSessionTitleCell_BoundsCJKProse(t *testing.T) {
 		id: {Title: "日本語のセッションタイトルです日本語のセッション"},
 	}, id)
 	for _, w := range []int{11, 14, 20} {
-		got := m.sessionTitleCell(id, w)
+		got := m.sessionTitleCell(id, "", w)
 		if cw := lipgloss.Width(got); cw > w {
 			t.Errorf("sessionTitleCell(%d) is %d display columns: %q", w, cw, got)
 		}
@@ -769,7 +784,7 @@ func TestSessionTitleCell_NonPositiveWidthYieldsNothing(t *testing.T) {
 
 	for _, id := range []string{prose, path} {
 		for _, w := range []int{0, -1} {
-			if got := m.sessionTitleCell(id, w); got != "" {
+			if got := m.sessionTitleCell(id, "", w); got != "" {
 				t.Errorf("sessionTitleCell(%q, %d) = %q, want \"\"", id, w, got)
 			}
 		}
@@ -838,7 +853,7 @@ func TestSessionTitleCell_CarriesNoANSI(t *testing.T) {
 		// The WIDTH half, on the helper. This one is real here: sessionTitleCell does the truncation,
 		// so a budget it fails to honour is its own bug.
 		for _, w := range []int{11, 20, 40} {
-			got := m.sessionTitleCell(id, w)
+			got := m.sessionTitleCell(id, "", w)
 			if lipgloss.Width(got) > w {
 				t.Errorf("title cell is %d columns against a %d-column budget: %q",
 					lipgloss.Width(got), w, got)
@@ -925,7 +940,7 @@ func TestTitleCap_IsSafeOnlyBecauseTheRendererRemeasures(t *testing.T) {
 		const id = "s1"
 		m := newTitleModel(t, map[string]SessionMetadata{id: {Title: tc.title}}, id)
 		for _, w := range []int{11, 14, 20, 40} {
-			got := m.sessionTitleCell(id, w)
+			got := m.sessionTitleCell(id, "", w)
 			if cw := lipgloss.Width(got); cw > w {
 				t.Errorf("%s: a %d-rune title rendered %d columns into a %d-column cell: %q — the "+
 					"harvester's cap is a RUNE count, so this package must re-truncate by width",
@@ -982,7 +997,7 @@ func TestSessionTitleCell_SlashCommandIsNotAPath(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			m := newTitleModel(t, map[string]SessionMetadata{id: {Title: tc.title}}, id)
 			const w = 20
-			got := m.sessionTitleCell(id, w)
+			got := m.sessionTitleCell(id, "", w)
 			if lipgloss.Width(got) > w {
 				t.Fatalf("cell is %d columns against a %d-column budget: %q", lipgloss.Width(got), w, got)
 			}
@@ -2166,5 +2181,191 @@ func TestLoadSessionMetadata_AtTheReadCap(t *testing.T) {
 	}
 	if got := LoadSessionMetadata(path); len(got) != 1 || got["a"].Title != "real" {
 		t.Errorf("loaded %d entries from a %d byte file, want the 1 real entry", len(got), len(under))
+	}
+}
+
+// A served title fills a cell the harvest could not name.
+//
+// The motivating case, and the reason the fallback exists at all: on the laptop this was found on,
+// every blank harvested entry belonged to an agent with no Claude Code transcript tree to read — but
+// one that routes through the proxy, so /v1/sessions had derived a title for exactly those sessions.
+// A blank TITLE was never "this session has no name", only "no name where abctl was looking".
+func TestSessionsPane_ServedTitleFillsAnUnharvestedCell(t *testing.T) {
+	m := newServedTitleModel(t,
+		map[string]SessionMetadata{},
+		map[string]string{"s1": "Investigate the flaky reloader test"},
+		"s1")
+	m.rebuildSessionsTable()
+
+	if got := sessionsCell(t, m, titleRow(t, m, "s1"), "TITLE"); got != "Investigate the flaky reloader test" {
+		t.Errorf("TITLE = %q, want the served title", got)
+	}
+	// And through the header, which an operator reaches by pressing Enter on that same row. A row
+	// selected BY its served title must not lose it one keystroke later.
+	if got := m.sessionLabel("s1"); got != "Investigate the flaky reloader test (s1)" {
+		t.Errorf("sessionLabel = %q, want the served title and the id", got)
+	}
+}
+
+// Harvest wins when both sources name the session.
+//
+// It is the richer of the two — tiered from cwd and prompt text — and the stable one: the served
+// title is first-wins per session, so which turn happened to land first should not decide what a
+// row says once a transcript can answer. Asserted at the cell AND the header, because they reach
+// the fallback by different routes (the row loop carries the summary; the header looks it up).
+func TestSessionsPane_HarvestBeatsServedTitle(t *testing.T) {
+	m := newServedTitleModel(t,
+		map[string]SessionMetadata{"s1": {Title: "harvested name"}},
+		map[string]string{"s1": "served name"},
+		"s1")
+	m.rebuildSessionsTable()
+
+	if got := sessionsCell(t, m, titleRow(t, m, "s1"), "TITLE"); got != "harvested name" {
+		t.Errorf("TITLE = %q, want the harvested title to win", got)
+	}
+	if got := m.sessionLabel("s1"); got != "harvested name (s1)" {
+		t.Errorf("sessionLabel = %q, want the harvested title to win", got)
+	}
+}
+
+// A BLANK harvested title falls back; a title that RENDERS SOMETHING does not.
+//
+// The distinction is titleIsBlank's, not == "" — a harvested " " paints nothing, so falling back
+// fills nothing rather than overriding something. "\t" is the opposite case and the one a
+// simplification gets wrong: sanitizeLabel REPLACES it with U+FFFD rather than stripping it, so the
+// cell shows a visible glyph and the row is named. Falling back there would override a title that
+// is on screen.
+func TestSessionsPane_ServedTitleOnlyFillsWhatRendersBlank(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		harvested string
+		want      string
+	}{
+		{"empty", "", "served name"},
+		{"one space", " ", "served name"},
+		{"several spaces", "   ", "served name"},
+		{"tab renders a glyph", "\t", "�"},
+		{"newline renders a glyph", "\n", "�"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newServedTitleModel(t,
+				map[string]SessionMetadata{"s1": {Title: tc.harvested}},
+				map[string]string{"s1": "served name"},
+				"s1")
+			if got := m.sessionTitleFor("s1", "served name"); got != tc.want {
+				t.Errorf("sessionTitleFor(%q harvested) = %q, want %q", tc.harvested, got, tc.want)
+			}
+		})
+	}
+}
+
+// Neither source names it: the cell stays empty and the header stays a bare id.
+//
+// The pre-existing behaviour, pinned against the fallback having quietly introduced a placeholder.
+// "" is still the honest answer for a session nothing has named.
+func TestSessionsPane_NoTitleAnywhereRendersAsBefore(t *testing.T) {
+	m := newServedTitleModel(t,
+		map[string]SessionMetadata{"s1": {Title: " "}},
+		map[string]string{"s1": "  "},
+		"s1")
+	m.rebuildSessionsTable()
+
+	if got := sessionsCell(t, m, titleRow(t, m, "s1"), "TITLE"); strings.TrimSpace(got) != "" {
+		t.Errorf("TITLE = %q, want a blank cell when neither source names the session", got)
+	}
+	if got := m.sessionLabel("s1"); got != "s1" {
+		t.Errorf("sessionLabel = %q, want the bare id", got)
+	}
+}
+
+// A served title is SANITISED, exactly as a harvested one is.
+//
+// /v1/sessions is unauthenticated and the title is folded from caller-supplied event content, so the
+// CWE-150 reasoning behind sanitizeLabel applies to this string at least as much as to the file the
+// harvester wrote. An ESC recolours the pane; a newline splits the frame.
+func TestSessionsPane_ServedTitleIsSanitized(t *testing.T) {
+	m := newServedTitleModel(t, map[string]SessionMetadata{}, nil, "s1")
+
+	got := m.sessionTitleFor("s1", "before\x1b[31mafter\nnext")
+	for _, bad := range []string{"\x1b", "\n"} {
+		if strings.Contains(got, bad) {
+			t.Errorf("sessionTitleFor = %q, still carries %q", got, bad)
+		}
+	}
+	if !strings.Contains(got, "before") || !strings.Contains(got, "after") {
+		t.Errorf("sessionTitleFor = %q, want the text kept and only the control runes replaced", got)
+	}
+}
+
+// A served title that looks like a path is truncated from the LEFT, like any other.
+//
+// The fallback feeds the existing cell, so it inherits looksLikePath and both truncation sides
+// rather than bypassing them. Cheap to assert and it pins that the fallback did not become a
+// second, unbounded rendering path.
+func TestSessionsPane_ServedPathTitleTruncatesFromTheLeft(t *testing.T) {
+	const long = "/Users/someone/src/cortex/.worktrees/servedtitle/authbridge"
+	m := newServedTitleModel(t, map[string]SessionMetadata{}, map[string]string{"s1": long}, "s1")
+	m.width = tableWidth(sessionsColumns())
+	m.rebuildSessionsTable()
+
+	got := sessionsCell(t, m, titleRow(t, m, "s1"), "TITLE")
+	if !strings.HasPrefix(got, "…") || !strings.HasSuffix(got, "authbridge") {
+		t.Errorf("TITLE = %q, want the cut front and the kept tail", got)
+	}
+	if n := lipgloss.Width(got); n > sessionsTitleWidth {
+		t.Errorf("TITLE is %d columns against a %d-column cell: %q", n, sessionsTitleWidth, got)
+	}
+}
+
+// A cached-only row shows no served title, and a live row beside it still shows its own.
+//
+// HONEST ABOUT ITS OWN REACH: this cannot fail on the "simplification" of having the cached-only
+// loop call m.servedTitle(id) itself — checked, the whole suite stays green. cachedOnlySessionIDs
+// skips every id in m.sessions, so servedTitle can only ever return "" there; the behavior is
+// guaranteed by that exclusion, not by this assertion. What the test does earn is the second
+// check — that a cached-only row in the table does not disturb the live row's title — plus a
+// worked example of the two row kinds side by side. Kept for that, not as a mutation gate.
+func TestSessionsPane_CachedOnlyRowTakesNoServedTitle(t *testing.T) {
+	m := newServedTitleModel(t,
+		map[string]SessionMetadata{},
+		map[string]string{"live": "a live session's name"},
+		"live")
+	m.events["gone"] = []pipeline.SessionEvent{{Host: "example.test"}}
+	m.rebuildSessionsTable()
+
+	if got := sessionsCell(t, m, titleRow(t, m, "gone"), "TITLE"); got != "" {
+		t.Errorf("cached-only TITLE = %q, want \"\" — the server lists no summary for it", got)
+	}
+	if got := sessionsCell(t, m, titleRow(t, m, "live"), "TITLE"); got != "a live session's name" {
+		t.Errorf("live TITLE = %q, want its own served title", got)
+	}
+}
+
+// THE REGRESSION GUARD: a served title must NOT satisfy the harvest-backoff predicates.
+//
+// Every predicate in session_metadata.go judges "unnamed" through sessionTitle, and that is
+// deliberate — a server-titled row has to keep reading as unnamed so the harvest keeps hunting for
+// the richer title. Fold the fallback into sessionTitle and the row reads as named, untitledMisses
+// zeroes, and the re-harvest stops for good while showing whichever title the proxy derived first.
+//
+// This is the only test that fails on that mutation: every display test above still passes, because
+// the cell is correct either way. That is exactly why it is here.
+func TestSessionMetadata_ServedTitleDoesNotSatisfyTheHarvestBackoff(t *testing.T) {
+	m := newServedTitleModel(t, map[string]SessionMetadata{}, map[string]string{"s1": "served name"}, "s1")
+
+	if m.sessionHasTitle("s1") {
+		t.Error("sessionHasTitle is true for a row only the SERVER named: the harvest will stop")
+	}
+	if n, _ := m.countUntitled(); len(n) != 1 {
+		t.Errorf("countUntitled counted %d untitled rows, want 1 — a served title is not a harvested one", len(n))
+	}
+	// And the harvest can still report progress on it, which is what keeps the backoff from
+	// capping out on a row it could in fact name.
+	if !m.harvestNamedSomething(map[string]SessionMetadata{"s1": {Title: "harvested at last"}}) {
+		t.Error("harvestNamedSomething is false for a served-only row the harvest just named")
+	}
+	// The display, meanwhile, was never blank — which is the point of the whole change.
+	if got := m.sessionTitleFor("s1", "served name"); got != "served name" {
+		t.Errorf("sessionTitleFor = %q, want the served title on screen throughout", got)
 	}
 }

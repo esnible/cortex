@@ -150,8 +150,10 @@ full scan, and milliseconds once the file exists.
 Pass `--skip-claude-metadata` when the scan is unwanted, or when `~/.claude` should
 simply not be touched. It suppresses only the *scan*: the viewer still reads
 `~/.cortex/session-metadata.json`, so titles recorded by earlier runs keep rendering and
-only sessions new or renamed since the last scan show as bare ids. There is no flag that
-hides titles already on disk — delete the file for that.
+only sessions new or renamed since the last scan go unharvested — and those still show the
+title the proxy serves, if it derived one, rather than a bare id. There is no flag that
+hides titles already on disk — delete the file for that, and note that it does not suppress
+the served title either, which arrives over the API and not from any file.
 
 A harvest that cannot run is never fatal — the worst a missing or unreadable file
 costs is the `TITLE` column, and the viewer still opens. A file that does not parse is
@@ -577,14 +579,16 @@ abctl is for, and the other three are surfaces you visit and leave.
 
 - **Sessions** (default): table of active sessions in the store, most
   recently updated first. Columns: session (truncated), title, updated
-  (relative), event count, tokens, cost, saved, context. `TITLE` is populated
-  from Claude Code's transcripts — see
+  (relative), event count, tokens, cost, saved, context. `TITLE` comes from
+  Claude Code's transcripts — see
   [`--skip-claude-metadata`](#naming-sessions-from-claude-code---skip-claude-metadata)
-  — and is empty for a session nothing has harvested. The proxy now also derives
-  a title of its own from the session's events and reports it as `title` on
-  `/v1/sessions`; **this pane does not read that field yet**, so a harvested
-  title is still the only thing that fills this column. Reconciling the two is
-  outstanding work. Numerics are right-aligned
+  — and **falls back to the title the proxy serves** on `/v1/sessions`, which it
+  derives from the session's own events. So a session with no transcript on this
+  machine can still be named, and the cell is empty only when neither source
+  names it. The harvested title wins when both exist: it is the richer of the two
+  (it carries the working directory and prompt text) and the more stable, since
+  the served title is fixed by whichever turn landed first. The column does not
+  say which source it used. Numerics are right-aligned
   so the digits line up between rows.
 
   `CONTEXT(1M)` is a gauge, not a figure: how full the **conversation's**

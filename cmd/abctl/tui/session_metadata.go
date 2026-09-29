@@ -136,10 +136,32 @@ func (m *model) sessionLabel(id string) string {
 	// THROUGH titleIsBlank, like the other two consumers of "is this named". A raw != "" accepted
 	// a whitespace-only title and rendered "    (id)" — a header padded by a title that shows
 	// nothing, which is worse than the bare id it would otherwise print.
-	if title := m.sessionTitle(id); !titleIsBlank(title) {
+	//
+	// sessionTitleFor, not sessionTitle, so a header names a session on whichever source can — the
+	// same precedence the TITLE column applies. A row an operator selected BY its served title must
+	// not lose it on Enter; that inconsistency is exactly what this helper's doc above rules out.
+	if title := m.sessionTitleFor(id, m.servedTitle(id)); !titleIsBlank(title) {
 		return title + " (" + id + ")"
 	}
 	return id
+}
+
+// servedTitle returns the title /v1/sessions published for this session, or "" if it listed none.
+//
+// A LINEAR WALK, deliberately, as several others in this package already are: m.sessions is one
+// pod's live sessions — a handful in practice — and the three headers this feeds each render ONE
+// selected session per frame. An id-keyed map would be a second structure to keep in step with the
+// slice, and the slice is rebuilt wholesale on every poll, so the sync is the cost, not the lookup.
+//
+// "" for a session the server does not list is the honest answer and the one sessionTitleFor wants:
+// it means nothing served a title, which is indistinguishable here from serving an empty one.
+func (m *model) servedTitle(id string) string {
+	for _, s := range m.sessions {
+		if s.ID == id {
+			return s.Title
+		}
+	}
+	return ""
 }
 
 // HarvestFunc reads an agent's transcripts and returns what it learned, keyed by session id.

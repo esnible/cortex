@@ -257,7 +257,7 @@ func (m *model) rebuildSessionsTable() {
 			trunc(s.ID, idW),
 		}
 		if showTitle {
-			row = append(row, m.sessionTitleCell(s.ID, titleW))
+			row = append(row, m.sessionTitleCell(s.ID, s.Title, titleW))
 		}
 		row = append(row,
 			relTime(now, s.UpdatedAt),
@@ -297,7 +297,10 @@ func (m *model) rebuildSessionsTable() {
 			trunc(id, idW),
 		}
 		if showTitle {
-			row = append(row, m.sessionTitleCell(id, titleW))
+			// NO SERVED TITLE HERE, by construction rather than by omission: these rows exist
+			// precisely because the server no longer lists the session, so there is no summary
+			// to carry one. Harvested metadata outlives the listing, so the cell can still fill.
+			row = append(row, m.sessionTitleCell(id, "", titleW))
 		}
 		row = append(row,
 			// "cached" sits in UPDATED now, where an em dash used to, because ACTIVE is gone
@@ -381,6 +384,11 @@ func (m *model) cachedOnlySessionIDs() []string {
 // SessionMetadata, so a session nobody harvested, an id not in the file, and the file being
 // absent altogether all render the same empty cell. That is the right answer for all three —
 // none of them is a fact about the session, only about whether anyone has run the harvester.
+//
+// HARVEST-ONLY, AND THAT IS LOAD-BEARING — do not fold the server's /v1/sessions title in here.
+// sessionHasTitle reads this, and through it every backoff predicate in session_metadata.go, so a
+// server title arriving would make the row read as named and STOP the re-harvest for good. The
+// fallback lives in sessionTitleFor instead, which only display paths call. See its doc.
 func (m *model) sessionTitle(id string) string {
 	// SANITISED AT THE ACCESSOR, so every consumer is covered by one line. The title is
 	// LLM-generated transcript text — sessions_metadata.go says so — and it reaches a table
@@ -394,7 +402,46 @@ func (m *model) sessionTitle(id string) string {
 	return sanitizeLabel(m.sessionsData[id].Title)
 }
 
-// sessionTitleCell is sessionTitle fitted to the TITLE column, truncated from the LEFT.
+// sessionTitleFor names a session for DISPLAY, falling back to the title the proxy served.
+//
+// Two independent sources, and each covers what the other cannot. The harvest reads Claude Code's
+// transcripts on this machine; /v1/sessions carries a title the proxy derived from the session's
+// own events. So a session the harvester has no transcript for can still be named, and that is not
+// a rare shape: on a laptop where every blank harvested entry was checked, all of them belonged to
+// an agent with no Claude Code transcript tree — one that does route through the proxy, so a served
+// title existed for exactly those. A blank cell was never "this session has no name", only "no name
+// where abctl was looking".
+//
+// HARVEST WINS when both exist. It is the richer of the two (cwd plus prompt text, tiered), and it
+// is also the stable one: the served title is first-wins per session, so which turn happened to
+// land first should not decide what a row says once the transcript can answer.
+//
+// THE FALLBACK IS ONLY HERE, not in sessionTitle. Every backoff predicate in session_metadata.go
+// judges "unnamed" through sessionTitle, so this deliberately leaves a server-titled row reading as
+// unnamed to them: the harvest keeps hunting for the better title, at the cost of a periodic
+// transcript scan until it finds one or the backoff caps out. That cost is the trade, not a leak.
+//
+// THROUGH titleIsBlank rather than == "", because a harvested " " renders as nothing and filling
+// nothing is the whole point. titleIsBlank's own doc anticipates this seam.
+//
+// served IS SANITISED TOO, and not on the assumption that it arrives clean. The proxy does trim and
+// cap it, but /v1/sessions is unauthenticated and the title is folded from caller-supplied event
+// content — sessionTitle's CWE-150 reasoning applies to this string at least as much as to the
+// harvested one.
+//
+// AN EMPTY served DOES NOT ALWAYS MEAN "the proxy derived none". A session that arrives on the
+// event stream before it appears in a list refresh gets a stub SessionSummary with a zero Title
+// (app.go's streamed-event path), so its row shows no served title until the next poll fills the
+// summary in — under two seconds, and it self-corrects with no help from here. Worth knowing only
+// because it makes a blank cell briefly ambiguous; nothing downstream needs to tell the two apart.
+func (m *model) sessionTitleFor(id, served string) string {
+	if title := m.sessionTitle(id); !titleIsBlank(title) {
+		return title
+	}
+	return sanitizeLabel(served)
+}
+
+// sessionTitleCell is sessionTitleFor fitted to the TITLE column, truncated from the LEFT.
 //
 // Truncating from the left because the titles are mostly paths. bubbles truncates every cell
 // from the right, which on "/Users/person/src/cortex/.worktrees/claudesessions" keeps
@@ -407,8 +454,8 @@ func (m *model) sessionTitle(id string) string {
 // why layout() must also rebuild these rows — see its call to rebuildSessionsTable.
 //
 // Left alone when it is not a path: a title is prose, and prose reads from the left.
-func (m *model) sessionTitleCell(id string, titleW int) string {
-	title := m.sessionTitle(id)
+func (m *model) sessionTitleCell(id, served string, titleW int) string {
+	title := m.sessionTitleFor(id, served)
 	if title == "" {
 		return title
 	}
