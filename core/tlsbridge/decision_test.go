@@ -401,9 +401,7 @@ func TestSkipSet_TransientDoesNotShortenAnEarnedWindow(t *testing.T) {
 //
 // Bridging it was not merely wasteful: it put the download on the buffered
 // response path, where the 10MB cap answered 502 and `claude update` could not
-// succeed through the proxy at all. That failure is fixed independently in
-// listener/forwardproxy (a body over the cap is now relayed, not rejected);
-// this entry keeps the bytes out of the pipeline in the first place.
+// succeed through the proxy at all.
 func TestDefaultPassthrough_ClaudeCodeUpdater(t *testing.T) {
 	d := mustDecision(t, DecisionOpts{}) // nil SkipHosts -> DefaultPassthroughHosts
 	tlsHello := []byte{0x16, 0x03, 0x01, 0x00, 0x05}
