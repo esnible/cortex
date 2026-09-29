@@ -295,7 +295,7 @@ type costJSON struct {
 	//
 	// EXCEPT UNDER --agent, WHERE IT DESCRIBES THE WINDOW AND Totals DESCRIBES ONE AGENT. The
 	// sentence above is the whole truth on every other path; on that one the two fields have
-	// different subjects and no third field says so. scopeToAgent explains why it cannot be
+	// different subjects and no third field says so. usage.ScopeToAgent explains why it cannot be
 	// narrowed — deciding one agent's units needs a cross-tabulation a folded Counts has already
 	// summed away — and the human surface prints a line saying whose mixture it is. This one does
 	// not, deliberately: the discrepancy is in the OVER-refusing direction, so a script that
@@ -637,7 +637,7 @@ func writeCostSummary(snap *usage.Snapshot, stdout io.Writer, agent string) {
 			strings.Join(snap.Currencies, " and "))
 		// WHOSE MIXTURE IT IS, on the --agent path. The list describes the WINDOW; Totals here
 		// describes one agent, and no client-side arithmetic can narrow the first to the second —
-		// see scopeToAgent for why the field is carried over anyway. Without this line a reader who
+		// see usage.ScopeToAgent for why the field is carried over anyway. Without this line a reader who
 		// asked about one agent reads the refusal as a statement about that agent's own traffic and
 		// goes looking for a second gateway it may never have called.
 		if agent != "" {

@@ -2582,7 +2582,7 @@ func TestRunCost_JSONOmitsCurrenciesWhenTheProducerDoesNotReportThem(t *testing.
 
 // --agent on a mixed window says WHOSE mixture it is.
 //
-// scopeToAgent narrows Totals to one agent and carries Currencies over from the whole window, and
+// usage.ScopeToAgent narrows Totals to one agent and carries Currencies over from the whole window, and
 // no client-side arithmetic can narrow the second — a folded per-agent Counts has summed the
 // currency axis away. So the refusal stands, deliberately over-refusing, and this line is what
 // stops a reader taking it as a statement about the agent they asked about.
