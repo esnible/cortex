@@ -215,10 +215,29 @@ func TestSessionTitle_StripsReminder(t *testing.T) {
 			"test connection",
 		},
 		{
-			// 67 of 68 real cases have prose on BOTH sides, which is why the block is spliced
-			// out rather than everything before it being discarded.
+			// PROSE ON BOTH SIDES is why the block is spliced out rather than everything before it
+			// being discarded. Rare — 10 of the 262 reminder-bearing messages in the 550-transcript
+			// corpus — but the splice costs nothing on the other 252, so rarity is not a reason to
+			// drop the head. (An earlier version of this comment claimed "67 of 68"; that figure did
+			// not reproduce and the PR description withdraws it. See stripReminders for the census.)
+			//
+			// THIS FIXTURE CANNOT PIN THE SEPARATOR, which is why the next case exists: it has \n on
+			// both sides of the block, so sanitizeTitle folds its way to a space whether or not the
+			// splice inserts one.
 			"prose on both sides",
 			"my question\n<system-reminder>noise</system-reminder>\nand the follow-up",
+			"my question and the follow-up",
+		},
+		{
+			// NO WHITESPACE ADJACENT TO THE BLOCK, so the splice itself has to separate the words:
+			// joining head to tail bare served "my questionand the follow-up". The case above passes
+			// under either behaviour, which is how the fusion went unpinned.
+			//
+			// Not a pathological shape — it is the MAJORITY of the both-sides cases (6 of 10), and
+			// every one is someone writing about the tag with it quoted mid-sentence. The harness
+			// always emits a newline beside its own blocks, so nothing it injects fuses.
+			"prose on both sides with no adjacent whitespace",
+			"my question<system-reminder>noise</system-reminder>and the follow-up",
 			"my question and the follow-up",
 		},
 		{
@@ -903,6 +922,39 @@ func TestSessionTitle_LaterReminderPrefixedRenameWins(t *testing.T) {
 	}
 	if got := foldTitle(t, two...); got != "late" {
 		t.Errorf("across events: got %q, want %q", got, "late")
+	}
+}
+
+// A <user_query> ENVELOPE BEHIND PROSE IS STILL RANK 1, which is why quickRank tests Contains for
+// that tag and not HasPrefix. The screen is deliberately unanchored here while the /rename test
+// beside it is anchored, and the asymmetry is easy to read as an oversight — so this pins it.
+//
+// IT IS NOT MERELY AN OPTIMIZATION, which is the part worth having a test for. On a single message
+// the anchored screen costs nothing observable: the guess drops to rank 2, the message is deferred,
+// and the deferred loop's titleFrom recovers the same title. But rank is also how two candidates in
+// one event are ORDERED, so demoting one changes which of them wins — with a genuine rank-1 message
+// EARLIER in the same event, HasPrefix serves the earlier one and breaks the last-match rule.
+// Verified: the second assertion below returns "earlier genuine" under that mutation.
+func TestSessionTitle_UserQueryBehindProseKeepsItsRank(t *testing.T) {
+	const behind = "before the tag <user_query>the real question</user_query>"
+
+	// Alone, both implementations agree — the deferred loop recovers it. Asserted anyway, because
+	// it is the case a reader checks first and its agreement is what makes the next one surprising.
+	if got := candidateTitle(userEvent(behind)); got != "the real question" {
+		t.Errorf("alone: got %q, want %q", got, "the real question")
+	}
+
+	// THE ORDERING CASE. Both messages settle at rank 1, so the LATER one wins; the envelope sitting
+	// behind prose must not cost it that. Under an anchored screen this message is deferred to rank 2
+	// and the earlier one outranks it.
+	const earlier = "<user_query>earlier genuine</user_query>"
+	if got := candidateTitle(userEvent(earlier, behind)); got != "the real question" {
+		t.Errorf("behind-prose last: got %q, want %q — an envelope behind prose lost its rank", got, "the real question")
+	}
+	// The mirror image, which holds under either implementation and is here so the assertion above
+	// reads as "later wins" rather than "behind-prose wins".
+	if got := candidateTitle(userEvent(behind, earlier)); got != "earlier genuine" {
+		t.Errorf("behind-prose first: got %q, want %q — the later candidate should win", got, "earlier genuine")
 	}
 }
 

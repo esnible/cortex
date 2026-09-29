@@ -91,6 +91,13 @@ func titleCandidate(e *pipeline.SessionEvent) (int, string) {
 			continue
 		}
 		bestRank, bestTitle, bestIdx = r, t, i
+		// PURE OPTIMIZATION — UNOBSERVABLE, so do not go looking for the test that pins it. Deleting
+		// it changes no result, by two independent mechanisms: `r >= bestRank` above rejects every
+		// later candidate once bestRank is 0 (no rank is better), and the deferred loop is gated on
+		// `bestRank >= rankUserMsg`, which 0 fails. Verified by mutation over renames paired with
+		// rank-1, rank-2, reminder-only and second-rename messages in both orders — byte-identical.
+		// It is kept because the remaining scan is provably wasted work, not because it decides
+		// anything.
 		if bestRank == rankRename {
 			return bestRank, bestTitle // nothing in this event can outrank it
 		}
@@ -293,11 +300,15 @@ const (
 // there), 31ns once a close is present.
 //
 // ONE ACCEPTED LOSS: PROSE BETWEEN TWO BLOCKS IS DROPPED. "<sr>a</sr>mid<sr>b</sr>tail" yields
-// "tail", not "mid tail" — keeping the outermost pair rather than excising each block and splicing.
-// It costs a title, on a field documented as a suggestion, and nothing else. Measured across 550
-// local transcripts — 2804 user text messages, 253 reminder-bearing — that shape is 8 of them,
-// against 242 reminder-only and 3 with an unclosed open. (An earlier comment here claimed 67 of 68
-// and used it to justify the splice; it did not reproduce.)
+// "tail" — keeping the outermost pair rather than excising each block separately.
+// The alternative is named precisely because it is easy to overstate: per-block excision would
+// yield "midtail", NOT "mid tail", since `mid` and `tail` are not adjacent to one separator but to
+// two different blocks. So the trade is one title against another equally mangled one, not against
+// a clean read — which is most of why it is acceptable. It costs a title, on a field documented as
+// a suggestion, and nothing else. Measured across 550 local transcripts — 2804 user text messages,
+// 253 reminder-bearing — that shape is 8 of them, against 242 reminder-only and 3 with an unclosed
+// open. (An earlier comment here claimed 67 of 68 and used it to justify the splice; it did not
+// reproduce.)
 //
 // Called once at the top of titleFrom, so every rank arm sees content with the blocks already
 // gone — see the comment there for why that matters to all three and not just rank 2.
@@ -336,7 +347,34 @@ func stripReminders(s string) string {
 		// but j < i) is not the end of a block either, and splicing on it would run backwards.
 		return s
 	}
-	return s[:i] + s[j+len(reminderClose):]
+	// A SPACE, because the head and tail were never adjacent in the message and joining them bare
+	// FUSES THE WORDS ACROSS THE GAP: "my question<sr>noise</sr>and the follow-up" served
+	// "my questionand the follow-up". The harness always emits a newline beside its own blocks, so
+	// nothing it injects fuses — every would-fuse message in the 550-transcript corpus (6 of the 10
+	// with prose on both sides) is someone writing ABOUT the tag, with it quoted mid-sentence. That
+	// is exactly the message whose title must survive, so the separator is not only for pathological
+	// input.
+	//
+	// NOT WHEN THE HEAD IS EMPTY, and this guard is load-bearing rather than a micro-optimization.
+	// It is tempting to splice unconditionally on the grounds that sanitizeTitle drops leading
+	// whitespace and TrimRights the tail, so no title can show the difference — but titleFrom reads
+	// this string BEFORE anything trims it, and its rank-0 and transcript arms are HasPrefix tests
+	// that a leading space defeats. Spliced unconditionally, every reminder-prefixed /rename demoted
+	// from rank 0 to rank 2; TestSessionTitle_ReminderBeforeRename, _LaterReminderPrefixedRenameWins
+	// and _TranscriptEnvelopeDiscarded all catch it. A LEADING BLOCK IS ALSO THE COMMON CASE — 242 of
+	// the 253 reminder-bearing messages in the corpus are reminder-only, which lands here with an
+	// empty head and must stay exactly "" for foldsBlank to screen it.
+	//
+	// THE MIRROR CASE IS DELIBERATELY NOT GUARDED. A trailing block leaves a trailing space, and no
+	// anchored test looks at the end of the string: every arm either extracts up to a close tag or is
+	// TrimRighted by sanitizeTitle, including at the clip boundary (a title exactly at maxTitleLen
+	// followed by a block keeps all 80 runes). Verified by mutation — adding `|| tail == ""` changes
+	// no test and no title on any shape reachable here — so it would be a clause no test could pin.
+	head := s[:i]
+	if head == "" {
+		return s[j+len(reminderClose):]
+	}
+	return head + " " + s[j+len(reminderClose):]
 }
 
 // between returns the text bracketed by open and closing, or "" if either is absent.
