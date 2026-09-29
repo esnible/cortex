@@ -50,7 +50,8 @@ const renamePrefix = "<command-name>/rename</command-name>"
 //   - a rank-2 guess (the majority) is DEFERRED to the second loop below: calling titleFrom on
 //     every message cost +70%, so the scan remembers the index instead. This direction of the
 //     bound does hold — a message with no <user_query> and no reminder-hidden /rename prefix has
-//     nothing for the strip to uncover — and it is the only direction relied on anywhere.
+//     nothing for the strip to uncover, because the strip's splice separator cannot assemble a tag
+//     across the junction — and it is the only direction relied on anywhere. See quickRank.
 func titleCandidate(e *pipeline.SessionEvent) (int, string) {
 	if e.Inference == nil {
 		return rankNone, ""
@@ -114,6 +115,19 @@ func titleCandidate(e *pipeline.SessionEvent) (int, string) {
 	// The prefix below deferredHead is visited by both loops. Skipping the indices the first loop
 	// already settled is possible and measured slower than the redundancy (8.8µs against 12.3µs),
 	// because the break below stops this loop within an index or two of deferredHead.
+	//
+	// THE BOUND IS rankUserMsg AND ONE DIRECTION OF IT IS OBSERVABLE. Tightening it to rankNone
+	// skips the loop whenever the eager pass settled anything, and a settled DEMOTION is exactly
+	// when the loop still has work: the demoted pick can sit earlier than the deferred one, so the
+	// event gets titled by the earlier message against last-match-within-event.
+	// TestSessionTitle_DeferredOnlyWithNothingSettled's last row is that case. Note rankNone is the
+	// numerically largest rank, so `>= rankNone` is the stricter gate — the mutation reads backwards.
+	//
+	// Loosening it to rankUserQuery is EQUIVALENT BY CONSTRUCTION, so do not hunt for the test that
+	// pins it. It differs only when bestRank == rankUserQuery, and every candidate this loop can
+	// return settles at rankUserMsg — a rank-0/1 message was handled eagerly, and a rankNone one
+	// carries t == "" and is dropped by foldsBlank above. So the first comparison below is
+	// `rankUserMsg > rankUserQuery`, always true, and the loop breaks without returning anything.
 	if deferredHead >= 0 && bestRank >= rankUserMsg {
 		for i := deferredHead - 1; i >= 0; i-- {
 			// No quickRank here: re-classifying costs a second scan of every message (+45% on
@@ -146,28 +160,37 @@ func titleCandidate(e *pipeline.SessionEvent) (int, string) {
 // quickRank guesses a message's rank without stripping reminders, cheaply enough to run on
 // every message of every event.
 //
-// A SCREEN, NOT A RANK, AND NOT AN INVARIANT IN EITHER DIRECTION. titleFrom is the only
-// authority on what a message settles at; this exists solely to keep titleFrom off the messages
-// where the answer is almost always rank 2.
+// A SCREEN, NOT A RANK. titleFrom is the only authority on what a message settles at; this exists
+// solely to keep titleFrom off the messages where the answer is almost always rank 2.
 //
-// IT UNDER-PROMISES, because stripReminders SPLICES the head before the first block onto the tail
-// after the last — so stripping can MANUFACTURE a tag the message did not carry as sent:
-// "<user_qu" + a reminder + "ery>ask</user_query>" contains no "<user_query>" until stripped, and
-// the same splice can assemble a whole /rename envelope (verified: it titles a session "SPLICED").
-// The rename half matters more, because RANK 0 IS STICKY — the fold lets a rename override, so only
-// a later genuine rename can displace a synthesized one. Both are self-inflicted, and a client
-// already controls its own title outright by sending a /rename, so neither is worth a pre-strip
-// scan. Recorded because "the guess can only be too high" reads like an invariant and is not one.
+// IT DOES NOT UNDER-PROMISE, and the reason is load-bearing elsewhere. stripReminders splices the
+// head before the first block onto the tail after the last, so in principle stripping could
+// MANUFACTURE a tag the message did not carry as sent — "<user_qu" + a reminder +
+// "ery>ask</user_query>" carries no "<user_query>" until the reminder is excised. It cannot, because
+// the splice joins head to tail with a SPACE and no tag in the vocabulary contains one: a tag split
+// across that junction reassembles as "<user_qu ery>" and matches nothing. Both halves of the old
+// hazard — a synthesized <user_query> and a synthesized /rename envelope — settle at rank 2 with the
+// mangled markup as their title, which is what TestSessionTitle_SpliceCannotManufactureATag pins.
 //
-// IT OVER-PROMISES TOO, in two ways both covered by tests: rank 1 for an UNTERMINATED
+// THAT MAKES THE SEPARATOR A SECURITY BOUNDARY, not just a readability fix, and it is the only
+// thing standing between a client and a rank-0 title it never sent. Rank 0 is STICKY — the fold lets
+// a rename override, so only a later genuine rename displaces one. Deleting the separator reopens
+// the hole (verified: the spliced envelope titles a session "SPLICED"), which is why the test above
+// exists in addition to the word-fusion row in TestSessionTitle_StripsReminder. See stripReminders.
+//
+// IT DOES OVER-PROMISE, in two ways both covered by tests: rank 1 for an UNTERMINATED
 // <user_query>, where between() finds no close and titleFrom falls through to rank 2; and rank 0
 // or 1 for a payload that is empty once extracted (`<command-args></command-args>`,
 // `<user_query></user_query>`, `<user_query> </user_query>`), which settles at rankNone.
 //
-// So a rank-0 or rank-1 guess MUST be settled by titleFrom before its rank is recorded, and a
-// rank-2 guess may be deferred — but a caller must not treat a deferred message's rank as known
-// without calling titleFrom, which is why titleCandidate's deferred arm calls it rather than
-// trusting the screen.
+// So the bound holds in ONE direction only — the guess can be too GOOD but never too bad. A rank-0
+// or rank-1 guess MUST therefore be settled by titleFrom before its rank is recorded, while a rank-2
+// guess can be DEFERRED, since nothing the strip uncovers can improve on it. That asymmetry is what
+// titleCandidate's two loops are shaped around, and it rests on the separator above: without it a
+// rank-2 guess could settle at rank 0, and deferring would be unsound rather than merely lazy.
+// Even so, the deferred arm calls titleFrom rather than recording the guess — a rank-2 guess can
+// still settle at rankNone (a message that is nothing but reminders), which is not a rank a caller
+// may assume away.
 //
 // Contains for BOTH tags, not HasPrefix for the /rename envelope. HasPrefix systematically
 // under-rated a reminder-prefixed /rename to rank 2, which is how a later genuine /rename lost
@@ -355,6 +378,14 @@ func stripReminders(s string) string {
 	// is exactly the message whose title must survive, so the separator is not only for pathological
 	// input.
 	//
+	// IT HAS A SECOND, LOAD-BEARING ROLE: it is what stops the splice MANUFACTURING a tag. A tag
+	// split across the junction ("<user_qu" + block + "ery>ask</user_query>", or a halved /rename
+	// envelope) would reassemble if head met tail bare, letting a client synthesize a rank-1 title —
+	// or, worse, a STICKY rank-0 one — out of markup it never sent. No tag in the vocabulary contains
+	// a space, so the separator defeats every such splice. Deleting it reopens that hole, and the
+	// word-fusion case above is NOT what would catch it: TestSessionTitle_SpliceCannotManufactureATag
+	// is. quickRank's bound depends on this, so do not "simplify" the separator away.
+	//
 	// NOT WHEN THE HEAD IS EMPTY, and this guard is load-bearing rather than a micro-optimization.
 	// It is tempting to splice unconditionally on the grounds that sanitizeTitle drops leading
 	// whitespace and TrimRights the tail, so no title can show the difference — but titleFrom reads
@@ -411,7 +442,8 @@ func between(s, open, closing string) string {
 //
 // O(maxTitleLen), NOT O(len(s)), and that is what lets it stay under the store's write lock. It
 // stops as soon as maxTitleLen runes are emitted, so a 190KB candidate costs the same as an 80-rune
-// one: 916µs and 958KB of allocation became 366ns and 384B.
+// one: 916µs and 958KB of allocation became 366ns and 320B. The 320 is not a measurement to re-take
+// but `maxTitleLen * 4`, the b.Grow below — one allocation of a fixed size, whatever the input.
 //
 // NO LOOKAHEAD IS NEEDED PAST THE STOP, which is the reason this is correct and not merely fast.
 // The fold is a left-to-right rewrite that never revisits an emitted rune, so runes 1..80 are final

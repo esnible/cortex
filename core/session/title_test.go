@@ -273,6 +273,61 @@ func TestSessionTitle_StripsReminder(t *testing.T) {
 	}
 }
 
+// THE SPLICE MUST NOT MANUFACTURE A TAG THE CLIENT DID NOT SEND, and the separator space is the
+// only thing enforcing it. stripReminders joins the head before the first block to the tail after
+// the last, so a tag halved across that junction would reassemble if the two met bare — letting a
+// client synthesize a title out of markup it never actually sent.
+//
+// THE /rename HALF IS THE ONE THAT MATTERS, because rank 0 is STICKY: Append's fold lets a rename
+// override an existing title, so a synthesized one holds the session until a later GENUINE rename
+// displaces it. The <user_query> half is milder (rank 1 beats prose but loses to a rename) and is
+// covered here too, since both ride the same junction.
+//
+// WHY THIS IS NOT REDUNDANT WITH TestSessionTitle_StripsReminder's fusion row: that row asserts a
+// title reads correctly, so it fails on a cosmetic regression. This one asserts a RANK, which is
+// what quickRank's one-directional bound and titleCandidate's deferral both rest on. Delete the
+// separator and the fusion row fails too — but it reports a mangled string, not a client-controlled
+// rank-0 title, so the actual consequence would be easy to misread as cosmetic.
+func TestSessionTitle_SpliceCannotManufactureATag(t *testing.T) {
+	block := reminderOpen + "noise" + reminderClose
+	// Each input halves a tag across the junction: the head ends mid-tag, the tail resumes it.
+	for _, tc := range []struct {
+		name, in string
+		wantRank int
+	}{
+		{
+			// "<user_qu" + "ery>ask</user_query>" would splice into a valid <user_query>.
+			"halved user_query does not reach rank 1",
+			"<user_qu" + block + "ery>ask</user_query>",
+			rankUserMsg,
+		},
+		{
+			// The /rename envelope halved mid-tag. Spliced bare this titles the session "SPLICED"
+			// at rank 0, and only a later genuine rename could ever displace it.
+			"halved rename envelope does not reach rank 0",
+			renamePrefix[:10] + block + renamePrefix[10:] + "<command-args>SPLICED</command-args>",
+			rankUserMsg,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// The junction must actually fall inside the tag, or the fixture proves nothing.
+			if strings.Contains(stripReminders(tc.in), "<user_query>") ||
+				strings.HasPrefix(stripReminders(tc.in), renamePrefix) {
+				t.Fatalf("fixture no longer halves a tag: stripped to %q", stripReminders(tc.in))
+			}
+			if got, _ := titleFrom(tc.in); got != tc.wantRank {
+				t.Errorf("titleFrom rank = %d, want %d — the splice manufactured a tag", got, tc.wantRank)
+			}
+			// And end-to-end: a genuine later rename must still be the thing that titles the
+			// session, not the synthesized envelope.
+			events := []pipeline.SessionEvent{userEvent(tc.in), userEvent(renameMsg("the real name"))}
+			if got := foldTitle(t, events...); got != "the real name" {
+				t.Errorf("got %q, want %q — a synthesized envelope claimed the title", got, "the real name")
+			}
+		})
+	}
+}
+
 // A message that is nothing but a reminder names nothing. It must fall through to a real
 // title behind it rather than answering "" — the same mechanism
 // TestSessionTitle_EmptyUserContentSkipped pins for a tool-result message.
@@ -774,6 +829,17 @@ func TestSessionTitle_DeferredLosesToLaterDemotedAtEqualRank(t *testing.T) {
 // bestIdx IS A -1 SENTINEL and it participates in a comparison, so the nothing-settled path needs
 // its own pin: when the eager loop accepts nothing, bestRank is rankNone and every real rank must
 // still beat it rather than tripping the "equally ranked and earlier" break against index -1.
+//
+// THE LAST ROW PINS THE GATE'S BOUND, not the sentinel, and it is here because this is the table
+// the gate is named for. The other rows all leave bestRank == rankNone, which is the ONE value that
+// cannot discriminate the bound: every candidate bound is satisfied by it, so the loop is admitted
+// whatever the comparison says. Telling the bounds apart needs a row where the eager loop SETTLES
+// something at rankUserMsg and the deferred candidate is nonetheless the right answer — then
+// tightening the bound to `>= rankNone` (which rankUserMsg fails) skips a loop that had work to do,
+// and the event is titled by the EARLIER message, against last-match-within-event.
+//
+// Note the bound moves in the counter-intuitive direction: rankNone is the WORST rank and the
+// numerically largest, so `>= rankNone` is the STRICTER gate, not the looser one.
 func TestSessionTitle_DeferredOnlyWithNothingSettled(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -785,6 +851,14 @@ func TestSessionTitle_DeferredOnlyWithNothingSettled(t *testing.T) {
 		{"blank then prose", []string{"   ", "real prose"}, "real prose"},
 		{"prose then blank", []string{"real prose", "   "}, "real prose"},
 		{"all blank names nothing", []string{"   ", "\t"}, ""},
+		// Index 0 guesses rank 1 on its unterminated <user_query> and is DEMOTED to rank 2 by
+		// titleFrom (between() finds no close), so the eager loop settles bestRank at rankUserMsg
+		// with bestIdx 0. Index 1 is a plain rank-2 guess, deferred, and is the LATER message — so
+		// the deferred loop must still run and hand it the title. A gate that rankUserMsg fails
+		// skips that loop and serves index 0 instead.
+		{"settled demotion does not preempt a later deferred pick",
+			[]string{"what does <user_query> mean in this code", "plain prose later"},
+			"plain prose later"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := candidateTitle(userEvent(tc.msgs...)); got != tc.want {
