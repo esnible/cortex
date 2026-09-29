@@ -255,7 +255,7 @@ func TestWarnIfUnpinned(t *testing.T) {
 		{"no pricing section at all", nil, true},
 		{"bundled on, nothing pinned", &Config{}, true},
 		{"an endpoint pinned", &Config{Endpoints: []EndpointConfig{{Hosts: []string{"gw"}}}}, false},
-		{"bundled disabled", &Config{Bundled: func() *bool { b := false; return &b }()}, false},
+		{"bundled disabled", &Config{Bundled: boolPtr(false)}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var buf strings.Builder
@@ -465,7 +465,7 @@ func TestTable_CurrencyForDefaultsToUSD(t *testing.T) {
 	}
 }
 
-// boolPtr is the inline `func() *bool {...}()` this file used twice, named once.
+// boolPtr names the inline `func() *bool {...}()` this file would otherwise repeat at each use.
 func boolPtr(b bool) *bool { return &b }
 
 // The unit reaches the wire from the PRODUCER side, under the field name a client decodes.

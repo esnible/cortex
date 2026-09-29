@@ -690,6 +690,15 @@ func writeCostSummary(snap *usage.Snapshot, stdout io.Writer, agent string) {
 	if mixed {
 		headline = fmt.Sprintf("%d units", len(snap.Currencies))
 	}
+	// %-14s IS A MINIMUM, NOT A BUDGET, and it was sized when costUSD's widest output was
+	// "$12345.67". costIn can now place a figure plus a space plus up to maxUnitLen (16) here, so
+	// the widest legal headline is ~25 columns and the tail of this ONE line shifts right.
+	// Measured, not assumed: "12345.67 Bobcoins12345678 1057 requests   298M tokens". Nothing is
+	// truncated and no figure is misread — %-14s pads, it never cuts — and a one-line shift is
+	// cheaper than widening the field by 11 columns for every USD deployment, which is all of them.
+	// The breakdown table's cost cell is the last column for the same reason, so a long unit there
+	// lengthens its row without moving anything. Pinned by
+	// TestRunCost_TheWidestLegalUnitIsNeverTruncated.
 	fmt.Fprintf(stdout, "  %-14s %s requests   %s tokens\n",
 		headline, plainCount(t.Requests), compactTokens(t.Tokens))
 	if negative {
@@ -1286,8 +1295,12 @@ const mixedCostCell = "(mixed)"
 //
 // UNPRICED ROWS RENDER AS emptyCostCell, NEVER "$0.00", keyed on PricedRequests rather than
 // CostMicros so a genuine zero-rate charge stays distinguishable from a figure nothing could
-// produce. That is the column's main job today: Bob bills in credits, which the cost model
-// cannot represent, so every Bob row is unpriced and "$0.00" would assert its traffic was free.
+// produce. That is the column's main job today: no rates ship for Bob, so every Bob row is
+// unpriced and "$0.00" would assert its traffic was free.
+//
+// NOT "because it bills in credits" — that was the reason before `unit:` existed, and this change
+// is what made it false. A credits endpoint with rates configured prices normally and renders
+// "0.08 credits"; what leaves a row unpriced is an absent RATE, which is orthogonal to the unit.
 func writeCostBreakdown(snap *usage.Snapshot, stdout io.Writer, requested usage.Group, asked string) {
 	if reportDowngrade(snap, stdout, requested, asked) {
 		return

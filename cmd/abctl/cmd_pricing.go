@@ -361,8 +361,8 @@ func perMtokLabel(anyNonUSD bool) string {
 // isDefaultUnit reports whether a unit off the wire means the default, USD.
 //
 // ONE PREDICATE FOR BOTH READERS — the "$/Mtok" sub-header and the provenance cell — because they
-// are two renderings of one question and they disagreed: each compared against pricing.CurrencyUSD
-// case-sensitively, so a server sending "usd" made both of them call dollars a foreign unit.
+// are two renderings of one question, and an exact comparison makes them disagree: a server
+// sending "usd" would have both of them call dollars a foreign unit.
 //
 // FOLDED ON THIS SIDE TOO, though core now canonicalises before it serialises. abctl is a client of
 // whatever server it is pointed at, including one older than itself, and a rate label is exactly

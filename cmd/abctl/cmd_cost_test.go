@@ -1849,8 +1849,9 @@ func TestRunCost_ByAgentPrintsARowPerAgent(t *testing.T) {
 // An unpriced row renders "—", and a row priced at a rate of zero renders "$0.00".
 //
 // THE WHOLE POINT OF THE COLUMN, and it takes three rows to state. bob-shell here sent 8
-// requests and nothing could price them — it bills in credits, which the cost model cannot
-// represent — and "$0.00" would assert that its traffic was free. Distinguishing "no rate
+// requests and nothing could price them — no rates ship for it — and "$0.00" would assert that
+// its traffic was free. (Not "because it bills in credits": a credits endpoint with rates
+// configured prices normally. An absent RATE is what leaves a row unpriced.) Distinguishing "no rate
 // configured" from "cost was zero" is the rule this codebase keeps everywhere a figure may be
 // unknown.
 //
@@ -2275,7 +2276,6 @@ func TestRunCost_AgentDropsTheWindowsProvenance(t *testing.T) {
 			}
 		}
 	})
-
 }
 
 // A window spanning two units does NOT get a single total.
@@ -2356,7 +2356,6 @@ func TestRunCost_OneUnitOrNoneStillPrintsTheTotal(t *testing.T) {
 			}
 		})
 	}
-
 }
 
 // --by currency labels each cell in the unit its OWN ROW names.
@@ -2738,4 +2737,67 @@ func TestRunCost_ByCurrencyMatchesAUnitSpelledADifferentWay(t *testing.T) {
 	if strings.Contains(row, mixedCostCell) {
 		t.Errorf("a real configured unit was withheld as unrecognised:\n%s", row)
 	}
+}
+
+// The widest unit pricing accepts is rendered in full, on both surfaces.
+//
+// %-14s ON THE HEADLINE WAS SIZED FOR costUSD, whose widest output is "$12345.67". costIn can now
+// place a figure plus a space plus up to pricing's maxUnitLen (16) there, so the widest legal
+// headline is ~25 columns. Go's %-14s pads and never truncates, so what happens is that the tail of
+// that one line shifts right — measured, and asserted here rather than left to be rediscovered:
+// widening the field by 11 columns would cost every USD deployment, which is all of them.
+//
+// THE TABLE'S COST CELL IS THE LAST COLUMN, so a long unit lengthens its own row and moves nothing.
+// Both directions matter, so both are checked: nothing truncated, and the sibling USD row unmoved.
+func TestRunCost_TheWidestLegalUnitIsNeverTruncated(t *testing.T) {
+	// Exactly pricing.maxUnitLen bytes, all charset-legal, so config would accept it.
+	const widest = "Bobcoins12345678"
+	if len(widest) != 16 {
+		t.Fatalf("fixture is %d bytes; it must be exactly maxUnitLen (16) to be the worst case",
+			len(widest))
+	}
+
+	t.Run("headline shifts but does not truncate", func(t *testing.T) {
+		srv := fakeUsageServer(t, `{"window":"today","priced":true,"currencies":["`+widest+`"],
+			"totals":{"requests":1057,"tokens":298000000,"costMicros":12345670000,
+			"pricedRequests":1057,"priceableRequests":1057}}`)
+		defer srv.Close()
+		var out, errOut strings.Builder
+		if code := runCost([]string{"--endpoint", srv.URL}, &out, &errOut); code != 0 {
+			t.Fatalf("exit = %d, want 0; stderr = %s", code, errOut.String())
+		}
+		got := out.String()
+		if !strings.Contains(got, "12345.67 "+widest) {
+			t.Errorf("the headline truncated the unit or the figure:\n%s", got)
+		}
+		// The unit-free counts survive the shift — they are what the line still has to carry.
+		if !strings.Contains(got, "1057 requests") || !strings.Contains(got, "298M tokens") {
+			t.Errorf("the shifted tail lost a figure:\n%s", got)
+		}
+	})
+
+	t.Run("table row lengthens without moving its siblings", func(t *testing.T) {
+		srv := fakeUsageServer(t, `{"window":"today","group":"currency","priced":true,
+			"currencies":["`+widest+`","USD"],
+			"totals":{"requests":1057,"costMicros":146439000,"pricedRequests":1057,"priceableRequests":1057},
+			"buckets":[{"at":"2026-09-27T10:00:00Z","series":{
+			   "USD":{"requests":1000,"costMicros":146361600,"pricedRequests":1000,"priceableRequests":1000},
+			   "`+widest+`":{"requests":57,"costMicros":12345670000,"pricedRequests":57,"priceableRequests":57}}}]}`)
+		defer srv.Close()
+		var out, errOut strings.Builder
+		if code := runCost([]string{"--endpoint", srv.URL, "--by", "currency"}, &out, &errOut); code != 0 {
+			t.Fatalf("exit = %d, want 0; stderr = %s", code, errOut.String())
+		}
+		got := out.String()
+		if row := tableRow(t, got, widest); !strings.Contains(row, "12345.67 "+widest) {
+			t.Errorf("the widest unit's cell was truncated:\n%s", row)
+		}
+		// The USD row is the invariant: the long row must not have shifted it. Asserted on the
+		// COLUMN POSITION of its figure, not merely on its presence, because presence is what a
+		// misaligned table still satisfies.
+		usd := tableRow(t, got, "USD")
+		if !strings.HasSuffix(usd, "$146.36") {
+			t.Errorf("the USD row no longer ends at its own column:\n%q", usd)
+		}
+	})
 }

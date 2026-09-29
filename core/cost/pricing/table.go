@@ -421,8 +421,8 @@ func (t *Table) multiplierFor(endpoint string) (float64, Provenance) {
 // each of them remembering to fold. normaliseUnit already canonicalises what an operator types,
 // which covers the config path at its entrance; this covers the rest. Endpoint is an EXPORTED
 // struct and core is consumed outside this repo, so a caller can build one with Currency "usd"
-// having never gone through a YAML file — and four separate sites comparing case-sensitively is
-// what let that spelling read as a non-default unit. Downstream of this funnel the only
+// having never gone through a YAML file — and every site that compares exactly would read that
+// spelling as a non-default unit. Downstream of this funnel the only
 // non-canonical spellings left are units this package has no canonical form for, where the
 // operator's own spelling is the name and is preserved on purpose.
 func currencyOrDefault(c string) string {

@@ -72,13 +72,15 @@ type EndpointConfig struct {
 	// entrance beats folding at each of the five comparisons.
 	Unit string `yaml:"unit" json:"unit,omitempty"`
 
-	// NO symbol: KEY. It was declared here as "display only" and nothing ever read it — zero
-	// readers in core, in cmd, or in any test — while being advertised in docs/pricing.md as
-	// though it worked. This change's own reasoning for serving group=currency from the ledger
-	// applies to it verbatim: a key that does nothing is a promise to an operator that nothing
-	// keeps, and it is worse than absent because a config carrying `symbol: "₡"` reads as
-	// configured. It was also the only string here escaping normaliseUnit's bounds, so it
-	// accepted 40 bytes with a control rune in them for a value destined for a terminal.
+	// NO symbol: KEY, and this is the reason not to add one speculatively. A display glyph here
+	// would be a key with no reader, which is the failure this same change cites when it insists
+	// group=currency actually be served by the ledger: a key that does nothing is a promise to an
+	// operator that nothing keeps, and it is worse than absent because a config carrying
+	// `symbol: "₡"` reads as configured.
+	//
+	// It would also be the one string in this struct outside normaliseUnit's bounds — unvalidated,
+	// unbounded, and destined for a terminal and a durable ledger row, which is exactly what
+	// maxUnitLen exists to prevent for Unit.
 	//
 	// Rendering a unit uses its NAME ("0.08 credits"), which is always readable if not always
 	// short. Add a glyph when something renders one, with the same validation Unit gets.
@@ -132,13 +134,13 @@ func normaliseUnit(unit, where string) (string, error) {
 	// The case-preserving promise is about units this package cannot know — "credits",
 	// "Bobcoins" — where the operator's spelling is the only name the unit has. USD is different:
 	// it is the one unit that already HAS a canonical spelling here, CurrencyUSD, and five
-	// consumers test against it to decide whether a figure may be labelled "$". Four of those
-	// compared case-sensitively, so `unit: usd` — which the charset check above accepts — read as
-	// a NON-default unit: abctl printed "per Mtok" over a table of dollars, and the ledger wrote
-	// a "currency" field on every row of a deployment that had only ever billed in dollars.
+	// consumers test against it to decide whether a figure may be labelled "$". Without this fold
+	// `unit: usd` — which the charset check above accepts — reads as a NON-default unit at every
+	// one of them that compares exactly: abctl prints "per Mtok" over a table of dollars, and the
+	// ledger writes a "currency" field on every row of a deployment that only ever billed dollars.
 	//
 	// FOLDED HERE, at the one place a configured unit enters the process, rather than at each
-	// comparison. Four sites folding independently is four chances to miss the fifth, which is
+	// comparison. Five sites folding independently are five chances to miss the sixth, which is
 	// the drift CurrencyUSD's own comment exists to prevent. ledger.CurrenciesIn already makes
 	// exactly this choice for exactly this reason — "USD is special-cased to its constant so a
 	// file written with 'usd' does not report a unit an operator never typed" — so this is that

@@ -34,7 +34,7 @@ Neither owns the cost model. One owner of rates means `tool-prune`,
 | A gateway matching a shipped discount rule (see below) | **Nothing.** The discount is applied for you. |
 | Any other gateway that bills below list | Set one `multiplier` — [Discounts](#discounts). |
 | Using non-Anthropic models (OpenAI, Gemini, Bedrock, Vertex) | Add rates — nothing ships for them. [Getting the numbers](#getting-the-numbers). |
-| A gateway billing in something other than dollars | Not yet supported; such traffic reports as *unpriced*. |
+| A gateway billing in something other than dollars | Set its `unit` — [Billing units](#billing-units). Rates still have to be configured; the unit only says what they are denominated in. |
 
 Cortex warns once at startup if you have pinned nothing at all:
 

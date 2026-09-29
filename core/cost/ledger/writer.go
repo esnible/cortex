@@ -460,7 +460,6 @@ func (w *Writer) Record(_ string, e *pipeline.SessionEvent) {
 		Agent:  rowLabel(agentLabel(e.Client)),
 		Counts: usage.Counts{Requests: 1},
 	}
-	//
 	// NIL-SAFE, because the guard above admits a row with no extension: an endpoint
 	// inference-parser cannot parse still gets its gateway-reported cost settled, and that
 	// event has no token counts and no model to read. The row is deliberately thin rather
