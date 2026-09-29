@@ -1364,9 +1364,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// paneNone, and msg.from is deliberately NOT read here. The gate has no caller
 				// pane to return to — it interrupted the sessions view — and the esc arm's
 				// existing paneNone fallback already lands on Sessions, which that arm documents
-				// as the one pane always defensible to land on. Reading msg.from instead would put the correctness of esc in an
-				// argument supplied a round trip earlier, where a test driving this message
-				// cannot see what production passes.
+				// as the one pane always defensible to land on. Reading msg.from instead would
+				// put the correctness of esc in an argument supplied a round trip earlier, where
+				// a test driving this message cannot see what production passes.
 				m.previousPane = paneNone
 				m.pane = paneAgents
 				m.rebuildAgentsTable()

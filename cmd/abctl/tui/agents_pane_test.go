@@ -613,7 +613,12 @@ func TestAgentsPane_StartupLeavesAnOperatorWhoHasMoved(t *testing.T) {
 		{label: "claude-code/2.1.270", Counts: usage.Counts{Requests: 10}},
 		{label: "bob-shell/2.0.5", Counts: usage.Counts{Requests: 8}},
 	}
-	for _, start := range []paneID{paneUsage, paneEvents, paneAgents} {
+	visited := 0
+	for start := paneID(0); start <= lastPaneID; start++ {
+		if start == paneSessions {
+			continue
+		}
+		visited++
 		m := &model{pane: start, previousPane: panePipeline, agentsTbl: newAgentsTable(), client: deadClient()}
 		updated, _ := m.Update(agentRowsLoadedMsg{rows: rows, open: agentsOpenAtStartup})
 		m = updated.(*model)
@@ -621,6 +626,9 @@ func TestAgentsPane_StartupLeavesAnOperatorWhoHasMoved(t *testing.T) {
 			t.Errorf("a startup reply arriving on %v moved the operator to %v (previousPane %v)",
 				start, m.pane, m.previousPane)
 		}
+	}
+	if visited != int(lastPaneID) {
+		t.Fatalf("visited %d panes, want %d", visited, lastPaneID)
 	}
 }
 
