@@ -206,7 +206,13 @@ Flags:
 	}
 
 	if *agent != "" {
-		scoped, err := scopeToAgent(snap, *agent)
+		// KeepBuckets, not NarrowBuckets: nothing on this path reads Buckets at all. The only
+		// reader of them here is writeCostBreakdown, and it is reachable only under --by, which
+		// the check at the top of this function refuses alongside --agent — so narrowing would
+		// be work whose result no writer looks at. abctl's usage pane passes the other value
+		// because it renders a chart from the buckets themselves. See usage.BucketScope for why
+		// this is a parameter rather than a default.
+		scoped, err := usage.ScopeToAgent(snap, *agent, usage.KeepBuckets)
 		if err != nil {
 			fmt.Fprintf(stderr, "abctl cost: %v\n", err)
 			return 1
@@ -222,91 +228,6 @@ Flags:
 		writeCostBreakdown(snap, stdout, requested, *by)
 	}
 	return 0
-}
-
-// scopeToAgent narrows a group=agent snapshot to one agent's figures.
-//
-// IT REWRITES Totals AND HANDS BACK A SNAPSHOT, rather than rendering the agent itself, so the
-// writers apply to it directly with no second implementation and no chance of the two drifting:
-// the negative-total refusal, the coverage-gap disclosure and the incomplete-read admission each
-// read one agent's numbers. Which fields do NOT survive the narrowing, and why, is stated at the
-// narrowing itself below. A COPY, never the caller's snapshot mutated in place.
-//
-// The fold is usage.FoldSeriesAcrossWindow, the same one abctl's AGENTS pane uses, so the
-// figure printed here and the row shown there cannot disagree.
-//
-// AN UNKNOWN AGENT IS AN ERROR THAT NAMES THE KNOWN ONES. The labels are User-Agents, so they
-// are neither short nor guessable — "bob" is the obvious thing to try and is not what Bob
-// sends. The set is already in hand, so withholding it would be a choice.
-func scopeToAgent(snap *usage.Snapshot, agent string) (*usage.Snapshot, error) {
-	series := usage.FoldSeriesAcrossWindow(snap.Buckets)
-	counts, ok := series[agent]
-	if !ok {
-		known := make([]string, 0, len(series))
-		for label := range series {
-			known = append(known, label)
-		}
-		// Sorted so the same window reports the same order every run; a set printed in map
-		// order is a set a reader cannot diff against yesterday's.
-		sort.Strings(known)
-		if len(known) == 0 {
-			return nil, fmt.Errorf("no agent traffic in the %s window, so --agent %q matches nothing",
-				snap.Window, agent)
-		}
-		return nil, fmt.Errorf("no agent %q in the %s window; seen: %s",
-			agent, snap.Window, strings.Join(known, ", "))
-	}
-	scoped := *snap
-	scoped.Totals = counts
-	// EVERY WHOLE-WINDOW STATEMENT ABOUT WHERE THE TOTALS CAME FROM GOES WITH Totals, or it is
-	// printed beside one agent's figure while describing all of them. Replacing only Totals left
-	// `--agent <an agent nothing priced>` printing $0.00 — the window was priced, just not this
-	// agent's traffic — for exactly the agent the AGENTS pane prints "—" for, which breaks both
-	// writeCostSummary's "cost unavailable rather than $0.00" rule and this function's own claim
-	// that the figure here and the row there cannot disagree.
-	//
-	// Priced is RE-DERIVED with the producers' own rule rather than one invented here: both
-	// snapshot.go and sessionapi set it to Totals.PricedRequests > 0, so the narrowed snapshot is
-	// the one they would have emitted had this agent's traffic been the whole window.
-	scoped.Priced = counts.PricedRequests > 0
-	// The three by-model maps are DROPPED, not narrowed, because nothing here can narrow them: a
-	// bucket's series is keyed by agent and carries no per-model breakdown, so the only available
-	// readings are the window's maps — which describe other agents' traffic — or none. They are
-	// omitempty on the wire, and costIncompleteReasonLines already treats an absent map as
-	// nothing to say, which is its common case for a ledger-backed window anyway.
-	scoped.PricedBy = nil
-	scoped.UnpricedBy = nil
-	scoped.IncompleteBy = nil
-	// Degraded and DaysOutsideRetention STAY, and the asymmetry is the point: they describe the
-	// READ and the retention configuration, which are the same facts whichever agent is scoped
-	// to. Dropping them would hide a short sum behind a narrower question.
-	//
-	// SeriesOvershootMicros and SeriesAvoidedOvershootMicros stay too, and they are the two the
-	// "every" above has to account for rather than pass over. Both are defect reports about a
-	// breakdown — the series summed to MORE than the total — so they belong with Degraded rather
-	// than with the provenance maps. A correct producer never sends either on this path:
-	// residualOf leaves them nil unless the series overshoots, which cannot happen where the
-	// figures reconcile. Where one does arrive it is upstream's bug, and forwarding it says so;
-	// narrowing it to an agent would be inventing a per-agent overshoot nothing computed.
-
-	// Currencies IS CARRIED OVER, AND IT NO LONGER DESCRIBES Totals. Said out loud because it is
-	// the one field on this struct that the narrowing above invalidates, and the honest options are
-	// worse than keeping it.
-	//
-	// The field means "every unit the rows behind Totals were denominated in", and after this copy
-	// Totals is one agent while the list is the whole window. Narrowing it is not available:
-	// deciding which units THIS agent's traffic carries needs a cross-tabulation of agent against
-	// currency, and a folded per-agent Counts has already summed that axis away. Dropping it is
-	// worse than leaving it — this agent's own traffic may well be the mixed part, and an absent
-	// list reads as "single unit", so the surface would print a confident figure that is exactly
-	// the credits-plus-dollars sum this whole change exists to refuse.
-	//
-	// SO THE OVER-REFUSAL IS DELIBERATE, and it is the safe direction: a per-agent figure is
-	// withheld in a mixed window even when that agent billed in one unit. writeCostSummary says
-	// which of the two it is rather than letting the reader assume, because "no figure for this
-	// agent" and "no figure for this window" have different fixes.
-
-	return &scoped, nil
 }
 
 // costJSON is the --json shape: the window actually served plus the totals
