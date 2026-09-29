@@ -698,18 +698,11 @@ func TestHelpOverlayDoesNotStealFilterInput(t *testing.T) {
 	}
 }
 
-// The AGENTS note discloses what the scope does NOT reach.
+// The AGENTS note must EXCLUDE the spend band, not merely mention it.
 //
-// THIS PR RE-BROKE THE SAME CLAIM TWICE — six prose sites in round 1, then the PR title in round 2 —
-// because "the scope covers cost" is the natural thing to write and nothing mechanical contradicted
-// it. app.go's agentScope doc states the norm ("this must not be described as scoping 'cost'"); a
-// norm in a comment is not a guard, and a mutant reverting this note to the pre-round-1 wording
-// survived the whole package.
-//
-// ASSERTS THE DISCLOSURE, NOT THE ABSENCE OF A WORD. Banning "cost" would fire on a site that had
-// become correctly qualified, which is the failure mode that turns a guard into a nuisance. The
-// property worth pinning is that the note names the surface the scope does not reach — the spend
-// band — because that is the one an operator is looking at when they press the key.
+// A substring pin on the negation, so it goes red on a reword that keeps the meaning. Asserting the
+// mention alone passed "scopes the usage pane AND the spend band" — the claim app.go's agentScope
+// doc forbids.
 func TestPaneKeys_TheAgentsNoteSaysWhatTheScopeDoesNotReach(t *testing.T) {
 	g, ok := paneKeys[paneAgents]
 	if !ok {
@@ -719,8 +712,7 @@ func TestPaneKeys_TheAgentsNoteSaysWhatTheScopeDoesNotReach(t *testing.T) {
 	if joined == "" {
 		t.Fatal("the AGENTS group carries no notes; the disclosure has nowhere to live")
 	}
-	if !strings.Contains(joined, "spend band") {
-		t.Errorf("the AGENTS note does not name the spend band, which the scope does NOT reach:\n  %s",
-			joined)
+	if !strings.Contains(joined, "not the spend band") {
+		t.Errorf("the AGENTS note does not EXCLUDE the spend band:\n  %s", joined)
 	}
 }

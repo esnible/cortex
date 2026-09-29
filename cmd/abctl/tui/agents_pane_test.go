@@ -669,8 +669,6 @@ func TestInitSessionView_ArmsTheStartupAgentsGate(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("initSessionView returned no command")
 	}
-	// Invoked ONCE: calling cmd() again for the error message would re-run tea.Batch's closure,
-	// and every leaf with it, on the failure path only.
 	first := cmd()
 	batch, ok := first.(tea.BatchMsg)
 	if !ok {
