@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/rossoctl/cortex/core/pipeline"
@@ -19,11 +20,12 @@ import (
 type responseBodyProbe struct {
 	sawResponseBodyLen int
 	responseCalls      int
+	writes             bool // declare WritesResponseBody, like cpex and sparc
 }
 
 func (p *responseBodyProbe) Name() string { return "response-body-probe" }
 func (p *responseBodyProbe) Capabilities() pipeline.PluginCapabilities {
-	return pipeline.PluginCapabilities{ReadsBody: true}
+	return pipeline.PluginCapabilities{ReadsBody: true, WritesResponseBody: p.writes}
 }
 func (p *responseBodyProbe) OnRequest(_ context.Context, _ *pipeline.Context) pipeline.Action {
 	return pipeline.Action{Type: pipeline.Continue}
@@ -33,6 +35,43 @@ func (p *responseBodyProbe) OnResponse(_ context.Context, pctx *pipeline.Context
 	p.sawResponseBodyLen = len(pctx.ResponseBody)
 	return pipeline.Action{Type: pipeline.Continue}
 }
+
+// lastFrameProbe is a StreamingResponder recording the terminal frame, where
+// inference-parser settles a header-priced response that has no body to parse.
+type lastFrameProbe struct{ sawLast bool }
+
+func (p *lastFrameProbe) Name() string { return "last-frame-probe" }
+func (p *lastFrameProbe) Capabilities() pipeline.PluginCapabilities {
+	return pipeline.PluginCapabilities{ReadsBody: true}
+}
+func (p *lastFrameProbe) OnRequest(_ context.Context, _ *pipeline.Context) pipeline.Action {
+	return pipeline.Action{Type: pipeline.Continue}
+}
+func (p *lastFrameProbe) OnResponse(_ context.Context, _ *pipeline.Context) pipeline.Action {
+	return pipeline.Action{Type: pipeline.Continue}
+}
+func (p *lastFrameProbe) OnResponseFrame(_ context.Context, _ *pipeline.Context, _ []byte, last bool) pipeline.Action {
+	p.sawLast = p.sawLast || last
+	return pipeline.Action{Type: pipeline.Continue}
+}
+
+// assertRelayedUnbuffered: OnResponse ran once, on an empty body rather than a
+// truncated one, and the terminal frame still arrived.
+func assertRelayedUnbuffered(t *testing.T, probe *responseBodyProbe, frames *lastFrameProbe) {
+	t.Helper()
+	if probe.responseCalls != 1 || probe.sawResponseBodyLen != 0 || !frames.sawLast {
+		t.Errorf("probe = %+v, last frame = %v; want 1 OnResponse on 0 body bytes and a last=true frame",
+			*probe, frames.sawLast)
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+type failingReader struct{}
+
+func (failingReader) Read([]byte) (int, error) { return 0, io.ErrUnexpectedEOF }
 
 // serveOversizedBody writes maxBodySize+1 bytes of a non-SSE content type.
 // When declareLength is false the handler leaves Content-Length unset, so
@@ -103,8 +142,8 @@ func TestForwardProxy_OversizedDeclaredLengthStreamsThrough(t *testing.T) {
 	backend, size := serveOversizedBody(t, true)
 	defer backend.Close()
 
-	probe := &responseBodyProbe{}
-	p, err := pipeline.New([]pipeline.Plugin{probe})
+	probe, frames := &responseBodyProbe{}, &lastFrameProbe{}
+	p, err := pipeline.New([]pipeline.Plugin{probe, frames})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -127,8 +166,33 @@ func TestForwardProxy_OversizedDeclaredLengthStreamsThrough(t *testing.T) {
 	// partial body is indistinguishable from a real short response and
 	// would make a parser emit nonsense. Mirrors the SSE passthrough
 	// contract, where a ReadsBody-only plugin also gets an empty body.
-	if probe.sawResponseBodyLen != 0 {
-		t.Errorf("plugin saw %d body bytes, want 0 (not buffered)", probe.sawResponseBodyLen)
+	assertRelayedUnbuffered(t, probe, frames)
+
+	// The declared length alone decides: a body that fails after a few bytes
+	// is never read before the headers go out, so it is not a 502.
+	srv.Client = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, ContentLength: maxBodySize + 1,
+			Body: io.NopCloser(io.MultiReader(strings.NewReader("abc"), failingReader{}))}, nil
+	})}
+	if resp := proxyGet(t, srv, "http://declared.example/x"); resp.StatusCode != http.StatusOK {
+		t.Errorf("declared oversize with a failing body: status = %d, want 200 (no read before headers)", resp.StatusCode)
+	}
+}
+
+// TestForwardProxy_OversizedWithResponseWriterStill502s: a WritesResponseBody
+// plugin enforces on the body, so relaying it an empty one would fail open.
+func TestForwardProxy_OversizedWithResponseWriterStill502s(t *testing.T) {
+	for _, declared := range []bool{true, false} {
+		backend, _ := serveOversizedBody(t, declared)
+		p, err := pipeline.New([]pipeline.Plugin{&responseBodyProbe{writes: true}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		srv := &Server{OutboundPipeline: pipeline.NewHolder(p), Client: http.DefaultClient}
+		if resp := proxyGet(t, srv, backend.URL+"/x"); resp.StatusCode != http.StatusBadGateway {
+			t.Errorf("declared=%v: status = %d, want 502", declared, resp.StatusCode)
+		}
+		backend.Close()
 	}
 }
 
@@ -140,8 +204,8 @@ func TestForwardProxy_OversizedUnknownLengthStreamsThrough(t *testing.T) {
 	backend, size := serveOversizedBody(t, false)
 	defer backend.Close()
 
-	probe := &responseBodyProbe{}
-	p, err := pipeline.New([]pipeline.Plugin{probe})
+	probe, frames := &responseBodyProbe{}, &lastFrameProbe{}
+	p, err := pipeline.New([]pipeline.Plugin{probe, frames})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -160,6 +224,9 @@ func TestForwardProxy_OversizedUnknownLengthStreamsThrough(t *testing.T) {
 	if n != int64(size) {
 		t.Errorf("proxied %d bytes, want %d", n, size)
 	}
+	// The one branch where a 10MB prefix IS in memory, so handing it over is
+	// the realistic regression.
+	assertRelayedUnbuffered(t, probe, frames)
 }
 
 // TestForwardProxy_UndersizedBodyStillBuffers guards the other direction:

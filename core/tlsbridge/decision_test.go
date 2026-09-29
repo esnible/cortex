@@ -411,7 +411,7 @@ func TestDefaultPassthrough_ClaudeCodeUpdater(t *testing.T) {
 		t.Errorf("downloads.claude.ai: got (%v,%q), want (%v,%q)", v, reason, Passthrough, "skip")
 	}
 	// The inference endpoint must stay bridged — that is where the parsers and
-	// the token accounting live. Guards against a future *.claude.ai glob.
+	// the token accounting live.
 	if v, _ := d.Classify("api.anthropic.com", 443, tlsHello); v != Terminate {
 		t.Errorf("api.anthropic.com: got %v, want %v (must stay bridged)", v, Terminate)
 	}

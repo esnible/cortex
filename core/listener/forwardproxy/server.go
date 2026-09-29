@@ -567,8 +567,7 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, isBridge 
 		// ever had the buffered path available, and any ReadsBody plugin
 		// therefore turned every large download into a failed request — a
 		// 226MB binary fetched through a bridged host, for a body no JSON
-		// parser could have read. The cap still bounds heap, which is its
-		// job; it no longer bounds the response.
+		// parser could have read. The cap still bounds heap, which is its job.
 		oversized := false
 		if s.OutboundPipeline.NeedsResponseBody() && resp.Body != nil {
 			if resp.ContentLength > maxBodySize {
@@ -602,9 +601,16 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, isBridge 
 				}
 			}
 		}
+		// A response writer (cpex, sparc) enforces on the body it is handed, and an
+		// empty one reads as nothing to enforce — relaying would let a padded response
+		// through unchecked. Such a chain keeps the 502.
+		if oversized && s.OutboundPipeline.WritesResponseBody() {
+			http.Error(w, `{"error":"response body too large"}`, http.StatusBadGateway)
+			return
+		}
 
 		// DETACHED AND BOUNDED, because the body above is already whole — or, when it was
-		// too large to buffer, is being relayed and owes the pipeline nothing. Everything from here on
+		// too large to buffer, is being relayed. Everything from here on
 		// is finalization: a client that hung up during that read leaves a done context, and
 		// RunResponse refuses a done context before calling any plugin — returning a Deny this
 		// call site cannot tell from a policy reject, since it only tests action.Type. It would
@@ -630,15 +636,7 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, isBridge 
 		// as one last=true frame so plugins finalize their running state.
 		// Plugins that didn't migrate — i.e. don't implement
 		// StreamingResponder — are unaffected (RunResponseFrame skips them).
-		//
-		// Skipped when the body was too large to buffer: pctx.ResponseBody is
-		// empty there, and a last=true frame carrying it would assert that the
-		// whole response WAS empty. That is the failure the Accept-Encoding
-		// comment above describes — aggregating plugins finalize on empty
-		// state and their telemetry reads as absent rather than wrong. No
-		// frame was delivered for such a response, so there is no running
-		// state left to finalize.
-		if !oversized && s.OutboundPipeline.HasStreamingResponders() && resp.Body != nil {
+		if s.OutboundPipeline.HasStreamingResponders() && resp.Body != nil {
 			// Its own budget, per the rule above.
 			finalCtx, cancelFinal := httpx.TeardownContext(r.Context())
 			defer cancelFinal()
