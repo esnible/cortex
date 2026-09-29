@@ -133,9 +133,7 @@ func normaliseUnit(unit, where string) (string, error) {
 	// The case-preserving promise is about units this package cannot know — "credits",
 	// "Bobcoins" — where the operator's spelling is the only name the unit has. USD is different:
 	// it is the one unit that already HAS a canonical spelling here, CurrencyUSD, and five
-	// consumers test against it to decide whether a figure may be labelled "$". Each of them folds
-	// too, so none depends on this alone — but five independent folds are five chances to miss the
-	// sixth, and `unit: usd` is a spelling the charset check above accepts.
+	// consumers test against it to decide whether a figure may be labelled "$".
 	//
 	// FOLDED HERE, at the one place a configured unit enters the process, rather than at each
 	// comparison. Five sites folding independently are five chances to miss the sixth, which is

@@ -51,8 +51,7 @@ func (r *Registry) Resolve(endpoint, model string, promptTotal int) (Rates, Prov
 // CurrencyFor delegates to the live table, defaulting to CurrencyUSD for a nil Registry.
 //
 // Same posture as Resolve above: a binary built without pricing wiring must report the default
-// rather than crash on the response path. Table.CurrencyFor carries why the unit follows the row
-// that priced rather than the endpoint block.
+// rather than crash on the response path.
 func (r *Registry) CurrencyFor(endpoint, model string) string {
 	if r == nil {
 		return CurrencyUSD

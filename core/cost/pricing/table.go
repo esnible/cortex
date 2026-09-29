@@ -432,17 +432,15 @@ func currencyOrDefault(c string) string {
 	return c
 }
 
-// CurrencyFor is the unit a figure priced for this (endpoint, model) pair is denominated in.
+// CurrencyFor is the unit a figure for this (endpoint, model) pair is denominated in.
 //
-// IT FOLLOWS THE SAME ROW Resolve PRICES FROM — bestRow — and that is the whole correctness
-// requirement. Two blocks can match one host, a `hosts: ["*"]` catch-all beside a specific
-// gateway, and the more specific row wins the rate; taking the unit from anywhere else would let
-// a figure be priced at one row's rate and labelled with another's, which is the failure the unit
-// exists to prevent.
+// WHEN A ROW MATCHES THE PAIR, IT FOLLOWS THE SAME ROW Resolve PRICES FROM — bestRow. Two blocks
+// can match one host, a `hosts: ["*"]` catch-all beside a specific gateway, and the more specific
+// row wins the rate; taking the unit from anywhere else would let a figure be priced at one row's
+// rate and labelled with another's, which is the failure the unit exists to prevent.
 //
-// USD FOR A NIL TABLE AND FOR AN UNMATCHED PAIR, rather than empty. The caller is about to label
-// a figure, and empty already means USD everywhere downstream — so "" would be the same answer
-// written less legibly. Nil is the Kubernetes deployment, where pricing is not wired: it reports
+// USD FOR A NIL TABLE, rather than empty. The caller is about to label a figure, and empty
+// already means USD everywhere downstream — so "" would be the same answer written less legibly. Nil is the Kubernetes deployment, where pricing is not wired: it reports
 // the default rather than panicking on the response path, for the reason Resolve answers ProvNone
 // there.
 //
@@ -456,10 +454,6 @@ func currencyOrDefault(c string) string {
 // figure is denominated in the gateway's unit. Returning USD for it put a credits charge on disk
 // with no unit, where the read side folds it into the dollar total: a cross-unit sum, which is the
 // one thing this field exists to prevent.
-//
-// THE bestRow INVARIANT IS UNTOUCHED. When a row matches the pair, its unit is still the answer, so
-// a figure can never be priced at one row's rate and labelled with another's. The fallback runs only
-// when there is no such row, and therefore no rate to disagree with.
 //
 // SAME RANKING, minus the model test — provenance, then specificity — so a configured row for this
 // gateway beats a bundled catch-all. An endpoint with no rows of its own falls through to whatever

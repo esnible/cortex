@@ -641,8 +641,14 @@ func TestCurrencyFor_FoldsADefaultSpellingSetProgrammatically(t *testing.T) {
 //
 // BOTH DIRECTIONS. The fallback must not disturb the pair-matched answer, which is the invariant
 // CurrencyFor's own comment rests on, so the specific and the catch-all row are both asserted.
+//
+// The "*" block comes FIRST and covers gw.bob too, so only specificity picks gw.bob's own row.
 func TestCurrencyFor_AModellessResponseResolvesTheEndpointsUnit(t *testing.T) {
 	tbl, err := Build(&Config{Endpoints: []EndpointConfig{
+		{
+			Hosts:  []string{"*"},
+			Models: map[string]ModelConfig{"claude-opus-5": {TierRates: TierRates{InputCostPerMillion: 5}}},
+		},
 		{
 			Hosts: []string{"gw.bob"}, Unit: "credits",
 			Models: map[string]ModelConfig{"premium-ide": {TierRates: TierRates{InputCostPerMillion: 2}}},

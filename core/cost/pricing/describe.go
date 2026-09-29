@@ -204,8 +204,6 @@ func (t *Table) EffectiveFor(host string) Effective {
 		rates, prov := t.Resolve(host, m, 0)
 		e := EffectiveRates{
 			Model: m, Provenance: prov.String(), Unpriced: prov == ProvNone,
-			// The host is fixed for this call, so CurrencyFor answers for the row that priced
-			// this model — the same row Resolve used above.
 			Unit: nonDefaultCurrency(t.CurrencyFor(host, m)),
 		}
 		// Read from the UNFLATTENED row: Resolve has already folded the applicable
