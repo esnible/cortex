@@ -261,9 +261,10 @@ func (m *model) untitledSettled(now time.Time) bool {
 		// way this gets large.
 		//
 		// A FUTURE UpdatedAt IS A BROKEN CLOCK, NOT A SETTLED SESSION. Pod ahead of client gives
-		// a negative delta, which can never reach untitledSettleDelay, so that row's title never
-		// arrives — no error, no log, just a permanently blank TITLE cell, and the skew has to
-		// exceed only 5s to do it. Treating it as settled instead is the safe direction: the
+		// a negative delta, which can never reach untitledSettleDelay, so the harvested title for
+		// that row never arrives — no error, no log, and the skew has to exceed only 5s to do it.
+		// The row is left on whatever the proxy served, or blank if it served nothing; either way
+		// it is stuck there. Treating it as settled instead is the safe direction: the
 		// cost of harvesting early is one wasted tree walk that the backoff then widens, against
 		// a title that otherwise never comes at all.
 		//
@@ -335,12 +336,17 @@ func (m *model) countUntitled() (counted map[string]bool, fresh bool) {
 	return counted, fresh
 }
 
-// sessionHasTitle reports whether this session renders a title, as the TITLE cell would judge it.
+// sessionHasTitle reports whether the HARVEST has named this session.
 //
-// THROUGH sessionTitle, not the raw map, so this predicate and the cell can never disagree about
-// what "unnamed" means: the cell sanitises (sessionTitle does), and a predicate reading
-// m.sessionsData[id].Title directly would be asserting about a different string than the one on
-// screen. sanitizeLabel replaces rather than strips, so it cannot change emptiness today — the
+// NOT "does the row render a title" — it deliberately says less than that. A row the harvest has
+// not named can still display the title the proxy served (see sessionTitleFor), and this predicate
+// answers false for it on purpose, so the harvest keeps looking for the title it would prefer.
+// Every backoff predicate in this file is built on that distinction; do not widen this to mean
+// "something is on screen".
+//
+// THROUGH sessionTitle, not the raw map, so this asks about the same sanitised string the harvest
+// path renders: a predicate reading m.sessionsData[id].Title directly would judge a different
+// string. sanitizeLabel replaces rather than strips, so it cannot change emptiness today — the
 // point is that this does not depend on that remaining true.
 //
 // WHITESPACE COUNTS AS UNNAMED, which the raw comparison got wrong. A title of " " is non-empty
@@ -354,11 +360,11 @@ func (m *model) sessionHasTitle(id string) bool {
 
 // titleIsBlank reports whether a title string would render as an empty TITLE cell.
 //
-// THE ONE DEFINITION OF "UNNAMED" AMONG THE PREDICATES, extracted because three callers ask that
-// question about different strings — sessionHasTitle about what the model already holds,
-// sessionLabel about the same for a header, and harvestNamedSomething about what a harvest just
-// returned, which is not in the model yet and so cannot be reached through sessionTitle. An
-// inline copy in any of them is the drift sessionHasTitle's comment exists to prevent.
+// THE ONE DEFINITION OF "UNNAMED", extracted because its callers ask that question about strings
+// reached different ways — what the model already holds, what a harvest just returned and is not in
+// the model yet, what the proxy served — and an inline copy in any of them is the drift
+// sessionHasTitle's comment exists to prevent. Deliberately not enumerated here: the list went
+// stale the first time a caller was added, and the callers are one grep away.
 //
 // THE CELL DOES NOT CALL THIS, and the claim that it does was overstated. sessionTitleCell tests
 // a raw title == "" as a fast path to skip truncating an empty string; it does not judge

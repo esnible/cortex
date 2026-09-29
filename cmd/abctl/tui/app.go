@@ -1299,6 +1299,13 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Repaint what names sessions. The sessions table is the only place a title is
 			// rendered into a cell; every other user of sessionLabel builds its text on each
 			// View, so those pick the new names up on the next frame with nothing to do here.
+			//
+			// Two inputs name a session now, not one: this map and the served title on
+			// m.sessions (see sessionTitleFor). Only the harvest needs a rebuild triggered
+			// here, because m.sessions is replaced by the two-second list refresh, which
+			// rebuilds the table on its own path. So the dependency set is wider than this
+			// call site suggests — a future input that names sessions and does NOT already
+			// rebuild needs its own repaint.
 			m.rebuildSessionsTable()
 		}
 		return m, nil

@@ -257,6 +257,11 @@ func (m *model) rebuildSessionsTable() {
 			trunc(s.ID, idW),
 		}
 		if showTitle {
+			// s.Title straight off the summary, where sessionLabel reaches the same value by
+			// id through m.servedTitle. Two routes, equal only because they read the same
+			// slice — probed across many inputs without finding a divergence. Do not "unify"
+			// one into the other: this loop has the summary in hand and should not pay a
+			// lookup, and the header path has only an id and cannot avoid one.
 			row = append(row, m.sessionTitleCell(s.ID, s.Title, titleW))
 		}
 		row = append(row,
@@ -297,10 +302,11 @@ func (m *model) rebuildSessionsTable() {
 			trunc(id, idW),
 		}
 		if showTitle {
-			// NO SERVED TITLE HERE, by construction rather than by omission: these rows exist
-			// precisely because the server no longer lists the session, so there is no summary
-			// to carry one. Harvested metadata outlives the listing, so the cell can still fill.
-			row = append(row, m.sessionTitleCell(id, "", titleW))
+			// These rows exist precisely because the server no longer lists the session, so
+			// there is no summary to carry a served title. Harvested metadata outlives the
+			// listing, so the cell can still fill from that. Named constant rather than a bare
+			// "" so the absence reads as a fact about this row, not a forgotten argument.
+			row = append(row, m.sessionTitleCell(id, noServedTitle, titleW))
 		}
 		row = append(row,
 			// "cached" sits in UPDATED now, where an em dash used to, because ACTIVE is gone
@@ -402,6 +408,15 @@ func (m *model) sessionTitle(id string) string {
 	return sanitizeLabel(m.sessionsData[id].Title)
 }
 
+// noServedTitle is the served-title argument for a row that cannot have one. Only the cached-only
+// rows qualify, and only because the server has stopped listing those sessions entirely.
+//
+// It exists because sessionTitleFor takes the served title as a parameter, so passing "" silently
+// disables the fallback and compiles. The parameter stays — the live row loop already holds the
+// summary, and resolving it inside would put a scan of m.sessions in the per-row render path — so
+// the one legitimate empty argument says so by name instead.
+const noServedTitle = ""
+
 // sessionTitleFor names a session for DISPLAY, falling back to the title the proxy served.
 //
 // Two independent sources, and each covers what the other cannot. The harvest reads Claude Code's
@@ -412,9 +427,13 @@ func (m *model) sessionTitle(id string) string {
 // title existed for exactly those. A blank cell was never "this session has no name", only "no name
 // where abctl was looking".
 //
-// HARVEST WINS when both exist. It is the richer of the two (cwd plus prompt text, tiered), and it
-// is also the stable one: the served title is first-wins per session, so which turn happened to
-// land first should not decide what a row says once the transcript can answer.
+// HARVEST WINS when both exist. Deliberately a fixed precedence and not a judgement about which
+// string is better: both sides pick a title through their own ranking, both may change, and this
+// says as little as possible about either mechanism so that it does not go stale when they do.
+// What it costs is worth knowing — the two rankings do not agree on every session, so a row can
+// show a harvested title while the proxy held one an operator would have preferred (an explicit
+// /rename is the clearest case). That is accepted for now, pending what operators report; the
+// precedence is one line to invert if it turns out wrong.
 //
 // THE FALLBACK IS ONLY HERE, not in sessionTitle. Every backoff predicate in session_metadata.go
 // judges "unnamed" through sessionTitle, so this deliberately leaves a server-titled row reading as

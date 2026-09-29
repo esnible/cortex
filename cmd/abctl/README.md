@@ -585,10 +585,10 @@ abctl is for, and the other three are surfaces you visit and leave.
   — and **falls back to the title the proxy serves** on `/v1/sessions`, which it
   derives from the session's own events. So a session with no transcript on this
   machine can still be named, and the cell is empty only when neither source
-  names it. The harvested title wins when both exist: it is the richer of the two
-  (it carries the working directory and prompt text) and the more stable, since
-  the served title is fixed by whichever turn landed first. The column does not
-  say which source it used. Numerics are right-aligned
+  names it. The harvested title wins when both exist — a fixed precedence, not a
+  claim that it is always the better string; the two sides rank candidates
+  differently and may not agree on a given session. The column does not say which
+  source it used. Numerics are right-aligned
   so the digits line up between rows.
 
   `CONTEXT(1M)` is a gauge, not a figure: how full the **conversation's**
