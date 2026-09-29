@@ -161,41 +161,28 @@ func BenchmarkRetainedHeap(b *testing.B) {
 	}
 }
 
-// BenchmarkListSessions_Title prices the claim the Title call site in ListSessions makes:
-// that the reverse walk stops at the first event carrying a title, so a named session costs
-// one event rather than all of them.
+// BenchmarkListSessions_Title prices what /v1/sessions pays for the Title field, and its whole
+// point now is that EVERY CASE IS THE SAME PRICE. The title is folded by Store.Append into
+// entry.Title, so ListSessions reads a field; the content shapes below cannot move it.
 //
-// Three sub-benchmarks, because one figure cannot show the shape:
+// It used to measure a reverse walk over the retained events, under s.mu.RLock() whose writer side
+// is Append on the proxy request path — named 280ns, user-text 228µs, no-title 13µs, demoted 714µs
+// at benchTurns=300 and maxEvents=100, a ~2500x spread driven entirely by attacker-supplied content.
+// A review then measured 38.1s of lock hold on a 190KB message of nested <system-reminder> opens,
+// which is what moved the fold to the writer. Now: ~165ns across all five cases.
 //
-//   - named: a /rename in the newest event — rank 0, so the walk breaks immediately. This is
-//     the case that has to be cheap, because it is the common one: every inference request
-//     re-sends the whole conversation, so a /rename from turn 3 is still in the newest event.
+// KEPT, RATHER THAN DELETED WITH THE WALK IT PRICED, because a flat row of five figures is the
+// assertion — it is the cheapest available evidence that no content shape reaches the read path any
+// more. If any case here diverges from the others again, the walk is back.
 //
-//   - user-text: no /rename, so rank 2 is the best available — and rank 2 is always
-//     beatable, so the walk CANNOT terminate. Every message of every event gets three
-//     strings.Index scans. THIS IS THE WORST CASE, which is not the one you would guess.
+// The cases are still named for the shapes they exercise, which now bear on Append rather than on
+// this benchmark: named (a /rename in the newest event, rank 0), user-text (rank 2, unbeatable so
+// nothing terminates early), no-title (assistant-only, rejected on the role comparison), demoted
+// (quickRank guesses rank 1 and titleFrom demotes every one — the screen missing 100% of the time),
+// reminder-only (the shape that drove the old quadratic retry cascade).
 //
-//   - no-title: assistant-only messages. Also a full walk, but 17x cheaper than user-text,
-//     because a role comparison rejects each message before any content scanning happens.
-//
-//   - demoted: every user message carries an unterminated <user_query>, so quickRank guesses
-//     rank 1 on all of them and titleFrom demotes every one to rank 2. THIS IS THE ACCEPTED
-//     WORST CASE, and it exists because the cost argument for this design is "quickRank screens
-//     cheaply, so titleFrom runs rarely" — a benchmark where the screen always misses is what
-//     prices that claim instead of assuming it.
-//
-// Measured when this was written, at benchTurns=300 and maxEvents=100: named 280ns,
-// user-text 228us, no-title 13us, demoted 714us. The ~800x gap between the first and second is
-// what the early break buys, and why the call site can afford this at all. The 3.1x from
-// user-text to demoted is the price of the screen missing every time — the accepted worst case,
-// and small enough that the screen is an optimization rather than a load-bearing assumption.
-//
-// THE STORE RETAINS 100 EVENTS AND sessionTitle SCANS titleScanEvents (64) OF THEM, deliberately:
-// the retained window has to exceed the scan ceiling or the ceiling is untested here and a
-// regression that removes it would not move these numbers at all.
-//
-// Reported rather than asserted: it is a per-poll cost against abctl's two-second refresh,
-// and the useful comparison is named-vs-user-text on one machine, not an absolute number.
+// Reported rather than asserted: it is a per-poll cost against abctl's two-second refresh, and
+// five figures agreeing on one machine is the useful reading, not an absolute number.
 //
 //	go test ./session/ -bench ListSessions_Title -run '^$'
 func BenchmarkListSessions_Title(b *testing.B) {
@@ -265,6 +252,10 @@ func BenchmarkListSessions_Title(b *testing.B) {
 // A SEPARATE BENCHMARK rather than another case in the table above, because the table varies
 // turns (events) and this has to vary messages within ONE event — the two axes multiply, and the
 // quadratic one was invisible while only the first was measured.
+//
+// CALLS sessionTitle, which is now the test-only per-event picker rather than what /v1/sessions
+// serves — see its doc comment. The messages-per-event axis it measures is still live, because
+// titleCandidate walks it on every Append; this reaches that walk through the smaller surface.
 //
 //	go test ./session/ -bench SessionTitle_ReminderFanout -run '^$'
 func BenchmarkSessionTitle_ReminderFanout(b *testing.B) {

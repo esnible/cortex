@@ -1272,3 +1272,183 @@ func waitEvent(t *testing.T, ch <-chan pipeline.SessionEvent, d time.Duration) p
 		return pipeline.SessionEvent{}
 	}
 }
+
+// titleOf reads the title /v1/sessions would serve for one session. Through ListSessions
+// deliberately: the served value is entry.Title, folded by Append, and sessionTitle answers a
+// DIFFERENT question — see entry.Title. A test that calls sessionTitle proves nothing here.
+func titleOf(t *testing.T, s *Store, id string) string {
+	t.Helper()
+	for _, sum := range s.ListSessions() {
+		if sum.ID == id {
+			return sum.Title
+		}
+	}
+	t.Fatalf("no summary for session %q", id)
+	return ""
+}
+
+// titleEvent is one user message, which is all the fold reads.
+func titleEvent(content string) pipeline.SessionEvent {
+	return pipeline.SessionEvent{Inference: &pipeline.InferenceExtension{
+		Messages: []pipeline.InferenceMessage{{Role: "user", Content: content}},
+	}}
+}
+
+// THE FOLD'S TIE-BREAK RULE, which is what /v1/sessions serves: FIRST-WINS, EXCEPT THAT A /rename
+// ALWAYS OVERRIDES.
+//
+// THIS IS NOT sessionTitle's RULE and the two disagree here on purpose. sessionTitle takes the last
+// match in event order, so over two prose messages it answers "second prose" where this answers
+// "first prose". Tested through Append/ListSessions for exactly that reason: the 31 tests in
+// title_test.go drive the other rule and cannot catch a regression in this one.
+//
+// The three-clause condition in Append is what these cases pin, one clause each:
+//   - a strictly better rank replaces          (prose then rename)
+//   - an equal rank does NOT                   (prose then prose, query then query)
+//   - an equal rank at rankRename DOES         (rename then rename)
+func TestAppend_TitleFoldTieBreak(t *testing.T) {
+	rename := func(args string) string {
+		return renamePrefix + "<command-args>" + args + "</command-args>"
+	}
+	for _, tc := range []struct {
+		name     string
+		contents []string
+		want     string
+	}{
+		{
+			// The clause the reviewer's literal `<` would have dropped: re-running /rename must
+			// rename the session, not be ignored because it ties.
+			"a second /rename replaces the first",
+			[]string{rename("first name"), rename("second name")},
+			"second name",
+		},
+		{
+			// First-wins. Under `<=` this would answer "second prose" and the title would shift
+			// on every turn of the conversation.
+			"a second prose message does not replace the first",
+			[]string{"first prose", "second prose"},
+			"first prose",
+		},
+		{
+			// The rank the instruction and the review both leave unmentioned, so it is the one
+			// most likely to be broken silently. Same rule as prose: first-wins.
+			"a second <user_query> does not replace the first",
+			[]string{"<user_query>first query</user_query>", "<user_query>second query</user_query>"},
+			"first query",
+		},
+		{
+			"a /rename overrides earlier prose",
+			[]string{"some prose", rename("the name")},
+			"the name",
+		},
+		{
+			"prose does not override an earlier /rename",
+			[]string{rename("the name"), "later prose"},
+			"the name",
+		},
+		{
+			"a <user_query> overrides earlier prose",
+			[]string{"some prose", "<user_query>the query</user_query>"},
+			"the query",
+		},
+		{
+			"prose does not override an earlier <user_query>",
+			[]string{"<user_query>the query</user_query>", "later prose"},
+			"the query",
+		},
+		{
+			// Across ranks in both directions, to pin that rank dominates recency entirely.
+			"a /rename overrides an earlier <user_query>",
+			[]string{"<user_query>the query</user_query>", rename("the name")},
+			"the name",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := New(time.Hour, 0, 0)
+			defer s.Close()
+			for _, c := range tc.contents {
+				s.Append("sess", titleEvent(c))
+			}
+			if got := titleOf(t, s, "sess"); got != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// A /rename OUTLIVES THE EVENT THAT CARRIED IT. This is the deliberate behaviour reversal in this
+// change: while the title was recomputed per call, trimming the event holding the /rename demoted
+// the session back to later prose.
+//
+// SAME PROPERTY TestAppend_PromptContextSurvivesATrim PINS FOR entry.context, and for the same
+// reason — the fold reads &event, the local parameter, not the tail of sess.Events, so it does not
+// care that the event later leaves the slice. A user who names a session expects the name to stick.
+func TestAppend_TitleSurvivesATrim(t *testing.T) {
+	const maxEvents = 2
+	s := New(time.Hour, maxEvents, 0)
+	defer s.Close()
+
+	s.Append("sess", titleEvent(renamePrefix+"<command-args>my name</command-args>"))
+	for i := 0; i < maxEvents*2; i++ {
+		s.Append("sess", titleEvent(fmt.Sprintf("later prose %d", i)))
+	}
+
+	if got := titleOf(t, s, "sess"); got != "my name" {
+		t.Errorf("got %q, want %q — the name did not survive eviction of its event", got, "my name")
+	}
+
+	// THE TRIM REALLY RAN, asserted rather than inferred: without this the test would pass on a
+	// fixture where nothing was ever evicted.
+	if v := s.View("sess"); v == nil {
+		t.Fatal("no view for the session")
+	} else if len(v.Events) != maxEvents {
+		t.Fatalf("session holds %d events, want %d — no trim happened, so this test proved nothing",
+			len(v.Events), maxEvents)
+	} else if got := sessionTitle(v.Events); got == "my name" {
+		t.Fatal("the /rename is still among the retained events — the fixture evicted the wrong thing")
+	}
+}
+
+// A blank candidate must not claim a rank, or it locks the session out of being named by anything
+// worse. The store-side mirror of what foldsBlank does inside titleCandidate.
+func TestAppend_TitleIgnoresBlankCandidates(t *testing.T) {
+	s := New(time.Hour, 0, 0)
+	defer s.Close()
+
+	// Whitespace and control runes only: non-empty as raw content, blank after sanitizeTitle.
+	s.Append("sess", titleEvent(" \t\n  "))
+	if got := titleOf(t, s, "sess"); got != "" {
+		t.Errorf("blank-only session titled %q, want %q", got, "")
+	}
+	// And a real message behind it still names the session, at the same rank.
+	s.Append("sess", titleEvent("the genuine ask"))
+	if got := titleOf(t, s, "sess"); got != "the genuine ask" {
+		t.Errorf("got %q, want %q — a blank candidate had claimed the rank", got, "the genuine ask")
+	}
+}
+
+// A session nothing has named serves an ABSENT title, not an empty string that a client could
+// mistake for a real one — the omitempty rule SessionSummary.CostMicros states.
+//
+// This also covers the string that used to be here: "(empty session)" was served for a session with
+// no events, CLAUDE.md told clients to expect it, and it was unreachable — the only entry-creation
+// site appends immediately, so a session on the wire always holds at least one event.
+func TestAppend_TitleAbsentWhenNothingNamedIt(t *testing.T) {
+	s := New(time.Hour, 0, 0)
+	defer s.Close()
+
+	s.Append("sess", pipeline.SessionEvent{Tunnel: true, Host: "gateway:443"})
+	if got := titleOf(t, s, "sess"); got != "" {
+		t.Errorf("got %q, want %q", got, "")
+	}
+	b, err := json.Marshal(s.ListSessions())
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(b), `"title"`) {
+		t.Errorf("title key present for an unnamed session: %s", b)
+	}
+	if strings.Contains(string(b), "empty session") {
+		t.Errorf("the retired \"(empty session)\" sentinel reached the wire: %s", b)
+	}
+}

@@ -8,8 +8,6 @@ import (
 	"github.com/rossoctl/cortex/core/pipeline"
 )
 
-const emptySessionTitle = "(empty session)"
-
 // maxTitleLen caps a title, in RUNES. A user message is unbounded — the largest measured
 // event carries ~190KB — and this is served on every /v1/sessions response, whose size is
 // already the constraint that `?before=` exists for.
@@ -24,7 +22,11 @@ const emptySessionTitle = "(empty session)"
 // that answer to different consumers. If they ever need to differ, they can.
 const maxTitleLen = 80
 
-// Title sources, best first. Within one rank the last match in event order wins.
+// Title sources, best first. Lower wins; rankNone means "named nothing".
+//
+// WITHIN ONE RANK THE TIE-BREAK DEPENDS ON THE CALLER, and the two in tree differ: sessionTitle
+// takes the LAST match in event order, Store.Append's fold keeps the FIRST unless the tie is at
+// rankRename. See entry.Title.
 const (
 	rankRename    = 0
 	rankUserQuery = 1
@@ -34,34 +36,20 @@ const (
 
 const renamePrefix = "<command-name>/rename</command-name>"
 
-// titleScanEvents caps how many of a session's NEWEST events sessionTitle examines, which is what
-// makes ListSessions' lock hold bounded rather than proportional to the session.
+// sessionTitle names a session from a slice of its events: a /rename envelope if one is present,
+// else a <user_query> block, else the LAST user message carrying text.
 //
-// A CEILING, NOT A COPY. The call site holds the store's read lock against a writer that is Append
-// on the proxy's request path, and without a bound the walk is O(events × message-content) with
-// maxEvents unset by default and abctl polling every two seconds — ~5ms of lock hold on the repo's
-// cited 5078-event session. Copying the events to walk them unlocked was the other option on the
-// table and is worse: the copy is of exactly the large payload that makes this expensive, so it
-// trades lock hold for an O(content) allocation on every poll, in a package that has just spent a
-// lot of effort deleting that shape from the read path (see core/session/intern.go and
-// core/sessionapi/snapshot.go).
+// TEST-ONLY, AND IT IS NOT WHAT /v1/sessions SERVES. Store.Append folds the title incrementally
+// into entry.Title instead, because this walk could not be afforded under the store's read lock —
+// see the Title call site in ListSessions for the 38.1s measurement that moved it. What survives
+// here is the per-event picker plus the cross-event ranking rule, which is the cheapest way to
+// exercise titleCandidate / titleFrom / stripReminders over a sequence.
 //
-// COSTS ALMOST NOTHING IN PRACTICE because of what the events contain: every inference request
-// re-sends the whole conversation, so the newest event already holds every message of the session.
-// A /rename from turn 3 of a 5000-turn session is still in the newest event and still found. What
-// the cap can lose is a title that was only ever in an event now older than this window — an
-// intent whose conversation has since been replaced wholesale, or a non-inference event kind. That
-// is the same class of loss the store's own eviction already imposes, and the comment on the call
-// site's Title field already tells clients this figure is recomputed and can change.
-//
-// 64 because the worst case per event is a full conversation's worth of message content, so the
-// product is what matters rather than either factor; this keeps the bound near the cost of the
-// benchmark shape that was measured (BenchmarkListSessions_Title, 300 events) rather than near the
-// unbounded one.
-const titleScanEvents = 64
-
-// sessionTitle names a session from its own events: a /rename envelope if one is present,
-// else a <user_query> block, else the last user message carrying text.
+// THE TWO RULES DISAGREE ON PURPOSE, so do not read this as a model of the served value. This
+// answers "last match in event order wins": over two prose messages it picks the SECOND. The fold
+// is first-wins except that a /rename always overrides, so it picks the FIRST. Both are pinned —
+// this by the tests below, the fold by tests that go through Append/ListSessions — and a test
+// added here proves nothing about the wire.
 //
 // SANITIZATION IS PART OF ACCEPTANCE, not a final flourish. A candidate that sanitizes to ""
 // names nothing, and accepting one used to lock its rank and discard the real title behind it:
@@ -74,34 +62,19 @@ const titleScanEvents = 64
 // always beatable and so every user message of every event becomes a candidate. Sanitizing at
 // the moment a candidate would REPLACE the incumbent runs it once per improvement — at most
 // three times for a session, since rank only ever descends.
-//
-// BOUNDED BY titleScanEvents, which is what makes the call site's lock hold O(1) rather than
-// O(session). See that constant.
 func sessionTitle(events []pipeline.SessionEvent) string {
-	if len(events) == 0 {
-		return emptySessionTitle
-	}
-	stop := 0
-	if len(events) > titleScanEvents {
-		stop = len(events) - titleScanEvents
-	}
 	best, bestRank := "", rankNone
-	for i := len(events) - 1; i >= stop; i-- {
+	for i := len(events) - 1; i >= 0; i-- {
 		// Reverse, so the FIRST hit at a rank is the LAST one in event order — hence
 		// `>=` rather than `>`: an earlier event must not displace it at equal rank.
 		r, t := titleCandidate(&events[i])
 		if t == "" || r >= bestRank {
 			continue
 		}
-		// Fold BEFORE accepting, so a whitespace-only candidate does not claim the rank. It is
-		// not merely that the title would be blank — claiming rank 0 would also break the walk
-		// and hide a real /rename in an earlier event.
-		//
-		// REDUNDANT TODAY AND KEPT ANYWAY: titleCandidate now folds at its own acceptance points
-		// (it has to — a blank candidate there hides a title in the SAME event), and the fold is
-		// idempotent, so this re-folds an already-folded string of at most maxTitleLen runes. That
-		// costs nothing measurable and keeps this loop's invariant true on its own terms rather
-		// than by trusting its callee, which is what the blank-candidate bug cost twice.
+		// Fold BEFORE accepting, so a whitespace-only candidate does not claim the rank — claiming
+		// rank 0 would also break the walk and hide a real /rename in an earlier event. Redundant
+		// while titleCandidate screens with foldsBlank, and kept so this loop's invariant holds on
+		// its own terms rather than by trusting its callee.
 		t = sanitizeTitle(t)
 		if t == "" {
 			continue
@@ -194,17 +167,19 @@ func titleCandidate(e *pipeline.SessionEvent) (int, string) {
 	// Settle the deferred rank-2 candidates only if nothing better was found — and, at equal rank,
 	// only if the deferred one is LATER in event order, per the last-match rule.
 	//
-	// THE INDEX COMPARISON IS NOT REDUNDANT, though the old comment here claimed the reverse scan
-	// made it so. The scan visits messages newest-first, so the FIRST rank-2 guess it meets is the
-	// newest one — but a rank-0/1 guess that titleFrom demotes to rank 2 can sit anywhere, including
-	// after deferredHead, and then it is the later of the two. `["early plain prose", "what does
-	// <user_query> mean here"]` is the whole bug: index 1 guesses rank 1, settles at 2, and is the
-	// last user message — yet the deferred index 0 was returned unconditionally.
+	// THE INDEX COMPARISON IS NOT REDUNDANT. The scan visits messages newest-first, so the first
+	// rank-2 guess it meets is the newest one — but a rank-0/1 guess that titleFrom demotes to rank
+	// 2 can sit anywhere, including after deferredHead, and then it is the later of the two.
+	// `["early plain prose", "what does <user_query> mean here"]` is the bug: index 1 guesses rank
+	// 1, settles at 2, and is the last user message — yet the deferred index 0 won regardless.
 	//
-	// AT MOST TWO PASSES, not one: messages between deferredHead and the end are visited only by
-	// the first loop, but those below it can be visited by both. Still linear — two passes over a
-	// prefix, no retries — which is the property that matters; the old "one pass total" claim was
-	// simply wrong about which messages each loop touches.
+	// AT MOST TWO PASSES over a prefix, no retries: messages above deferredHead are visited only by
+	// the first loop, those below it by both. A review asked whether the second visit's titleFrom
+	// could be skipped for indices the first loop already settled. It can, and it is not worth the
+	// bookkeeping: constructing the overlap (a demoted message below a plain-prose guess, 300
+	// messages alternating) measures 8.8µs against 12.3µs for the all-demoted shape, because the
+	// break below stops this loop within an index or two of deferredHead. The redundancy is real
+	// and costs less than the counter that would avoid it.
 	if deferredHead >= 0 && bestRank >= rankUserMsg {
 		for i := deferredHead - 1; i >= 0; i-- {
 			// No quickRank here. Re-classifying costs a second scan of every message, which is
@@ -223,13 +198,10 @@ func titleCandidate(e *pipeline.SessionEvent) (int, string) {
 				// within-event fall-through TestSessionTitle_DemotedPickFallsBackWithinEvent pins.
 				continue
 			}
-			// UNREACHABLE TODAY AND KEPT DELIBERATELY: `r > bestRank` cannot fire, because this
-			// loop only runs when bestRank >= rankUserMsg and titleFrom cannot return worse than
-			// rankUserMsg once foldsBlank has rejected the blanks. Written as the full comparison
-			// anyway so the rule is "better rank wins, then later index wins" in the code and not
-			// only in this comment — a future arm that can settle at a worse rank would otherwise
-			// silently take the wrong branch. Verified dead by mutation: dropping this disjunct
-			// leaves every test passing.
+			// `r > bestRank` cannot fire today (this loop runs only when bestRank >= rankUserMsg,
+			// and titleFrom cannot settle worse once foldsBlank has rejected the blanks). Written
+			// as the full comparison so the rule — better rank wins, then later index — lives in
+			// the code rather than only here.
 			if r > bestRank || (r == bestRank && i < bestIdx) {
 				break // the already-settled pick is better ranked, or equally ranked and later
 			}
@@ -242,20 +214,27 @@ func titleCandidate(e *pipeline.SessionEvent) (int, string) {
 // quickRank guesses a message's rank without stripping reminders, cheaply enough to run on
 // every message of every event.
 //
-// A LOWER BOUND ON COST, NOT A RANK. It is reliable in ONE direction only: a message it calls
-// rank 2 cannot settle better than 2, because it contains neither <user_query> nor a /rename
-// prefix anywhere, and stripping reminders cannot introduce either. Callers may defer such a
-// message and settle it later.
+// A SCREEN, NOT A RANK, AND NOT AN INVARIANT IN EITHER DIRECTION. titleFrom is the only
+// authority on what a message settles at; this exists solely to keep titleFrom off the messages
+// where the answer is almost always rank 2. An earlier comment here claimed rank 2 was reliable
+// — that the guess could never be beaten, because such a message contains neither <user_query>
+// nor a /rename prefix and stripping reminders could not introduce one. The last clause is
+// false: stripReminders SPLICES, joining the head before the first block to the tail after the
+// last, so "<user_qu" + "<system-reminder>…</system-reminder>" + "ery>ask</user_query>" carries
+// no "<user_query>" as sent and does once stripped. Contrived rather than observed, and the cost
+// of being wrong is one under-ranked title, so it is not worth a scan to close.
 //
-// IN THE OTHER DIRECTION IT OVER-PROMISES, and the comment here used to claim otherwise —
-// "never worse" was false in two ways, both now covered by tests:
+// IT OVER-PROMISES TOO, in two ways both covered by tests:
 //
 //   - rank 1 for an UNTERMINATED <user_query>: Contains finds the open tag, but between() needs
 //     a closing tag and returns "", so titleFrom falls through to rank 2.
 //   - rank 0 or 1 for a message whose payload is empty once extracted (`<command-args></command-args>`,
 //     `<user_query> </user_query>`), which settles at rankNone.
 //
-// So a rank-0 or rank-1 guess MUST be settled by titleFrom before its rank is recorded.
+// So a rank-0 or rank-1 guess MUST be settled by titleFrom before its rank is recorded, and a
+// rank-2 guess may be deferred — but a caller must not treat a deferred message's rank as known
+// without calling titleFrom, which is why titleCandidate's deferred arm calls it rather than
+// trusting the screen.
 //
 // Contains for BOTH tags, not HasPrefix for the /rename envelope. HasPrefix systematically
 // under-rated a reminder-prefixed /rename to rank 2, which is how a later genuine /rename lost
@@ -360,30 +339,45 @@ const (
 	transcriptOpen = "<transcript>"
 )
 
-// stripReminders excises every <system-reminder>…</system-reminder> span and returns what
-// surrounds them. The harness injects these blocks into the user turn it is attached to, so
-// without this the block itself becomes the title and the real prompt — which sits after it —
-// is never reached.
+// stripReminders returns what surrounds the reminder blocks: everything before the FIRST
+// <system-reminder> joined to everything after the LAST </system-reminder>. The harness injects
+// these blocks into the user turn it is attached to, so without this the block itself becomes the
+// title and the real prompt — which sits after it — is never reached.
 //
-// SPLICES rather than keeping only the tail: of the user turns in local transcripts that carry
-// a reminder alongside real prose, 67 of 68 have text on BOTH sides of the block. The seam is
-// left as-is; sanitizeTitle folds "before\n" + "\nafter" to one space later.
+// DELIBERATELY UNBALANCED, and that is a DoS fix rather than a simplification. The previous version
+// paired each open with its own close by tracking depth, which re-scanned the tail once per nesting
+// level: a 190KB message of nested open tags (11,444 of them, all attacker-supplied) took 593ms
+// here, and ListSessions called this under s.mu.RLock() whose writer side is Store.Append on the
+// proxy's request path — 38.1s of lock hold over a 64-event window of such events.
+//
+// Two index scans cannot go quadratic regardless of what the content nests. On that same 190KB
+// fixture, measured three ways because the shapes differ by four orders of magnitude and only the
+// worst one is worth quoting: 250µs with no close tag anywhere (Index finds the open at byte 0,
+// then LastIndex scans the whole payload backward for a close that is not there — THE WORST CASE,
+// and 2400x better than the 593ms it replaces), 31ns once a close is present, 2.4µs for content
+// with no reminder at all. Through the real path a single hostile Append is 452µs and the
+// ListSessions that was 38.1s is now 1.6µs.
+//
+// THE LOCK HOLD WAS FIXED TWICE OVER, and this is the half that still matters. The title is now
+// folded at Append, so ListSessions no longer calls this at all — but Append does, on the request
+// path, still holding the write lock. A quadratic scan there is the same denial of service with a
+// different call stack, which is why the ceiling that once bounded the read side was not a fix.
+//
+// TWO ACCEPTED LOSSES, both real and both pinned by tests rather than left to be rediscovered:
+//
+//   - PROSE BETWEEN TWO BLOCKS IS DROPPED. "<sr>a</sr>mid<sr>b</sr>tail" yields "tail", not
+//     "mid tail". The 67-of-68 evidence that user turns carry prose on both sides of a block
+//     argued for excising each block and splicing; this keeps the outermost pair instead. It
+//     costs a title, on a field documented as a suggestion, and nothing else.
+//   - AN UNTERMINATED OPEN TRUNCATES. "what does <system-reminder> mean" yields "what does ",
+//     where the old version returned it verbatim — so this is narrower than the policy
+//     TestSessionTitle_UnclosedTag states for <user_query>, which keeps the raw string because
+//     the tag name can appear in ordinary prose. Unlike a blank result this does NOT fall
+//     through to an earlier real title: "what does " is non-blank and wins. Tolerated because
+//     the alternative is scanning for balance, which is the thing that was quadratic.
 //
 // Called once at the top of titleFrom, so every rank arm sees content with the blocks already
 // gone — see the comment there for why that matters to all three and not just rank 2.
-//
-// NESTED BLOCKS ARE MATCHED BY DEPTH, so an inner block does not terminate the outer one. The
-// non-nesting version leaked the outer closing tag and dropped the text between the two open
-// tags: "prose <sr>a<sr>b</sr> outer-tail</sr> real ask" left
-// "prose  outer-tail</system-reminder> real ask" — a stray tag in a title, and the reason to
-// track depth rather than pair each open with the next close. "<sr>a<sr>b</sr>c" now excises the
-// whole span and yields "", where before it yielded "c".
-//
-// An UNTERMINATED open tag is left alone, matching the policy between() fixes for <user_query>:
-// the tag name can appear in ordinary prose (someone discussing this very code), so the whole
-// message stays a reasonable title rather than being cut at a tag that closes nothing. With depth
-// tracking that extends to a block whose closes do not balance its opens: the remainder from the
-// outermost unbalanced open is kept verbatim, tags and all.
 //
 // Matched literally in lowercase, which is the only form the harness emits into an inference
 // payload. core/observe/claude canonicalises tag names because a capitalised variant reached
@@ -396,41 +390,20 @@ func stripReminders(s string) string {
 	// The common case is no reminder at all, and this runs on every message of every event: a
 	// session whose best rank is 2 can never terminate the reverse walk early, since rank 2 is
 	// always beatable. One Index over the message beats building a string for each.
-	if !strings.Contains(s, reminderOpen) {
+	i := strings.Index(s, reminderOpen)
+	if i < 0 {
 		return s
 	}
-	var b strings.Builder
-	b.Grow(len(s))
-	for {
-		i := strings.Index(s, reminderOpen)
-		if i < 0 {
-			break
-		}
-		// Walk forward from the open tag, tracking depth, so a nested open tag consumes its own
-		// close rather than letting the inner close terminate the outer block.
-		depth, rest := 1, s[i+len(reminderOpen):]
-		for depth > 0 {
-			nextOpen := strings.Index(rest, reminderOpen)
-			nextClose := strings.Index(rest, reminderClose)
-			if nextClose < 0 {
-				break // unbalanced from here on
-			}
-			if nextOpen >= 0 && nextOpen < nextClose {
-				depth++
-				rest = rest[nextOpen+len(reminderOpen):]
-				continue
-			}
-			depth--
-			rest = rest[nextClose+len(reminderClose):]
-		}
-		if depth > 0 {
-			break // unterminated: keep the remainder verbatim, tags and all
-		}
-		b.WriteString(s[:i])
-		s = rest
+	// LastIndex, not Index: pairing the first open with the FIRST close is what leaks a stray
+	// "</system-reminder>" into the title when the blocks nest, since the inner close arrives
+	// first. Searching the whole string from the right is one scan either way.
+	j := strings.LastIndex(s, reminderClose)
+	if j < i {
+		// No close after the first open — including a close that sits in prose BEFORE it, which
+		// is why this compares against i rather than testing j < 0. Keep the head.
+		return s[:i]
 	}
-	b.WriteString(s)
-	return b.String()
+	return s[:i] + s[j+len(reminderClose):]
 }
 
 // between returns the text bracketed by open and closing, or "" if either is absent.

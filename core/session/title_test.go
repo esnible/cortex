@@ -23,17 +23,24 @@ func renameMsg(args string) string {
 	return renamePrefix + "<command-args>" + args + "</command-args>"
 }
 
+// No events names nothing, and that is now the SAME answer as events that name nothing: "",
+// absent on the wire.
+//
+// IT USED TO BE "(empty session)", a distinct sentinel, and this test is what is left of it. The
+// string was unreachable through the API — the only entry-creation site appends immediately and
+// planTrim never trims below maxEvents >= 1 — so it could only ever be produced by a direct call
+// like this one, while CLAUDE.md told clients to expect it on the wire. Kept as a test so the
+// no-events path is still pinned to SOMETHING rather than going unexercised.
 func TestSessionTitle_EmptySlice(t *testing.T) {
-	if got := sessionTitle(nil); got != emptySessionTitle {
-		t.Errorf("nil slice = %q, want %q", got, emptySessionTitle)
+	if got := sessionTitle(nil); got != "" {
+		t.Errorf("nil slice = %q, want %q", got, "")
 	}
-	if got := sessionTitle([]pipeline.SessionEvent{}); got != emptySessionTitle {
-		t.Errorf("empty slice = %q, want %q", got, emptySessionTitle)
+	if got := sessionTitle([]pipeline.SessionEvent{}); got != "" {
+		t.Errorf("empty slice = %q, want %q", got, "")
 	}
 }
 
-// An event with no user text is not the same as no events: "" (absent on the wire), not
-// "(empty session)", which would claim the session had nothing in it at all.
+// An event with no user text names nothing: "", absent on the wire.
 func TestSessionTitle_NoMatch(t *testing.T) {
 	events := []pipeline.SessionEvent{
 		{Inference: &pipeline.InferenceExtension{Messages: []pipeline.InferenceMessage{
@@ -153,9 +160,17 @@ func TestSessionTitle_StripsReminder(t *testing.T) {
 			"my question and the follow-up",
 		},
 		{
-			"repeated blocks",
+			// PROSE BETWEEN TWO BLOCKS IS LOST, and this pins the loss rather than the splice it
+			// replaced ("midtail"). stripReminders keeps what precedes the FIRST open and what
+			// follows the LAST close, so `mid` — which is between two blocks — goes with them.
+			//
+			// An accepted trade, not an oversight: excising each block separately means pairing
+			// opens with closes, and doing that by depth is what cost 593ms on a 190KB nested
+			// message under the store's read lock. Costs a title on a field documented as a
+			// suggestion. See stripReminders.
+			"repeated blocks lose the prose between them",
 			"<system-reminder>a</system-reminder>mid<system-reminder>b</system-reminder>tail",
-			"midtail",
+			"tail",
 		},
 		{
 			"adjacent blocks",
@@ -227,12 +242,29 @@ func TestSessionTitle_DemotedPickFallsBackWithinEvent(t *testing.T) {
 	}
 }
 
-// Mirrors TestSessionTitle_UnclosedTag's stated asymmetry: a tag that can appear in ordinary
-// prose must not truncate the title when it closes nothing.
-func TestSessionTitle_UnterminatedReminder(t *testing.T) {
+// AN UNTERMINATED <system-reminder> TRUNCATES THE TITLE AT IT, and this test exists to pin that
+// loss because it is the least defensible thing about stripReminders.
+//
+// IT NO LONGER MIRRORS TestSessionTitle_UnclosedTag, which it used to and which still holds for
+// <user_query>: there, a tag that closes nothing leaves the raw string alone, on the reasoning that
+// the tag name can appear in ordinary prose (someone discussing this very code — which is exactly
+// the fixture below). <system-reminder> is deliberately narrower now. Recovering the old behaviour
+// means finding whether the opens balance the closes, and that scan is what made a 190KB nested
+// message cost 593ms under the store's read lock.
+//
+// WORSE THAN A BLANK, and worth knowing: a blank result falls through to a real title in an earlier
+// message (TestSessionTitle_ReminderOnlyFallsThrough), but "what does " is non-blank, so it WINS at
+// rank 2 and the prose after the tag is unreachable. The second event here proves the fall-through
+// is not what rescues this case.
+func TestSessionTitle_UnterminatedReminderTruncates(t *testing.T) {
 	in := "what does <system-reminder> mean in this code"
-	if got := sessionTitle([]pipeline.SessionEvent{userEvent(in)}); got != in {
-		t.Errorf("got %q, want the raw string %q", got, in)
+	if got := sessionTitle([]pipeline.SessionEvent{userEvent(in)}); got != "what does" {
+		t.Errorf("got %q, want %q — the truncation is the documented loss", got, "what does")
+	}
+	// Non-blank, so it beats an earlier real title rather than deferring to it.
+	events := []pipeline.SessionEvent{userEvent("an earlier genuine ask"), userEvent(in)}
+	if got := sessionTitle(events); got != "what does" {
+		t.Errorf("got %q, want %q — a truncated title must still win at its rank", got, "what does")
 	}
 }
 
@@ -367,6 +399,51 @@ func TestSessionTitle_ClipsToMaxTitleLen(t *testing.T) {
 		in := strings.Repeat("y", maxTitleLen)
 		if got := sessionTitle([]pipeline.SessionEvent{userEvent(in)}); got != in {
 			t.Errorf("a title exactly at the cap was altered: %d runes", utf8.RuneCountInString(got))
+		}
+	})
+
+	// AN ACCEPTED LOSS, pinned so it is a decision rather than a surprise: the cut is a plain rune
+	// slice, so it can land BETWEEN a base rune and its combining mark and silently change the
+	// character. A decomposed "é" (U+0065 U+0301) whose base sits at rune index 79 keeps the bare
+	// "e" and drops the acute — "café" clipped becomes "cafe", not a replacement char and not
+	// invalid UTF-8.
+	//
+	// Not fixed, because fixing it means a grapheme-cluster boundary (golang.org/x/text/unicode/norm
+	// or a segmentation table) for a display suggestion that is already truncated, and the failure
+	// mode is one accent on the 80th rune of a clipped title. The sanitize table's "combining mark
+	// survives" case covers the short-title path, which is the one that matters; this covers the
+	// boundary the reviewer found unpinned. THE OFF-BY-ONE IS THE ASSERTION: at base 78 the pair
+	// fits intact, at 79 the mark is severed, at 80 both are cut — so a clip that moved by one rune
+	// in either direction fails here.
+	t.Run("a combining mark at the cut is lost", func(t *testing.T) {
+		// The wants are WRITTEN AS ESCAPES, not as the literal "é". A Go source literal "é" is the
+		// COMPOSED U+00E9 — one rune — while this fixture builds the DECOMPOSED U+0065 U+0301, and
+		// the two are different strings that no comparison here normalizes. Spelling the composed
+		// form by accident is how the first draft of this test failed against correct code.
+		for _, tc := range []struct {
+			base int
+			want string // the last runes of the clipped title
+		}{
+			{78, "é"}, // base at 78, mark at 79 — both inside the cap, pair intact
+			{79, "ae"}, // base at 79, mark at 80 — the mark is cut, the base survives BARE
+			{80, "aa"}, // base at 80 — both cut, no fragment left behind
+		} {
+			in := strings.Repeat("a", tc.base) + "é" + "trailing prose"
+			got := sessionTitle([]pipeline.SessionEvent{userEvent(in)})
+			if n := utf8.RuneCountInString(got); n != maxTitleLen {
+				t.Errorf("base=%d: clipped to %d runes, want %d", tc.base, n, maxTitleLen)
+			}
+			if !utf8.ValidString(got) {
+				t.Errorf("base=%d: clip produced invalid UTF-8: %q", tc.base, got)
+			}
+			if !strings.HasSuffix(got, tc.want) {
+				t.Errorf("base=%d: title ends %q, want suffix %q", tc.base, got, tc.want)
+			}
+			// The severed case must not leave a DANGLING MARK either — a title opening with a
+			// combining mark renders on top of whatever precedes it in a TUI cell.
+			if strings.HasPrefix(got, "́") {
+				t.Errorf("base=%d: title starts with a bare combining mark: %q", tc.base, got)
+			}
 		}
 	})
 
@@ -603,13 +680,19 @@ func TestSessionTitle_RenameEnvelopeBehindProseIsRank2(t *testing.T) {
 	}
 }
 
-// THE SCAN STOPS AT titleScanEvents, which is what bounds ListSessions' lock hold. Pinned in both
-// directions: a title inside the window is found, one older than it is not — the cap is a real
-// behaviour change and not just a performance note, so it needs a test that fails if someone
-// removes it OR quietly widens it to "whole session".
-func TestSessionTitle_ScanCeiling(t *testing.T) {
-	// A /rename is rank 0 and would otherwise beat everything and break the walk, so it is the
-	// strongest possible candidate to place out of reach.
+// THE WALK HAS NO CEILING: a /rename is found however far back it sits, including in the very
+// oldest event of a long session.
+//
+// THIS REPLACES A TEST THAT PINNED THE OPPOSITE. An earlier titleScanEvents capped the walk at the
+// 64 newest events, because this ran under the store's read lock and an unbounded walk was a
+// liability there. The cap bounded the event count without bounding the cost of any one event —
+// 38.1s of lock hold at the ceiling, on a nested-reminder message — so the fix moved the title off
+// the read path entirely (Store.Append folds it; see entry.Title) and the ceiling went with it.
+// Pinned in this direction now so a future reader does not reintroduce a cap here believing it
+// still guards a lock.
+func TestSessionTitle_NoScanCeiling(t *testing.T) {
+	// A /rename is rank 0, the strongest possible candidate, so placing it in the oldest event
+	// proves the walk reached the end rather than stopping at some window.
 	build := func(titleAt int, total int) []pipeline.SessionEvent {
 		evs := make([]pipeline.SessionEvent, 0, total)
 		for i := 0; i < total; i++ {
@@ -621,23 +704,13 @@ func TestSessionTitle_ScanCeiling(t *testing.T) {
 		}
 		return evs
 	}
-	total := titleScanEvents + 20
+	const total = 200 // comfortably past the 64 the old ceiling used
 
-	// Newest event inside the window: found.
-	if got := sessionTitle(build(total-1, total)); got != "the name" {
-		t.Errorf("newest event: got %q, want %q", got, "the name")
-	}
-	// Oldest event still inside the window: found.
-	if got := sessionTitle(build(total-titleScanEvents, total)); got != "the name" {
-		t.Errorf("oldest in-window event: got %q, want %q", got, "the name")
-	}
-	// One event past the window: not reached, so the newest filler names it instead.
-	if got := sessionTitle(build(total-titleScanEvents-1, total)); got != "filler prose" {
-		t.Errorf("first out-of-window event: got %q, want %q — the ceiling is not being applied", got, "filler prose")
-	}
-	// A session shorter than the window is walked entirely.
-	if got := sessionTitle(build(0, titleScanEvents)); got != "the name" {
-		t.Errorf("short session: got %q, want %q", got, "the name")
+	for _, titleAt := range []int{total - 1, total - 64, total - 65, 0} {
+		if got := sessionTitle(build(titleAt, total)); got != "the name" {
+			t.Errorf("/rename at event %d of %d: got %q, want %q — the walk stopped early",
+				titleAt, total, got, "the name")
+		}
 	}
 }
 
@@ -703,8 +776,14 @@ func TestSessionTitle_LaterReminderPrefixedRenameWins(t *testing.T) {
 	}
 }
 
-// Nested reminder blocks must be matched by DEPTH. Pairing each open with the next close leaked
-// the outer closing tag into the title and dropped the text between the two open tags.
+// NESTED REMINDER BLOCKS MUST LEAVE NO STRAY TAG IN THE TITLE, which is the property that matters
+// and the one that survived the rewrite. It is now got by keeping only what precedes the FIRST open
+// and follows the LAST close, rather than by pairing opens with closes by depth — the depth walk
+// re-scanned the tail per level and cost 593ms on a 190KB nested message, under the store's read
+// lock. Both approaches leave no tag behind; only one of them is linear.
+//
+// (The earlier non-nesting version paired each open with the NEXT close, which is what leaked
+// "</system-reminder>" into a title and dropped the text between two opens.)
 func TestSessionTitle_NestedReminders(t *testing.T) {
 	for _, tc := range []struct{ name, in, want string }{
 		{
@@ -718,11 +797,14 @@ func TestSessionTitle_NestedReminders(t *testing.T) {
 			"the ask",
 		},
 		{
-			// Unbalanced: two opens, one close. The remainder is kept verbatim, matching the
-			// unterminated policy TestSessionTitle_UnterminatedReminder pins.
-			"unbalanced opens keep the remainder",
+			// Unbalanced: two opens, one close. NO LONGER KEPT VERBATIM — everything up to the
+			// last close goes, leaving "c". The old behaviour returned the whole string on the
+			// "an unclosed tag must not truncate" policy; see
+			// TestSessionTitle_UnterminatedReminderTruncates for why that policy no longer
+			// extends to this tag. What still holds is the part worth holding: no tag leaks.
+			"unbalanced opens do not keep the remainder",
 			"<system-reminder>a<system-reminder>b</system-reminder>c",
-			"<system-reminder>a<system-reminder>b</system-reminder>c",
+			"c",
 		},
 		{
 			"three deep",
