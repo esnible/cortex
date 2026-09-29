@@ -89,18 +89,20 @@ type entry struct {
 	money []eventMoney
 
 	// Title is this session's name and titleRank the rank that named it, folded by Append and
-	// read by ListSessions. See sessionTitle for the ranks themselves.
+	// read by ListSessions. See the rank constants in title.go for the ranks themselves.
 	//
 	// FIRST-WINS, EXCEPT THAT A /rename ALWAYS OVERRIDES: Append replaces these when a candidate
 	// ranks strictly better, and additionally when an equally-ranked candidate is a rename. So
 	// ordinary conversation names a session by its FIRST prompt and the name then stays put,
 	// while an explicit /rename can rename it at any time, repeatedly.
 	//
-	// THIS DIVERGES FROM sessionTitle AT THE OTHER TWO RANKS, deliberately, and a reader comparing
-	// the two will find them disagreeing: sessionTitle answers "last match in event order wins",
-	// so over two prose messages it picks the second where this picks the first. That function is
-	// the per-event picker, not the served value. The tests that drive it directly pin it on its
-	// own terms; the fold's rule is pinned through Append/ListSessions.
+	// FIRST-WINS ACROSS EVENTS, LAST-WINS WITHIN ONE, and the two rules meeting here is deliberate
+	// rather than an inconsistency to reconcile. titleCandidate scans one event's messages in
+	// REVERSE, so within a single inference request — which carries the whole conversation — the
+	// newest user message is the ask. The fold then keeps whichever event named the session first.
+	// A session is therefore named by its first prompt and keeps that name, while the messages of
+	// any one request are read newest-first. TestSessionTitle_LastUserMessage asserts both halves
+	// side by side, because reading either one alone suggests the other.
 	//
 	// AN EXTREMUM, NOT A SUM, so this is in context's class below and not cost's: nothing is
 	// accumulated, so a trim has nothing to subtract, and it is NOT maintained in lockstep with
@@ -109,8 +111,9 @@ type entry struct {
 	// That is the intended behavior (a user who names a session expects the name to stick) and it
 	// is the same property TestAppend_PromptContextSurvivesATrim pins for context.
 	//
-	// FOLDED AT APPEND BECAUSE THE READ PATH COULD NOT AFFORD IT. ListSessions used to call
-	// sessionTitle under s.mu.RLock(), which walks message CONTENT — the largest payload here. A
+	// FOLDED AT APPEND BECAUSE THE READ PATH COULD NOT AFFORD IT. ListSessions used to pick the
+	// title per call, under s.mu.RLock(), by walking the retained events and their message
+	// CONTENT — the largest payload here, and the walk is now deleted along with its helper. A
 	// 190KB message of nested <system-reminder> opens measured 593ms of lock hold, and 38.1s at
 	// the scan ceiling, against a writer side that is Append on the proxy's request path with
 	// attacker-controlled content. Two integers and a string here; no walk there.
@@ -310,6 +313,31 @@ func (s *Store) Append(sessionID string, event pipeline.SessionEvent) {
 	// of every session on abctl's two-second poll; see entry.cost.
 	money := moneyOf(&event)
 
+	// BEFORE THE LOCK FOR THE SAME REASON, and unlike sess.context.Add below — see the comment
+	// there, which correctly declines to hoist a phase check and a couple of int adds. This is not
+	// that: titleCandidate walks every message of the event and, for each one whose rank is worth
+	// settling, scans its CONTENT (stripReminders plus the tag extractions). That is the largest
+	// payload on this path and it is attacker-supplied.
+	//
+	// MEASURED BOTH WAYS, because "it scans content" is not on its own an argument. One goroutine
+	// appending the 190KB nested-open fixture in a loop, against a concurrent ListSessions:
+	//
+	//   candidate extracted inside the lock:   reader mean 259µs, worst 2.51ms
+	//   candidate extracted here (this line):  reader mean 319ns, worst 28.1µs
+	//
+	// ~810x on the mean. Note what did NOT change: serial Append stayed at ~578µs, because the scan
+	// is O(content) and cannot be made cheap — the work moved off the critical section rather than
+	// going away, which is the whole claim. It belongs here because it is a pure function of the
+	// local event and touches no store state.
+	//
+	// WHY THAT MATTERS HERE RATHER THAN BEING A MICRO-OPTIMISATION: Append is called synchronously
+	// from the reverseproxy, forwardproxy and extproc request paths, so this lock sits in front of
+	// live proxied traffic, and the writer side excludes every reader and every other appender.
+	//
+	// Only the candidate's EXTRACTION is hoisted, which is the expensive half; the rank comparison
+	// and sanitizeTitle both stay under the lock, for the reason given at the fold site below.
+	titleRank, titleText := titleCandidate(&event)
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -379,20 +407,37 @@ func (s *Store) Append(sessionID string, event pipeline.SessionEvent) {
 	// Equal/After chain: tens of nanoseconds, no allocation, NO DECODE. Splitting it to hoist the
 	// extraction would add an exported type for plumbing alone and save nothing measurable.
 	sess.context.Add(&event)
-	// AND THE TITLE, on the same terms: read from &event, the local parameter, so the fold
-	// outlives the events it was read from — see entry.Title, and entry.context just above for
-	// why sourcing the candidate from the stored slice is what breaks that property.
+	// AND THE TITLE — but NOT on the same terms, and an earlier revision of this comment claimed
+	// otherwise. The candidate was extracted ABOVE THE LOCK, because unlike context.Add it scans
+	// message content; see the hoist for the measurement. What is left here is the comparison.
+	//
+	// Read from &event, the local parameter, so the fold outlives the events it was read from — see
+	// entry.Title, and entry.context just above for why sourcing the candidate from the stored slice
+	// is what breaks that property.
 	//
 	// THE SECOND DISJUNCT IS THE WHOLE RULE, not a tie-break detail: without it a re-rename is
 	// silently ignored, because the equal rank never beats the one already held. Widening it to a
 	// plain `<=` instead is the opposite failure — the title then shifts on every turn, since each
 	// new prose message equals the rank of the last.
-	if r, t := titleCandidate(&event); t != "" && (r < sess.titleRank || (r == sess.titleRank && r == rankRename)) {
-		// Folded here rather than in ListSessions because this runs once per event where that runs
-		// once per poll per session, and because a candidate that folds to nothing must not claim
-		// the rank — the same reason titleCandidate screens with foldsBlank.
-		if t = sanitizeTitle(t); t != "" {
-			sess.Title, sess.titleRank = t, r
+	//
+	// THE BLANK SCREEN IS REDUNDANT AND NO TEST CAN SHOW IT, which is worth saying rather than
+	// leaving as a surviving mutant for the next reader to re-derive. titleCandidate returns ""
+	// only ever paired with rankNone (enumerated: every blank-folding shape — empty, whitespace,
+	// reminder-only, an empty <user_query> — comes back as rankNone), and rankNone is the value a
+	// fresh entry is initialised to, so `rankNone < rankNone` is false and the rank test alone
+	// already rejects it. Deleting `titleText != ""` changes no behaviour today; it is kept as a
+	// local statement of what the fold requires, so a future titleCandidate that starts returning
+	// a blank at a real rank fails here instead of storing one.
+	if titleText != "" && (titleRank < sess.titleRank || (titleRank == sess.titleRank && titleRank == rankRename)) {
+		// sanitizeTitle STAYS UNDER THE LOCK, deliberately, and it is the one part of this worth
+		// leaving. It runs only on a candidate that has already beaten the held rank — so at most
+		// once per rank improvement per session, not once per event — and under first-wins a session
+		// improves its rank at most three times in its life unless it is being renamed. Hoisting it
+		// would mean sanitizing every event's candidate including the ones about to be discarded,
+		// which is strictly more work on the same path: 938µs on a 190KB candidate, paid per append
+		// rather than per improvement.
+		if t := sanitizeTitle(titleText); t != "" {
+			sess.Title, sess.titleRank = t, titleRank
 		}
 	}
 	sess.UpdatedAt = now
@@ -793,8 +838,8 @@ func (s *Store) ListSessions() []SessionSummary {
 			// carried it.
 			//
 			// THE WALK THAT USED TO BE HERE IS WHY THIS FIELD IS FOLDED AT ALL, and it is worth
-			// naming because the comment it replaced argued the walk was affordable. It called
-			// sessionTitle, which scans message CONTENT — the largest payload here — and an
+			// naming because the comment it replaced argued the walk was affordable. It reverse-
+			// walked the retained events, scanning message CONTENT — the largest payload here — and an
 			// earlier ceiling on how many events it examined bounded the count without bounding
 			// the cost of any one of them. A 190KB message of nested <system-reminder> opens
 			// measured 593ms of lock hold, 38.1s at that ceiling, all of it under s.mu.RLock()

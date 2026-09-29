@@ -23,20 +23,42 @@ func renameMsg(args string) string {
 	return renamePrefix + "<command-args>" + args + "</command-args>"
 }
 
-// No events names nothing, and that is now the SAME answer as events that name nothing: "",
-// absent on the wire.
+// candidateTitle is what ONE event offers as a title, sanitized — the per-event half of what a
+// since-deleted per-session picker used to do inline. Most of this file's cases are about content: which tag
+// wins, what a reminder does to it, where the clip falls. Those need one event and nothing else,
+// so they assert on this rather than going through a store.
 //
-// IT USED TO BE "(empty session)", a distinct sentinel, and this test is what is left of it. The
-// string was unreachable through the API — the only entry-creation site appends immediately and
-// planTrim never trims below maxEvents >= 1 — so it could only ever be produced by a direct call
-// like this one, while CLAUDE.md told clients to expect it on the wire. Kept as a test so the
-// no-events path is still pinned to SOMETHING rather than going unexercised.
-func TestSessionTitle_EmptySlice(t *testing.T) {
-	if got := sessionTitle(nil); got != "" {
-		t.Errorf("nil slice = %q, want %q", got, "")
+// The two-line body is deliberately the same order Append uses (titleCandidate, then sanitizeTitle
+// on the winner, then "" for rankNone), so a case that passes here is describing the served
+// behaviour and not a test-only variant of it. What it does NOT model is the cross-event tie-break
+// — that is the fold's business, and foldTitle in store_test.go is where those cases live.
+func candidateTitle(ev pipeline.SessionEvent) string {
+	r, t := titleCandidate(&ev)
+	if r == rankNone {
+		return ""
 	}
-	if got := sessionTitle([]pipeline.SessionEvent{}); got != "" {
-		t.Errorf("empty slice = %q, want %q", got, "")
+	return sanitizeTitle(t)
+}
+
+// A SESSION WITH NO NAMEABLE EVENT IS UNNAMED — "", absent on the wire.
+//
+// IT USED TO BE "(empty session)", a distinct sentinel for the zero-EVENTS case, and this test is
+// what is left of that. Two things retired it. The sentinel was unreachable through the API to
+// begin with (the only entry-creation site appends immediately, and planTrim never trims below
+// maxEvents >= 1), so it could only ever be produced by calling the picker directly on an empty
+// slice — and that picker is now deleted, leaving no caller in the package that can pass zero
+// events. What remains checkable is the case a real session can actually be in: it exists, it has
+// events, and none of them named it. Same answer, and now the only one.
+func TestSessionTitle_NothingNamesTheSession(t *testing.T) {
+	// An event with no Inference extension at all, then one whose only message is not from the user.
+	events := []pipeline.SessionEvent{
+		{Host: "api.example.com"},
+		{Inference: &pipeline.InferenceExtension{Messages: []pipeline.InferenceMessage{
+			{Role: "assistant", Content: "an answer nobody asked for"},
+		}}},
+	}
+	if got := foldTitle(t, events...); got != "" {
+		t.Errorf("got %q, want %q — something named a session that nothing in it named", got, "")
 	}
 }
 
@@ -49,7 +71,7 @@ func TestSessionTitle_NoMatch(t *testing.T) {
 		}}},
 		{Host: "api.example.com"}, // Inference == nil
 	}
-	if got := sessionTitle(events); got != "" {
+	if got := foldTitle(t, events...); got != "" {
 		t.Errorf("no user text = %q, want %q", got, "")
 	}
 }
@@ -61,7 +83,7 @@ func TestSessionTitle_RenameWinsOverLaterInference(t *testing.T) {
 		userEvent(renameMsg("Fix the parser")),
 		userEvent("and now do something else entirely"),
 	}
-	if got := sessionTitle(events); got != "Fix the parser" {
+	if got := foldTitle(t, events...); got != "Fix the parser" {
 		t.Errorf("got %q, want %q — a later user message outranked a /rename", got, "Fix the parser")
 	}
 }
@@ -71,12 +93,12 @@ func TestSessionTitle_RenameLastWins(t *testing.T) {
 		userEvent(renameMsg("first name")),
 		userEvent(renameMsg("second name")),
 	}
-	if got := sessionTitle(events); got != "second name" {
+	if got := foldTitle(t, events...); got != "second name" {
 		t.Errorf("got %q, want %q", got, "second name")
 	}
 	// Two renames inside ONE event: the forward inner loop must also take the later.
 	one := []pipeline.SessionEvent{userEvent(renameMsg("early"), renameMsg("late"))}
-	if got := sessionTitle(one); got != "late" {
+	if got := foldTitle(t, one...); got != "late" {
 		t.Errorf("same-event renames: got %q, want %q", got, "late")
 	}
 }
@@ -85,17 +107,17 @@ func TestSessionTitle_UserQuery(t *testing.T) {
 	events := []pipeline.SessionEvent{
 		userEvent("preamble <user_query>find the bug</user_query> trailer"),
 	}
-	if got := sessionTitle(events); got != "find the bug" {
+	if got := foldTitle(t, events...); got != "find the bug" {
 		t.Errorf("got %q, want %q", got, "find the bug")
 	}
 	// Outranks a plain user message that came later...
 	events = append(events, userEvent("some follow-up"))
-	if got := sessionTitle(events); got != "find the bug" {
+	if got := foldTitle(t, events...); got != "find the bug" {
 		t.Errorf("a later plain message outranked <user_query>: got %q", got)
 	}
 	// ...but loses to a /rename, wherever it sits.
 	events = append(events, userEvent(renameMsg("explicit")))
-	if got := sessionTitle(events); got != "explicit" {
+	if got := foldTitle(t, events...); got != "explicit" {
 		t.Errorf("<user_query> outranked a /rename: got %q", got)
 	}
 }
@@ -103,13 +125,23 @@ func TestSessionTitle_UserQuery(t *testing.T) {
 func TestSessionTitle_LastUserMessage(t *testing.T) {
 	// Last user message within one event.
 	one := []pipeline.SessionEvent{userEvent("first ask", "second ask")}
-	if got := sessionTitle(one); got != "second ask" {
+	if got := foldTitle(t, one...); got != "second ask" {
 		t.Errorf("within one event: got %q, want %q", got, "second ask")
 	}
-	// A later event beats an earlier one at the same rank.
+	// ACROSS events the EARLIER one holds, which is the opposite of the within-event rule above
+	// and is deliberate. Within one event the reverse scan takes the last user message, because the
+	// messages of a single inference request are one conversation and the newest is the ask. Across
+	// events the fold is first-wins, so a session keeps the name its first prompt gave it instead of
+	// re-titling on every turn. TestAppend_TitleFoldTieBreak is where that rule is pinned in full,
+	// including the /rename override that is its one exception; this assertion exists here so the
+	// two rules are visible side by side, since reading only one of them suggests the other.
+	//
+	// THIS IS ALSO THE ONE CASE the deleted per-event picker answered differently: of the 15
+	// multi-event cases in this file it was the only one where its last-match rule and the fold
+	// disagreed, which is why it is called out rather than quietly flipped.
 	two := []pipeline.SessionEvent{userEvent("old ask"), userEvent("new ask")}
-	if got := sessionTitle(two); got != "new ask" {
-		t.Errorf("across events: got %q, want %q", got, "new ask")
+	if got := foldTitle(t, two...); got != "old ask" {
+		t.Errorf("across events: got %q, want %q", got, "old ask")
 	}
 	// Non-user roles are never candidates, even when they are last.
 	mixed := []pipeline.SessionEvent{{Inference: &pipeline.InferenceExtension{
@@ -118,7 +150,7 @@ func TestSessionTitle_LastUserMessage(t *testing.T) {
 			{Role: "assistant", Content: "my answer"},
 		},
 	}}}
-	if got := sessionTitle(mixed); got != "the real ask" {
+	if got := foldTitle(t, mixed...); got != "the real ask" {
 		t.Errorf("an assistant message was chosen: got %q", got)
 	}
 }
@@ -137,7 +169,7 @@ func TestSessionTitle_EmptyUserContentSkipped(t *testing.T) {
 			{Role: "user", Content: "", ContentBytes: 4096},
 		},
 	}}}
-	if got := sessionTitle(events); got != "read /etc/hosts" {
+	if got := foldTitle(t, events...); got != "read /etc/hosts" {
 		t.Errorf("got %q, want %q — an empty tool-result message was chosen", got, "read /etc/hosts")
 	}
 }
@@ -184,7 +216,7 @@ func TestSessionTitle_StripsReminder(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := sessionTitle([]pipeline.SessionEvent{userEvent(tc.in)})
+			got := candidateTitle(userEvent(tc.in))
 			if got != tc.want {
 				t.Errorf("got %q, want %q", got, tc.want)
 			}
@@ -200,7 +232,7 @@ func TestSessionTitle_ReminderOnlyFallsThrough(t *testing.T) {
 		userEvent("the genuine ask"),
 		userEvent("<system-reminder>just context, no prompt</system-reminder>"),
 	}
-	if got := sessionTitle(events); got != "the genuine ask" {
+	if got := foldTitle(t, events...); got != "the genuine ask" {
 		t.Errorf("got %q, want %q — a reminder-only message won", got, "the genuine ask")
 	}
 }
@@ -234,7 +266,7 @@ func TestSessionTitle_DemotedPickFallsBackWithinEvent(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := sessionTitle([]pipeline.SessionEvent{userEvent(tc.msgs...)})
+			got := candidateTitle(userEvent(tc.msgs...))
 			if got != tc.want {
 				t.Errorf("got %q, want %q", got, tc.want)
 			}
@@ -242,29 +274,46 @@ func TestSessionTitle_DemotedPickFallsBackWithinEvent(t *testing.T) {
 	}
 }
 
-// AN UNTERMINATED <system-reminder> TRUNCATES THE TITLE AT IT, and this test exists to pin that
-// loss because it is the least defensible thing about stripReminders.
+// AN UNTERMINATED <system-reminder> LEAVES THE MESSAGE ALONE. There is no block to excise — just a
+// tag name in prose — and prose mentioning the tag is exactly the message a reader wants as a title.
 //
-// IT NO LONGER MIRRORS TestSessionTitle_UnclosedTag, which it used to and which still holds for
-// <user_query>: there, a tag that closes nothing leaves the raw string alone, on the reasoning that
-// the tag name can appear in ordinary prose (someone discussing this very code — which is exactly
-// the fixture below). <system-reminder> is deliberately narrower now. Recovering the old behaviour
-// means finding whether the opens balance the closes, and that scan is what made a 190KB nested
-// message cost 593ms under the store's read lock.
+// THIS MIRRORS TestSessionTitle_UnclosedTag, deliberately, and for one review round it did not. The
+// branch returned the head, so the fixtures below titled as "why is" / "what does", and the comment
+// here defended that as the price of not scanning for balance. THE TRADEOFF WAS FALSE: returning the
+// message costs the same two index scans — measured on the 190KB opens-only fixture at 202µs against
+// 260µs, so the fixed branch is the cheaper one — and the DoS bound is set by those scans, not by
+// what they return.
 //
-// WORSE THAN A BLANK, and worth knowing: a blank result falls through to a real title in an earlier
-// message (TestSessionTitle_ReminderOnlyFallsThrough), but "what does " is non-blank, so it WINS at
-// rank 2 and the prose after the tag is unreachable. The second event here proves the fall-through
-// is not what rescues this case.
-func TestSessionTitle_UnterminatedReminderTruncates(t *testing.T) {
-	in := "what does <system-reminder> mean in this code"
-	if got := sessionTitle([]pipeline.SessionEvent{userEvent(in)}); got != "what does" {
-		t.Errorf("got %q, want %q — the truncation is the documented loss", got, "what does")
+// THE TRUNCATION WAS WORSE THAN A BLANK, which is what made it more than cosmetic. A blank result
+// falls through to a real title in an earlier message
+// (TestSessionTitle_ReminderOnlyFallsThrough), but "why is" is non-blank, so it won rank 2 — and
+// under Store.Append's first-wins fold a filled rank is never revisited, so it permanently blocked
+// the session's real title. TestAppend_UnterminatedReminderDoesNotBlockTheTitle pins that end of it;
+// this pins the picker.
+func TestSessionTitle_UnterminatedReminderIsLeftAlone(t *testing.T) {
+	// The review's probe, verbatim. It used to serve "why is".
+	probe := "why is <system-reminder> leaking into my session titles?"
+	if got := candidateTitle(userEvent(probe)); got != probe {
+		t.Errorf("got %q, want the message unchanged %q", got, probe)
 	}
-	// Non-blank, so it beats an earlier real title rather than deferring to it.
-	events := []pipeline.SessionEvent{userEvent("an earlier genuine ask"), userEvent(in)}
-	if got := sessionTitle(events); got != "what does" {
-		t.Errorf("got %q, want %q — a truncated title must still win at its rank", got, "what does")
+	in := "what does <system-reminder> mean in this code"
+	if got := candidateTitle(userEvent(in)); got != in {
+		t.Errorf("got %q, want the message unchanged %q", got, in)
+	}
+	// UNTOUCHED WHEREVER IT SITS, which is the part of this that is the strip's business: the
+	// message is returned whole whether it is the only message, the first, or behind a real ask. An
+	// earlier draft asserted the cross-event outcome here instead and expected the probe to win —
+	// written against the deleted picker's last-match rule, and wrong about the fold, which is
+	// first-wins. Which of the two gets served is TestAppend_TitleFoldTieBreak's subject; that the
+	// probe survives the strip intact is this one's.
+	if got := candidateTitle(userEvent("an earlier genuine ask", in)); got != in {
+		t.Errorf("behind a real ask: got %q, want the message unchanged %q", got, in)
+	}
+	// A CLOSE IN PROSE BEFORE THE FIRST OPEN is not a block end either: splicing on it would run
+	// backwards. This is why the branch compares against i rather than testing j < 0.
+	back := "discussing </system-reminder> and <system-reminder> dangling"
+	if got := candidateTitle(userEvent(back)); got != back {
+		t.Errorf("got %q, want the message unchanged %q", got, back)
 	}
 }
 
@@ -291,7 +340,7 @@ func TestSessionTitle_ReminderNestedWithUserQuery(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := sessionTitle([]pipeline.SessionEvent{userEvent(tc.in)}); got != tc.want {
+			if got := candidateTitle(userEvent(tc.in)); got != tc.want {
 				t.Errorf("got %q, want %q", got, tc.want)
 			}
 		})
@@ -306,7 +355,7 @@ func TestSessionTitle_ReminderBeforeRename(t *testing.T) {
 		userEvent(in),
 		userEvent("a later plain message that must not outrank it"),
 	}
-	if got := sessionTitle(events); got != "Fix the parser" {
+	if got := foldTitle(t, events...); got != "Fix the parser" {
 		t.Errorf("got %q, want %q", got, "Fix the parser")
 	}
 }
@@ -327,7 +376,7 @@ func TestSessionTitle_Sanitizes(t *testing.T) {
 		{"combining mark survives", "café", "café"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := sessionTitle([]pipeline.SessionEvent{userEvent(tc.in)})
+			got := candidateTitle(userEvent(tc.in))
 			if got != tc.want {
 				t.Errorf("sanitize(%q) = %q, want %q", tc.in, got, tc.want)
 			}
@@ -343,7 +392,7 @@ func TestSessionTitle_Sanitizes(t *testing.T) {
 // tag name it never closed.
 func TestSessionTitle_UnclosedTag(t *testing.T) {
 	in := "<user_query>no close"
-	if got := sessionTitle([]pipeline.SessionEvent{userEvent(in)}); got != in {
+	if got := candidateTitle(userEvent(in)); got != in {
 		t.Errorf("got %q, want the raw string %q", got, in)
 	}
 	// A rename whose args never close yields NOTHING, not the raw envelope. The asymmetry
@@ -353,12 +402,12 @@ func TestSessionTitle_UnclosedTag(t *testing.T) {
 	// assertion originally expected the raw envelope, which is what the fall-through in
 	// titleFrom produced — the fall-through was the bug.
 	open := renamePrefix + "<command-args>no close"
-	if got := sessionTitle([]pipeline.SessionEvent{userEvent(open)}); got != "" {
+	if got := candidateTitle(userEvent(open)); got != "" {
 		t.Errorf("got %q, want %q — a raw /rename envelope leaked as a title", got, "")
 	}
 	// And a real title behind such an envelope still wins.
 	events := []pipeline.SessionEvent{userEvent("the genuine ask"), userEvent(open)}
-	if got := sessionTitle(events); got != "the genuine ask" {
+	if got := foldTitle(t, events...); got != "the genuine ask" {
 		t.Errorf("got %q, want %q", got, "the genuine ask")
 	}
 }
@@ -370,7 +419,7 @@ func TestSessionTitle_EmptyCommandArgs(t *testing.T) {
 		userEvent("a genuine earlier ask"),
 		userEvent(renamePrefix + "<command-args></command-args>"),
 	}
-	if got := sessionTitle(events); got != "a genuine earlier ask" {
+	if got := foldTitle(t, events...); got != "a genuine earlier ask" {
 		t.Errorf("got %q, want %q — an empty /rename won", got, "a genuine earlier ask")
 	}
 }
@@ -378,7 +427,7 @@ func TestSessionTitle_EmptyCommandArgs(t *testing.T) {
 func TestSessionTitle_ClipsToMaxTitleLen(t *testing.T) {
 	// A ~190KB message, the size of the largest measured event.
 	t.Run("long ascii", func(t *testing.T) {
-		got := sessionTitle([]pipeline.SessionEvent{userEvent(strings.Repeat("x", 190_000))})
+		got := candidateTitle(userEvent(strings.Repeat("x", 190_000)))
 		if n := utf8.RuneCountInString(got); n != maxTitleLen {
 			t.Errorf("clipped to %d runes, want %d", n, maxTitleLen)
 		}
@@ -386,7 +435,7 @@ func TestSessionTitle_ClipsToMaxTitleLen(t *testing.T) {
 
 	// RUNES, not bytes: 200 CJK runes is 600 bytes, and a byte cut would split one.
 	t.Run("multibyte stays valid utf8", func(t *testing.T) {
-		got := sessionTitle([]pipeline.SessionEvent{userEvent(strings.Repeat("日", 200))})
+		got := candidateTitle(userEvent(strings.Repeat("日", 200)))
 		if n := utf8.RuneCountInString(got); n != maxTitleLen {
 			t.Errorf("clipped to %d runes, want %d", n, maxTitleLen)
 		}
@@ -397,7 +446,7 @@ func TestSessionTitle_ClipsToMaxTitleLen(t *testing.T) {
 
 	t.Run("exactly at the cap is unchanged", func(t *testing.T) {
 		in := strings.Repeat("y", maxTitleLen)
-		if got := sessionTitle([]pipeline.SessionEvent{userEvent(in)}); got != in {
+		if got := candidateTitle(userEvent(in)); got != in {
 			t.Errorf("a title exactly at the cap was altered: %d runes", utf8.RuneCountInString(got))
 		}
 	})
@@ -429,7 +478,7 @@ func TestSessionTitle_ClipsToMaxTitleLen(t *testing.T) {
 			{80, "aa"}, // base at 80 — both cut, no fragment left behind
 		} {
 			in := strings.Repeat("a", tc.base) + "é" + "trailing prose"
-			got := sessionTitle([]pipeline.SessionEvent{userEvent(in)})
+			got := candidateTitle(userEvent(in))
 			if n := utf8.RuneCountInString(got); n != maxTitleLen {
 				t.Errorf("base=%d: clipped to %d runes, want %d", tc.base, n, maxTitleLen)
 			}
@@ -450,7 +499,7 @@ func TestSessionTitle_ClipsToMaxTitleLen(t *testing.T) {
 	// The cut can land just after a folded space, which is why clipTitle trims again.
 	t.Run("no trailing space survives the cut", func(t *testing.T) {
 		in := strings.Repeat("ab ", 200) // a space lands at rune index 80
-		got := sessionTitle([]pipeline.SessionEvent{userEvent(in)})
+		got := candidateTitle(userEvent(in))
 		if strings.HasSuffix(got, " ") {
 			t.Errorf("clip left a trailing space: %q", got)
 		}
@@ -468,7 +517,7 @@ func TestSessionTitle_NeverExceedsCap(t *testing.T) {
 		"<user_query>" + strings.Repeat("q", 5000) + "</user_query>",
 		strings.Repeat("日本", 5000),
 	} {
-		if n := utf8.RuneCountInString(sessionTitle([]pipeline.SessionEvent{userEvent(in)})); n > maxTitleLen {
+		if n := utf8.RuneCountInString(candidateTitle(userEvent(in))); n > maxTitleLen {
 			t.Errorf("a title reached %d runes, over the %d cap", n, maxTitleLen)
 		}
 	}
@@ -527,7 +576,7 @@ func TestSessionSummary_TitleOmittedWhenEmpty(t *testing.T) {
 // rank 0, which also BREAKS the walk, so nothing behind it was even examined.
 //
 // EACH CASE RUNS TWICE, in two events and in one, and the two are not the same test. The
-// separate-event form is satisfied by sessionTitle's own fold-then-skip; the same-event form is
+// separate-event form is satisfied by the fold's own blank screen in Append; the same-event form is
 // not, and passed nowhere until titleCandidate grew its own blank test. titleCandidate collapses
 // an event to ONE answer, so a blank winner there does not fall through — it discards the whole
 // event, and userEvent("the real ask", "<user_query>   </user_query>") titled the session "".
@@ -545,13 +594,13 @@ func TestSessionTitle_BlankAfterSanitizeFallsThrough(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			events := []pipeline.SessionEvent{userEvent("the real ask"), userEvent(tc.blank)}
-			if got := sessionTitle(events); got != "the real ask" {
+			if got := foldTitle(t, events...); got != "the real ask" {
 				t.Errorf("got %q, want %q — a blank-after-sanitize candidate won", got, "the real ask")
 			}
 		})
 		t.Run(tc.name+" same event", func(t *testing.T) {
 			events := []pipeline.SessionEvent{userEvent("the real ask", tc.blank)}
-			if got := sessionTitle(events); got != "the real ask" {
+			if got := foldTitle(t, events...); got != "the real ask" {
 				t.Errorf("got %q, want %q — a blank candidate hid a title in its own event", got, "the real ask")
 			}
 		})
@@ -562,8 +611,8 @@ func TestSessionTitle_BlankAfterSanitizeFallsThrough(t *testing.T) {
 // so omitempty drops the field rather than shipping a whitespace title.
 func TestSessionTitle_OnlyBlankCandidateIsUnnamed(t *testing.T) {
 	for _, in := range []string{"   ", "\t\n", renameMsg(" "), "<user_query>​</user_query>"} {
-		if got := sessionTitle([]pipeline.SessionEvent{userEvent(in)}); got != "" {
-			t.Errorf("sessionTitle(%q) = %q, want %q", in, got, "")
+		if got := candidateTitle(userEvent(in)); got != "" {
+			t.Errorf("candidateTitle(%q) = %q, want %q", in, got, "")
 		}
 	}
 }
@@ -577,7 +626,7 @@ func TestSessionTitle_UnterminatedUserQueryDoesNotOutrank(t *testing.T) {
 		userEvent("<user_query>the genuine query</user_query>"),
 		userEvent("what does <user_query> mean in this code"),
 	}
-	if got := sessionTitle(events); got != "the genuine query" {
+	if got := foldTitle(t, events...); got != "the genuine query" {
 		t.Errorf("got %q, want %q — an unterminated <user_query> was recorded as rank 1", got, "the genuine query")
 	}
 }
@@ -587,7 +636,7 @@ func TestSessionTitle_UnterminatedUserQueryDoesNotOutrank(t *testing.T) {
 // better-ranked message sitting in front of it was discarded.
 func TestSessionTitle_DemotedNonEmptyPickKeepsBetterRank(t *testing.T) {
 	msgs := []string{"<user_query>the real ask</user_query>", "what does <user_query> mean here"}
-	if got := sessionTitle([]pipeline.SessionEvent{userEvent(msgs...)}); got != "the real ask" {
+	if got := candidateTitle(userEvent(msgs...)); got != "the real ask" {
 		t.Errorf("got %q, want %q — a demoted pick discarded a better-ranked message", got, "the real ask")
 	}
 }
@@ -614,7 +663,7 @@ func TestSessionTitle_DeferredLosesToLaterDemotedAtEqualRank(t *testing.T) {
 		// kind of case that hid this bug in the first place.
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := sessionTitle([]pipeline.SessionEvent{userEvent(tc.early, tc.late)})
+			got := candidateTitle(userEvent(tc.early, tc.late))
 			if got != tc.late {
 				t.Errorf("got %q, want %q — an earlier deferred candidate beat a later demoted one at equal rank", got, tc.late)
 			}
@@ -638,7 +687,7 @@ func TestSessionTitle_DeferredOnlyWithNothingSettled(t *testing.T) {
 		{"all blank names nothing", []string{"   ", "\t"}, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := sessionTitle([]pipeline.SessionEvent{userEvent(tc.msgs...)}); got != tc.want {
+			if got := candidateTitle(userEvent(tc.msgs...)); got != tc.want {
 				t.Errorf("got %q, want %q", got, tc.want)
 			}
 		})
@@ -653,7 +702,7 @@ func TestSessionTitle_LaterDeferredLosesToBetterRank(t *testing.T) {
 		{"rename then prose", renameMsg("named"), "plain prose after it", "named"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := sessionTitle([]pipeline.SessionEvent{userEvent(tc.first, tc.second)})
+			got := candidateTitle(userEvent(tc.first, tc.second))
 			if got != tc.want {
 				t.Errorf("got %q, want %q — a later rank-2 message beat a better rank", got, tc.want)
 			}
@@ -675,7 +724,7 @@ func TestSessionTitle_RenameEnvelopeBehindProseIsRank2(t *testing.T) {
 	}
 	// And it must therefore lose to a real /rename anywhere in the session, not win at rank 0.
 	events := []pipeline.SessionEvent{userEvent(renameMsg("the real name")), userEvent(content)}
-	if got := sessionTitle(events); got != "the real name" {
+	if got := foldTitle(t, events...); got != "the real name" {
 		t.Errorf("got %q, want %q — a prose-embedded envelope claimed rank 0", got, "the real name")
 	}
 }
@@ -707,7 +756,7 @@ func TestSessionTitle_NoScanCeiling(t *testing.T) {
 	const total = 200 // comfortably past the 64 the old ceiling used
 
 	for _, titleAt := range []int{total - 1, total - 64, total - 65, 0} {
-		if got := sessionTitle(build(titleAt, total)); got != "the name" {
+		if got := foldTitle(t, build(titleAt, total)...); got != "the name" {
 			t.Errorf("/rename at event %d of %d: got %q, want %q — the walk stopped early",
 				titleAt, total, got, "the name")
 		}
@@ -727,15 +776,15 @@ func TestSessionTitle_TranscriptEnvelopeDiscarded(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			// Alone, it names nothing at all.
-			if got := sessionTitle([]pipeline.SessionEvent{userEvent(tc.in)}); got != "" {
+			if got := candidateTitle(userEvent(tc.in)); got != "" {
 				t.Errorf("alone: got %q, want %q", got, "")
 			}
 			// Behind a real ask, in the same event and in an earlier one.
-			if got := sessionTitle([]pipeline.SessionEvent{userEvent("the real ask", tc.in)}); got != "the real ask" {
+			if got := candidateTitle(userEvent("the real ask", tc.in)); got != "the real ask" {
 				t.Errorf("same event: got %q, want %q", got, "the real ask")
 			}
 			two := []pipeline.SessionEvent{userEvent("the real ask"), userEvent(tc.in)}
-			if got := sessionTitle(two); got != "the real ask" {
+			if got := foldTitle(t, two...); got != "the real ask" {
 				t.Errorf("earlier event: got %q, want %q", got, "the real ask")
 			}
 		})
@@ -752,8 +801,8 @@ func TestSessionTitle_ProseMentioningTranscriptSurvives(t *testing.T) {
 		"the title comes from a content that begins with <transcript>",
 		"why is <transcript> being discarded",
 	} {
-		if got := sessionTitle([]pipeline.SessionEvent{userEvent(in)}); got != in {
-			t.Errorf("sessionTitle(%q) = %q, want it kept verbatim", in, got)
+		if got := candidateTitle(userEvent(in)); got != in {
+			t.Errorf("candidateTitle(%q) = %q, want it kept verbatim", in, got)
 		}
 	}
 }
@@ -763,7 +812,7 @@ func TestSessionTitle_ProseMentioningTranscriptSurvives(t *testing.T) {
 // 2 and the earlier bare rename took it.
 func TestSessionTitle_LaterReminderPrefixedRenameWins(t *testing.T) {
 	msgs := []string{renameMsg("early"), "<system-reminder>n</system-reminder>" + renameMsg("late")}
-	if got := sessionTitle([]pipeline.SessionEvent{userEvent(msgs...)}); got != "late" {
+	if got := candidateTitle(userEvent(msgs...)); got != "late" {
 		t.Errorf("got %q, want %q — a later reminder-prefixed /rename lost to an earlier one", got, "late")
 	}
 	// Across events too, where the outer walk's reverse order should already favour the later.
@@ -771,7 +820,7 @@ func TestSessionTitle_LaterReminderPrefixedRenameWins(t *testing.T) {
 		userEvent(renameMsg("early")),
 		userEvent("<system-reminder>n</system-reminder>" + renameMsg("late")),
 	}
-	if got := sessionTitle(two); got != "late" {
+	if got := foldTitle(t, two...); got != "late" {
 		t.Errorf("across events: got %q, want %q", got, "late")
 	}
 }
@@ -798,10 +847,17 @@ func TestSessionTitle_NestedReminders(t *testing.T) {
 		},
 		{
 			// Unbalanced: two opens, one close. NO LONGER KEPT VERBATIM — everything up to the
-			// last close goes, leaving "c". The old behaviour returned the whole string on the
-			// "an unclosed tag must not truncate" policy; see
-			// TestSessionTitle_UnterminatedReminderTruncates for why that policy no longer
-			// extends to this tag. What still holds is the part worth holding: no tag leaks.
+			// last close goes, leaving "c". The old depth-tracking version returned the whole
+			// string here, on the "an unclosed tag must not truncate" policy.
+			//
+			// THAT POLICY STILL HOLDS, and this subcase is not a counterexample to it: what it
+			// protects is a message with NO close anywhere, which is the shape ordinary prose
+			// mentioning the tag name has — see
+			// TestSessionTitle_UnterminatedReminderIsLeftAlone, which pins that such a message
+			// is returned untouched. A close IS present here, so a real block demonstrably
+			// ended somewhere and splicing to it is the intended behaviour. The unbalanced form
+			// gives up on WHICH open pairs with it, deliberately: pairing by depth is what cost
+			// 38.1s on the nested fixture.
 			"unbalanced opens do not keep the remainder",
 			"<system-reminder>a<system-reminder>b</system-reminder>c",
 			"c",
@@ -813,14 +869,14 @@ func TestSessionTitle_NestedReminders(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := sessionTitle([]pipeline.SessionEvent{userEvent(tc.in)}); got != tc.want {
+			if got := candidateTitle(userEvent(tc.in)); got != tc.want {
 				t.Errorf("got %q, want %q", got, tc.want)
 			}
 		})
 	}
 	// No stray closing tag may survive in any title this function produces.
-	got := sessionTitle([]pipeline.SessionEvent{userEvent(
-		"prose <system-reminder>a<system-reminder>b</system-reminder> t</system-reminder> ask")})
+	got := candidateTitle(userEvent(
+		"prose <system-reminder>a<system-reminder>b</system-reminder> t</system-reminder> ask"))
 	if strings.Contains(got, reminderClose) || strings.Contains(got, reminderOpen) {
 		t.Errorf("title leaked a reminder tag: %q", got)
 	}

@@ -253,9 +253,10 @@ func BenchmarkListSessions_Title(b *testing.B) {
 // turns (events) and this has to vary messages within ONE event — the two axes multiply, and the
 // quadratic one was invisible while only the first was measured.
 //
-// CALLS sessionTitle, which is now the test-only per-event picker rather than what /v1/sessions
-// serves — see its doc comment. The messages-per-event axis it measures is still live, because
-// titleCandidate walks it on every Append; this reaches that walk through the smaller surface.
+// CALLS titleCandidate, which is the function Append actually runs per event — so this measures the
+// production walk and not a test-only wrapper around it. (It used to call a per-session picker that
+// looped over events; that has been deleted, and nothing is lost here, because the axis this varies
+// is messages WITHIN one event.)
 //
 //	go test ./session/ -bench SessionTitle_ReminderFanout -run '^$'
 func BenchmarkSessionTitle_ReminderFanout(b *testing.B) {
@@ -268,11 +269,11 @@ func BenchmarkSessionTitle_ReminderFanout(b *testing.B) {
 					Content: "<system-reminder>" + strings.Repeat("x", 40) + "</system-reminder>",
 				})
 			}
-			events := []pipeline.SessionEvent{{Inference: &pipeline.InferenceExtension{Messages: msgs}}}
+			event := pipeline.SessionEvent{Inference: &pipeline.InferenceExtension{Messages: msgs}}
 			b.ReportAllocs()
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				_ = sessionTitle(events)
+				_, _ = titleCandidate(&event)
 			}
 		})
 	}
