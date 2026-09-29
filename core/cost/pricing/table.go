@@ -448,15 +448,54 @@ func currencyOrDefault(c string) string {
 //
 // A MULTIPLIER CANNOT CHANGE IT. multiplierFor scales a rate WITHIN an endpoint and never crosses
 // units — scaling credits by 0.76 leaves credits — so the unit is settled by the row alone.
+//
+// HOST ALONE WHEN NO ROW MATCHES THE MODEL, which is the case a figure can arrive in without any
+// rate at all. bestRow needs both the host and the model to match, so it answers nil for a response
+// whose model the parser could not read — and the only figure such a response can carry is one the
+// GATEWAY reported, which settle publishes as authoritative without consulting this table. That
+// figure is denominated in the gateway's unit. Returning USD for it put a credits charge on disk
+// with no unit, where the read side folds it into the dollar total: a cross-unit sum, which is the
+// one thing this field exists to prevent.
+//
+// THE bestRow INVARIANT IS UNTOUCHED. When a row matches the pair, its unit is still the answer, so
+// a figure can never be priced at one row's rate and labelled with another's. The fallback runs only
+// when there is no such row, and therefore no rate to disagree with.
+//
+// SAME RANKING, minus the model test — provenance, then specificity — so a configured row for this
+// gateway beats a bundled catch-all. An endpoint with no rows of its own falls through to whatever
+// covers it, which is USD for every deployment that has configured no unit.
 func (t *Table) CurrencyFor(endpoint, model string) string {
 	if t == nil {
 		return CurrencyUSD
 	}
-	best := t.bestRow(endpoint, model)
-	if best == nil {
-		return CurrencyUSD
+	if best := t.bestRow(endpoint, model); best != nil {
+		return currencyOrDefault(best.currency)
 	}
-	return currencyOrDefault(best.currency)
+	if best := t.bestRowForHost(endpoint); best != nil {
+		return currencyOrDefault(best.currency)
+	}
+	return CurrencyUSD
+}
+
+// bestRowForHost is bestRow with the model test dropped: the most specific row whose HOST covers
+// this endpoint, or nil.
+//
+// Only CurrencyFor uses it, and only as a fallback. It answers "what does this gateway bill in",
+// which is a question about the endpoint — the level this config puts `unit:` on — and not about
+// any one model. It must never be used to pick RATES: a row reached without matching the model is
+// the wrong row to price from, which is what bestRow's own comment is about.
+func (t *Table) bestRowForHost(endpoint string) *row {
+	var best *row
+	for i := range t.rows {
+		r := &t.rows[i]
+		if !matchHost(r.host, endpoint) {
+			continue
+		}
+		if best == nil || r.prov > best.prov || (r.prov == best.prov && r.spec.beats(best.spec)) {
+			best = r
+		}
+	}
+	return best
 }
 
 // Resolve returns the rates for one (endpoint, model) pair and where they came

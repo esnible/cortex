@@ -631,3 +631,84 @@ func TestCurrencyFor_FoldsADefaultSpellingSetProgrammatically(t *testing.T) {
 			got, CurrencyUSD)
 	}
 }
+
+// A response whose model could not be read still resolves its gateway's unit.
+//
+// bestRow needs the host AND the model to match, so it answers nil for a model-less response and
+// CurrencyFor used to return USD. The only figure such a response can carry is one the gateway
+// reported, which settle publishes without consulting this table, and which is denominated in the
+// gateway's unit — so USD was a mislabel on the one path that has no rate to check it against.
+//
+// BOTH DIRECTIONS. The fallback must not disturb the pair-matched answer, which is the invariant
+// CurrencyFor's own comment rests on, so the specific and the catch-all row are both asserted.
+func TestCurrencyFor_AModellessResponseResolvesTheEndpointsUnit(t *testing.T) {
+	tbl, err := Build(&Config{Endpoints: []EndpointConfig{
+		{
+			Hosts: []string{"gw.bob"}, Unit: "credits",
+			Models: map[string]ModelConfig{"premium-ide": {TierRates: TierRates{InputCostPerMillion: 2}}},
+		},
+		{
+			Hosts:  []string{"api.anthropic.com"},
+			Models: map[string]ModelConfig{"claude-opus-5": {TierRates: TierRates{InputCostPerMillion: 5}}},
+		},
+	}})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	if got := tbl.CurrencyFor("gw.bob", ""); got != "credits" {
+		t.Errorf("CurrencyFor(gw.bob, \"\") = %q, want credits; a gateway-reported charge with no "+
+			"model would be written with no unit and folded into the dollar total", got)
+	}
+	// The pair-matched answer is unchanged, which is what keeps a figure from being priced at one
+	// row's rate and labelled with another's.
+	if got := tbl.CurrencyFor("gw.bob", "premium-ide"); got != "credits" {
+		t.Errorf("CurrencyFor(gw.bob, premium-ide) = %q, want credits", got)
+	}
+	// And a dollars endpoint is untouched in both forms — the direction that would break every
+	// deployment configured today.
+	for _, model := range []string{"claude-opus-5", ""} {
+		if got := tbl.CurrencyFor("api.anthropic.com", model); got != CurrencyUSD {
+			t.Errorf("CurrencyFor(api.anthropic.com, %q) = %q, want %s", model, got, CurrencyUSD)
+		}
+	}
+}
+
+// A catch-all that CAN price a model-less response keeps the unit its rate is in.
+//
+// The complement of the test above, and the boundary of what the host-only fallback is allowed to
+// do. `models: {"*"}` matches an empty model, so bestRow answers, the table prices the response at
+// that row's rate — verified `prov=configured`, 1e-06 — and the figure really is in that row's unit.
+// Labelling it from the endpoint instead would be the mislabel CurrencyFor's own invariant forbids:
+// priced at one row's rate, labelled with another's. So the fallback must NOT run here.
+//
+// A gateway-reported figure on this same shape is still labelled from the catch-all, because
+// CurrencyFor is not told which figure it holds. That is issue #1183, and it needs the caller to
+// pass provenance — not a change to the rule this test pins.
+func TestCurrencyFor_ACatchAllThatPricesTheResponseKeepsItsOwnUnit(t *testing.T) {
+	tbl, err := Build(&Config{Endpoints: []EndpointConfig{
+		{
+			Hosts:  []string{"*"},
+			Models: map[string]ModelConfig{"*": {TierRates: TierRates{InputCostPerMillion: 1}}},
+		},
+		{
+			Hosts: []string{"gw.bob"}, Unit: "credits",
+			Models: map[string]ModelConfig{"premium-ide": {TierRates: TierRates{InputCostPerMillion: 2}}},
+		},
+	}})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	// The catch-all prices it, so its unit is the honest label.
+	if _, ok := mustResolve(t, tbl, "gw.bob", "").For(TierInput); !ok {
+		t.Fatal("the catch-all no longer prices a model-less response, so this test pins nothing")
+	}
+	if got := tbl.CurrencyFor("gw.bob", ""); got != CurrencyUSD {
+		t.Errorf("CurrencyFor(gw.bob, \"\") = %q, want %s: the row that priced this figure is the "+
+			"catch-all, and its rates are dollars", got, CurrencyUSD)
+	}
+	// The configured pair is unaffected either way.
+	if got := tbl.CurrencyFor("gw.bob", "premium-ide"); got != "credits" {
+		t.Errorf("CurrencyFor(gw.bob, premium-ide) = %q, want credits", got)
+	}
+}

@@ -319,3 +319,57 @@ func TestRecord_ConfiguredUnitReachesTheRowOnDisk(t *testing.T) {
 		})
 	}
 }
+
+// A gateway-reported charge whose model could not be read lands on disk in the gateway's unit.
+//
+// THE CONSEQUENCE, at the layer where it is a wrong figure rather than a wrong lookup. bestRow needs
+// the host AND the model to match, so a model-less response found no row and CurrencyFor answered
+// USD; the writer omits the field for USD, so a credits charge reached the file with no unit and the
+// read side folded it into the dollar total. That is a cross-unit sum — the one thing Row.Currency
+// exists to prevent — and it arrived through the only path that can carry a figure without a rate:
+// a cost the gateway reported, which settle publishes without consulting the table.
+//
+// ASSERTED ON THE BYTES AND ON CurrenciesIn, not on CurrencyFor. The pricing-layer lookup is pinned
+// in that package; what this adds is that the fix survives the writer's omit-the-default rule, which
+// is the step that turned a wrong lookup into a wrong file.
+func TestRecord_AModellessChargeOnACreditsGatewayIsNotWrittenAsUSD(t *testing.T) {
+	tbl, err := pricing.Build(&pricing.Config{Endpoints: []pricing.EndpointConfig{{
+		Hosts: []string{"gw.bob"},
+		Unit:  "credits",
+		// A concrete pattern, so nothing here matches an empty model.
+		Models: map[string]pricing.ModelConfig{
+			"premium-ide": {TierRates: pricing.TierRates{InputCostPerMillion: 2}},
+		},
+	}}})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+
+	dir := t.TempDir()
+	now := at
+	w, err := New(dir, WithClock(func() time.Time { return now }), WithPricing(tbl))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	t.Cleanup(func() { _ = w.Close() })
+
+	// Model "" is the response the parser could not read — an embeddings call, say.
+	w.Record("s1", costedEvent(t, "gw.bob", "", 0.25, 100, 50))
+	now = at.Add(time.Minute)
+	if err := w.Flush(); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+
+	rows := readAllRows(t, dir)
+	if len(rows) != 1 {
+		t.Fatalf("got %d rows, want 1: %+v", len(rows), rows)
+	}
+	if rows[0].Currency != "credits" {
+		t.Errorf("Row.Currency = %q, want credits; a credits charge with no unit on disk reads as "+
+			"USD and is summed into the dollar total", rows[0].Currency)
+	}
+	// And the refusal downstream can see it, which is what the field is for.
+	if got := CurrenciesIn(rows); len(got) != 1 || got[0] != "credits" {
+		t.Errorf("CurrenciesIn = %v, want [credits]", got)
+	}
+}
