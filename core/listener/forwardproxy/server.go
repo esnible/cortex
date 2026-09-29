@@ -558,23 +558,53 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, isBridge 
 			}
 		}
 
+		// oversized records that the response was too big to buffer and is
+		// being relayed instead. A body over the cap USED TO BE a 502, which
+		// made the cap a limit on what this proxy can carry rather than a
+		// limit on what a plugin will be handed. Nothing here is a stream
+		// being downgraded: the incremental path above is gated on
+		// Content-Type: text/event-stream, so a large non-SSE body has only
+		// ever had the buffered path available, and any ReadsBody plugin
+		// therefore turned every large download into a failed request — a
+		// 226MB binary fetched through a bridged host, for a body no JSON
+		// parser could have read. The cap still bounds heap, which is its
+		// job; it no longer bounds the response.
+		oversized := false
 		if s.OutboundPipeline.NeedsResponseBody() && resp.Body != nil {
-			respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxBodySize+1))
-			if err != nil {
-				slog.Warn("forward-proxy: response body read error", "host", r.Host, "error", err)
-				http.Error(w, `{"error":"response body read error"}`, http.StatusBadGateway)
-				return
+			if resp.ContentLength > maxBodySize {
+				// Declared and over the cap: knowable before a byte is read,
+				// so skip the read entirely rather than pulling maxBodySize
+				// into heap only to throw it away.
+				oversized = true
+				slog.Warn("forward-proxy: response too large to buffer — relaying without giving plugins a body",
+					"host", r.Host, "contentLength", resp.ContentLength, "cap", maxBodySize)
+			} else {
+				respBody, err := io.ReadAll(io.LimitReader(resp.Body, maxBodySize+1))
+				if err != nil {
+					slog.Warn("forward-proxy: response body read error", "host", r.Host, "error", err)
+					http.Error(w, `{"error":"response body read error"}`, http.StatusBadGateway)
+					return
+				}
+				if len(respBody) > maxBodySize {
+					// No declared length (chunked), so the cap was only
+					// crossed mid-read. The bytes already read still belong
+					// to the caller: push them back in front of the
+					// remainder and relay the whole thing. resp.Body is
+					// replaced, but the deferred Close above captured the
+					// original, so the upstream connection still closes.
+					oversized = true
+					slog.Warn("forward-proxy: undeclared response length over cap — relaying without giving plugins a body",
+						"host", r.Host, "cap", maxBodySize)
+					resp.Body = io.NopCloser(io.MultiReader(bytes.NewReader(respBody), resp.Body))
+				} else {
+					pctx.ResponseBody = respBody
+					resp.Body = io.NopCloser(bytes.NewReader(respBody))
+				}
 			}
-			if len(respBody) > maxBodySize {
-				slog.Warn("forward-proxy: response body too large", "host", r.Host, "len", len(respBody))
-				http.Error(w, `{"error":"response body too large"}`, http.StatusBadGateway)
-				return
-			}
-			pctx.ResponseBody = respBody
-			resp.Body = io.NopCloser(bytes.NewReader(respBody))
 		}
 
-		// DETACHED AND BOUNDED, because the body above is already whole. Everything from here on
+		// DETACHED AND BOUNDED, because the body above is already whole — or, when it was
+		// too large to buffer, is being relayed and owes the pipeline nothing. Everything from here on
 		// is finalization: a client that hung up during that read leaves a done context, and
 		// RunResponse refuses a done context before calling any plugin — returning a Deny this
 		// call site cannot tell from a policy reject, since it only tests action.Type. It would
@@ -600,7 +630,15 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, isBridge 
 		// as one last=true frame so plugins finalize their running state.
 		// Plugins that didn't migrate — i.e. don't implement
 		// StreamingResponder — are unaffected (RunResponseFrame skips them).
-		if s.OutboundPipeline.HasStreamingResponders() && resp.Body != nil {
+		//
+		// Skipped when the body was too large to buffer: pctx.ResponseBody is
+		// empty there, and a last=true frame carrying it would assert that the
+		// whole response WAS empty. That is the failure the Accept-Encoding
+		// comment above describes — aggregating plugins finalize on empty
+		// state and their telemetry reads as absent rather than wrong. No
+		// frame was delivered for such a response, so there is no running
+		// state left to finalize.
+		if !oversized && s.OutboundPipeline.HasStreamingResponders() && resp.Body != nil {
 			// Its own budget, per the rule above.
 			finalCtx, cancelFinal := httpx.TeardownContext(r.Context())
 			defer cancelFinal()

@@ -117,6 +117,11 @@ var DefaultPassthroughHosts = []string{
 	"docker.io",
 	"*.docker.io",
 	"production.cloudflare.docker.com",
+	// The Claude Code updater's binary host — a ~226MB artifact per release,
+	// same category as the module and image hosts above. Named exactly, NOT as
+	// *.claude.ai: the inference endpoints must stay bridged or the parsers and
+	// the token accounting go blind.
+	"downloads.claude.ai",
 }
 
 // NewDecision compiles the interception policy. It returns an error for an
