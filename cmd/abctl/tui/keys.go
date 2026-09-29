@@ -934,6 +934,18 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 		var cmd tea.Cmd
 		m.catalogTbl, cmd = m.catalogTbl.Update(msg)
 		return cmd
+	case paneAgents:
+		// Without this arm the pane's navigation keys fell off the end of the switch and
+		// returned nil, while its footer printed "[↑↓] nav" and the help overlay listed
+		// "↑↓ / jk  navigate" — an advertised key that does nothing, which is the same defect
+		// agentsPaneRefusal exists to prevent on the way in. The table is built
+		// WithFocused(true), so it drew a selection highlight on a cursor nothing could move.
+		//
+		// NO `r` BRANCH, unlike the catalog above: the rows are refetched by every `A` press,
+		// which is why the footer advertises no refresh key either.
+		var cmd tea.Cmd
+		m.agentsTbl, cmd = m.agentsTbl.Update(msg)
+		return cmd
 	}
 	return nil
 }
@@ -1314,6 +1326,7 @@ func (m *model) layout() {
 	// heights are set.
 	m.pipelineTbl.SetColumns(fitTableColumns(pipelineColumns(), m.width))
 	m.catalogTbl.SetColumns(fitTableColumns(catalogColumns(), m.width))
+	m.agentsTbl.SetColumns(fitTableColumns(agentsColumns(), m.width))
 
 	// Through setTableHeight, not SetHeight: a height change re-windows the rows
 	// while the viewport keeps the offset it had for the old height, and these
@@ -1345,6 +1358,14 @@ func (m *model) layout() {
 	// covered this pane but never populated m.catalog, so it only ever measured the
 	// "loading catalog…" line.
 	setTableHeight(&m.catalogTbl, bodyH)
+	// The agents table had the catalog's bug, whose comment above is this one's history: nothing
+	// sized it anywhere, so it kept bubbles' table.New default for the life of the process and
+	// rendered past the bottom of any shorter terminal. The catalog's blind spot was an empty
+	// fixture; this one was a size larger, and it is the class that will recur:
+	// TestLayout_EveryPaneFitsTheTerminal enumerates the panes it measures in a HAND-WRITTEN
+	// map, and paneAgents was simply not in it — so no fixture could have helped, and adding a
+	// pane means adding it to that map too.
+	setTableHeight(&m.agentsTbl, bodyH)
 	m.detailVp.Width = m.width
 	m.detailVp.Height = bodyH
 	// Re-clamp the scroll offset to the new height, for the PLUGIN detail pane:

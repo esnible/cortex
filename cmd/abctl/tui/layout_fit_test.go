@@ -46,6 +46,11 @@ func fitModel(t *testing.T, p paneID, w, h int, events []pipeline.SessionEvent) 
 	m.catalogTbl = newCatalogTable()
 	m.namespacesTbl = newNamespacesTable()
 	m.podsTbl = newPodsTable()
+	// The real constructors build this one too (New and the picker's both call
+	// newAgentsTable). Omitted here, SetRows landed on a zero-value table.Model — no columns
+	// and a zero-height viewport, which renders as nothing at all — so the pane measured blank
+	// and the fit assertion below was green whatever layout() did or did not do to it.
+	m.agentsTbl = newAgentsTable()
 	// TITLES, not just ids. This is the ONLY test that renders m.View() through bubbles'
 	// fixed-width padding, so it is the only place the "no line wider than the terminal"
 	// invariant is measured on real output — and with sessionsData left empty every TITLE cell
@@ -122,6 +127,41 @@ func fitModel(t *testing.T, p paneID, w, h int, events []pipeline.SessionEvent) 
 	m.usage.snap = usageSnap
 	m.usage.lastFetch = time.Now()
 
+	// Populated agent rows, for the third time and the same reason as the catalog and the usage
+	// snapshot above: paneAgents renders a one-line "(no agent traffic in this window)" branch
+	// when m.agents is empty, so without rows this test measures that sentence and never the
+	// TABLE. That is precisely how the catalog table kept bubbles' default height of 20 — the
+	// comment on m.catalog records it — and the agents table shipped with the identical defect,
+	// nothing in layout() sizing it at all.
+	//
+	// ONE NON-EMPTY ROW IS THE WHOLE REQUIREMENT, and the rest of this fixture is realism
+	// rather than reach. bubbles truncates every cell to its column width and pads its
+	// viewport up to its Height, so neither a label's length nor the number of rows can move
+	// what either half of this invariant measures. Both halves were mutated to check that:
+	// shortening the overlong label to "ag/1.0" reproduces the width failure byte-identically,
+	// and cutting the rows to four reproduces the height failures at every size and filter
+	// state. What the width half measures is the FITTED COLUMN WIDTHS — which is why it is
+	// deleting the SetColumns call, not any cell's content, that fails it.
+	//
+	// The labels stay real shapes anyway — a version suffix, a vendor prefix, and one
+	// request-controlled User-Agent running past any column — because a fixture that reads
+	// like production is worth keeping, not because the assertion needs them.
+	labels := []string{
+		"claude-code/2.1.270",
+		"bob-shell/2.0.5",
+		"cursor/1.2.3",
+		"some-agent/9.9.9 (an unrecognised User-Agent that keeps going well past any column)",
+	}
+	for i, label := range labels {
+		m.agents = append(m.agents, agentRow{
+			label: label,
+			Counts: usage.Counts{
+				Requests: int64(1000 + i), Tokens: int64(1_200_000 + i),
+				PricedRequests: int64(1000 + i), CostMicros: int64(146_361_600 + i),
+			},
+		})
+	}
+
 	m.pipeline = &apiclient.PipelineView{}
 	for i := 0; i < 8; i++ {
 		m.pipeline.Inbound = append(m.pipeline.Inbound, apiclient.PipelinePlugin{
@@ -136,6 +176,7 @@ func fitModel(t *testing.T, p paneID, w, h int, events []pipeline.SessionEvent) 
 	m.rebuildSessionsTable()
 	m.rebuildPipelineTable()
 	m.rebuildCatalogTable()
+	m.rebuildAgentsTable()
 	m.layout()
 	return m
 }
@@ -170,6 +211,7 @@ func TestLayout_EveryPaneFitsTheTerminal(t *testing.T) {
 	panes := map[string]paneID{
 		"sessions": paneSessions, "events": paneEvents, "pipeline": panePipeline,
 		"detail": paneDetail, "catalog": paneCatalog, "usage": paneUsage,
+		"agents": paneAgents,
 	}
 	for _, dim := range fitSizes {
 		for name, p := range panes {
