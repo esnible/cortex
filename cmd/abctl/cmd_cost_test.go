@@ -2427,8 +2427,17 @@ func TestRunCost_ByAgentOnAMixedWindowWithholdsTheCostCells(t *testing.T) {
 	}
 	// Said once, under the table, naming the units and the axis that resolves them. A column of
 	// "(mixed)" with nothing explaining it reads as a defect in the tool.
-	if !strings.Contains(got, "cannot be added") || !strings.Contains(got, "--by currency") {
-		t.Errorf("the withheld column is unexplained:\n%s", got)
+	//
+	// ASSERTED ON THE BREAKDOWN'S OWN WORDING — "these rows hold" — and not on "cannot be added",
+	// which writeCostSummary also prints above this table for the same window. That looser string
+	// let the assertion pass on the SUMMARY's caveat while the breakdown's was suppressed, which is
+	// how mutant byUnit_always_true survived a round after being killed: a test satisfied by a
+	// different surface than the one it names.
+	if !strings.Contains(got, "these rows hold") {
+		t.Errorf("the withheld column is unexplained by the table's own caveat:\n%s", got)
+	}
+	if !strings.Contains(got, "use --by currency for a figure per unit") {
+		t.Errorf("the withheld column does not point at the axis that resolves it:\n%s", got)
 	}
 }
 
