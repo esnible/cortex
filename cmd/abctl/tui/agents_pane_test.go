@@ -582,7 +582,11 @@ func TestAgentsPane_StartupEscapesToSessions(t *testing.T) {
 		{label: "claude-code/2.1.270", Counts: usage.Counts{Requests: 10}},
 		{label: "bob-shell/2.0.5", Counts: usage.Counts{Requests: 8}},
 	}
-	m := &model{pane: paneSessions, previousPane: paneNone, agentsTbl: newAgentsTable(), client: deadClient()}
+	// previousPane is seeded with a pane the startup arm MUST overwrite. Seeding paneNone — the
+	// value that arm assigns — let the fixture supply the mechanism the comment above credits, and
+	// two mutants survived on it: deleting `m.previousPane = paneNone` from the arm, and setting it
+	// to paneSessions instead. Neither can survive a seed the arm has to clear.
+	m := &model{pane: paneSessions, previousPane: panePipeline, agentsTbl: newAgentsTable(), client: deadClient()}
 	updated, _ := m.Update(agentRowsLoadedMsg{rows: rows, open: agentsOpenAtStartup})
 	m = updated.(*model)
 	if m.pane != paneAgents {
@@ -658,9 +662,12 @@ func TestInitSessionView_ArmsTheStartupAgentsGate(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("initSessionView returned no command")
 	}
-	batch, ok := cmd().(tea.BatchMsg)
+	// Invoked ONCE: calling cmd() again for the error message would re-run tea.Batch's closure,
+	// and every leaf with it, on the failure path only.
+	first := cmd()
+	batch, ok := first.(tea.BatchMsg)
 	if !ok {
-		t.Fatalf("initSessionView produced %T, want tea.BatchMsg", cmd())
+		t.Fatalf("initSessionView produced %T, want tea.BatchMsg", first)
 	}
 	got := make(chan agentRowsLoadedMsg, len(batch))
 	for _, leaf := range batch {
@@ -680,6 +687,15 @@ func TestInitSessionView_ArmsTheStartupAgentsGate(t *testing.T) {
 		// exists to avoid.
 		if msg.open != agentsOpenAtStartup {
 			t.Errorf("the startup fetch carried open=%v, want agentsOpenAtStartup", msg.open)
+		}
+		// THE FETCH ACTUALLY SERVED. fetchAgentRowsCmd's error return carries the same `open`, so
+		// without these two the server, the payload and the handler are all decoration: blanking
+		// the fixture's agents to `{}` left the test green.
+		if msg.err != nil {
+			t.Errorf("the startup fetch failed: %v — the fixture is not being served", msg.err)
+		}
+		if len(msg.rows) != 2 {
+			t.Errorf("the startup fetch carried %d rows, want the fixture's 2", len(msg.rows))
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("no agentRowsLoadedMsg came out of initSessionView's batch — the startup gate is not armed")

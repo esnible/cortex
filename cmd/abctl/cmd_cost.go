@@ -206,8 +206,9 @@ Flags:
 	}
 
 	if *agent != "" {
-		// KeepBuckets, not NarrowBuckets: this command prints window totals, so it needs no
-		// per-bucket narrowing and pays for none. abctl's usage pane passes the other value
+		// KeepBuckets, not NarrowBuckets: on this path the command prints window totals, so it
+		// needs no per-bucket narrowing and pays for none. (Under --by it does read buckets —
+		// hence "on this path" rather than a claim about the command.) abctl's usage pane passes the other value
 		// because it renders a chart from the buckets themselves. See usage.BucketScope for why
 		// this is a parameter rather than a default.
 		scoped, err := usage.ScopeToAgent(snap, *agent, usage.KeepBuckets)

@@ -101,8 +101,12 @@ func TestScopeToAgent_DropsTheProvenanceMapsAndKeepsTheReadFacts(t *testing.T) {
 	}
 }
 
-// KeepBuckets is the mode `abctl cost` asks for: it prints window totals and reads no buckets,
-// so it wants no per-bucket work done. The buckets and their Series come through untouched.
+// KeepBuckets is the mode `abctl cost` asks for: it reads only window totals ON ITS SCOPED PATH,
+// so it wants no per-bucket work done there. The buckets and their Series come through untouched.
+//
+// THE QUALIFIER IS LOAD-BEARING and is restored from scope.go's own wording rather than rewritten:
+// `abctl cost --by` does read buckets (writeCostBreakdown folds them), so the same sentence without
+// "on its scoped path" is false of the command as a whole.
 func TestScopeToAgent_KeepBucketsLeavesTheSeriesIntact(t *testing.T) {
 	got, err := ScopeToAgent(scopeFixture(), "claude-code/2.1.270", KeepBuckets)
 	if err != nil {
