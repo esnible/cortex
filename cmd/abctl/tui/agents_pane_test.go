@@ -442,3 +442,72 @@ func TestRebuildAgentsTable_RendersTheUnpricedAgentAsADash(t *testing.T) {
 		t.Errorf("priced agent's COST cell = %q, want %q", got, "$146.36")
 	}
 }
+
+// ↑↓ and j/k move the cursor, because two surfaces promise they do.
+//
+// AN ADVERTISED KEY THAT DOES NOTHING is the defect agentsPaneRefusal's doc names from the
+// other direction — "`A` doing nothing looks like a broken binding" — and this pane shipped
+// with exactly that from the opposite end: handleKey's fall-through dispatch switch carried
+// arms for sessions, events, detail, pipeline and catalog and none for paneAgents, so every
+// navigation key fell off the end of it and returned nil. The footer printed "[↑↓] nav" and
+// the help overlay listed "↑↓ / jk  navigate" over a cursor that could not move, and the table
+// is built WithFocused(true), so it rendered a selection highlight the whole time.
+//
+// DRIVEN THROUGH handleKey, never through agentsTbl.Update: the missing code WAS the dispatch,
+// so a test calling the table's own Update would have been green against the bug it is here to
+// catch. That is the same reason TestAgentsPane_RecordsTheCallerAtPressTimeNotAtReplyTime goes
+// through handleKey rather than calling enterAgentsOrRefuse.
+//
+// BOTH SPELLINGS OF EACH DIRECTION, because they are two separate claims: bubbles' table binds
+// arrows and jk independently, and the help overlay advertises the pair as one binding.
+func TestAgentsPane_NavigationKeysMoveTheCursor(t *testing.T) {
+	// Three rows, so a cursor that moves can also be seen to stop: a two-row fixture cannot
+	// tell "moved one row" from "jumped to the end".
+	rows := []agentRow{
+		{label: "claude-code/2.1.270", Counts: usage.Counts{Requests: 1049, PricedRequests: 1048, CostMicros: 146_361_600}},
+		{label: "bob-shell/2.0.5", Counts: usage.Counts{Requests: 118}},
+		{label: "cursor/1.2.3", Counts: usage.Counts{Requests: 12, PricedRequests: 12, CostMicros: 4_000}},
+	}
+	key := func(s string) tea.KeyMsg {
+		switch s {
+		case "up":
+			return tea.KeyMsg{Type: tea.KeyUp}
+		case "down":
+			return tea.KeyMsg{Type: tea.KeyDown}
+		}
+		return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(s)}
+	}
+	for _, tc := range []struct {
+		name string
+		keys []string
+		want int
+	}{
+		{"down moves to the second row", []string{"down"}, 1},
+		{"j moves to the second row", []string{"j"}, 1},
+		{"down twice reaches the third", []string{"down", "down"}, 2},
+		{"up comes back", []string{"down", "down", "up"}, 1},
+		{"k comes back", []string{"j", "j", "k"}, 1},
+		// The clamps, which are bubbles' own behavior and are asserted so a future dispatch
+		// arm that reimplemented the movement by hand could not quietly run off either end.
+		{"up on the first row stays put", []string{"up"}, 0},
+		{"down past the last row stays on it", []string{"down", "down", "down", "down"}, 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := &model{
+				pane:               paneAgents,
+				previousPane:       paneSessions,
+				agents:             rows,
+				agentsTbl:          newAgentsTable(),
+				client:             deadClient(),
+				pipelineReturnPane: paneNone,
+			}
+			m.rebuildAgentsTable()
+			for _, k := range tc.keys {
+				m.handleKey(key(k))
+			}
+			if got := m.agentsTbl.Cursor(); got != tc.want {
+				t.Errorf("after %v the cursor is on row %d, want %d", tc.keys, got, tc.want)
+			}
+		})
+	}
+}

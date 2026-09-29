@@ -162,19 +162,29 @@ func (m *model) fetchAgentRowsCmd(open bool, from paneID) tea.Cmd {
 	}
 }
 
-// newAgentsTable builds an empty per-agent breakdown table.
+// agentsColumns is the table's declared layout, at the width it wants on a wide terminal.
+//
+// A FUNCTION RATHER THAN A LITERAL INSIDE newAgentsTable, matching pipelineColumns and
+// catalogColumns, because layout() has to re-fit these on every resize and must do it from
+// THESE definitions rather than from the live table's columns — refitting the live ones
+// compounds each narrowing, so widening the terminal back up never restores what it took away.
 //
 // NO SESSIONS COLUMN — see agentRow. COST is widest because it is the column the pane exists
 // for, and it holds "—" for an agent nothing could price, which is every Bob row until the
 // billing-unit work lands.
+func agentsColumns() []table.Column {
+	return []table.Column{
+		{Title: "AGENT", Width: 34},
+		{Title: "REQUESTS", Width: 10},
+		{Title: "TOKENS", Width: 10},
+		{Title: "COST", Width: 12},
+	}
+}
+
+// newAgentsTable builds an empty per-agent breakdown table.
 func newAgentsTable() table.Model {
 	t := table.New(
-		table.WithColumns([]table.Column{
-			{Title: "AGENT", Width: 34},
-			{Title: "REQUESTS", Width: 10},
-			{Title: "TOKENS", Width: 10},
-			{Title: "COST", Width: 12},
-		}),
+		table.WithColumns(agentsColumns()),
 		table.WithFocused(true),
 	)
 	t.SetStyles(tableStyles())
