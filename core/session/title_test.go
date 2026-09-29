@@ -42,13 +42,12 @@ func candidateTitle(ev pipeline.SessionEvent) string {
 
 // A SESSION WITH NO NAMEABLE EVENT IS UNNAMED — "", absent on the wire.
 //
-// IT USED TO BE "(empty session)", a distinct sentinel for the zero-EVENTS case, and this test is
-// what is left of that. Two things retired it. The sentinel was unreachable through the API to
-// begin with (the only entry-creation site appends immediately, and planTrim never trims below
-// maxEvents >= 1), so it could only ever be produced by calling the picker directly on an empty
-// slice — and that picker is now deleted, leaving no caller in the package that can pass zero
-// events. What remains checkable is the case a real session can actually be in: it exists, it has
-// events, and none of them named it. Same answer, and now the only one.
+// NO SEPARATE ZERO-EVENTS CASE, which is why this test asserts the has-events one instead. A
+// session with no events at all is unreachable through the API: the only entry-creation site
+// appends immediately, and planTrim never trims below maxEvents >= 1. So the case a real session
+// can actually be in is this one — it exists, it has events, and none of them named it — and a
+// distinct sentinel for the empty case would be both untestable here and indistinguishable on the
+// wire from a session genuinely so titled. See TestAppend_TitleAbsentWhenNothingNamedIt.
 func TestSessionTitle_NothingNamesTheSession(t *testing.T) {
 	// An event with no Inference extension at all, then one whose only message is not from the user.
 	events := []pipeline.SessionEvent{
@@ -553,6 +552,62 @@ func TestSessionTitle_EmptyCommandArgs(t *testing.T) {
 	}
 }
 
+// The <user_query> envelope guard is ANCHORED AT BOTH ENDS, and this pins what that buys and what
+// it costs, because the two are one decision and a future round will be tempted to re-trade it.
+//
+// It asserts RANKS, not served titles, and that distinction is the whole point of a separate test.
+// Every blank-bodied row below is already caught downstream by foldsBlank in titleCandidate, so
+// TestSessionTitle_BlankAfterSanitizeFallsThrough passes with or without this guard — what it
+// cannot see is a message claiming rank 1 on a whitespace body, which outranks genuine prose and is
+// a lie even when a net catches it. Rank is also what the deferral in titleCandidate rests on.
+//
+// THE LAST ROW IS AN ACCEPTED LIMIT, NOT A PASSING CASE. A trailing non-blank byte defeats the
+// suffix anchor, so "<user_query></user_query>x" is still titled with its own markup — and under
+// Append's first-wins fold that blocks the session's real name until a /rename. The fix asked for in
+// review ("blank body whenever both tags are present and correctly ordered") does close it, and it
+// discards the prose row above with it: a bug report quoting an empty envelope is a perfectly good
+// title. This shape declines that trade. If a future round decides markup-as-title is the worse of
+// the two, this row is the one to change, deliberately — the prose row is the cost.
+func TestSessionTitle_EnvelopeAnchorLimits(t *testing.T) {
+	for _, tc := range []struct {
+		name, in string
+		wantRank int
+	}{
+		{"empty envelope", "<user_query></user_query>", rankNone},
+		{"blank body", "<user_query>   </user_query>", rankNone},
+		{"control body", "<user_query>\x00</user_query>", rankNone},
+		{"surrounding whitespace", "  <user_query></user_query>\n", rankNone},
+
+		// A real ask still ranks, and the guard must not swallow it.
+		{"real ask", "<user_query>the real ask</user_query>", rankUserQuery},
+
+		// Prose the anchor exists to protect. Both tags are present and correctly ordered, so the
+		// remedy prescribed in review would discard exactly this.
+		{"envelope quoted in prose",
+			"why does <user_query></user_query> render empty in my logs?", rankUserMsg},
+		// An unterminated open has no close to anchor against.
+		{"unterminated open", "what does <user_query> mean in this code", rankUserMsg},
+		// Mis-pairing shapes: a tag inside the anchored span declines the guard.
+		{"close before open", "a</user_query>b<user_query>c", rankUserMsg},
+		// Two envelopes, the second real — and it does NOT reach rank 1, which is pre-existing and
+		// not this guard's doing. between() pairs the FIRST open with the FIRST close, so it reads
+		// the empty body, returns "", and the message falls to prose. The guard declines it (a tag
+		// sits inside the anchored span), so the behavior is unchanged in both directions; the row
+		// is here to say so, since the guard is the obvious suspect when someone notices.
+		{"empty envelope then a real one",
+			"<user_query></user_query> and <user_query>hi</user_query>", rankUserMsg},
+
+		// THE ACCEPTED LIMIT — see the doc comment. Not an aspiration; today's behavior.
+		{"trailing byte still serves markup", "<user_query></user_query>x", rankUserMsg},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got, _ := titleFrom(tc.in); got != tc.wantRank {
+				t.Errorf("titleFrom(%q) rank = %d, want %d", tc.in, got, tc.wantRank)
+			}
+		})
+	}
+}
+
 func TestSessionTitle_ClipsToMaxTitleLen(t *testing.T) {
 	// A ~190KB message, the size of the largest measured event.
 	t.Run("long ascii", func(t *testing.T) {
@@ -716,18 +771,18 @@ func TestSessionSummary_TitleOmittedWhenEmpty(t *testing.T) {
 	}
 }
 
-// A candidate that SANITIZES to empty names nothing, and accepting one used to lock its rank and
-// discard the real title behind it. The raw-content tests inside titleFrom cannot catch this:
-// whitespace and control runes are non-empty until sanitizeTitle folds them away.
+// A candidate that SANITIZES to empty names nothing. Accepting one locks its rank and discards the
+// real title behind it, and the raw-content tests inside titleFrom cannot catch that: whitespace
+// and control runes are non-empty until sanitizeTitle folds them away.
 //
-// All three rank arms, because the two better ones are worse: a whitespace-only /rename claimed
-// rank 0, which also BREAKS the walk, so nothing behind it was even examined.
+// All three rank arms, because the two better ones fail worse: a whitespace-only /rename claims
+// rank 0, which also BREAKS the walk, so nothing behind it is examined at all.
 //
-// EACH CASE RUNS TWICE, in two events and in one, and the two are not the same test. The
-// separate-event form is satisfied by the fold's own blank screen in Append; the same-event form is
-// not, and passed nowhere until titleCandidate grew its own blank test. titleCandidate collapses
-// an event to ONE answer, so a blank winner there does not fall through — it discards the whole
-// event, and userEvent("the real ask", "<user_query>   </user_query>") titled the session "".
+// EACH CASE RUNS TWICE, in two events and in one, and the two are not the same assertion. The
+// separate-event form is satisfied by the fold's own blank screen in Append; the same-event form
+// needs titleCandidate's, because titleCandidate collapses an event to ONE answer — a blank winner
+// there does not fall through to the next message, it discards the whole event, which titles the
+// session "" rather than with the real ask sitting beside it.
 func TestSessionTitle_BlankAfterSanitizeFallsThrough(t *testing.T) {
 	for _, tc := range []struct{ name, blank string }{
 		{"spaces", "   "},
@@ -738,13 +793,20 @@ func TestSessionTitle_BlankAfterSanitizeFallsThrough(t *testing.T) {
 		{"line separator", " "},
 		{"rename with blank args", renameMsg("  ")},
 		{"user_query with blank body", "<user_query> </user_query>"},
-		// ZERO-LENGTH, not whitespace, and the two reached the generic arm by different routes
-		// until this was fixed. between() returns "" for an empty body and for an absent tag
-		// alike, so an empty envelope fell through and the session was titled with the literal
-		// markup "<user_query></user_query>" — non-blank, so foldsBlank could not reject it, and
-		// under first-wins it then blocked the real ask permanently. The whitespace row above was
-		// always safe via foldsBlank, which is exactly what hid this.
+		// ZERO-LENGTH, not whitespace, and the two reach the envelope arm by different routes.
+		// between() returns "" for an empty body and for an absent tag alike, so without the
+		// anchored guard an empty envelope falls to the generic arm and the session is titled with
+		// the literal markup "<user_query></user_query>" — non-blank, so foldsBlank cannot reject
+		// it, and under first-wins that blocks the real ask permanently. The whitespace row above
+		// is safe via foldsBlank whatever the arm decides, which is what makes it the weaker test.
 		{"user_query with empty body", "<user_query></user_query>"},
+		// SURROUNDING WHITESPACE, which a whole-string equality does not tolerate: a leading
+		// newline is enough to defeat the anchor and serve the markup. These pass through
+		// foldsBlank downstream either way, so they assert the served title, not the rank —
+		// TestSessionTitle_EnvelopeAnchorLimits covers the rank, which is where the lie lives.
+		{"empty envelope in whitespace", "  <user_query></user_query>  "},
+		{"empty envelope after newline", "\n<user_query></user_query>"},
+		{"user_query with control body", "<user_query>\x00</user_query>"},
 		{"rename with control args", renameMsg("\x00")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

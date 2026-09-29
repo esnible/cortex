@@ -1501,9 +1501,10 @@ func TestAppend_TitleIgnoresBlankCandidates(t *testing.T) {
 // A session nothing has named serves an ABSENT title, not an empty string that a client could
 // mistake for a real one — the omitempty rule SessionSummary.CostMicros states.
 //
-// This also covers the string that used to be here: "(empty session)" was served for a session with
-// no events, CLAUDE.md told clients to expect it, and it was unreachable — the only entry-creation
-// site appends immediately, so a session on the wire always holds at least one event.
+// The second assertion rules out a placeholder sentinel reaching the wire. A name like
+// "(empty session)" is tempting here and wrong twice: a client cannot tell it from a session
+// genuinely so titled, and it is unreachable anyway — the only entry-creation site appends
+// immediately, so a session on the wire always holds at least one event.
 func TestAppend_TitleAbsentWhenNothingNamedIt(t *testing.T) {
 	s := New(time.Hour, 0, 0)
 	defer s.Close()

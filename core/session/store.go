@@ -111,12 +111,13 @@ type entry struct {
 	// That is the intended behavior (a user who names a session expects the name to stick) and it
 	// is the same property TestAppend_PromptContextSurvivesATrim pins for context.
 	//
-	// FOLDED AT APPEND BECAUSE THE READ PATH COULD NOT AFFORD IT. ListSessions used to pick the
-	// title per call, under s.mu.RLock(), by walking the retained events and their message
-	// CONTENT — the largest payload here, and the walk is now deleted along with its helper. A
-	// 190KB message of nested <system-reminder> opens measured 593ms of lock hold, and 38.1s at
-	// the scan ceiling, against a writer side that is Append on the proxy's request path with
-	// attacker-controlled content. Two integers and a string here; no walk there.
+	// FOLDED AT APPEND BECAUSE THE READ PATH CANNOT AFFORD IT. Picking the title per call means
+	// walking the retained events and their message CONTENT — the largest payload here — under
+	// s.mu.RLock(), whose writer side is Append on the proxy's request path with caller-supplied
+	// content. Measured on a 190KB message of nested <system-reminder> opens: 593ms of lock hold,
+	// and 38.1s with a ceiling on how many events are examined, since bounding the count does not
+	// bound the cost of any one of them. Folding here is two integers and a string, and leaves the
+	// read path a field read — see ListSessions, and stripReminders for the quadratic part.
 	Title     string
 	titleRank int
 
@@ -838,25 +839,14 @@ func (s *Store) ListSessions() []SessionSummary {
 			EventCount: len(sess.Events),
 			// Read, not computed — like the money figures below and for the same reason,
 			// squared. Append folds this; see entry.Title for the rule (first-wins, except
-			// that a /rename always overrides) and for why the name outlives the event that
-			// carried it.
+			// that a /rename always overrides), for why the name outlives the event that
+			// carried it, and for the measurements that put the fold there rather than here.
 			//
-			// THE WALK THAT USED TO BE HERE IS WHY THIS FIELD IS FOLDED AT ALL, and it is worth
-			// naming because the comment it replaced argued the walk was affordable. It reverse-
-			// walked the retained events, scanning message CONTENT — the largest payload here — and an
-			// earlier ceiling on how many events it examined bounded the count without bounding
-			// the cost of any one of them. A 190KB message of nested <system-reminder> opens
-			// measured 593ms of lock hold, 38.1s at that ceiling, all of it under s.mu.RLock()
-			// whose writer side is Append on the proxy's request path, on content a caller
-			// supplies. See stripReminders, which was the quadratic part.
-			//
-			// THE SAME FIXTURE NOW READS IN 1.6µs, against 38.1s: this is a field read, so no
-			// content shape can reach it. BenchmarkListSessions_Title measures five shapes that
-			// used to span 280ns to 714µs and now agree at ~165ns, which is the standing evidence
-			// that the walk has not come back.
-			//
-			// So this is no longer the exception to the rule PromptContext states below. That
-			// rule rejects an O(events) walk under the read lock, and this field now obeys it.
+			// A FIELD READ, so no content shape can reach it: the 190KB nested-reminder fixture
+			// that costs 38.1s to walk reads in 1.6µs. BenchmarkListSessions_Title measures five
+			// shapes that agree at ~165ns, which is the standing evidence against a walk
+			// reappearing here — they would diverge immediately if one did. This obeys the rule
+			// PromptContext states below, which rejects an O(events) walk under the read lock.
 			Title: sess.Title,
 			// Still a walk, and deliberately left as one: it is a pointer deref per event
 			// with no allocation, where the money figures below needed a JSON unmarshal.
