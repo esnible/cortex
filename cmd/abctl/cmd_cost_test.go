@@ -2750,12 +2750,12 @@ func TestRunCost_ByCurrencyMatchesAUnitSpelledADifferentWay(t *testing.T) {
 // THE TABLE'S COST CELL IS THE LAST COLUMN, so a long unit lengthens its own row and moves nothing.
 // Both directions matter, so both are checked: nothing truncated, and the sibling USD row unmoved.
 func TestRunCost_TheWidestLegalUnitIsNeverTruncated(t *testing.T) {
-	// Exactly pricing.maxUnitLen bytes, all charset-legal, so config would accept it.
+	// 16 bytes, all charset-legal. That is pricing's maxUnitLen today, but maxUnitLen is
+	// UNEXPORTED and cmd/abctl cannot import it, so this literal does not track it and must not
+	// claim to: raising the bound to 24 leaves this test green. The bound itself is pinned where it
+	// is visible, by the accepted/refused boundary rows in pricing's own config_test.go; this
+	// fixture only has to be wide enough to overflow a 14-column field, which 16 is.
 	const widest = "Bobcoins12345678"
-	if len(widest) != 16 {
-		t.Fatalf("fixture is %d bytes; it must be exactly maxUnitLen (16) to be the worst case",
-			len(widest))
-	}
 
 	t.Run("headline shifts but does not truncate", func(t *testing.T) {
 		srv := fakeUsageServer(t, `{"window":"today","priced":true,"currencies":["`+widest+`"],
@@ -2792,12 +2792,25 @@ func TestRunCost_TheWidestLegalUnitIsNeverTruncated(t *testing.T) {
 		if row := tableRow(t, got, widest); !strings.Contains(row, "12345.67 "+widest) {
 			t.Errorf("the widest unit's cell was truncated:\n%s", row)
 		}
-		// The USD row is the invariant: the long row must not have shifted it. Asserted on the
-		// COLUMN POSITION of its figure, not merely on its presence, because presence is what a
-		// misaligned table still satisfies.
+		// The USD row is the invariant: the long row must not have shifted it. AGAINST THE HEADER,
+		// not against a column number and not with HasSuffix.
+		//
+		// HasSuffix was the first attempt and it cannot fail for this: it pins where the figure
+		// ENDS THE STRING, not where it sits. `%14s` right-aligns, so widening that field moves the
+		// figure from column 73 to 79 and the row still ends with it — both mutants survived.
+		// A literal 73 would work and would be a constant nothing derives.
+		//
+		// The header and the rows are printed from TWO SEPARATE format literals, three lines apart
+		// in writeCostBreakdown, and that is the drift this guards: equal length means the columns
+		// still line up, and it stays true if someone deliberately re-widens BOTH.
 		usd := tableRow(t, got, "USD")
-		if !strings.HasSuffix(usd, "$146.36") {
-			t.Errorf("the USD row no longer ends at its own column:\n%q", usd)
+		header := tableRow(t, got, "CURRENCY")
+		if len(usd) != len(header) {
+			t.Errorf("the USD row is %d columns and its header is %d, so the table no longer lines "+
+				"up:\n%q\n%q", len(usd), len(header), header, usd)
+		}
+		if !strings.Contains(usd, "$146.36") {
+			t.Errorf("the USD row lost its figure:\n%q", usd)
 		}
 	})
 }

@@ -341,12 +341,56 @@ func TestConfig_UnitDefaultsToUSDAndIsCarriedOnTheEntry(t *testing.T) {
 // These strings reach a durable ledger row, a terminal and a JSON document, so the same
 // reasoning that caps and sanitises a model name applies: refuse at load, where an operator is
 // looking at the error, rather than write something unreadable into a file retained for a month.
+// maxUnitLen is 16, and two things outside this package restate that number.
+//
+// A LITERAL, DELIBERATELY. The boundary cases below derive their fixtures from maxUnitLen, which
+// makes them test the BEHAVIOUR at the bound and leaves them green when the bound moves — verified:
+// 16 -> 24 passes every package. So they cannot be the pin, and a test that derives its fixture
+// from the constant it means to hold never can be.
+//
+// What the number is load-bearing FOR, neither of which the compiler connects:
+//   - docs/pricing.md tells operators a unit is "at most 16 bytes";
+//   - cmd/abctl's TestRunCost_TheWidestLegalUnitIsNeverTruncated uses a 16-byte fixture as its
+//     worst case, and cannot import an unexported constant to check it.
+//
+// Changing the bound is fine; changing it silently is not. This is the tripwire that makes it a
+// decision, and its failure message is the checklist.
+func TestConfig_MaxUnitLenIsSixteen(t *testing.T) {
+	if maxUnitLen != 16 {
+		t.Errorf("maxUnitLen = %d, not 16. That is allowed, but three things have to move with it: "+
+			"docs/pricing.md's \"at most 16 bytes\", cmd/abctl's widest-unit fixture, and this test.",
+			maxUnitLen)
+	}
+}
+
+// A unit of exactly maxUnitLen bytes is ACCEPTED.
+//
+// The other half of the bound's BEHAVIOUR, and the half that keeps the refusal below from being
+// satisfiable by a validator that refuses everything. Derived from maxUnitLen on purpose: this pair
+// asserts the boundary is where the constant says, whatever the constant says.
+func TestConfig_AUnitOfExactlyTheBoundIsAccepted(t *testing.T) {
+	unit := strings.Repeat("c", maxUnitLen)
+	got, err := normaliseUnit(unit, "pricing.endpoints[0]")
+	if err != nil {
+		t.Fatalf("a unit of exactly maxUnitLen (%d) was refused: %v", maxUnitLen, err)
+	}
+	if got != unit {
+		t.Errorf("normaliseUnit(%q) = %q; a non-default unit keeps the operator's spelling", unit, got)
+	}
+}
+
 func TestConfig_RejectsAnUnusableUnit(t *testing.T) {
 	for _, tc := range []struct{ name, unit string }{
 		{"whitespace only", "   "},
 		{"embedded space", "bob coins"},
 		{"control character", "cre\x1bdits"},
 		{"absurdly long", strings.Repeat("c", 40)},
+		// THE BOUNDARY, not just a value far past it. "absurdly long" above is refused by any
+		// bound at all, so it pins nothing: raising maxUnitLen from 16 to 24 left it green, and
+		// left a cmd/abctl fixture that restates 16 green too — that fixture cannot import an
+		// unexported constant, so this is the only place the number can be held. One over the
+		// bound must be refused; exactly the bound is accepted by the sibling test below.
+		{"one byte past maxUnitLen", strings.Repeat("c", maxUnitLen+1)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := &Config{Endpoints: []EndpointConfig{{
