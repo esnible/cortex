@@ -1240,6 +1240,14 @@ offer_path_setup() {
 # produced a working proxy, and this runs after the binaries are already in place.
 # Requires python3, which is not a dependency of anything else here -- so the
 # absence of it is reported, not repaired.
+#
+# Called at top level, so it ALSO runs on the "Already at ${version} — not
+# re-downloading" path. That is deliberate, not an oversight: version is a real ref
+# there, so the URL is valid, and it self-heals an install whose helper is missing
+# or predates this change -- which every existing install does. The cost is that a
+# run which just said it was not re-downloading still makes one request. The other
+# skip path, AUTHBRIDGE_SKIP_DOWNLOAD=1, means "do not touch the network" and is
+# guarded inside the function instead.
 install_session_dump() {
 	# AUTHBRIDGE_SKIP_DOWNLOAD=1 means "do not touch the network", and sets version
 	# to a prose string rather than a ref -- which would build a nonsense URL. An

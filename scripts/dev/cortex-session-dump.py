@@ -207,6 +207,7 @@ def main():
 
     total = 0
     ok = 0
+    written = {}
     for meta in wanted:
         sid = meta["id"]
         # A session id is a path component here. Ids come from the proxy today, but
@@ -214,12 +215,28 @@ def main():
         # being free -- a "/" or ".." would otherwise write outside sessions/.
         safe_sid = sid.replace(os.sep, "_").replace("/", "_").strip(".") or "unnamed"
         out_path = os.path.join(args.out, "sessions", f"{safe_sid}.jsonl")
+        # That mapping is many-to-one: "a/b" and "a_b" both land on a_b.jsonl. Needs
+        # the same hostile-host precondition as the traversal above, but a silent
+        # overwrite is worse than a rejected one -- the run would report both
+        # sessions dumped and exit 0, leaving a dump that looks complete and is not.
+        #
+        # Tracked per run rather than with os.path.exists: under --reuse-dir the file
+        # may be left from an EARLIER run, which is that flag's whole purpose, and
+        # testing the filesystem would turn a deliberate re-dump into a failure.
+        if safe_sid in written:
+            print(
+                f"  {sid}: FAILED sanitized name {safe_sid!r} collides with {written[safe_sid]!r}",
+                file=sys.stderr,
+            )
+            failed.append(sid)
+            continue
         try:
             n = dump_events(base, sid, out_path, args.full)
         except Exception as exc:
             print(f"  {sid}: FAILED {exc}", file=sys.stderr)
             failed.append(sid)
             continue
+        written[safe_sid] = sid
         total += n
         ok += 1
         print(f"  {sid}  {n} events (reported {meta.get('eventCount', '?')})")
