@@ -74,10 +74,21 @@ else that egresses through the proxy without announcing a session.
 
 Some limitations worth knowing:
 
-- **Tool calls are attributed by timing, not identity.** MCP requests carry no session
-  header, so they are filed under whichever session was most recently active. That is
-  right when sessions take turns and can misattribute when two are genuinely
-  interleaved. Inference traffic — where the tokens and the cost are — is always exact.
+- **Header-less requests are attributed by timing, not identity — unless you turn on
+  `session.client_affinity`.** MCP tool calls, Claude Code's WebFetch, and Bob's startup
+  probes and task-classifier completions carry no session header, so by default they are
+  filed under whichever session was most recently active. That is right when sessions
+  take turns and wrong when two agents run side by side: Bob's classifier completions —
+  real inference, with tokens and cost — land in Claude Code's session, and Claude Code's
+  WebFetch in Bob's. Inference is exact only where it carries the header.
+
+  `session.client_affinity: true` files a header-less request under the newest session of
+  the same agent (by `User-Agent`). An agent's calls before its first header wait in a
+  `pending:<agent>` bucket that its first session then absorbs, and a request from no
+  known agent goes to `default` while two agents are live. Two sessions of the SAME agent
+  still share by timing. The built-in `--local` preset turns it on for new installs; an
+  existing `~/.cortex/config.yaml` is never rewritten, so add the line yourself. It is not
+  hot-reloadable — restart the proxy after changing it.
 - **Agents other than Claude Code and Bob need to be named.** Set `session.id_headers`
   to a list of headers to consult in precedence order if you run a client with its own
   session header; naming any replaces the built-in list rather than adding to it. An
