@@ -353,7 +353,7 @@ func bandAmount(r spanReading) (string, bool) {
 	order := make([]string, 0, len(r.Units))
 	for _, u := range r.Units {
 		if _, ok := r.ByUnit[u]; !ok {
-			continue
+			return "", false
 		}
 		if money.IsDefault(u) {
 			order = append([]string{u}, order...)

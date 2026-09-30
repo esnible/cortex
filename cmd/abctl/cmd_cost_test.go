@@ -2867,3 +2867,22 @@ func TestRunCost_AgentResidualKeepsTheWindowsUnits(t *testing.T) {
 		t.Errorf("a whole-window residual in a mixed window was stated in the agent's dollars:\n%s", got)
 	}
 }
+
+// Under --agent the JSON's currencies is the agent's own list, and a script labels every figure
+// by it; the whole-window residual is only emitted where the window's unit is that same one.
+func TestRunCost_AgentJSONOmitsAResidualInAnotherUnit(t *testing.T) {
+	srv := fakeUsageServer(t, `{"window":"today","group":"agent","priced":true,
+		"currencies":["USD","credits"],"seriesCurrencies":{"claude-code/2.1.270":["USD"]},
+		"ungroupedCostMicros":5000000,
+		"totals":{"requests":20,"costMicros":9000000,"pricedRequests":20,"priceableRequests":20},
+		"buckets":[{"at":"2026-09-27T10:00:00Z","series":{
+		   "claude-code/2.1.270":{"requests":14,"costMicros":4000000,"pricedRequests":14,"priceableRequests":14}}}]}`)
+	defer srv.Close()
+	var out, errOut strings.Builder
+	if code := runCost([]string{"--endpoint", srv.URL, "--agent", "claude-code/2.1.270", "--json"}, &out, &errOut); code != 0 {
+		t.Fatalf("exit = %d, stderr = %s", code, errOut.String())
+	}
+	if got := out.String(); strings.Contains(got, "ungroupedCostMicros") {
+		t.Errorf("a mixed window's residual was emitted beside the agent's currencies [USD]:\n%s", got)
+	}
+}

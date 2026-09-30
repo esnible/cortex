@@ -223,7 +223,7 @@ Flags:
 	}
 
 	if *asJSON {
-		return writeCostJSON(snap, stdout, stderr, *agent, *by)
+		return writeCostJSON(snap, stdout, stderr, *agent, *by, windowUnits)
 	}
 	writeCostSummary(snap, stdout, *agent, ownUnits, windowUnits)
 	if *by != "" {
@@ -499,7 +499,7 @@ func tiersJSONOf(t usage.Counts) *costTiersJSON {
 	return out
 }
 
-func writeCostJSON(snap *usage.Snapshot, stdout, stderr io.Writer, agent, by string) int {
+func writeCostJSON(snap *usage.Snapshot, stdout, stderr io.Writer, agent, by string, windowUnits []string) int {
 	enc := json.NewEncoder(stdout)
 	enc.SetIndent("", "  ")
 	out := costJSON{
@@ -517,7 +517,7 @@ func writeCostJSON(snap *usage.Snapshot, stdout, stderr io.Writer, agent, by str
 		// ONLY UNDER --agent OR --by, so the default path serialises no key and its absence keeps
 		// meaning "no breakdown was asked for". See the field's own comment for the debt this
 		// pays.
-		UngroupedCostMicros: ungroupedForBreakdown(snap, agent, by),
+		UngroupedCostMicros: ungroupedForBreakdown(snap, agent, by, windowUnits),
 		By:                  by,
 		Series:              seriesForBreakdown(snap, by),
 		// usage.Counts.Saturated and usage.Counts.RefusedTokenRequests need no line here: Totals
@@ -1284,9 +1284,16 @@ func reportDowngrade(snap *usage.Snapshot, stdout io.Writer, requested usage.Gro
 // value there would mean the producer changed — and serialising it would quietly retract what
 // the field's absence has always promised a script. Dropping it keeps that promise and the
 // mismatch surfaces where it belongs, in the producer.
-func ungroupedForBreakdown(snap *usage.Snapshot, agent, by string) *int64 {
+func ungroupedForBreakdown(snap *usage.Snapshot, agent, by string, windowUnits []string) *int64 {
 	if agent == "" && by == "" {
 		return nil
+	}
+	if agent != "" {
+		wu, wok := money.WindowUnit(windowUnits)
+		au, aok := money.WindowUnit(snap.Currencies)
+		if !wok || !aok || !strings.EqualFold(wu, au) {
+			return nil
+		}
 	}
 	return snap.UngroupedCostMicros
 }
