@@ -101,6 +101,13 @@ type Server struct {
 	// SessionIDHeaders for the default and how to turn it off.
 	SessionIDHeaders []string
 
+	// ClientAffinity files a request that carries no session header under the newest
+	// session of the SAME coding agent, instead of under ActiveSession() — the one
+	// global "most recently updated" id, which with two agents running files each
+	// one's header-less calls into the other's session. See config.SessionConfig
+	// ClientAffinity; false keeps today's resolution byte for byte.
+	ClientAffinity bool
+
 	// bufferedFallbackOnce keeps the SSE-buffered-path notice to one line per
 	// process; the condition is a supported chain shape, not an error.
 	bufferedFallbackOnce sync.Once
