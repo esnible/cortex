@@ -2073,7 +2073,7 @@ func (m *model) handleStreamEvent(ev apiclient.StreamEvent) {
 	// within two seconds of anything changing.
 	//
 	// Not for a tunnel's close, which lands when the tunnel ends rather than when its
-	// session speaks; the proxy's own list does not count it either.
+	// session speaks.
 	trailing := isTunnelClose(&e)
 	for i := range m.sessions {
 		if m.sessions[i].ID == e.SessionID {
