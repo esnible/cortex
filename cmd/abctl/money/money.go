@@ -88,7 +88,9 @@ func SeriesUnit(snap *usage.Snapshot, label string) (unit string, ok bool) {
 
 // Relabel rewrites a dollar rendering into unit, keeping every other character the dollar
 // formatter chose — its rounding, its floor, its magnitude suffix — so the two units cannot
-// follow different precision rules. "$12.40" becomes "12.40 Bobcoins", "<$0.01" "<0.01 Bobcoins".
+// follow different precision rules. "$12.40" becomes "12.40 Bobcoins", "<$0.01" "<0.01 Bobcoins",
+// and a composite such as a figure with its saving, "$0.26(−$0.01)", names the unit once:
+// "0.26(−0.01) Bobcoins".
 //
 // FITTED TO budget when budget > 0: the unit name is shortened with an ellipsis ("12.40 Bobco…"),
 // and then replaced by "¤" ("12.40¤"). "" when not even that fits, so a caller with a ladder of
@@ -97,7 +99,7 @@ func Relabel(dollars, unit string, budget int) string {
 	if IsDefault(unit) {
 		return dollars
 	}
-	amount := strings.Replace(dollars, "$", "", 1)
+	amount := strings.ReplaceAll(dollars, "$", "")
 	fits := func(s string) bool { return budget <= 0 || lipgloss.Width(s) <= budget }
 	name := []rune(printable(unit))
 	if full := amount + " " + string(name); fits(full) {

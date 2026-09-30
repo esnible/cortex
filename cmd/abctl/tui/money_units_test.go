@@ -303,3 +303,26 @@ func TestCostUngroupedRow_OnlyDollarsCarryAnAmount(t *testing.T) {
 		t.Errorf("Bobcoins note = %q, want the note without a dollar amount", got)
 	}
 }
+
+// A request and its response in Bobcoins read in Bobcoins in the events pane, the saving included,
+// with the unit named once; the same pair without a unit is the dollar cells TestCostCellPhases pins.
+func TestCostCell_ARecordInAForeignUnitIsLabelledSo(t *testing.T) {
+	wire := strings.Replace(costWire, `"source":"gateway-header",`, `"source":"gateway-header","currency":"Bobcoins",`, 1)
+	if wire == costWire {
+		t.Fatal("the fixture no longer has the anchor this test rewrites")
+	}
+	req := reqEvent(t, bigPromptWire)
+	req.RequestID = "aaa"
+	resp := respEvent(wire, agentTurn())
+	resp.RequestID = "aaa"
+	rows := []eventRow{{event: req}, {event: resp}}
+	partner := map[int]int{0: 1, 1: 0}
+	m := &model{}
+
+	if got := m.costCell(rows, partner, 0, req); got != "0.2633(−0.0038) Bobcoins" {
+		t.Errorf("request COST = %q, want 0.2633(−0.0038) Bobcoins", got)
+	}
+	if got := m.costCell(rows, partner, 1, resp); got != "0.0352 Bobcoins" {
+		t.Errorf("response COST = %q, want 0.0352 Bobcoins", got)
+	}
+}
