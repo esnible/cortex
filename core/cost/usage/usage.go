@@ -647,6 +647,38 @@ type bucket struct {
 	// both the same way, which is how a permanent property of a gateway comes to read
 	// as an incident.
 	byIncomplete map[string]Counts
+
+	// byCurrency tallies by the BILLING UNIT each request's figures are in, "USD" by default.
+	// UNCONDITIONAL, like byAgent, so its series sum to the bucket total and group=currency
+	// leaves nothing ungrouped — the unit is a property of the endpoint, so every request has one.
+	byCurrency map[string]Counts
+	// labelUnits is, per unit-labelled axis (model, endpoint, agent) and per key of that axis's
+	// map, the units of those requests that were priced or carried a saving: the
+	// cross-tabulation Snapshot.SeriesCurrencies reports. Keyed by the label byAgent actually
+	// used, overflow included, so the two can never name different agents.
+	labelUnits map[Group]map[string]map[string]struct{}
+}
+
+// unitAxes are the groupings Snapshot.SeriesCurrencies is reported for: the spend drawer's three
+// breakdowns. Every other axis mixes endpoints within a series, so it has no per-series unit worth
+// keeping a cross-tabulation for.
+var unitAxes = [...]Group{GroupModel, GroupEndpoint, GroupAgent}
+
+// noteUnit records that a request filed under label on axis g was in unit.
+func (b *bucket) noteUnit(g Group, label, unit string) {
+	if unit == "" {
+		return
+	}
+	if b.labelUnits == nil {
+		b.labelUnits = make(map[Group]map[string]map[string]struct{}, len(unitAxes))
+	}
+	if b.labelUnits[g] == nil {
+		b.labelUnits[g] = make(map[string]map[string]struct{}, 2)
+	}
+	if b.labelUnits[g][label] == nil {
+		b.labelUnits[g][label] = make(map[string]struct{}, 1)
+	}
+	b.labelUnits[g][label][unit] = struct{}{}
 }
 
 // eventCost is one event's settled cost, decoded once per Record and passed to
@@ -707,6 +739,8 @@ type eventCost struct {
 	// Empty for a priced request, and empty for traffic that carries no model at
 	// all — naming every non-LLM call the proxy handled would bury the real gaps.
 	unpricedKey string
+	// unit is the billing unit the figure is in, "" for USD. See Aggregator.Record.
+	unit string
 }
 
 // costOf settles one event's cost, preferring a published figure and falling back
@@ -1032,6 +1066,17 @@ func (a *Aggregator) Record(sessionID string, e *pipeline.SessionEvent) {
 		// what hoisting this out of it was for.
 		rec, haveRec := event.Record(e)
 		ec = a.costOf(e, rec, haveRec)
+		// THE LEDGER'S RULE, pricing.UnitOf, so a ring window and a ledger window label the same
+		// request alike. The record's own stamp covers a ring with no rate table — Kubernetes,
+		// and tests — where it is the only source; where both exist they agree by construction
+		// (ledger.TestSettleAndWriter_AgreeOnTheUnit).
+		var model string
+		if e.Inference != nil {
+			model = e.Inference.Model
+		}
+		if ec.unit = pricing.UnitOf(a.rates, e.Host, model); ec.unit == "" && haveRec {
+			ec.unit = rec.Currency
+		}
 		if haveRec {
 			avoided = rec.TotalAvoidedMicros()
 		}
@@ -1270,8 +1315,16 @@ func (a *Aggregator) foldInto(ring []bucket, t time.Time, sessionID string, e *p
 		b.latN++
 	}
 
+	unit := pricing.CurrencyUSD
+	if ec.unit != "" {
+		unit = ringLabel(ec.unit)
+	}
+	addLabel(&b.byCurrency, unit, one)
+	if ec.priced == 0 && avoided == 0 {
+		unit = ""
+	}
 	if model != "" {
-		addLabel(&b.byMethod, ringLabel(model), one)
+		b.noteUnit(GroupModel, addLabel(&b.byMethod, ringLabel(model), one), unit)
 	}
 	// Host is the :authority as the listener saw it, so it is request-controlled
 	// and goes through truncateLabel like the model name. Guarded on empty for the
@@ -1308,14 +1361,14 @@ func (a *Aggregator) foldInto(ring []bucket, t time.Time, sessionID string, e *p
 	// and an "" key renders as a blank row in a breakdown table, which reads as a
 	// bug rather than as missing data.
 	if e.Host != "" {
-		addLabel(&b.byEndpoint, ringLabel(e.Host), one)
+		b.noteUnit(GroupEndpoint, addLabel(&b.byEndpoint, ringLabel(e.Host), one), unit)
 	}
 	// UNCONDITIONAL, where byMethod and byEndpoint are guarded on a non-empty value.
 	// Label() is nil-safe and answers "unknown" for an event that carried no client,
 	// so there is no empty key to guard against — and folding unconditionally is what
 	// makes this axis's series sum to the bucket total. That is also what gives it a
 	// different denominator from group=model's; see byAgent.
-	addLabel(&b.byAgent, ringLabel(e.Client.Label()), one)
+	b.noteUnit(GroupAgent, addLabel(&b.byAgent, ringLabel(e.Client.Label()), one), unit)
 	if e.StatusCode > 0 {
 		addLabel(&b.byStatus, strconv.Itoa(e.StatusCode), one)
 	} else if e.Phase == pipeline.SessionDenied {
@@ -1699,7 +1752,9 @@ func capSeriesAcrossWindow(buckets []Bucket, n int) {
 	}
 }
 
-func addLabel(m *map[string]Counts, key string, c Counts) {
+// addLabel adds c under key, or under overflowLabel once the map is full, and returns the key it
+// used — which a caller keeping a second tally in step with this one must key on.
+func addLabel(m *map[string]Counts, key string, c Counts) string {
 	if *m == nil {
 		*m = make(map[string]Counts, 4)
 	}
@@ -1711,6 +1766,7 @@ func addLabel(m *map[string]Counts, key string, c Counts) {
 	cur := (*m)[key]
 	cur.Add(c)
 	(*m)[key] = cur
+	return key
 }
 
 func slot(t time.Time) int {

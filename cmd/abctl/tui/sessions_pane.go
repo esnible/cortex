@@ -12,6 +12,7 @@ import (
 	"github.com/charmbracelet/bubbles/table"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/rossoctl/cortex/cmd/abctl/money"
 	"github.com/rossoctl/cortex/core/observe/claude"
 	"github.com/rossoctl/cortex/core/pipeline"
 )
@@ -279,8 +280,8 @@ func (m *model) rebuildSessionsTable() {
 		)
 		if showMoney {
 			row = append(row,
-				padLeft(sessionMoneyCell(s.CostMicros, s.Saturated, costW), costW),
-				padLeft(sessionMoneyCell(s.AvoidedMicros, s.Saturated, savedW), savedW))
+				padLeft(sessionMoneyCellIn(s.CostMicros, s.Saturated, costW, s.Currencies), costW),
+				padLeft(sessionMoneyCellIn(s.AvoidedMicros, s.Saturated, savedW, s.Currencies), savedW))
 		}
 		// The server's published figure is merged with abctl's own — see sessionContextFor for
 		// why neither source dominates. It is what lets a row idle since before abctl attached
@@ -1205,7 +1206,22 @@ const emptyCell = "—"
 // cost is real and accepted: two sessions that differ below a cent now read alike. See the
 // precision rule beside formatUSDTotal, which this change rewrote.
 func sessionMoneyCell(micros int64, saturated bool, budget int) string {
+	return sessionMoneyCellIn(micros, saturated, budget, nil)
+}
+
+// sessionMoneyCellIn is sessionMoneyCell in the units SessionSummary.Currencies names: nil is
+// dollars, rendered exactly as sessionMoneyCell always has; one foreign unit relabels each rung of
+// the same ladder (money.Relabel), so credits follow the dollar precision rule; two or more are a
+// cross-unit sum with no amount to show, so the cell says money.Mixed.
+func sessionMoneyCellIn(micros int64, saturated bool, budget int, currencies []string) string {
 	if micros == 0 || negativeCost(micros) {
+		return emptyCell
+	}
+	unit, ok := money.WindowUnit(currencies)
+	if !ok {
+		if lipgloss.Width(money.Mixed) <= budget {
+			return money.Mixed
+		}
 		return emptyCell
 	}
 	decorate := func(amount string) string {
@@ -1252,7 +1268,17 @@ func sessionMoneyCell(micros int64, saturated bool, budget int) string {
 		// lipgloss.Width, like everything else that budgets a cell here. Safe as a rune count
 		// today — the output is ASCII digits with width-one markers — but it is the same class
 		// of bug truncLeft had, and the cost of being right is one call.
-		if cell := decorate(r.text); lipgloss.Width(cell) <= budget {
+		text := r.text
+		if !money.IsDefault(unit) {
+			room := budget
+			if saturated {
+				room -= lipgloss.Width(partialMarker)
+			}
+			if text = money.Relabel(text, unit, room); text == "" {
+				continue
+			}
+		}
+		if cell := decorate(text); lipgloss.Width(cell) <= budget {
 			return cell
 		}
 	}

@@ -10,6 +10,7 @@ import (
 	"github.com/charmbracelet/bubbles/table"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/rossoctl/cortex/cmd/abctl/money"
 	"github.com/rossoctl/cortex/core/pipeline"
 )
 
@@ -1217,7 +1218,7 @@ func (m *model) costCell(rows []eventRow, partner map[int]int, i int, ev *pipeli
 		if !ok {
 			return ""
 		}
-		return formatUSDCell(usd)
+		return money.Relabel(formatUSDCell(usd), recordUnit(ev), 0)
 	case pipeline.SessionRequest:
 		resp := pairedResponse(rows, partner, i, ev)
 		if resp == nil {
@@ -1232,7 +1233,7 @@ func (m *model) costCell(rows []eventRow, partner map[int]int, i int, ev *pipeli
 		if s, ok := pruneSavingFor(resp); ok {
 			savedUSD, projected = s.USD, s.Projected
 		}
-		return formatUSDWithSaving(total, savedUSD, projected)
+		return money.Relabel(formatUSDWithSaving(total, savedUSD, projected), recordUnit(resp), 0)
 	default:
 		return ""
 	}

@@ -2564,8 +2564,6 @@ func TestRunCost_JSONCarriesTheCurrencies(t *testing.T) {
 	}
 }
 
-// The ring serialises no currencies key at all, so no script starts seeing a field for a window
-// that cannot compute one.
 func TestRunCost_JSONOmitsCurrenciesWhenTheProducerDoesNotReportThem(t *testing.T) {
 	srv := fakeUsageServer(t, `{"window":"today","priced":true,
 		"totals":{"requests":318,"costMicros":4170000,"pricedRequests":318,"priceableRequests":318}}`)
@@ -2576,16 +2574,11 @@ func TestRunCost_JSONOmitsCurrenciesWhenTheProducerDoesNotReportThem(t *testing.
 		t.Fatalf("exit = %d, want 0; stderr = %s", code, errOut.String())
 	}
 	if strings.Contains(out.String(), "currencies") {
-		t.Errorf("a ring-served window named a currencies key:\n%s", out.String())
+		t.Errorf("a window named a currencies key:\n%s", out.String())
 	}
 }
 
 // --agent on a mixed window says WHOSE mixture it is.
-//
-// usage.ScopeToAgent narrows Totals to one agent and carries Currencies over from the whole window, and
-// no client-side arithmetic can narrow the second — a folded per-agent Counts has summed the
-// currency axis away. So the refusal stands, deliberately over-refusing, and this line is what
-// stops a reader taking it as a statement about the agent they asked about.
 func TestRunCost_AgentOnAMixedWindowNamesTheWindowAsTheSource(t *testing.T) {
 	srv := fakeUsageServer(t, `{"window":"today","group":"agent","priced":true,
 		"currencies":["USD","credits"],
@@ -2811,4 +2804,85 @@ func TestRunCost_TheWidestLegalUnitIsNeverTruncated(t *testing.T) {
 			t.Errorf("the USD row lost its figure:\n%q", usd)
 		}
 	})
+}
+
+// With seriesCurrencies the scoped list is the agent's own, so a single-unit agent in a mixed
+// window gets its figure, and an agent whose own traffic is mixed is not told the mixture is the
+// window's.
+func TestRunCost_AgentWithSeriesCurrenciesIsJudgedOnItsOwnUnits(t *testing.T) {
+	for _, tc := range []struct {
+		units, want, notWant string
+	}{
+		{`["USD"]`, "$146.36", "cannot be added"},
+		{`["USD","credits"]`, "cannot be added", "window's mixture"},
+	} {
+		srv := fakeUsageServer(t, `{"window":"today","group":"agent","priced":true,
+			"currencies":["USD","credits"],"seriesCurrencies":{"claude-code/2.1.270":`+tc.units+`},
+			"totals":{"requests":1057,"costMicros":146439000,"pricedRequests":1057,"priceableRequests":1057},
+			"buckets":[{"at":"2026-09-27T10:00:00Z","series":{
+			   "claude-code/2.1.270":{"requests":1000,"costMicros":146361600,"pricedRequests":1000,"priceableRequests":1000}}}]}`)
+		var out, errOut strings.Builder
+		if code := runCost([]string{"--endpoint", srv.URL, "--agent", "claude-code/2.1.270"}, &out, &errOut); code != 0 {
+			t.Fatalf("units %s: exit = %d, stderr = %s", tc.units, code, errOut.String())
+		}
+		if got := out.String(); !strings.Contains(got, tc.want) || strings.Contains(got, tc.notWant) {
+			t.Errorf("units %s: want %q and not %q in:\n%s", tc.units, tc.want, tc.notWant, got)
+		}
+		srv.Close()
+	}
+}
+
+// An agent the server sent no units for had nothing priced; it gets "cost unavailable", not the
+// window's mixture — which, by then, describes other agents' traffic.
+func TestRunCost_AgentWithNoUnitsOfItsOwnIsNotRefusedAsMixed(t *testing.T) {
+	srv := fakeUsageServer(t, `{"window":"10m","group":"agent","priced":true,
+		"currencies":["Bobcoins","USD"],"seriesCurrencies":{"bob-shell/2.0.5":["Bobcoins"],"claude-code/2.1.284":["USD"]},
+		"totals":{"requests":3,"costMicros":257800,"pricedRequests":2,"priceableRequests":2},
+		"buckets":[{"at":"2026-09-27T10:00:00Z","series":{"curl/8.0":{"requests":1}}}]}`)
+	defer srv.Close()
+	var out, errOut strings.Builder
+	if code := runCost([]string{"--endpoint", srv.URL, "--agent", "curl/8.0"}, &out, &errOut); code != 0 {
+		t.Fatalf("exit = %d, stderr = %s", code, errOut.String())
+	}
+	if got := out.String(); strings.Contains(got, "cannot be added") || strings.Contains(got, "units") {
+		t.Errorf("an agent with nothing priced was refused as a unit mixture:\n%s", got)
+	}
+}
+
+// The residual belongs to no agent, so it is labelled by the WINDOW's units, not the scoped
+// agent's: in a mixed window it is the same un-addable sum the headline refuses.
+func TestRunCost_AgentResidualKeepsTheWindowsUnits(t *testing.T) {
+	srv := fakeUsageServer(t, `{"window":"today","group":"agent","priced":true,
+		"currencies":["USD","credits"],"seriesCurrencies":{"claude-code/2.1.270":["USD"]},
+		"ungroupedCostMicros":5000000,
+		"totals":{"requests":20,"costMicros":9000000,"pricedRequests":20,"priceableRequests":20},
+		"buckets":[{"at":"2026-09-27T10:00:00Z","series":{
+		   "claude-code/2.1.270":{"requests":14,"costMicros":4000000,"pricedRequests":14,"priceableRequests":14}}}]}`)
+	defer srv.Close()
+	var out, errOut strings.Builder
+	if code := runCost([]string{"--endpoint", srv.URL, "--agent", "claude-code/2.1.270"}, &out, &errOut); code != 0 {
+		t.Fatalf("exit = %d, stderr = %s", code, errOut.String())
+	}
+	if got := out.String(); strings.Contains(got, "$5.00") {
+		t.Errorf("a whole-window residual in a mixed window was stated in the agent's dollars:\n%s", got)
+	}
+}
+
+// Under --agent the JSON's currencies is the agent's own list, and a script labels every figure
+// by it; the whole-window residual is only emitted where the window's unit is that same one.
+func TestRunCost_AgentJSONOmitsAResidualInAnotherUnit(t *testing.T) {
+	srv := fakeUsageServer(t, `{"window":"today","group":"agent","priced":true,
+		"currencies":["USD","credits"],"seriesCurrencies":{"claude-code/2.1.270":["USD"]},
+		"ungroupedCostMicros":5000000,
+		"totals":{"requests":20,"costMicros":9000000,"pricedRequests":20,"priceableRequests":20},
+		"buckets":[{"at":"2026-09-27T10:00:00Z","series":{
+		   "claude-code/2.1.270":{"requests":14,"costMicros":4000000,"pricedRequests":14,"priceableRequests":14}}}]}`)
+	defer srv.Close()
+	var out, errOut strings.Builder
+	if code := runCost([]string{"--endpoint", srv.URL, "--agent", "claude-code/2.1.270", "--json"}, &out, &errOut); code != 0 {
+		t.Fatalf("exit = %d, stderr = %s", code, errOut.String())
+	}
+	if got := out.String(); strings.Contains(got, "ungroupedCostMicros") {
+		t.Errorf("a mixed window's residual was emitted beside the agent's currencies [USD]:\n%s", got)
+	}
 }

@@ -203,8 +203,7 @@ order. `unpricedBy` is keyed by `<endpoint> <model>`.
 **The response reports the `group` it SERVED, not the one you asked for — and the
 difference is silent.** On a ledger-backed window (`today`, `month`, `7d`) only
 `endpoint`, `agent`, `model` and `currency` are actually grouped; `host`, `session`, `status`
-and `plugin` fall back to `group: "none"` with no error and HTTP 200. A ring-served window groups
-by every axis but `currency`, which falls back the same way. Always read the `group` field
+and `plugin` fall back to `group: "none"` with no error and HTTP 200. Always read the `group` field
 back:
 
 ```sh
@@ -334,8 +333,8 @@ the gateway reports itself is labelled with the same unit.
 A `unit` needs a `models` block — a block with only a `multiplier` has no rates for it to apply to
 — and two blocks naming the same host must agree on it. Both **fail startup** otherwise.
 
-**Figures in different units are never added on a window served from the ledger.** Where such a
-window holds more than one, `abctl cost` withholds the combined total, names the units it found, and
+**Figures in different units are never added**, on a window served from the ledger or from the
+in-memory ring. Where such a window holds more than one, `abctl cost` withholds the combined total, names the units it found, and
 points you at `--by currency`:
 
 ```
@@ -362,6 +361,12 @@ is a single row whose figure would be the cross-unit sum, and nothing in a per-a
 separate it. A window in **one** non-USD unit is not mixed and prints its total normally, labelled
 in that unit rather than behind a `$`.
 
+`abctl observe` follows the same rules on every money figure it draws: a unit is shown beside the
+figure it belongs to, a span holding several units prints each one's figure side by side and never
+their sum, and a row that itself spans units reads `(mixed)`. It knows each row's unit because
+`/v1/usage` reports the units of every series for the model, endpoint and agent breakdowns
+(`seriesCurrencies`) and `/v1/sessions` reports each session's (`currencies`).
+
 `--json` carries a `currencies` array whenever the producer computes one, so a script can make the
 same refusal. One entry is not a caveat — it is the answer to "what unit is this total in".
 
@@ -378,10 +383,6 @@ way.
 
 Nothing converts between units. There are no exchange rates here: a unit partitions figures, it is
 never an operand.
-
-The in-memory ring does not track units. A window it serves — a duration such as `--window 1h`, or
-any window where no ledger is configured — totals every unit's figures together, and answers
-`--by currency` with no breakdown.
 
 ### Per-tier rate forms
 

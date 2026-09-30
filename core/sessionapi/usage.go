@@ -333,7 +333,7 @@ func (s *Server) ledgerSnapshot(ctx context.Context, spec usage.Spec, group usag
 	}
 	totals, series, ungroupedCost, ungroupedAvoided := ledger.Fold(rows, applied)
 	// WHICH UNITS THE TOTAL SPANS, computed from the same rows Fold just summed so the two cannot
-	// describe different traffic. The ring does not report this — see Snapshot.Currencies.
+	// describe different traffic.
 	currencies := ledger.CurrenciesIn(rows)
 	// Carried onto the totals BEFORE the snapshot is built, not left to
 	// SetUngroupedCost's own assignment below. This response's single bucket is a copy of
@@ -423,6 +423,8 @@ func (s *Server) ledgerSnapshot(ctx context.Context, spec usage.Spec, group usag
 	// Set beside the residual because both are claims ABOUT the totals rather than parts of them,
 	// and both are what let a client refuse to present a figure it cannot justify.
 	snap.Currencies = currencies
+	// Per series too, for the drawer's axes, keyed by the grouping in effect.
+	snap.SeriesCurrencies = ledger.SeriesCurrenciesIn(rows, applied, series)
 	// And the same for the saving, which is MORE likely to be unattributable than the cost:
 	// Writer.Record admits a row whose only figure is an applied saving even when the
 	// response carried no inference extension, so under group=model that row has no label at

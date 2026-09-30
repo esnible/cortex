@@ -66,6 +66,16 @@ func promptCost(resp *pipeline.SessionEvent) (usd float64, ok bool) {
 // does without a prompt figure. Deliberately NOT backfilled with the exchange total: that
 // is what made this column read as cumulative, and a total in a per-row cell is wrong by
 // more than it is right.
+// recordUnit is the unit resp's cost record is in, "" for dollars or no record. See
+// event.Event.Currency: the record's figures are named in USD for history's sake only.
+func recordUnit(resp *pipeline.SessionEvent) string {
+	ev, ok := event.Record(resp)
+	if !ok {
+		return ""
+	}
+	return ev.Currency
+}
+
 func outputCost(resp *pipeline.SessionEvent) (usd float64, ok bool) {
 	ev, ok := event.Record(resp)
 	if !ok || ev.OutputUSD <= 0 {

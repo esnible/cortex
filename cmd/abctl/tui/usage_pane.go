@@ -9,6 +9,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/rossoctl/cortex/cmd/abctl/money"
 	"github.com/rossoctl/cortex/core/cost/usage"
 )
 
@@ -29,6 +30,8 @@ var errUsageUnsupported = errors.New("usage endpoint not available")
 // usageLoadedMsg carries a fetched snapshot back to Update.
 type usageLoadedMsg struct {
 	snap *usage.Snapshot
+	// windowUnits is snap.Currencies before any agent scope narrowed it; see costUngroupedRow.
+	windowUnits []string
 	// req is the monotonic id of the request this answers. Update discards any
 	// reply whose id is not the newest one issued.
 	//
@@ -54,9 +57,11 @@ type usageState struct {
 	windowIdx int    // index into usageWindows
 	session   string // "" means all sessions
 	snap      *usage.Snapshot
-	err       error
-	loading   bool
-	lastFetch time.Time
+	// windowUnits is the window's units, which the whole-window residual is in; see usageLoadedMsg.
+	windowUnits []string
+	err         error
+	loading     bool
+	lastFetch   time.Time
 
 	// group is the active breakdown; GroupNone renders the ungrouped bars.
 	group usage.Group
@@ -159,6 +164,10 @@ func (m *model) fetchUsage() tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		snap, err := client.GetUsage(ctx, window, resolution, session, group)
+		var windowUnits []string
+		if err == nil {
+			windowUnits = snap.Currencies
+		}
 		if err == nil && scope != "" {
 			// NarrowBuckets, not KeepBuckets: this pane renders a chart from Buckets, and
 			// narrowing only the totals would title a whole-window chart with one agent's name.
@@ -169,7 +178,7 @@ func (m *model) fetchUsage() tea.Cmd {
 			// window moves past an agent's last request.
 			snap, err = usage.ScopeToAgent(snap, scope, usage.NarrowBuckets)
 		}
-		return usageLoadedMsg{snap: snap, req: req, err: err}
+		return usageLoadedMsg{snap: snap, windowUnits: windowUnits, req: req, err: err}
 	}
 }
 
@@ -261,10 +270,19 @@ func renderUsageChart(snap *usage.Snapshot, m usageMetric, group usage.Group, wi
 		// the renderer would only move the discard somewhere less visible.
 		return renderWhiskers(snap.Buckets, width)
 	}
-	if group != "" && group != usage.GroupNone {
-		return renderStackedBars(snap.Buckets, m, group, width, height)
+	unit := ""
+	if m.isCost() {
+		// A COST CHART OVER SEVERAL UNITS IS NOT DRAWN: every bar would stack credits on dollars.
+		// Scoping to one agent narrows the window to that agent's units, which is the way out.
+		var ok bool
+		if unit, ok = money.WindowUnit(snap.Currencies); !ok {
+			return []string{"  cost chart withheld: this window mixes billing units — [A] scope to one agent, or view tokens"}
+		}
 	}
-	return renderBars(snap.Buckets, m, width, height)
+	if group != "" && group != usage.GroupNone {
+		return renderStackedBarsIn(snap.Buckets, m, group, width, height, unit)
+	}
+	return renderBarsIn(snap.Buckets, m, width, height, unit)
 }
 
 // usageScopeMax is the room the header line can give the scope label at this width.
@@ -372,7 +390,7 @@ func (m *model) renderUsage(width, height int) string {
 		b.WriteString("\n")
 		// BOTH BRANCHES that render the summary render this, because both print its COST cell
 		// from the narrowed Totals. Empty string when no disclosure is due.
-		b.WriteString(costUngroupedRow(m.usage.snap, m.agentScope))
+		b.WriteString(costUngroupedRow(m.usage.snap, m.agentScope, m.usage.windowUnits))
 	default:
 		for _, line := range renderUsageChart(m.usage.snap, m.usage.metric, m.usage.group, width, usageChartHeight(height)) {
 			b.WriteString(line)
@@ -380,7 +398,7 @@ func (m *model) renderUsage(width, height int) string {
 		}
 		// The note takes the blank row above the summary rather than adding one: it is
 		// conditional, so usagePaneChromeRows cannot count it.
-		if note := costUngroupedRow(m.usage.snap, m.agentScope); note != "" {
+		if note := costUngroupedRow(m.usage.snap, m.agentScope, m.usage.windowUnits); note != "" {
 			b.WriteString(note)
 		} else {
 			b.WriteString("\n")
@@ -429,13 +447,18 @@ func (m *model) renderUsage(width, height int) string {
 // impossible figure stays the caller's job. Left to it, this line would read "$-0.1500 of this
 // window is attributed to no agent" — prose asserting a negative residual, which is worse than the
 // silence. The shape is sessionMoneyCell's.
-func costUngroupedRow(snap *usage.Snapshot, scope string) string {
+func costUngroupedRow(snap *usage.Snapshot, scope string, windowUnits []string) string {
 	if scope == "" || snap == nil || snap.UngroupedCostMicros == nil {
 		return ""
 	}
 	micros := *snap.UngroupedCostMicros
 	if micros == 0 || negativeCost(micros) {
 		return ""
+	}
+	// DOLLARS ONLY carry an amount. The residual belongs to no agent, so a scoped snapshot's units
+	// — the agent's — do not say what it is in, and a foreign or mixed list drops the amount.
+	if unit, ok := money.WindowUnit(windowUnits); !ok || !money.IsDefault(unit) {
+		return "  note  part of this window's cost is attributed to no agent\n"
 	}
 	return fmt.Sprintf("  note  %s of this window is attributed to no agent\n",
 		formatUSDTotalMicros(micros))

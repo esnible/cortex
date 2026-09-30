@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/rossoctl/cortex/cmd/abctl/apiclient"
+	"github.com/rossoctl/cortex/cmd/abctl/money"
 	"github.com/rossoctl/cortex/core/cost/pricing"
 	"github.com/rossoctl/cortex/core/cost/usage"
 )
@@ -205,6 +206,8 @@ Flags:
 		return 1
 	}
 
+	_, ownUnits := snap.SeriesCurrencies[*agent]
+	windowUnits := snap.Currencies
 	if *agent != "" {
 		// KeepBuckets, not NarrowBuckets: on this path the command prints window totals, so it
 		// needs no per-bucket narrowing and pays for none. (Under --by it does read buckets —
@@ -220,9 +223,9 @@ Flags:
 	}
 
 	if *asJSON {
-		return writeCostJSON(snap, stdout, stderr, *agent, *by)
+		return writeCostJSON(snap, stdout, stderr, *agent, *by, windowUnits)
 	}
-	writeCostSummary(snap, stdout, *agent)
+	writeCostSummary(snap, stdout, *agent, ownUnits, windowUnits)
 	if *by != "" {
 		writeCostBreakdown(snap, stdout, requested, *by)
 	}
@@ -289,18 +292,7 @@ type costJSON struct {
 	//
 	// VERBATIM, INCLUDING THE SINGLE-UNIT CASE, rather than only when there is a conflict. One
 	// entry is not a caveat but the answer to "what unit IS this total in", which a script billing
-	// in credits needs and could not otherwise get from this document. omitempty, so the ring —
-	// which does not compute the field — serialises no key, and a USD-only ledger window names USD
-	// exactly as it names any other unit.
-	//
-	// EXCEPT UNDER --agent, WHERE IT DESCRIBES THE WINDOW AND Totals DESCRIBES ONE AGENT. The
-	// sentence above is the whole truth on every other path; on that one the two fields have
-	// different subjects and no third field says so. usage.ScopeToAgent explains why it cannot be
-	// narrowed — deciding one agent's units needs a cross-tabulation a folded Counts has already
-	// summed away — and the human surface prints a line saying whose mixture it is. This one does
-	// not, deliberately: the discrepancy is in the OVER-refusing direction, so a script that
-	// honours the field withholds a figure it could technically have shown and never computes a
-	// wrong one. A field that narrowed by guessing would be the opposite trade.
+	// in credits needs and could not otherwise get from this document.
 	Currencies []string `json:"currencies,omitempty"`
 	// PricedBy counts the priced requests by the provenance of their figure —
 	// "authoritative" when the gateway reported it, otherwise the rate table's level. It
@@ -507,7 +499,7 @@ func tiersJSONOf(t usage.Counts) *costTiersJSON {
 	return out
 }
 
-func writeCostJSON(snap *usage.Snapshot, stdout, stderr io.Writer, agent, by string) int {
+func writeCostJSON(snap *usage.Snapshot, stdout, stderr io.Writer, agent, by string, windowUnits []string) int {
 	enc := json.NewEncoder(stdout)
 	enc.SetIndent("", "  ")
 	out := costJSON{
@@ -525,7 +517,7 @@ func writeCostJSON(snap *usage.Snapshot, stdout, stderr io.Writer, agent, by str
 		// ONLY UNDER --agent OR --by, so the default path serialises no key and its absence keeps
 		// meaning "no breakdown was asked for". See the field's own comment for the debt this
 		// pays.
-		UngroupedCostMicros: ungroupedForBreakdown(snap, agent, by),
+		UngroupedCostMicros: ungroupedForBreakdown(snap, agent, by, windowUnits),
 		By:                  by,
 		Series:              seriesForBreakdown(snap, by),
 		// usage.Counts.Saturated and usage.Counts.RefusedTokenRequests need no line here: Totals
@@ -564,7 +556,7 @@ func writeCostJSON(snap *usage.Snapshot, stdout, stderr io.Writer, agent, by str
 // reader that can act on a fact with nothing on screen to attach it to, and
 // TestRunCost_AsksForAnAxisThatCannotCarryAResidual is what fails if this command ever takes an
 // axis and owes a rendering.
-func writeCostSummary(snap *usage.Snapshot, stdout io.Writer, agent string) {
+func writeCostSummary(snap *usage.Snapshot, stdout io.Writer, agent string, ownUnits bool, windowUnits []string) {
 	t := snap.Totals
 	if agent != "" {
 		fmt.Fprintf(stdout, "COST — %s · %s\n", costWindowLabel(snap.Window), agent)
@@ -592,8 +584,7 @@ func writeCostSummary(snap *usage.Snapshot, stdout io.Writer, agent string) {
 	// figure on screen. Same posture as the negative case beside it, and for a stronger reason:
 	// that one is a producer contradicting itself, this one is arithmetic that was never legal.
 	//
-	// TWO OR MORE, never one and never zero: an absent list is the in-memory ring, which does not
-	// compute it, and one unit is every deployment today. Turning either into a refusal would
+	// TWO OR MORE, never one and never zero: turning either into a refusal would
 	// break summable traffic — see usage.Snapshot.Currencies.
 	// A SINGLE NON-USD UNIT IS NOT MIXED, and was the other half of the same defect: one unit
 	// passes the test above, so a deployment billing only in credits printed its total behind a
@@ -636,11 +627,10 @@ func writeCostSummary(snap *usage.Snapshot, stdout io.Writer, agent string) {
 			"  ! this window holds %s, which cannot be added — no combined figure is shown\n",
 			strings.Join(snap.Currencies, " and "))
 		// WHOSE MIXTURE IT IS, on the --agent path. The list describes the WINDOW; Totals here
-		// describes one agent, and no client-side arithmetic can narrow the first to the second —
-		// see usage.ScopeToAgent for why the field is carried over anyway. Without this line a reader who
+		// describes one agent. Without this line a reader who
 		// asked about one agent reads the refusal as a statement about that agent's own traffic and
 		// goes looking for a second gateway it may never have called.
-		if agent != "" {
+		if agent != "" && !ownUnits {
 			fmt.Fprintln(stdout,
 				"    this is the window's mixture, not necessarily this agent's; a per-agent figure cannot be separated from it")
 		}
@@ -662,10 +652,11 @@ func writeCostSummary(snap *usage.Snapshot, stdout io.Writer, agent string) {
 	// SILENT WHEN THE WINDOW IS MIXED, like every other figure here: the residual is a sum over the
 	// same rows the headline was withheld for, so it is the same un-addable quantity and printing
 	// it in any unit would be the mislabel this surface just refused one line above.
-	if agent != "" && labelled && snap.UngroupedCostMicros != nil && *snap.UngroupedCostMicros != 0 {
+	residualUnit, residualLabelled := money.WindowUnit(windowUnits)
+	if agent != "" && residualLabelled && snap.UngroupedCostMicros != nil && *snap.UngroupedCostMicros != 0 {
 		fmt.Fprintf(stdout,
 			"  note  %s of this window is attributed to no agent, so per-agent figures do not sum to the window total\n",
-			costIn(float64(*snap.UngroupedCostMicros)/1e6, unit))
+			costIn(float64(*snap.UngroupedCostMicros)/1e6, residualUnit))
 	}
 
 	if split := tokenSplit(t); split != "" {
@@ -1028,19 +1019,6 @@ func costWindowLabel(window string) string {
 	}
 }
 
-// costUSD formats a dollar figure for a headline.
-//
-// Two decimals, because this is a session or a day total and cents are the unit a
-// human reasons in. A real charge below half a cent renders as "<$0.01" rather than
-// "$0.00": the floor exists so a small non-zero figure is never printed as the one
-// string this command is forbidden to print for an unknown cost.
-func costUSD(v float64) string {
-	if v > 0 && v < 0.005 {
-		return "<$0.01"
-	}
-	return fmt.Sprintf("$%.2f", v)
-}
-
 // costIn formats a money figure in the unit it is actually denominated in.
 //
 // THE GLYPH IS A CLAIM, and costUSD makes it unconditionally. That was a rendering while every
@@ -1055,15 +1033,7 @@ func costUSD(v float64) string {
 // SAME SUB-CENT FLOOR, in the unit's own words. costUSD's "<$0.01" exists so a real charge is never
 // printed as the one string this command may not print for an unknown cost, and that reasoning is
 // about the figure being small, not about it being dollars.
-func costIn(v float64, unit string) string {
-	if isDefaultUnit(unit) {
-		return costUSD(v)
-	}
-	if v > 0 && v < 0.005 {
-		return "<0.01 " + unit
-	}
-	return fmt.Sprintf("%.2f %s", v, unit)
-}
+func costIn(v float64, unit string) string { return money.In(v, unit) }
 
 // windowUnit reports the unit every figure on this snapshot is denominated in, and whether any
 // figure may be labelled at all.
@@ -1077,9 +1047,10 @@ func costIn(v float64, unit string) string {
 //   - EXACTLY ONE: that unit, whatever it is. This is the case the headline got wrong in the other
 //     direction: a deployment billing only in credits is not mixed, so it printed a "$" figure with
 //     nothing anywhere to contradict it.
-//   - ABSENT: the default, i.e. dollars. An empty list is the in-memory ring, which does not
-//     compute the field — not a window with no units — so this preserves today's output for every
-//     ring-served surface.
+//   - ABSENT: the default, i.e. dollars — an idle window, or a server older than the field.
+//
+// The rules live in package money, shared with the TUI so the two cannot label one figure
+// differently; these names stay so this file reads as it did.
 //
 // isReportedUnit reports whether a series label is one of the billing units this window carries.
 //
@@ -1101,16 +1072,7 @@ func isReportedUnit(units []string, label string) bool {
 	return false
 }
 
-func windowUnit(snap *usage.Snapshot) (string, bool) {
-	switch len(snap.Currencies) {
-	case 0:
-		return pricing.CurrencyUSD, true
-	case 1:
-		return snap.Currencies[0], true
-	default:
-		return "", false
-	}
-}
+func windowUnit(snap *usage.Snapshot) (string, bool) { return money.WindowUnit(snap.Currencies) }
 
 // compactTokens renders a token count the way a headline has room for: 218.1M, not
 // 218100000.
@@ -1322,9 +1284,16 @@ func reportDowngrade(snap *usage.Snapshot, stdout io.Writer, requested usage.Gro
 // value there would mean the producer changed — and serialising it would quietly retract what
 // the field's absence has always promised a script. Dropping it keeps that promise and the
 // mismatch surfaces where it belongs, in the producer.
-func ungroupedForBreakdown(snap *usage.Snapshot, agent, by string) *int64 {
+func ungroupedForBreakdown(snap *usage.Snapshot, agent, by string, windowUnits []string) *int64 {
 	if agent == "" && by == "" {
 		return nil
+	}
+	if agent != "" {
+		wu, wok := money.WindowUnit(windowUnits)
+		au, aok := money.WindowUnit(snap.Currencies)
+		if !wok || !aok || !strings.EqualFold(wu, au) {
+			return nil
+		}
 	}
 	return snap.UngroupedCostMicros
 }
