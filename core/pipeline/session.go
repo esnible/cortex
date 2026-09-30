@@ -168,13 +168,28 @@ type SessionEvent struct {
 	// Populated by the listener layer; plugins do not write to it.
 	TLS *EventTLS
 
-	// Tunnel marks an opaque CONNECT / transparent-redirect tunnel-open: the
-	// bytes are not HTTP, so there's no protocol parse. Set only by
-	// recordTunnelOpened. Consumers (abctl) use it to fold the tunnel into the
-	// decrypted inner request a TLS bridge produces — an explicit producer
-	// signal rather than inferring "tunnel" from host/extension shape, which
-	// an ordinary unparsed request could otherwise mimic.
+	// Tunnel marks both rows of an opaque CONNECT / transparent-redirect tunnel:
+	// the bytes are not HTTP, so there's no protocol parse. Set only by
+	// recordTunnelOpened (the request-phase open) and recordTunnelClosed (the
+	// response-phase close, which shares the open's RequestID). Consumers (abctl)
+	// use it to fold the OPEN into the decrypted inner request a TLS bridge
+	// produces — an explicit producer signal rather than inferring "tunnel" from
+	// host/extension shape, which an ordinary unparsed request could otherwise
+	// mimic. Only the request-phase row folds; a close row never does.
+	//
+	// A bridged tunnel whose decrypted requests carry their own responses records
+	// no close: its open folds into the first of them. Every other tunnel does —
+	// opaque ones when they end, a failed dial at once, and a bridged one that
+	// carried no request at all.
 	Tunnel bool
+
+	// BytesUp and BytesDown are how many bytes an opaque tunnel carried each way:
+	// up is client to destination, down is destination to client. Set only on a
+	// tunnel's close row, which is when the counts are known. Zero — and absent on
+	// the wire — everywhere else, including a bridged tunnel's close, whose bytes
+	// were TLS the bridge terminated rather than counted.
+	BytesUp   int64
+	BytesDown int64
 
 	// TunnelReason says WHY the bytes were left opaque. Empty when Tunnel is
 	// false, and empty on a bridged CONNECT (abctl folds that row into the
@@ -307,6 +322,10 @@ const (
 	TunnelPassthroughPort   TunnelReason = "passthrough-port"
 	TunnelPassthroughNonTLS TunnelReason = "passthrough-nontls"
 	TunnelPassthroughHost   TunnelReason = "passthrough-host"
+	// TunnelDialFailed — the proxy could not reach the destination at all, so no
+	// tunnel ever opened. Recorded with a 502 close row carrying the dial error, so
+	// an unreachable destination shows in the timeline instead of leaving no trace.
+	TunnelDialFailed TunnelReason = "dial-failed"
 	// TunnelPassthroughUnknown is the fallback when a lower layer declines to
 	// intercept for a reason this vocabulary does not yet name. It exists so that
 	// case can never produce the EMPTY string, which a consumer reads as "bridged" —
@@ -401,6 +420,10 @@ type sessionEventWire struct {
 	// key, and a new abctl against an old proxy sees "" and renders exactly what it
 	// renders today.
 	TunnelReason TunnelReason `json:"tunnelReason,omitempty"`
+	// omitempty for the same skew reason, and because only a tunnel's close row
+	// has a count to report.
+	BytesUp   int64 `json:"bytesUp,omitempty"`
+	BytesDown int64 `json:"bytesDown,omitempty"`
 	// omitempty for the same skew reason as TunnelReason above: an old abctl
 	// ignores keys it does not know, and a new abctl against a proxy that
 	// predates these fields sees "" and renders what it renders today.
@@ -435,6 +458,8 @@ func (e SessionEvent) MarshalJSON() ([]byte, error) {
 		TLS:          e.TLS,
 		Tunnel:       e.Tunnel,
 		TunnelReason: e.TunnelReason,
+		BytesUp:      e.BytesUp,
+		BytesDown:    e.BytesDown,
 		HTTPMethod:   e.HTTPMethod,
 		HTTPPath:     e.HTTPPath,
 		Client:       e.Client,
@@ -469,6 +494,8 @@ func (e *SessionEvent) UnmarshalJSON(data []byte) error {
 		TLS:          w.TLS,
 		Tunnel:       w.Tunnel,
 		TunnelReason: w.TunnelReason,
+		BytesUp:      w.BytesUp,
+		BytesDown:    w.BytesDown,
 		HTTPMethod:   w.HTTPMethod,
 		HTTPPath:     w.HTTPPath,
 		Client:       w.Client,

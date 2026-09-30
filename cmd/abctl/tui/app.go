@@ -2071,16 +2071,24 @@ func (m *model) handleStreamEvent(ev apiclient.StreamEvent) {
 	// against 1000 back when both sides capped. The server's count is the one that is
 	// complete, so it is the only one that writes here now; the poll refreshes it
 	// within two seconds of anything changing.
+	//
+	// Not for a tunnel's close, which lands when the tunnel ends rather than when its
+	// session speaks.
+	trailing := isTunnelClose(&e)
 	for i := range m.sessions {
 		if m.sessions[i].ID == e.SessionID {
-			m.sessions[i].UpdatedAt = e.At
+			if !trailing {
+				m.sessions[i].UpdatedAt = e.At
+			}
 			goto sortAndRebuild
 		}
 	}
 	// New session → create a stub summary; next list refresh will replace it.
-	m.sessions = append(m.sessions, session.SessionSummary{
-		ID: e.SessionID, CreatedAt: e.At, UpdatedAt: e.At, EventCount: 1, Active: true,
-	})
+	if !trailing {
+		m.sessions = append(m.sessions, session.SessionSummary{
+			ID: e.SessionID, CreatedAt: e.At, UpdatedAt: e.At, EventCount: 1, Active: true,
+		})
+	}
 sortAndRebuild:
 	sort.Slice(m.sessions, func(i, j int) bool {
 		return m.sessions[i].UpdatedAt.After(m.sessions[j].UpdatedAt)

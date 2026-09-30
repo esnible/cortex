@@ -137,11 +137,19 @@ func (s *Server) HandleTransparentConn(clientConn net.Conn, dst string) {
 		pctx.OutboundSessionID = sessionID
 	}
 
+	// This connection's two timeline rows; see handleConnect's tl. Never skipped here:
+	// SkipHosts is matched on the CONNECT path only.
+	tl := s.newTunnelLog(pctx, false)
+
 	// Always dial the original IP (dst), never the sniffed name — the agent
 	// already chose the IP, and re-resolving the name could diverge from it.
 	upstream, err := net.DialTimeout("tcp", dst, connectDialTimeout)
 	if err != nil {
 		slog.Warn("transparent-proxy: upstream dial failed", "host", host, "dst", dst, "error", err)
+		// The 502 is synthetic — this path sends the client no status at all — but the
+		// failure is recorded as it is on CONNECT rather than leaving no trace.
+		tl.open(pipeline.TunnelDialFailed)
+		tl.close(http.StatusBadGateway, dialError(err), 0, 0)
 		return
 	}
 	defer func() { _ = upstream.Close() }()
@@ -154,7 +162,7 @@ func (s *Server) HandleTransparentConn(clientConn net.Conn, dst string) {
 	// a follow-up rather than half-done, since this listener is off by default
 	// (--local skips it) and every reason it could report is already correct in
 	// the log.
-	s.recordTunnelOpened(pctx, "")
+	tl.open("")
 
 	if s.TLSBridge != nil {
 		// host is the policy authority: "<sniffed-SNI>:port" when a name was
@@ -168,22 +176,27 @@ func (s *Server) HandleTransparentConn(clientConn net.Conn, dst string) {
 			v, reason := s.TLSBridge.Decision.Classify(key, portOf(dst), first)
 			if v == tlsbridge.Terminate {
 				_ = upstream.Close() // bridgeServe dials its own verified upstream; drop the pre-dial
-				// No-op recorder: this path already recorded the tunnel-open eagerly
-				// above, so letting bridgeServe record again would double-count it.
-				if s.bridgeServe(clientConn, host, key, noopRecorder) {
+				// The open is already recorded above, so bridgeServe's own open calls are
+				// no-ops here; what it still records through tl is the close.
+				if s.bridgeServe(clientConn, host, key, tl) {
 					return
 				}
 				// bridgeServe fell open (upstream-verify failed) → re-dial for the tunnel.
-				if up2, derr := net.DialTimeout("tcp", dst, connectDialTimeout); derr == nil {
-					tunnel(clientConn, up2)
-					_ = up2.Close()
+				up2, derr := net.DialTimeout("tcp", dst, connectDialTimeout)
+				if derr != nil {
+					tl.close(http.StatusOK, dialError(derr), 0, 0)
+					return
 				}
+				sent, received := tunnel(clientConn, up2)
+				_ = up2.Close()
+				tl.close(http.StatusOK, nil, sent, received)
 				return
 			}
 			slog.Info("tls-bridge passthrough", "host", key, "reason", reason)
 		}
 	}
-	tunnel(clientConn, upstream)
+	sent, received := tunnel(clientConn, upstream)
+	tl.close(http.StatusOK, nil, sent, received)
 }
 
 // recordTunnelOpened emits the SessionRequest event for an opened opaque
@@ -191,9 +204,12 @@ func (s *Server) HandleTransparentConn(clientConn net.Conn, dst string) {
 // HandleTransparentConn. MCP/Inference snapshots are nil by definition (the
 // bytes are opaque); Invocations from gate plugins and plugin-public Plugins
 // entries are still meaningful.
-func (s *Server) recordTunnelOpened(pctx *pipeline.Context, reason pipeline.TunnelReason) {
+//
+// It returns the bucket the row went to, so the tunnel's close row can land beside it;
+// nil when session tracking is off.
+func (s *Server) recordTunnelOpened(pctx *pipeline.Context, reason pipeline.TunnelReason) *session.Bucket {
 	if s.Sessions == nil {
-		return
+		return nil
 	}
 	// Without client affinity this reads ActiveSession() at recording time, as it always
 	// has, ignoring the identity the tunnel was gated under (#1187). With it, the pin set
@@ -236,20 +252,70 @@ func (s *Server) recordTunnelOpened(pctx *pipeline.Context, reason pipeline.Tunn
 	// Always record the tunnel-open so passthrough/non-bridged tunnels (no
 	// plugin activity) are still visible. For a TLS-bridged call abctl folds
 	// this CONNECT event into the decrypted inner-request row.
-	s.Sessions.Append(sid, ev)
+	return s.Sessions.AppendBucket(sid, ev)
+}
+
+// recordTunnelClosed emits the SessionResponse row for a tunnel that ended, or that
+// never opened because the destination could not be dialed. It shares the open's
+// RequestID, which is how abctl pairs the two into one exchange with a STATUS and a
+// DURATION.
+//
+// b is the bucket the open was recorded under, reused rather than re-resolved: a long
+// tunnel closes minutes after it opened, when whichever session spoke last says nothing
+// about whose tunnel this was.
+//
+// statusCode is the status the proxy answered the CONNECT with — 200 once the tunnel was
+// established, however it later ended, and 502 when the destination could not be dialed
+// at all. The transparent listener sends no status of its own, so there it is synthetic,
+// as that path's CONNECT method already is. fail says why a tunnel failed; nil when it
+// simply ran until one side closed. up and down are the bytes it carried, zero where
+// nothing was counted — a bridged tunnel's bytes were TLS the bridge terminated.
+//
+// No Invocations and no Plugins: nothing runs on a tunnel's response, so there is
+// nothing to snapshot that the open row does not already carry.
+func (s *Server) recordTunnelClosed(pctx *pipeline.Context, b *session.Bucket, reason pipeline.TunnelReason, statusCode int, fail *pipeline.EventError, up, down int64) {
+	if s.Sessions == nil {
+		return
+	}
+	s.Sessions.AppendTrailing(b, pipeline.SessionEvent{
+		At:           time.Now(),
+		Direction:    pipeline.Outbound,
+		Phase:        pipeline.SessionResponse,
+		RequestID:    pctx.RequestID(),
+		Identity:     pipeline.SnapshotIdentity(pctx),
+		Host:         pctx.Host,
+		HTTPMethod:   pctx.Method,
+		HTTPPath:     pctx.Path,
+		StatusCode:   statusCode,
+		Error:        fail,
+		Duration:     pipeline.DurationSince(pctx.StartedAt),
+		Tunnel:       true,
+		TunnelReason: reason,
+		BytesUp:      up,
+		BytesDown:    down,
+		Client:       pctx.ClientInfo(),
+	})
 }
 
 // tunnel bidirectionally copies between two connections until either side
 // closes, then propagates the close to the other so both io.Copy goroutines
 // exit. Close-on-each-side is idempotent on net.Conn. Shared by handleConnect
 // and HandleTransparentConn.
-func tunnel(a, b net.Conn) {
+//
+// It returns how many bytes crossed each way — up is client to upstream, down is
+// upstream to client — for the tunnel's close row. It waits for the other copy to
+// finish before returning, which it did not need to while nothing read its count:
+// closing both ends first is what makes that wait short.
+func tunnel(client, upstream net.Conn) (up, down int64) {
+	upc := make(chan int64, 1)
 	go func() {
-		_, _ = io.Copy(b, a)
-		_ = b.Close()
-		_ = a.Close()
+		n, _ := io.Copy(upstream, client)
+		_ = upstream.Close()
+		_ = client.Close()
+		upc <- n
 	}()
-	_, _ = io.Copy(a, b)
-	_ = a.Close()
-	_ = b.Close()
+	down, _ = io.Copy(client, upstream)
+	_ = client.Close()
+	_ = upstream.Close()
+	return <-upc, down
 }

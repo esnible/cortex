@@ -537,6 +537,32 @@ func TestRecord_IgnoresRequestPhase(t *testing.T) {
 	}
 }
 
+// A tunnel is not a request /v1/usage can say anything about. Its close row carries
+// how long the tunnel stayed OPEN, which for kubectl logs -f is minutes, so folding it
+// would pull the latency mean toward tunnel lifetimes; and the bytes are opaque, so
+// there is no model, token or cost to attribute. Counting it would also change what
+// "requests" means for every consumer of this endpoint.
+func TestRecord_IgnoresTunnelRows(t *testing.T) {
+	now := time.Date(2026, 9, 4, 23, 30, 30, 0, time.UTC)
+	a := New(WithClock(fixedClock(now)))
+	a.Record("s1", respEvent(now, 200, time.Second, "m", 10))
+
+	closed := respEvent(now, 200, 4*time.Minute, "", 0)
+	closed.Tunnel = true
+	a.Record("s1", closed)
+	failed := respEvent(now, 502, 3*time.Second, "", 0)
+	failed.Tunnel = true
+	a.Record("s1", failed)
+
+	b := a.Snapshot(time.Minute, BucketWidth, "", GroupNone).Totals
+	if b.Requests != 1 {
+		t.Errorf("requests = %d, want 1 — tunnel rows must not count as requests", b.Requests)
+	}
+	if b.Errors != 0 {
+		t.Errorf("errors = %d, want 0 — a failed dial is a tunnel row, not a failed request", b.Errors)
+	}
+}
+
 // All three groupings accumulate simultaneously, so an operator cycling the
 // group parameter sees the same history from each angle rather than each
 // grouping starting empty when first selected.

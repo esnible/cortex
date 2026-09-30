@@ -229,7 +229,7 @@ type Counts struct {
 	// complete one.
 	//
 	// NOT Requests-minus-PricedRequests. Requests counts every proxied response — MCP
-	// tool calls, health checks, tunnels — none of which can ever carry a price, so
+	// tool calls, health checks — none of which can ever carry a price, so
 	// that difference never reaches zero and a client obeying it marks every total
 	// partial forever. Requests is not the denominator for coverage;
 	// PriceableRequests is.
@@ -269,12 +269,11 @@ type Counts struct {
 	// model and a non-zero token count.
 	//
 	// It exists because Requests is the wrong denominator for coverage. Requests
-	// counts every proxied response, including MCP tool calls, health checks and any
-	// other non-LLM traffic the sidecar handled, while PricedRequests can only ever
-	// cover inference. Dividing one by the other made a CORRECTLY configured
-	// deployment read "1/10 priced" forever with an empty gap list — a permanent
-	// warning with nothing to act on, which trains an operator to ignore the one
-	// signal that matters.
+	// counts every proxied response, including MCP tool calls and health checks, while
+	// PricedRequests can only ever cover inference. Dividing one by the other made a
+	// CORRECTLY configured deployment read "1/10 priced" forever with an empty gap
+	// list — a permanent warning with nothing to act on, which trains an operator to
+	// ignore the one signal that matters.
 	//
 	// Priced-versus-priceable is the ratio that answers "is my cost total complete",
 	// and it reaches parity when it should.
@@ -1028,6 +1027,16 @@ func New(opts ...Option) *Aggregator {
 // requests in flight at a time.
 func (a *Aggregator) Record(sessionID string, e *pipeline.SessionEvent) {
 	if e == nil {
+		return
+	}
+
+	// A tunnel row, open or close, is not a request this can say anything about. The
+	// close carries how long the tunnel stayed OPEN — minutes for `kubectl logs -f` —
+	// so folding it would drag the latency mean toward tunnel lifetimes, and the bytes
+	// were opaque, so there is no model, token or cost to attribute. Counting it would
+	// also quietly change what Requests means for every reader of /v1/usage. A bridged
+	// tunnel's decrypted requests are ordinary events and are counted as usual.
+	if e.Tunnel {
 		return
 	}
 

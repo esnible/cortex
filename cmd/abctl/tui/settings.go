@@ -35,8 +35,9 @@ type UserSettings struct {
 
 // EventSettings is the events-table view state.
 type EventSettings struct {
-	// Columns records only DEVIATIONS from the defaults — a column absent here is
-	// visible. Two consequences, both deliberate:
+	// Columns records only DEVIATIONS from the defaults — a column absent here takes
+	// its own default, which is visible for every column but the opt-in BYTES. Two
+	// consequences, both deliberate:
 	//
 	// A column added in a later build shows up for everyone who already has a
 	// config file, instead of starting hidden because their file predates it. And
@@ -44,7 +45,7 @@ type EventSettings struct {
 	// twelve.
 	//
 	// The alternative (a list of what is ON) reads more obviously but inverts both
-	// of those, since every column is defaultOn today.
+	// of those, since every column but one is defaultOn.
 	Columns []ColumnSetting `yaml:"columns,omitempty"`
 	// SortColumn is the events-table sort column, by the same stable id the picker
 	// shows as a header (#865). Empty — the zero value, and what every file written
@@ -120,10 +121,9 @@ type ColumnSetting struct {
 // a phantom key would make the former report a selection the latter cannot render.
 //
 // Absent means "unchanged", so the column falls back to its own defaultOn. Every
-// column is defaultOn today, which is what makes "absent means visible" a true
-// description of the file format — but the fallback is the default, not a literal
-// true, so a future defaultOn:false column behaves the same way here as it does in
-// defaultColumnSelection.
+// column but BYTES is defaultOn, which is what makes "absent means visible" true of
+// them — but the fallback is the default, not a literal true, so BYTES stays off for
+// a file that predates it, exactly as it does in defaultColumnSelection.
 func (u UserSettings) columnSelection() map[eventColumnID]bool {
 	// Both directions, not just the off-list: a column whose defaultOn is false has
 	// to be turnable ON by the file, or the picker could not persist enabling it.
@@ -135,10 +135,9 @@ func (u UserSettings) columnSelection() map[eventColumnID]bool {
 	for _, c := range eventColumns {
 		// The fallback is c.defaultOn, not an unconditional true: "absent from the file"
 		// means "I never changed this", so the answer is whatever the built-in default
-		// is. The two agree today because all twelve entries are defaultOn — which is
-		// exactly why hardcoding true here would be a trap. The first column added with
-		// defaultOn:false would otherwise render ON for every user, fresh installs
-		// included, and disagree with defaultColumnSelection.
+		// is. BYTES, the first column with defaultOn:false, is why hardcoding true here
+		// would be a trap: it would render ON for every user, fresh installs included,
+		// and disagree with defaultColumnSelection.
 		if v, ok := set[string(c.id)]; ok {
 			out[c.id] = v
 			continue
@@ -181,9 +180,9 @@ func (u UserSettings) sortSelection() (eventColumnID, bool) {
 // columnSettingsFrom is the inverse: the deviations worth writing down.
 //
 // Emits only the columns that differ from their own defaultOn, so an untouched
-// selection serialises to nothing rather than to twelve `visible: true` entries —
-// the file should record what the user changed. With every column defaultOn, that
-// means the off entries and nothing else.
+// selection serialises to nothing rather than to a `visible: true` entry per column —
+// the file should record what the user changed: the default columns turned off, and
+// BYTES if it was turned on.
 //
 // Ordered by eventColumns, not by map iteration: Go randomises the latter, which
 // would rewrite the file with the same entries reshuffled on every save. That
@@ -194,8 +193,7 @@ func columnSettingsFrom(sel map[eventColumnID]bool) []ColumnSetting {
 		// Compared against the column's own default, in both directions: turning ON a
 		// defaultOn:false column is as much a deviation as turning off a default one,
 		// and recording only the off-list would make enabling such a column
-		// unpersistable. Every column is defaultOn today, so in practice this still
-		// writes only the off entries.
+		// unpersistable. BYTES is that column.
 		if sel[c.id] != c.defaultOn {
 			out = append(out, ColumnSetting{Name: string(c.id), Visible: sel[c.id]})
 		}

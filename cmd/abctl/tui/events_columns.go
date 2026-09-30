@@ -31,6 +31,7 @@ const (
 	colTokens   eventColumnID = "TOKENS"
 	colCost     eventColumnID = "COST"
 	colHost     eventColumnID = "HOST"
+	colBytes    eventColumnID = "BYTES"
 )
 
 // cellContext is what a cell function needs beyond the event itself.
@@ -168,6 +169,15 @@ func numKey[T int | int64 | float64 | time.Duration](n T) sortValue {
 
 func strKey(s string) sortValue { return sortValue{str: s} }
 
+// durationSortKey ranks a tunnel row with the blank ones: its DURATION is how long the
+// tunnel stayed open, not how long a call took.
+func durationSortKey(c cellContext) sortValue {
+	if c.row.event.Tunnel {
+		return numKey(0)
+	}
+	return numKey(c.row.event.Duration)
+}
+
 // Keep ranks. Only the ordering matters, not the values.
 const (
 	keepLow    = 0 // give these up first
@@ -239,7 +249,14 @@ var eventColumns = []eventColumn{
 	{id: colDuration, width: 10, defaultOn: true, keep: keepLow, rightAlign: true,
 		desc:    "how long the exchange took",
 		cell:    func(c cellContext) string { return durationCell(*c.row.event) },
-		sortKey: func(c cellContext) sortValue { return numKey(c.row.event.Duration) }},
+		sortKey: durationSortKey},
+	// Off by default: only an opaque tunnel's close row has a figure, so a column on for
+	// everyone would spend columns of every terminal on a mostly blank one. The total is
+	// the sort key, so a descending sort finds the tunnel that carried the most.
+	{id: colBytes, width: 17, defaultOn: false, keep: keepLow, rightAlign: true,
+		desc:    "bytes an opaque tunnel carried: ↑ sent, ↓ received",
+		cell:    func(c cellContext) string { return bytesCell(*c.row.event) },
+		sortKey: func(c cellContext) sortValue { return numKey(c.row.event.BytesUp + c.row.event.BytesDown) }},
 	// 17, not 15: sized for a SEVEN-digit prompt, "1,048,576(−12.3k)". Million-token
 	// contexts are in service, and bubbles truncates a cell at the column width, so
 	// 15 rendered "1,048,576(−1…" — dropping the saving, which is the half of this

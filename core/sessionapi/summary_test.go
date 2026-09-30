@@ -24,6 +24,8 @@ func fullEvent() pipeline.SessionEvent {
 		Host:       "api.example.com",
 		StatusCode: 200,
 		Duration:   1200 * time.Millisecond,
+		BytesUp:    4210,
+		BytesDown:  18230,
 		Identity:   &pipeline.EventIdentity{},
 		Invocations: &pipeline.Invocations{
 			Outbound: []pipeline.Invocation{{Plugin: "token-exchange", Action: "modify", Reason: "exchanged"}},
@@ -124,6 +126,9 @@ func TestSummarizeEvent_DropsPayloadsKeepsTimelineFields(t *testing.T) {
 	}
 	if got.StatusCode != 200 || got.Duration != 1200*time.Millisecond {
 		t.Error("status/duration did not survive — STATUS and DURATION columns")
+	}
+	if got.BytesUp != 4210 || got.BytesDown != 18230 {
+		t.Error("a tunnel's byte counts did not survive — the BYTES column")
 	}
 	// Token counts drive the TOKENS and COST columns, and cost is derived from the
 	// cache-read/write split rather than the total — so each one is checked.
@@ -300,7 +305,9 @@ func TestSummarizeEvent_ShapeIsGuarded(t *testing.T) {
 		typ  reflect.Type
 		want int
 	}{
-		{"SessionEvent", reflect.TypeOf(pipeline.SessionEvent{}), 22},
+		// 24 since BytesUp/BytesDown, which are TIMELINE data: abctl's BYTES column
+		// renders them. Scalars, so the struct copy keeps them; asserted above.
+		{"SessionEvent", reflect.TypeOf(pipeline.SessionEvent{}), 24},
 		// 25 since AgentRole, which is TIMELINE data: abctl's CONTEXT gauge reads it on every
 		// row the timeline serves. It needs no assertion of its own in the projection test
 		// beyond the equality one there — a scalar survives the struct copy, unlike the two

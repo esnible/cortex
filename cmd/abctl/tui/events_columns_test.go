@@ -339,14 +339,18 @@ func TestColumnPicker_KeyPathSurvivesEveryToggle(t *testing.T) {
 	if !m.colPicker {
 		t.Fatal("`c` did not open the picker")
 	}
-	// Toggle every column off, moving DOWN each time.
+	// Toggle every visible column off, moving DOWN each time. The opt-in BYTES starts
+	// off, so it is stepped over rather than toggled — toggling it would turn it ON and
+	// the selection would never empty.
 	//
 	// `j`, not `l`: the picker binds up/k and down/j, and `l` falls to the switch's
-	// default. With `l` the cursor never moved, so all twelve space presses toggled
-	// the same column — an even count that ended back at all-on, and both assertions
-	// below passed without the picker ever having emptied the selection.
+	// default. With `l` the cursor never moved, so every space press toggled the same
+	// column — an even count that ended back at all-on, and both assertions below
+	// passed without the picker ever having emptied the selection.
 	for i := 0; i < len(eventColumns); i++ {
-		m.handleKey(keyRune(' '))
+		if m.eventColumns[eventColumns[i].id] {
+			m.handleKey(keyRune(' '))
+		}
 		m.handleKey(keyRune('j'))
 	}
 	// The final toggle empties the selection, and the handler snaps it back to the

@@ -897,18 +897,19 @@ abctl is for, and the other three are surfaces you visit and leave.
   toward. Sorting never changes the `#` exchange pairing or the per-row token and
   cost figures; it reorders the finished rows only.
 
-  All twelve together need ~168 terminal columns, so the table drops what does
-  not fit and the footer says how many (`→ N more columns`). Columns carry a
+  The twelve default columns together need ~168 terminal columns, so the table
+  drops what does not fit and the footer says how many (`→ N more columns`). Columns carry a
   keep rank rather than being equally expendable: DIR, DURATION, TOKENS and COST
   give way first, while `#` and HOST survive longest. That is what makes HOST
   usable at 80 columns despite being last in display order — it is the column
   most people open this pane for.
 
-  All twelve are on by default: `#` (exchange number, shared by a request
-  and its response), TIME, DIR, PHASE, ACTION, PLUGIN, METHOD, STATUS,
-  DURATION, TOKENS, COST, HOST. On a narrow terminal the low-ranked ones
-  are hidden rather than turned off, so widening the window brings them
-  back without touching the picker.
+  Twelve of the thirteen are on by default: `#` (exchange number, shared by a
+  request and its response), TIME, DIR, PHASE, ACTION, PLUGIN, METHOD, STATUS,
+  DURATION, TOKENS, COST, HOST. The thirteenth, BYTES, is opt-in through the
+  picker (`c`), because only an opaque tunnel's close row has a figure for it.
+  On a narrow terminal the low-ranked ones are hidden rather than turned off,
+  so widening the window brings them back without touching the picker.
 
   Live-updates while in view — if the cursor is on the last row, it
   auto-follows new events.
@@ -933,8 +934,12 @@ abctl is for, and the other three are surfaces you visit and leave.
   ```
 
   `—` in ACTION and PLUGIN means no plugin acted on that message; a `tunnel`
-  there is an opaque CONNECT, where METHOD and STATUS are blank too because
-  opaque bytes carry no request line. The TOKENS and COST figures on a request
+  there is an opaque CONNECT, where METHOD is blank because opaque bytes carry
+  no request line. The tunnel's STATUS arrives on its `resp` row when it closes,
+  with DURATION for how long it stayed open and, in BYTES, what it carried each
+  way. That STATUS is the
+  CONNECT's own (200, or 502 when the destination could not be reached), never
+  the destination's, which travels inside the client's TLS. The TOKENS and COST figures on a request
   row carry what `tool-prune` saved in parentheses — `−` for a counted saving,
   `~` for a projected one.
 - **Detail**: pretty-printed JSON of a single event. Scroll with arrow
@@ -1238,7 +1243,7 @@ config — that is `~/.cortex/config.yaml`, and `--config` on `abctl service` an
 
 ```yaml
 # abctl user settings. Written by abctl; safe to hand-edit or delete.
-# Columns not listed under events.columns are visible — only deviations are recorded.
+# Columns not listed under events.columns keep their default — only deviations are recorded.
 events:
   columns:
     - name: COST
@@ -1290,6 +1295,7 @@ Column ids, in display order — the same headers the picker shows:
 | `METHOD` | protocol operation: model name, MCP or A2A method |
 | `STATUS` | HTTP status of the response |
 | `DURATION` | how long the exchange took |
+| `BYTES` | bytes an opaque tunnel carried: ↑ sent, ↓ received — off by default |
 | `TOKENS` | tokens used, and what `tool-prune` saved |
 | `COST` | estimated cost, and what `tool-prune` saved |
 | `HOST` | host the message was sent to |
