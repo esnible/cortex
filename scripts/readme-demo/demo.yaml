@@ -4,7 +4,7 @@
 # CI fails if docs/assets/cortex-demo.svg does not match this file.
 #
 # Every string in the shell act is copied from the real source, not paraphrased.
-# The sources are scripts/install.sh and cmd/abctl/cmd_claudecode.go; grep a quoted
+# The sources are scripts/install.sh and cmd/agentop/cmd_claudecode.go; grep a quoted
 # fragment below to find the line it came from, rather than trusting a line number here.
 # Most of these strings interpolate a variable at source, so grep a literal prefix of one
 # rather than the whole rendered line.

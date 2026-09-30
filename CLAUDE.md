@@ -170,7 +170,7 @@ cortex/
 │   ├── Dockerfile                    #   plugins, has no demo — but deliberately kept
 │   └── entrypoint.sh                 #   and kept compiling. Do not delete.
 │
-├── cmd/abctl/                        # Terminal UI over the session API (:9094).
+├── cmd/agentop/                        # Terminal UI over the session API (:9094).
 │   ├── tui/                          #   Panes: sessions, events, pipeline, catalog
 │   ├── edit/, apiclient/,            #   Pipeline editing, API client, cluster
 │   │   cluster/, toolscan/           #   port-forward, tool manifest scanning
@@ -308,9 +308,9 @@ Every sidecar binary but praxis pins one deployment shape and refuses a
 mismatching `mode:` at boot; praxis pins none. Mode is no longer selected at
 runtime. See [`cmd/README.md`](cmd/README.md) for which binary pins which shape.
 
-`cmd/abctl/` is also a Go module here but is not a sidecar — it is the
+`cmd/agentop/` is also a Go module here but is not a sidecar — it is the
 operator-facing TUI over the session API, and the component the root README leads
-with. See [`cmd/abctl/README.md`](cmd/abctl/README.md) for flags and keybindings.
+with. See [`cmd/agentop/README.md`](cmd/agentop/README.md) for flags and keybindings.
 
 **Plugins are all opt-in.** Each one lives in a `cmd/*/plugins_<name>.go` file
 gated by `//go:build include_plugin_<name>` (15 such files in
@@ -342,7 +342,7 @@ self-contained `demos/*` modules are outside the workspace. `go-tidy-check` in
 `ci.yaml` does cover all 12: it discovers them with `find`, not from `go.work`):
 - `core/` — the runtime library: `pipeline`, `plugins`, `listener`, `config`, `spiffe` (the framework, 57% of it); `cost/{pricing,settle,ledger,event,usage}` (21%); `session`, `sessionapi`, `observe`, `redact` (10%); `auth`, `bypass`, `capabilities` (1.6%); plus transport and storage glue. **Consumed outside this repo**, so removing exported API here is a cross-repo change.
 - `cmd/authbridge-{proxy,envoy,cpex,praxis}/` — thin main packages that import core and start the listeners they need; they import no plugin package directly. (The `authbridge-lite` image is `authbridge-proxy` built with the `lite` profile.)
-- `cmd/abctl/` — the TUI; also released as a standalone binary.
+- `cmd/agentop/` — the TUI; also released as a standalone binary.
 - `core/storage/redis/`, `scripts/{profile-tags,readme-demo}/`, and the self-contained `demos/{echo,finance-sparc,ibac}/`.
 - `go.work` — workspace linking core + the binaries for local development.
 
@@ -1038,7 +1038,7 @@ resulting `/shared/client-id.txt` and `/shared/client-secret.txt`.
 
     **Retention was only half of it, and reading the store was the more expensive half.** A memory figure that keeps climbing while traffic is idle is usually not retention: `GET /v1/sessions/{id}` used to encode the whole response into a single buffer before writing a byte, so serving one snapshot cost heap proportional to the *response* — ~246MB of heap growth for a 105MB response — and Go keeps that as idle heap rather than returning it promptly. abctl requests a snapshot on every <kbd>Enter</kbd> into a session, so RSS ratcheted a couple hundred megabytes per keystroke: four requests took a live proxy from 731MB to 1447MB, still 1447MB two minutes later. Interning could not have helped there, and the two are not alternatives — interning makes stored events *share* one copy of a repeated message, and an encoder expands every share back into its own bytes on the way out. The response is now written one event at a time (`core/sessionapi/snapshot.go`, `BenchmarkSnapshotHeap`). When judging any memory change here, note that **RSS is not heap** and the proxy exposes no heap metric — there is no `pprof` endpoint anywhere in this tree — so an RSS-per-event figure mixes retention with read-path churn and cannot settle either one.
 
-    **And the client is the other end of the same problem.** Measured on a laptop, `abctl` sat at 1.64GB against the proxy's 1.03GB — larger than the process it was watching, and the only one of the two still climbing. It made both mistakes the server had just stopped making: it decoded each snapshot as one document (`json.Decoder` only bounds its buffer between *values*, and a whole snapshot is one value), and it kept every string the server's encoder had expanded back out of the store's sharing. Both are fixed in `cmd/abctl/apiclient/snapshot.go`: the response is decoded one event at a time and fed through the same `session.Interner` the store uses, exported for the purpose rather than reimplemented. On a 23.5MB document, `+32.0MB HeapSys` and 26.49MB retained became +0.0MB and 2.31MB (`BenchmarkDecodeSessionViewHeap`). When a memory figure here looks wrong, measure **both** processes — the proxy has not been the larger one for a while.
+    **And the client is the other end of the same problem.** Measured on a laptop, `abctl` sat at 1.64GB against the proxy's 1.03GB — larger than the process it was watching, and the only one of the two still climbing. It made both mistakes the server had just stopped making: it decoded each snapshot as one document (`json.Decoder` only bounds its buffer between *values*, and a whole snapshot is one value), and it kept every string the server's encoder had expanded back out of the store's sharing. Both are fixed in `cmd/agentop/apiclient/snapshot.go`: the response is decoded one event at a time and fed through the same `session.Interner` the store uses, exported for the purpose rather than reimplemented. On a 23.5MB document, `+32.0MB HeapSys` and 26.49MB retained became +0.0MB and 2.31MB (`BenchmarkDecodeSessionViewHeap`). When a memory figure here looks wrong, measure **both** processes — the proxy has not been the larger one for a while.
 
     Two layered defenses keep the inbound A2A user intent visible to IBAC even when an agent generates dozens of outbound events per turn:
 

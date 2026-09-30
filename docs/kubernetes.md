@@ -33,7 +33,7 @@ them by hand.
 
 The **[Weather Agent walkthrough](../demos/weather-agent/demo-ui.md)** is the shortest
 end-to-end path: a cluster, an agent, inbound validation, and traffic you can watch.
-There is also an [`abctl` version](../demos/weather-agent/demo-with-abctl.md) that
+There is also an [`abctl` version](../demos/weather-agent/demo-with-agentop.md) that
 focuses on the plugin pipeline.
 
 For the full deployment architecture — sidecar shapes, container inventory, the

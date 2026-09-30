@@ -2,7 +2,7 @@
 
 Status: implemented · proposed 2026-09-19 · shipped in
 `core/cost/{pricing,settle,event,usage}` and
-`cmd/abctl` (the `$` spend breakdown). Kept as the design record,
+`cmd/agentop` (the `$` spend breakdown). Kept as the design record,
 not a live proposal.
 
 ## 1. Problem

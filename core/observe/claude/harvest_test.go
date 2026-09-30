@@ -19,7 +19,7 @@ import (
 
 // writeSessionTranscript writes one transcript with caller-supplied lines.
 //
-// A local copy rather than a shared helper: the equivalent in cmd/abctl's tests serves
+// A local copy rather than a shared helper: the equivalent in cmd/agentop's tests serves
 // the command-layer tests that stayed there, and the two packages cannot share test code.
 func writeSessionTranscript(t *testing.T, dir, name string, lines ...string) {
 	t.Helper()
@@ -47,7 +47,7 @@ func readMetadataFile(t *testing.T, path string) map[string]SessionMetadata {
 }
 
 // metadataHome points $HOME at a temp dir so SessionMetadataPath resolves into it.
-// Same shape as cmd/abctl's prefsHome, which is in package main and out of reach here.
+// Same shape as cmd/agentop's prefsHome, which is in package main and out of reach here.
 func metadataHome(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -1411,7 +1411,7 @@ func TestIsSyntheticPrompt_HandlesAttributesAndCase(t *testing.T) {
 // 80 runes of CJK occupy 160 columns, so nothing may read this constant as a width budget. This
 // pins ONLY the half that lives in this package: that the cap counts runes rather than bytes or
 // columns. The other half — that the sessions pane re-truncates by lipgloss.Width — is in
-// cmd/abctl/tui and tested there; no test in either module fails if that truncation is removed while
+// cmd/agentop/tui and tested there; no test in either module fails if that truncation is removed while
 // this constant stays, so the cross-module invariant rests on the comments, not on this test.
 func TestMaxTitleLen_IsARuneCapNotAWidthBudget(t *testing.T) {
 	dir := t.TempDir()
@@ -1429,7 +1429,7 @@ func TestMaxTitleLen_IsARuneCapNotAWidthBudget(t *testing.T) {
 		t.Errorf("clipped to %d runes, want %d", n, MaxTitleLen)
 	}
 	// The point of the test: runes are capped, BYTES AND COLUMNS ARE NOT. core has no width
-	// library — lipgloss and go-runewidth are cmd/abctl dependencies, and adding one here for a
+	// library — lipgloss and go-runewidth are cmd/agentop dependencies, and adding one here for a
 	// single assertion is not worth it — so byte length stands in as the observable proxy: a
 	// three-byte-per-rune title is 240 bytes at 80 runes, and anything laying out by width will
 	// likewise see more than 80. What this pins is that the cap is NOT a width, which is the

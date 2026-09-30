@@ -117,7 +117,7 @@ func ScopeToAgent(snap *Snapshot, agent string, buckets BucketScope) (*Snapshot,
 	// writeCostSummary; abctl's usage pane does it in tui.costUngroupedRow.
 	//
 	// THE SURVIVAL IS PINNED IN THIS PACKAGE because every guard it had was a module away, in
-	// the consumer: dropping UngroupedCostMicros here fails two cmd/abctl tests, and dropping
+	// the consumer: dropping UngroupedCostMicros here fails two cmd/agentop tests, and dropping
 	// UngroupedAvoidedMicros failed nothing at all — measured, both ways. See
 	// TestScopeToAgent_KeepsTheWindowResidualsForTheCallerToDisclose.
 

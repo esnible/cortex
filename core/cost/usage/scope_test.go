@@ -107,7 +107,7 @@ func TestScopeToAgent_DropsTheProvenanceMapsAndKeepsTheReadFacts(t *testing.T) {
 // and abctl's usage pane prints it through tui.costUngroupedRow.
 //
 // PINNED HERE BECAUSE EVERY GUARD IT HAD WAS IN A CONSUMER. Measured on this tree: nilling
-// UngroupedCostMicros in ScopeToAgent fails two cmd/abctl tests, and nilling
+// UngroupedCostMicros in ScopeToAgent fails two cmd/agentop tests, and nilling
 // UngroupedAvoidedMicros failed nothing at all — so for the avoided residual this assertion is
 // the only thing between a one-line "cleanup" and a silently retracted disclosure.
 //

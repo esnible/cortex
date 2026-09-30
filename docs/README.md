@@ -15,7 +15,7 @@ only the repo-level pieces.
 | Write a plugin | [`docs/plugin-reference.md`](../docs/plugin-reference.md) and [`plugin-tutorial.md`](../docs/plugin-tutorial.md) |
 | Understand the pipeline internals and hot-reload | [`docs/framework-architecture.md`](../docs/framework-architecture.md) |
 | Run a demo | [`demos/README.md`](../demos/README.md) |
-| Use the `abctl` TUI | [`cmd/abctl/README.md`](../cmd/abctl/README.md) |
+| Use the `abctl` TUI | [`cmd/agentop/README.md`](../cmd/agentop/README.md) |
 | Write the in-memory session store to files | [`session-dump.md`](session-dump.md) |
 
 ## Configuration reference

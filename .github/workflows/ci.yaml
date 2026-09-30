@@ -155,7 +155,7 @@ jobs:
           # for a core transitive dep reach main: the workspace build used
           # everywhere else resolved it, and the per-module release build did
           # not — surfacing only when a tag was cut.
-          - abctl
+          - agentop
           # authbridge-praxis was in no workflow at all, which is how it ended
           # up broken under GOWORK=off by the same missing go.sum entry. Any
           # cmd/* module absent from every workflow will drift this way — the
@@ -216,7 +216,7 @@ jobs:
       # and ABCTL_SYSTEMD_TESTS=required (below) is what turns THAT case into a failed
       # test instead of a silent skip.
       - name: Enable a systemd --user session (abctl leg only)
-        if: matrix.binary == 'abctl'
+        if: matrix.binary == 'agentop'
         run: |
           sudo loginctl enable-linger "$(whoami)"
           rt="/run/user/$(id -u)"
@@ -230,7 +230,7 @@ jobs:
 
       - name: Test
         env:
-          ABCTL_SYSTEMD_TESTS: ${{ matrix.binary == 'abctl' && 'required' || '' }}
+          ABCTL_SYSTEMD_TESTS: ${{ matrix.binary == 'agentop' && 'required' || '' }}
         run: go test -v -race -cover ./...
 
   proxy-init-iptables:

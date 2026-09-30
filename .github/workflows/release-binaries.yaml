@@ -157,7 +157,7 @@ jobs:
             os="${target%/*}"; arch="${target#*/}"
 
             echo "==> abctl ${os}/${arch}"
-            ( cd cmd/abctl && \
+            ( cd cmd/agentop && \
               GOWORK=off CGO_ENABLED=0 GOOS="${os}" GOARCH="${arch}" \
               go build -trimpath \
                 -ldflags "-s -w -X main.version=${VERSION}" \

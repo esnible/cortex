@@ -457,7 +457,7 @@ Both extension points already have the exact pattern needed.
   populate it in `describePipeline` with a three-line type assertion mirroring the
   `RawConfigProvider` case at `sessionapi/server.go:234`. Matching field on
   `apiclient.PipelinePlugin`.
-- `cmd/abctl/tui/plugin_detail_pane.go`: a `Metrics:` section after the dependency
+- `cmd/agentop/tui/plugin_detail_pane.go`: a `Metrics:` section after the dependency
   sections and before `Config:`, following the always-newline convention that the
   comment at `:67-70` records as deliberate — it exists to stop layout jitter when
   navigating between plugins that do and do not have the section. `Note` renders

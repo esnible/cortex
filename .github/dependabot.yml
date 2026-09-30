@@ -75,7 +75,7 @@ updates:
         versions: [">=1.8.0"]
   # Go - abctl TUI
   - package-ecosystem: gomod
-    directory: /cmd/abctl
+    directory: /cmd/agentop
     schedule:
       interval: weekly
     ignore:

@@ -175,10 +175,10 @@ demo: preflight host-setup load-images ollama-up deploy patch-config setup-keycl
 	@echo "Demo complete. UI: http://rossoctl-ui.localtest.me:8080  |  forensic: make show-result"
 
 build-abctl:  ## Build abctl into /tmp (for show-result)
-	cd ../../cmd/abctl && go build -o /tmp/abctl-finance-sparc-demo .
+	cd ../../cmd/agentop && go build -o /tmp/abctl-finance-sparc-demo .
 
 show-result: build-abctl  ## Launch abctl against the agent's session API
-	bash scripts/launch-abctl.sh $(NS) $(AGENT)
+	bash scripts/launch-agentop.sh $(NS) $(AGENT)
 
 undeploy:  ## Remove demo resources (rossoctl install untouched)
 	-kubectl -n $(NS) delete -f k8s/agent.yaml --ignore-not-found

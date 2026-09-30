@@ -774,7 +774,7 @@ func clipCwd(s string) string {
 //
 // EXPORTED so the renderer's tests can hold the cross-module contract: the cap is only safe because
 // every renderer re-truncates by display width, and while it was package-private neither side could
-// name the other's half. cmd/abctl/tui asserts the relationship against this constant.
+// name the other's half. cmd/agentop/tui asserts the relationship against this constant.
 //
 // A prompt is unbounded — the longest on the measured tree ran to several KB — and a title is a
 // table cell. Clipping at the source keeps the metadata file small and stops every consumer having
@@ -794,7 +794,7 @@ func clipCwd(s string) string {
 // before they do it, which is why it is recorded here rather than left to be rediscovered.
 //
 // THAT RELATIONSHIP IS GUARDED, from the renderer's side:
-// TestTitleCap_IsSafeOnlyBecauseTheRendererRemeasures in cmd/abctl/tui takes a title at exactly this
+// TestTitleCap_IsSafeOnlyBecauseTheRendererRemeasures in cmd/agentop/tui takes a title at exactly this
 // cap in the worst case for the mismatch — MaxTitleLen runes of CJK, twice that in columns — and
 // requires the rendered cell to fit anyway. Removing the renderer's truncation fails it, along with
 // ten other tests in that package.
@@ -2017,7 +2017,7 @@ func SaveMetadata(path string, meta map[string]SessionMetadata) error {
 	//
 	// Through writeAll, not f.Write directly, so a test can make the write fail while Close
 	// and Rename still succeed — the only shape that catches the shadowing above, and one no
-	// real filesystem produces on demand. cmd/abctl has its own copy of this seam for
+	// real filesystem produces on demand. cmd/agentop has its own copy of this seam for
 	// saveUserConfig; the duplication is two lines and buys each module its own tripwire.
 	_, err = writeAll(f, body)
 	if cerr := f.Close(); err == nil {

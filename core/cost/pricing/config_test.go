@@ -284,7 +284,7 @@ func TestWarnIfUnpinned(t *testing.T) {
 				}
 				// Naming the right surfaces does not exclude the wrong one. The bug this
 				// pins was the hint sending an operator to `abctl cost`, which prints no
-				// provenance annotation (provenanceNote lives only in cmd/abctl/tui), and
+				// provenance annotation (provenanceNote lives only in cmd/agentop/tui), and
 				// re-adding it leaves every pin above satisfied — so the ban is the only
 				// half that can fail for the original defect, and the pins above are the
 				// only half that can fail for its deletion.
@@ -350,7 +350,7 @@ func TestConfig_UnitDefaultsToUSDAndIsCarriedOnTheEntry(t *testing.T) {
 //
 // What the number is load-bearing FOR, neither of which the compiler connects:
 //   - docs/pricing.md tells operators a unit is "at most 16 bytes";
-//   - cmd/abctl's TestRunCost_TheWidestLegalUnitIsNeverTruncated uses a 16-byte fixture as its
+//   - cmd/agentop's TestRunCost_TheWidestLegalUnitIsNeverTruncated uses a 16-byte fixture as its
 //     worst case, and cannot import an unexported constant to check it;
 //   - cmd_cost.go's headline-geometry comment writes "up to maxUnitLen (16)";
 //   - and DERIVES "~25 columns" from it, so that figure moves too.
@@ -363,7 +363,7 @@ func TestConfig_UnitDefaultsToUSDAndIsCarriedOnTheEntry(t *testing.T) {
 func TestConfig_MaxUnitLenIsSixteen(t *testing.T) {
 	if maxUnitLen != 16 {
 		t.Errorf("maxUnitLen = %d, not 16. That is allowed, but five things have to move with it: "+
-			"docs/pricing.md's \"at most 16 bytes\", cmd/abctl's widest-unit fixture, cmd_cost.go's "+
+			"docs/pricing.md's \"at most 16 bytes\", cmd/agentop's widest-unit fixture, cmd_cost.go's "+
 			"\"up to maxUnitLen (16)\" and the \"~25 columns\" it derives, and this test.",
 			maxUnitLen)
 	}
@@ -393,7 +393,7 @@ func TestConfig_RejectsAnUnusableUnit(t *testing.T) {
 		{"absurdly long", strings.Repeat("c", 40)},
 		// THE BOUNDARY, not just a value far past it. "absurdly long" above is refused by any
 		// bound at all, so it pins nothing: raising maxUnitLen from 16 to 24 left it green, and
-		// left a cmd/abctl fixture that restates 16 green too — that fixture cannot import an
+		// left a cmd/agentop fixture that restates 16 green too — that fixture cannot import an
 		// unexported constant, so this is the only place the number can be held. One over the
 		// bound must be refused; exactly the bound is accepted by the sibling test below.
 		{"one byte past maxUnitLen", strings.Repeat("c", maxUnitLen+1)},
@@ -518,7 +518,7 @@ func boolPtr(b bool) *bool { return &b }
 
 // The unit reaches the wire from the PRODUCER side, under the field name a client decodes.
 //
-// cmd/abctl's pricing tests feed hand-written JSON, so they pin the CLIENT's struct tag and say
+// cmd/agentop's pricing tests feed hand-written JSON, so they pin the CLIENT's struct tag and say
 // nothing about what this package emits — renaming json:"unit" on either side alone went
 // undetected, and dropping the field from either producer left every test green. This asserts the
 // bytes Describe() and EffectiveFor() actually serialise, which is the only place the two sides

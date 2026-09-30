@@ -859,4 +859,4 @@ Breaking changes will be announced in `CHANGELOG.md` (TBD) before a 1.0 tag.
 - `core/sessionapi/` — HTTP API (`/v1/sessions`, `/v1/events`, `/v1/pipeline`) surfacing all of the above.
 - `core/plugins/` — built-in plugin implementations and registry.
 - `cmd/authbridge/listener/extproc/` — reference usage for all three phases.
-- `cmd/abctl/` — TUI consumer of the session API, useful as a reference integrator.
+- `cmd/agentop/` — TUI consumer of the session API, useful as a reference integrator.

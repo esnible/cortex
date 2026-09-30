@@ -41,7 +41,7 @@ authbridge-lite
 authbridge-praxis
 profile-tags
 readme-demo
-cmd/abctl/abctl
+cmd/agentop/abctl
 cmd/*/authbridge-*
 scripts/profile-tags/profile-tags
 scripts/readme-demo/readme-demo

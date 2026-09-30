@@ -249,7 +249,7 @@ func capUA(s string) string {
 // name.
 //
 // Deliberately small. Claude Code is the only agent with full support today —
-// cmd/abctl/toolscan/known.go hardcodes its built-in tool names, so the
+// cmd/agentop/toolscan/known.go hardcodes its built-in tool names, so the
 // tool-prune analysis only works for it — and OpenCode, Codex and the rest arrive
 // with their own detection work rather than a speculative entry here. A guess
 // that is wrong is worse than an unrecognised agent, because an unrecognised one

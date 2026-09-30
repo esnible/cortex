@@ -1136,7 +1136,7 @@ func TestMergePromptContext_AZeroTokenFigureIsTheIdentity(t *testing.T) {
 // grew, shrank or was replaced wholesale — and a per-event caller has no slice, so the session store
 // folds thousands of events and leaves n at zero forever. Until this test, adding `f.n++` to Add left
 // `go test ./core/pipeline/` entirely green: the only thing guarding the contract stated at AddAll
-// was cmd/abctl/tui, a suite in another module, and the fold has a second consumer now.
+// was cmd/agentop/tui, a suite in another module, and the fold has a second consumer now.
 //
 // COUNTED IN EVENTS, NOT IN CANDIDATES. AddAll advances by len(events) including the one-shots the
 // rule rejects, because the length check it serves compares against len(slice) — a cursor that
@@ -1184,7 +1184,7 @@ func TestPromptContextFold_AddAllAdvancesTheCursorAndAddDoesNot(t *testing.T) {
 // sessionapi.summarizeEvent nils Messages and Tools — 99.5% of an event — after recording their
 // lengths in ToolCount and MessageCount, and toolCount/messageCount exist to answer on either shape.
 // Until this test no fixture in this package set the counts with the slices nil, so the branch that
-// exists FOR that shape was reached only from cmd/abctl/tui, across a module boundary, while
+// exists FOR that shape was reached only from cmd/agentop/tui, across a module boundary, while
 // statement coverage here looked complete.
 //
 // A CLIENT CONCERN, NOT A SERVER ONE, and worth stating because the reverse is easy to assume: the

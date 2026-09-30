@@ -16,7 +16,7 @@ import "github.com/rossoctl/cortex/core/pipeline"
 // THE RULE: a field may be dropped only if NEITHER the events table nor its
 // filter reads it. The filter is the half that is easy to forget, and forgetting
 // it is silent — a `/completion text` search simply stops matching. abctl's
-// eventHaystack and matchEventRow (cmd/abctl/tui/events_pane.go) are the source of
+// eventHaystack and matchEventRow (cmd/agentop/tui/events_pane.go) are the source of
 // truth for that half; TestSummarizeEvent_KeepsEverythingTheFilterSearches names
 // each field they read so this cannot drift again.
 //

@@ -23,7 +23,7 @@ fmt: ## Run formatters across all sub-projects
 	@# Its own module, so the `cd core` above does not reach it: Go excludes nested
 	@# modules from ./..., and moving it under core/ made it only look covered.
 	cd core/storage/redis && go fmt ./...
-	cd cmd/abctl && go fmt ./...
+	cd cmd/agentop && go fmt ./...
 	cd cmd/authbridge-proxy && go fmt ./...
 	cd cmd/authbridge-envoy && go fmt ./...
 	@# Scope matches the ruff hooks in .pre-commit-config.yaml. Both skip the root
@@ -64,7 +64,7 @@ endif
 abctl: ## Build abctl to ./bin/abctl
 	@mkdir -p $(BIN_DIR)
 	@echo "→ building abctl"
-	@cd cmd/abctl && GOWORK=off go build -o $(BIN_DIR)/abctl .
+	@cd cmd/agentop && GOWORK=off go build -o $(BIN_DIR)/abctl .
 
 authbridge-proxy: ## Build authbridge-proxy to ./bin/authbridge-proxy (PROFILE=full|lite|local, default full)
 	@mkdir -p $(BIN_DIR)

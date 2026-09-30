@@ -4,7 +4,7 @@
 //
 // It exists because that file is a contract between two things that cannot import each
 // other: the harvester, reached from abctl's package main, and the viewer in
-// cmd/abctl/tui. Before this, both the shape and the harvest lived in package main, so
+// cmd/agentop/tui. Before this, both the shape and the harvest lived in package main, so
 // nothing else could reach them and `abctl observe` could not name a session without
 // shelling out to another subcommand.
 //

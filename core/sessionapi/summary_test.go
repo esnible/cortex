@@ -258,7 +258,7 @@ func TestSummarizeEvent_IsOrdersOfMagnitudeSmaller(t *testing.T) {
 // snapshot had replaced.
 //
 // Each field below is named by abctl's eventHaystack / matchEventRow
-// (cmd/abctl/tui/events_pane.go). Keeping them costs 299x → 163x, which is 1.12 MiB
+// (cmd/agentop/tui/events_pane.go). Keeping them costs 299x → 163x, which is 1.12 MiB
 // against 0.61 for a 1000-event session — both instant.
 func TestSummarizeEvent_KeepsEverythingTheFilterSearches(t *testing.T) {
 	full := fullEvent()

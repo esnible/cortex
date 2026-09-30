@@ -28,8 +28,8 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
 
-	"github.com/rossoctl/cortex/cmd/abctl/apiclient"
-	"github.com/rossoctl/cortex/cmd/abctl/tui"
+	"github.com/rossoctl/cortex/cmd/agentop/apiclient"
+	"github.com/rossoctl/cortex/cmd/agentop/tui"
 	"github.com/rossoctl/cortex/core/cost/event"
 	"github.com/rossoctl/cortex/core/cost/ledger"
 	"github.com/rossoctl/cortex/core/cost/usage"

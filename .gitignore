@@ -79,7 +79,7 @@ __pycache__/
 # pattern that is safe, so the list below is exhaustive for `cmd/` and for the
 # two `scripts/` helpers further down. The `demos/*` mains are deliberately not
 # listed. Keep adding to it.
-cmd/abctl/abctl
+cmd/agentop/abctl
 cmd/authbridge-proxy/authbridge-proxy
 cmd/authbridge-envoy/authbridge-envoy
 cmd/authbridge-cpex/authbridge-cpex
@@ -96,7 +96,7 @@ cmd/authbridge-praxis/authbridge-praxis
 #
 # Leading slash is load-bearing now that the repo root IS the module root: a bare
 # `abctl` has no separator, so git would match it at any depth — including the
-# package directory `cmd/abctl`, silently ignoring new source files under it.
+# package directory `cmd/agentop`, silently ignoring new source files under it.
 /abctl
 /authbridge-proxy
 /authbridge-envoy

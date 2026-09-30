@@ -14,7 +14,7 @@ import (
 // occupy 160 columns, so a client still truncates by width.
 //
 // Deliberately the same 80 as core/observe/claude.MaxTitleLen and deliberately NOT that constant,
-// which caps a HARVESTED title and is exported for cmd/abctl's contract with the harvester.
+// which caps a HARVESTED title and is exported for cmd/agentop's contract with the harvester.
 // Importing it would make the session store depend on the transcript harvester for a number and
 // couple two caps that answer to different consumers. If they ever need to differ, they can.
 const maxTitleLen = 80

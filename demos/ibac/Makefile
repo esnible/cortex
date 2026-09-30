@@ -114,7 +114,7 @@ $(STAMP_DIR)/evil-server.built: $(shell find evil-server -type f) go.mod | $(STA
 build-images: $(STAMP_DIR)/agent.built $(STAMP_DIR)/email-server.built $(STAMP_DIR)/evil-server.built  ## Build demo images (rebuilds only when sources change)
 
 build-abctl:  ## Build abctl into /tmp (rebuilds when source is newer; used by show-result)
-	@ABCTL_SRC_DIR=../../cmd/abctl; \
+	@ABCTL_SRC_DIR=../../cmd/agentop; \
 	if [ -x /tmp/abctl-ibac-demo ]; then \
 	  NEWER=$$(find $$ABCTL_SRC_DIR -name '*.go' -newer /tmp/abctl-ibac-demo -print -quit 2>/dev/null); \
 	  if [ -z "$$NEWER" ]; then \
@@ -218,7 +218,7 @@ demo-ibac: preflight build-images load-images deploy patch-config  ## Build, loa
 	@echo "╚══════════════════════════════════════════════════════════╝"
 
 show-result: build-abctl  ## Launch abctl against the agent's session API (interactive TUI)
-	bash scripts/launch-abctl.sh $(NAMESPACE) $(AGENT_NAME)
+	bash scripts/launch-agentop.sh $(NAMESPACE) $(AGENT_NAME)
 
 # ---------- Cleanup ----------
 
