@@ -584,8 +584,11 @@ abctl is for, and the other three are surfaces you visit and leave.
   [`--skip-claude-metadata`](#naming-sessions-from-claude-code---skip-claude-metadata)
   — and **falls back to the title the proxy serves** on `/v1/sessions`, which it
   derives from the session's own events. So a session with no transcript on this
-  machine can still be named, and the cell is empty only when neither source
-  names it. The harvested title wins when both exist — a fixed precedence, not a
+  machine can still be named, and the cell is empty when neither source names it
+  — or when the proxy has stopped listing the session, since a row kept alive by
+  its cached events alone has no summary to carry a served title. A session named
+  only by the proxy therefore loses its name at that point while its events
+  remain, which is the one case where a title visibly disappears. The harvested title wins when both exist — a fixed precedence, not a
   claim that it is always the better string; the two sides rank candidates
   differently and may not agree on a given session. The column does not say which
   source it used. Numerics are right-aligned

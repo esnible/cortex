@@ -416,6 +416,14 @@ func (m *model) sessionTitle(id string) string {
 // disables the fallback and compiles. The parameter stays — the live row loop already holds the
 // summary, and resolving it inside would put a scan of m.sessions in the per-row render path — so
 // the one legitimate empty argument says so by name instead.
+//
+// "CANNOT HAVE ONE" IS ABOUT TODAY'S STRUCTURE, not a claim that nothing better is possible. A
+// session named ONLY by the proxy keeps its name while listed and loses it the moment it becomes
+// cached-only, so an operator watches a title vanish from a row whose events are deliberately
+// preserved (the #870 scenario). Remembering the last-seen served title would fix that, and nothing
+// here does: neither this constant nor cachedOnlySessionIDs retains anything from the summary that
+// went away. Deferred rather than overlooked — it means holding title state across list refreshes,
+// which is a store question and not a rendering one.
 const noServedTitle = ""
 
 // sessionTitleFor names a session for DISPLAY, falling back to the title the proxy served.
@@ -439,7 +447,13 @@ const noServedTitle = ""
 // THE FALLBACK IS ONLY HERE, not in sessionTitle. Every backoff predicate in session_metadata.go
 // judges "unnamed" through sessionTitle, so this deliberately leaves a server-titled row reading as
 // unnamed to them: the harvest keeps looking for the harvested title, at the cost of a periodic
-// transcript scan until it finds one or the backoff caps out. That cost is the trade, not a leak.
+// transcript scan. That cost is the trade, not a leak — but it is a PERMANENT steady state on
+// exactly the rows this fallback serves, not a transient one. An agent with no Claude Code
+// transcript tree is the case that motivated the feature, and for it the harvest can never
+// succeed, so the backoff pins at untitledBackoffCap and re-walks ~/.claude every 3 minutes for
+// the life of the process (~0.7s for a first full scan, per the README). Accepted because the
+// alternative is the re-harvest stopping on a served title and never picking up a transcript that
+// appears later; worth revisiting if that walk ever becomes expensive enough to matter.
 //
 // THROUGH titleIsBlank rather than == "", because a harvested " " renders as nothing and filling
 // nothing is the whole point. titleIsBlank's own doc anticipates this seam.

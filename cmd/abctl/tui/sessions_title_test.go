@@ -2276,7 +2276,12 @@ func TestSessionsPane_ServedTitleOnlyFillsWhatRendersBlank(t *testing.T) {
 				map[string]SessionMetadata{"s1": {Title: tc.harvested}},
 				map[string]string{"s1": "served name"},
 				"s1")
-			if got := m.sessionTitleFor("s1", "served name"); got != tc.want {
+			// THROUGH THE FIXTURE, not a literal. Passing "served name" here instead read the
+			// same string the served map holds, so the assertion passed whether or not
+			// newServedTitleModel had wired Title onto the summary at all — leaving one test as
+			// the only gate on that wiring. sessionLabel resolves the served title by id, so
+			// going through it asserts the fixture and the accessor together.
+			if got := m.sessionTitleFor("s1", m.servedTitle("s1")); got != tc.want {
 				t.Errorf("sessionTitleFor(%q harvested) = %q, want %q", tc.harvested, got, tc.want)
 			}
 		})
@@ -2318,6 +2323,53 @@ func TestSessionsPane_ServedTitleIsSanitized(t *testing.T) {
 	}
 	if !strings.Contains(got, "before") || !strings.Contains(got, "after") {
 		t.Errorf("sessionTitleFor = %q, want the text kept and only the control runes replaced", got)
+	}
+}
+
+// THE BIDI RUNES sanitizeLabel DOES NOT COVER, and why a served title is safe anyway.
+//
+// sanitizeLabel replaces the BIDI OVERRIDES AND ISOLATES (U+202A-202E, U+2066-2069) and stops
+// there. The plain MARKS — U+200E LRM, U+200F RLM, U+061C ALM — and U+200D ZWJ pass through it
+// untouched; measured, all four survive. core/observe/claude drops them from a harvested title, so
+// this gap only ever mattered once a title arrived by another route.
+//
+// IT IS COVERED, but in another module: core/session.sanitizeTitle folds every unicode.IsSpace and
+// pipeline.IsControlRune to a space, and these are Cf, so a served title reaches abctl with them
+// already gone. That makes this the SECOND cross-package invariant this fallback leans on — the
+// length cap is the other — and the same objection applies: /v1/sessions is unauthenticated and the
+// producer's guarantee is not one this side can assert.
+//
+// So this test is CHARACTERIZATION, not a guarantee, and says which: it records that abctl alone
+// does not strip these, so the reliance on core/session is explicit and a reader who assumes this
+// side is self-sufficient is corrected here. Asserting the safe end would need sanitizeTitle, which
+// is unexported in another module on purpose — exporting it to test one line of rendering is a worse
+// trade than naming the dependency.
+//
+// It fails if sanitizeLabel starts covering these, which is the direction that would CLOSE the gap:
+// at that point delete this test rather than invert it.
+func TestSessionsPane_ServedTitleBidiMarksRelyOnTheProducer(t *testing.T) {
+	m := newServedTitleModel(t, map[string]SessionMetadata{}, nil, "s1")
+
+	for _, tc := range []struct{ name, mark string }{
+		{"LRM U+200E", "‎"},
+		{"RLM U+200F", "‏"},
+		{"ALM U+061C", "؜"},
+		{"ZWJ U+200D", "‍"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := m.sessionTitleFor("s1", "report"+tc.mark+"exe"); !strings.Contains(got, tc.mark) {
+				t.Errorf("sessionTitleFor = %q no longer carries %s — if sanitizeLabel now covers "+
+					"the BIDI marks, this test has served its purpose and should be deleted, not "+
+					"inverted", got, tc.name)
+			}
+		})
+	}
+
+	// AND THE ONES IT DOES COVER, so the boundary is asserted rather than described. An override is
+	// replaced; a mark is not. That contrast is the whole content of this test.
+	if got := m.sessionTitleFor("s1", "report‮exe"); strings.Contains(got, "‮") {
+		t.Errorf("sessionTitleFor = %q, want U+202E RLO replaced — sanitizeLabel covers the "+
+			"overrides and isolates, and that half must not regress", got)
 	}
 }
 
