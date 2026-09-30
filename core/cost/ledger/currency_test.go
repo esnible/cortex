@@ -282,9 +282,9 @@ func TestRecord_AUnitSeenOnlyPastTheCapIsReportedAndNotAddedToDollars(t *testing
 // counts one unit, and the table no longer reconciles with the units reported beside it.
 func TestFold_GroupCurrencyFoldsSpellingsLikeCurrenciesIn(t *testing.T) {
 	rows := []Row{
-		{Endpoint: "bob", Currency: "credits", Counts: usage.Counts{Requests: 1, CostMicros: 100}},
-		{Endpoint: "bob2", Currency: "Credits", Counts: usage.Counts{Requests: 2, CostMicros: 200}},
-		{Endpoint: "anthropic", Counts: usage.Counts{Requests: 4, CostMicros: 400}},
+		{Endpoint: "bob", Currency: "credits", Counts: usage.Counts{Requests: 1, PricedRequests: 1, CostMicros: 100}},
+		{Endpoint: "bob2", Currency: "Credits", Counts: usage.Counts{Requests: 2, PricedRequests: 2, CostMicros: 200}},
+		{Endpoint: "anthropic", Counts: usage.Counts{Requests: 4, PricedRequests: 4, CostMicros: 400}},
 	}
 
 	_, series, _, _ := Fold(rows, usage.GroupCurrency)
@@ -293,6 +293,9 @@ func TestFold_GroupCurrencyFoldsSpellingsLikeCurrenciesIn(t *testing.T) {
 		t.Fatalf("got %d series, want 2 (USD and credits): %v", len(series), series)
 	}
 	units := CurrenciesIn(rows)
+	if len(units) != 2 {
+		t.Fatalf("CurrenciesIn = %v, want 2 units; the loop below checks nothing otherwise", units)
+	}
 	for _, u := range units {
 		if _, ok := series[u]; !ok {
 			t.Errorf("CurrenciesIn names %q but no series is keyed by it: %v", u, series)
