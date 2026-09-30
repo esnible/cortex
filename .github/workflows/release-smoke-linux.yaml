@@ -22,7 +22,10 @@ name: Release Smoke Test (Linux)
 
 on:
   workflow_run:
-    workflows: ["Release Binaries"]
+    # Must be byte-identical to release-binaries.yaml's own `name:` (lowercase
+    # "binaries") — workflow_run matches on name, not file path, and a mismatch
+    # fails silently: no run is ever created, nothing goes red.
+    workflows: ["Release binaries"]
     types: [completed]
 
 permissions:
@@ -49,8 +52,10 @@ jobs:
       # mapped here to the same CHANNEL_TAG install.sh itself uses.
       - name: Determine the tag under test
         id: tag
+        env:
+          BRANCH: ${{ github.event.workflow_run.head_branch }}
         run: |
-          branch="${{ github.event.workflow_run.head_branch }}"
+          branch="${BRANCH}"
           case "${branch}" in
             v*) tag="${branch}" ;;
             main) tag="main-latest" ;;
@@ -84,4 +89,5 @@ jobs:
       - name: Run the Linux release smoke test
         env:
           GH_TOKEN: ${{ github.token }}
-        run: sh scripts/release_smoke_test_linux.sh "${{ steps.tag.outputs.tag }}"
+          SMOKE_TEST_TAG: ${{ steps.tag.outputs.tag }}
+        run: sh scripts/release_smoke_test_linux.sh "${SMOKE_TEST_TAG}"
