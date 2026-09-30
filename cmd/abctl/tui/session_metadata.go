@@ -133,7 +133,7 @@ func loadSessionMetadataForModel() map[string]SessionMetadata {
 // unique — two sessions in the same directory get the same harvested title, so a title
 // alone would make them indistinguishable in a header.
 func (m *model) sessionLabel(id string) string {
-	// THROUGH titleIsBlank, like the other two consumers of "is this named". A raw != "" accepted
+	// THROUGH titleIsBlank, like every other consumer of "is this named". A raw != "" accepted
 	// a whitespace-only title and rendered "    (id)" — a header padded by a title that shows
 	// nothing, which is worse than the bare id it would otherwise print.
 	//
@@ -366,15 +366,14 @@ func (m *model) sessionHasTitle(id string) bool {
 // sessionHasTitle's comment exists to prevent. Deliberately not enumerated here: the list went
 // stale the first time a caller was added, and the callers are one grep away.
 //
-// THE CELL DOES NOT CALL THIS, and the claim that it does was overstated. sessionTitleCell tests
-// a raw title == "" as a fast path to skip truncating an empty string; it does not judge
-// blankness, and a " " title falls through it and is returned as " ". So the two AGREE in
-// behaviour on every input — verified across "", " ", "   ", "\t" and ordinary prose — but by
-// construction rather than by sharing this function. If that fast path ever becomes a real
-// blankness test, it should route through here.
+// THE CELL REACHES THIS NOW, through sessionTitleFor, which is where the fallback decides whether
+// the harvested title is worth keeping. So a harvested " " no longer survives to the screen: it
+// answers blank here and the cell shows the served title instead, or "" when there is none. What
+// remains NOT a blankness test is sessionTitleCell's own `title == ""` fast path, which only skips
+// truncating an empty string and is reached after this predicate has already had its say.
 //
-// SANITISES BEFORE TRIMMING, in that order, because that is the order the cell applies them: it
-// renders sessionTitle, which is sanitizeLabel'd, and nothing trims afterwards. sanitizeLabel
+// SANITISES BEFORE TRIMMING, in that order, because that is the order the display applies them: it
+// renders sessionTitleFor, which is sanitizeLabel'd on both paths, and nothing trims afterwards. sanitizeLabel
 // REPLACES control and BIDI runes with U+FFFD rather than stripping them, so a title of "\t" or
 // "\n" is NOT blank here — the cell shows "�", a visible glyph, and a predicate calling that row
 // unnamed would re-harvest forever for a row that is already displaying something.

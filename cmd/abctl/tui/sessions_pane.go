@@ -437,7 +437,7 @@ const noServedTitle = ""
 //
 // THE FALLBACK IS ONLY HERE, not in sessionTitle. Every backoff predicate in session_metadata.go
 // judges "unnamed" through sessionTitle, so this deliberately leaves a server-titled row reading as
-// unnamed to them: the harvest keeps hunting for the better title, at the cost of a periodic
+// unnamed to them: the harvest keeps looking for the harvested title, at the cost of a periodic
 // transcript scan until it finds one or the backoff caps out. That cost is the trade, not a leak.
 //
 // THROUGH titleIsBlank rather than == "", because a harvested " " renders as nothing and filling
