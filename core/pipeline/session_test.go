@@ -335,6 +335,7 @@ func TestTunnelReasonsAreDocumented(t *testing.T) {
 		TunnelClientRejectedCA, TunnelClientHungUp, TunnelHandshakeFailed,
 		TunnelOriginUnverified, TunnelSkipCached, TunnelBridgeDisabled,
 		TunnelPassthroughPort, TunnelPassthroughNonTLS, TunnelPassthroughHost,
+		TunnelDialFailed,
 	} {
 		if !strings.Contains(string(doc), string(reason)) {
 			t.Errorf("tunnel reason %q is not in laptop-service.md; an operator who sees "+
@@ -432,5 +433,43 @@ func TestSessionEvent_OldWireFormatDecodesWithNoClient(t *testing.T) {
 	// to answer rather than panic. Fatal above, so this is never an accidental deref.
 	if out.Client.Label() != "unknown" {
 		t.Errorf("Label() = %q, want unknown — consumers call it without a nil check", out.Client.Label())
+	}
+}
+
+// TestSessionEvent_TunnelBytesRoundTrip: a tunnel's close row carries how many bytes
+// crossed it each way. Both counts must reach abctl, which decodes these out of
+// process, and both must be absent rather than zero on every other event — an unset
+// count is not a tunnel that carried nothing.
+func TestSessionEvent_TunnelBytesRoundTrip(t *testing.T) {
+	in := SessionEvent{
+		At:     time.Now().UTC().Truncate(time.Millisecond),
+		Phase:  SessionResponse,
+		Tunnel: true, BytesUp: 4210, BytesDown: 18230,
+	}
+	raw, err := json.Marshal(in)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var keys map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &keys); err != nil {
+		t.Fatalf("unmarshal to map: %v", err)
+	}
+	if string(keys["bytesUp"]) != "4210" || string(keys["bytesDown"]) != "18230" {
+		t.Errorf("wire = %s, want bytesUp 4210 and bytesDown 18230", raw)
+	}
+	var out SessionEvent
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if out.BytesUp != 4210 || out.BytesDown != 18230 {
+		t.Errorf("decoded BytesUp=%d BytesDown=%d, want 4210 and 18230", out.BytesUp, out.BytesDown)
+	}
+
+	plain, err := json.Marshal(SessionEvent{At: in.At, Phase: SessionResponse})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(plain), "bytesUp") || strings.Contains(string(plain), "bytesDown") {
+		t.Errorf("an event with no byte counts emitted the keys: %s", plain)
 	}
 }

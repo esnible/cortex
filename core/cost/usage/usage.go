@@ -1031,6 +1031,16 @@ func (a *Aggregator) Record(sessionID string, e *pipeline.SessionEvent) {
 		return
 	}
 
+	// A tunnel row, open or close, is not a request this can say anything about. The
+	// close carries how long the tunnel stayed OPEN — minutes for `kubectl logs -f` —
+	// so folding it would drag the latency mean toward tunnel lifetimes, and the bytes
+	// were opaque, so there is no model, token or cost to attribute. Counting it would
+	// also quietly change what Requests means for every reader of /v1/usage. A bridged
+	// tunnel's decrypted requests are ordinary events and are counted as usual.
+	if e.Tunnel {
+		return
+	}
+
 	// A request event with nothing to hold is the common case — Invocations is nil
 	// on any plain proxied request — and this runs synchronously inside
 	// Store.Append on the request hot path. Checked before the lock so that path

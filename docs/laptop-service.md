@@ -366,7 +366,7 @@ direct TLS call it makes.
 
 ### Everything shows as `tunnel` and no plugin ever runs
 
-`abctl observe` shows rows like this, with `tunnel` in ACTION and no method or status:
+`abctl observe` shows rows like this, with `tunnel` in ACTION and no method:
 
 ```
 18:00:02  out  req  tunnel  client-rejected-ca   ete-litellm.example.com
@@ -444,6 +444,7 @@ The other reasons you may see, and what each one asks of you:
 | `client-hung-up` | The client vanished mid-handshake. Often a cancelled request; not evidence about trust, which is why it carries no advice. | usually no |
 | `handshake-failed` | Some other handshake failure — a version, cipher or ALPN mismatch, or Cortex failing to mint a certificate. | check `error=` in the log |
 | `origin-unverified` | **Cortex** could not verify the destination's certificate, so it declined to vouch for it. Bridging would have meant terminating TLS for a server we could not authenticate. | investigate the destination |
+| `dial-failed` | Cortex could not reach the destination at all — a DNS failure, a refused connection or a timeout — so no tunnel opened. Its response row is a `502` whose `error` carries the dial error. | check the destination and the network path to it |
 
 Only `client-rejected-ca` asks you to restart anything. The others are either working as
 intended or point somewhere other than your agents — which is why the reason is worth

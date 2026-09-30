@@ -142,9 +142,7 @@ func TestClientRejectedCA_WarnsEvenAfterOtherTrafficBridged(t *testing.T) {
 
 	client := rejectingClient(t)
 	pctx := &pipeline.Context{Direction: pipeline.Outbound, Host: authority}
-	rec := func(reason pipeline.TunnelReason) { s.recordTunnelOpened(pctx, reason) }
-
-	if handled := s.bridgeServe(client, authority, hostOnly(authority), rec); !handled {
+	if handled := s.bridgeServe(client, authority, hostOnly(authority), s.newTunnelLog(pctx, false)); !handled {
 		t.Fatal("bridgeServe returned false; the connection is dead post-forge and must be reported handled")
 	}
 
@@ -170,11 +168,11 @@ func TestClientRejectedCA_WarnsEvenAfterOtherTrafficBridged(t *testing.T) {
 	}
 
 	// And the timeline carries it, so this is visible without reading a log file.
-	v := store.View(session.DefaultSessionID)
-	if v == nil || len(v.Events) != 1 {
-		t.Fatalf("want exactly 1 tunnel event, got %+v", v)
+	opens, _ := tunnelRows(store, session.DefaultSessionID)
+	if len(opens) != 1 {
+		t.Fatalf("want exactly 1 tunnel open, got %d", len(opens))
 	}
-	if ev := v.Events[0]; !ev.Tunnel || ev.TunnelReason != pipeline.TunnelClientRejectedCA {
+	if ev := opens[0]; !ev.Tunnel || ev.TunnelReason != pipeline.TunnelClientRejectedCA {
 		t.Errorf("event = {Tunnel:%v Reason:%q}, want {true %q}",
 			ev.Tunnel, ev.TunnelReason, pipeline.TunnelClientRejectedCA)
 	}
@@ -190,7 +188,7 @@ func TestClientRejectedCA_SkipsHostAfterwards(t *testing.T) {
 	if s.TLSBridge.Skip.Contains(host) {
 		t.Fatal("host skipped before any failure")
 	}
-	s.bridgeServe(rejectingClient(t), authority, host, noopRecorder)
+	s.bridgeServe(rejectingClient(t), authority, host, discardTunnel())
 	if !s.TLSBridge.Skip.Contains(host) {
 		t.Error("host not skipped after a rejected forge; the client's retry would fail again")
 	}
@@ -209,8 +207,7 @@ func TestClientHungUp_GetsNoRestartAdvice(t *testing.T) {
 	t.Cleanup(func() { slog.SetDefault(prev) })
 
 	pctx := &pipeline.Context{Direction: pipeline.Outbound, Host: authority}
-	s.bridgeServe(hangUpClient(t), authority, hostOnly(authority),
-		func(reason pipeline.TunnelReason) { s.recordTunnelOpened(pctx, reason) })
+	s.bridgeServe(hangUpClient(t), authority, hostOnly(authority), s.newTunnelLog(pctx, false))
 
 	got := logbuf.String()
 	if !strings.Contains(got, string(pipeline.TunnelClientHungUp)) {
@@ -219,17 +216,17 @@ func TestClientHungUp_GetsNoRestartAdvice(t *testing.T) {
 	if strings.Contains(got, "fix=") || strings.Contains(got, "ca_not_before") {
 		t.Errorf("a hang-up was given CA-trust advice it cannot justify:\n%s", got)
 	}
-	v := store.View(session.DefaultSessionID)
-	if v == nil || len(v.Events) != 1 || v.Events[0].TunnelReason != pipeline.TunnelClientHungUp {
-		t.Errorf("event reason = %+v, want %q", v, pipeline.TunnelClientHungUp)
+	opens, _ := tunnelRows(store, session.DefaultSessionID)
+	if len(opens) != 1 || opens[0].TunnelReason != pipeline.TunnelClientHungUp {
+		t.Errorf("tunnel opens = %+v, want one with reason %q", opens, pipeline.TunnelClientHungUp)
 	}
 }
 
 // connectThrough drives a real CONNECT through handleConnect against a throwaway
 // origin and returns the tunnel-open event that was recorded, or nil.
 //
-// This exists because the tests above call bridgeServe directly, which leaves the
-// recorder closure in handleConnect — recOnce, the skipped guard, and five of the nine
+// This exists because the tests above call bridgeServe directly, which leaves
+// handleConnect's own tunnelLog wiring — the skipped guard, and five of the nine
 // reasons — with no coverage at all. Reading the control flow is not the same as
 // pinning it.
 func connectThrough(t *testing.T, s *Server, store *session.Store, target string, first []byte) *pipeline.SessionEvent {
@@ -356,8 +353,8 @@ func TestHandleConnect_RecordsReason(t *testing.T) {
 	})
 }
 
-// TestHandleConnect_RecordsExactlyOnce: the recorder is a closure with a recOnce
-// guard, so a CONNECT must produce ONE tunnel-open however it is decided. A double
+// TestHandleConnect_RecordsExactlyOnce: tunnelLog guards each row, so a CONNECT must
+// produce ONE tunnel-open and, once it ends, ONE close however it is decided. A double
 // record would double-count every tunnel in the timeline.
 func TestHandleConnect_RecordsExactlyOnce(t *testing.T) {
 	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {}))
@@ -370,9 +367,16 @@ func TestHandleConnect_RecordsExactlyOnce(t *testing.T) {
 	if ev := connectThrough(t, s, store, target, nil); ev == nil {
 		t.Fatal("no event recorded")
 	}
-	if v := store.View(session.DefaultSessionID); v == nil || len(v.Events) != 1 {
-		t.Errorf("want exactly 1 tunnel-open event, got %d", len(v.Events))
+	// connectThrough hangs up on return, which ends the tunnel; its close is recorded
+	// asynchronously, so wait for it rather than counting a moving target.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, closes := tunnelRows(store, session.DefaultSessionID); len(closes) > 0 || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
+	onePair(t, store, session.DefaultSessionID)
 }
 
 // TestHangUpAlsoSeedsTheSkip pins that a hang-up skips the host too, and that the
@@ -393,15 +397,14 @@ func TestHangUpAlsoSeedsTheSkip(t *testing.T) {
 	host := hostOnly(authority)
 	pctx := &pipeline.Context{Direction: pipeline.Outbound, Host: authority}
 
-	s.bridgeServe(hangUpClient(t), authority, host,
-		func(r pipeline.TunnelReason) { s.recordTunnelOpened(pctx, r) })
+	s.bridgeServe(hangUpClient(t), authority, host, s.newTunnelLog(pctx, false))
 
 	// The first failure reports what actually happened, not a CA rejection.
-	v := store.View(session.DefaultSessionID)
-	if v == nil || len(v.Events) != 1 {
-		t.Fatalf("want 1 event, got %+v", v)
+	opens, _ := tunnelRows(store, session.DefaultSessionID)
+	if len(opens) != 1 {
+		t.Fatalf("want 1 tunnel open, got %d", len(opens))
 	}
-	if got := v.Events[0].TunnelReason; got != pipeline.TunnelClientHungUp {
+	if got := opens[0].TunnelReason; got != pipeline.TunnelClientHungUp {
 		t.Errorf("first failure reason = %q, want %q — a hang-up must not be reported as "+
 			"a CA rejection", got, pipeline.TunnelClientHungUp)
 	}
@@ -471,14 +474,14 @@ func TestOneStaleClientDoesNotSuppressAHealthyOne(t *testing.T) {
 	host := hostOnly(authority)
 
 	// 1. The stale client rejects our leaf; the host is skipped for everyone.
-	s.bridgeServe(rejectingClient(t), authority, host, noopRecorder)
+	s.bridgeServe(rejectingClient(t), authority, host, discardTunnel())
 	if !s.TLSBridge.Skip.Contains(host) {
 		t.Fatal("a rejected forge did not skip the host")
 	}
 
 	// 2. The healthy client bridges. bridgeServe blocks serving the decrypted
 	//    connection, so run it and wait for the skip to clear.
-	go s.bridgeServe(trustingClient(t, s.TLSBridge.CAPEM), authority, host, noopRecorder)
+	go s.bridgeServe(trustingClient(t, s.TLSBridge.CAPEM), authority, host, discardTunnel())
 
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
@@ -518,7 +521,7 @@ func TestClientRejectedCA_NamesTheCAItself(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logbuf, &slog.HandlerOptions{Level: slog.LevelWarn})))
 	t.Cleanup(func() { slog.SetDefault(prev) })
 
-	s.bridgeServe(rejectingClient(t), authority, hostOnly(authority), noopRecorder)
+	s.bridgeServe(rejectingClient(t), authority, hostOnly(authority), discardTunnel())
 
 	got := logbuf.String()
 	if !strings.Contains(got, "ca_fingerprint=") {
@@ -593,9 +596,13 @@ func TestClientHungUp_GetsNoCAIdentity(t *testing.T) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logbuf, &slog.HandlerOptions{Level: slog.LevelWarn})))
 	t.Cleanup(func() { slog.SetDefault(prev) })
 
-	s.bridgeServe(hangUpClient(t), authority, hostOnly(authority), noopRecorder)
+	s.bridgeServe(hangUpClient(t), authority, hostOnly(authority), discardTunnel())
 
 	if got := logbuf.String(); strings.Contains(got, "ca_fingerprint=") || strings.Contains(got, "ca_file=") {
 		t.Errorf("a hang-up was given CA identity it cannot justify:\n%s", got)
 	}
 }
+
+// discardTunnel is a tunnelLog that records nothing, for a test driving bridgeServe that
+// asserts on something other than the timeline.
+func discardTunnel() *tunnelLog { return &tunnelLog{skipped: true} }
