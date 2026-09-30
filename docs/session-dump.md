@@ -61,8 +61,14 @@ Each run wants its own `--out`. Writing into a directory that already holds a
 dump is refused, because a `--session` or `--active` run only writes its own
 selection — so reusing a previous full dump would leave session files this run
 did not produce, beside a `sessions.json` that no longer lists them. Pass
-`--reuse-dir` to override. It exits nonzero if any selected session failed, so a
-partial dump is not mistaken for a complete one in a cron job or a `&&` chain.
+`--reuse-dir` to override.
+
+It exits nonzero if any selected session failed, so a partial dump is not
+mistaken for a complete one in a cron job or a `&&` chain. An id passed to
+`--session` that the index does not list counts as a failure too — naming an id
+is a claim that it exists, and a typo or a session evicted since you read it
+should not look like success. `--active` matching nothing is a legitimate empty
+result and exits 0.
 
 It finds the API itself, probing `127.0.0.1:47601` (what `authbridge-proxy
 --local` pins) then `127.0.0.1:9094` (the mode presets' default). For anything
@@ -120,9 +126,12 @@ decisions, HTTP method and path. With it you also get the message bodies — use
 prompts, LLM completions, tool arguments and results.
 
 That is usually the reason to dump at all, and it is also the reason to be careful.
-Expect a large multiple of the size — one 65-event Claude Code session measured
-58 KB summary against 3.9 MB full, about **68x** — and expect the output to
-contain whatever went through the proxy: source code,
+Expect a large multiple of the size, varying with how big the messages are: one
+65-event Claude Code session measured 58 KB summary against 3.9 MB full (**~68x**),
+while the server's own estimate in `core/sessionapi/server.go` is **~163x**, also
+from a live proxy but over conversations with larger message bodies. Treat either
+as an order of magnitude rather than a constant. Expect the output to contain
+whatever went through the proxy: source code,
 customer data, credentials pasted into a prompt. A secret in a URL *path segment*
 survives too — the API strips query strings but not path segments.
 

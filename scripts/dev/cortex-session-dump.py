@@ -190,17 +190,30 @@ def main():
             print(f"  skipped {name}: {exc}", file=sys.stderr)
 
     wanted = index.get("sessions") or []
+    failed = []
     if args.sessions:
-        wanted = [s for s in wanted if s["id"] in set(args.sessions)]
+        requested = set(args.sessions)
+        wanted = [s for s in wanted if s["id"] in requested]
+        # Naming an id is a claim that it exists, so a miss is a failure and not an
+        # empty result: a typo, or a session evicted between abctl showing it and
+        # this running, would otherwise be indistinguishable from success. `--active`
+        # matching nothing is different -- that is a legitimate empty answer.
+        missing = sorted(requested - {s["id"] for s in wanted})
+        for sid in missing:
+            print(f"  {sid}: NOT IN INDEX (unknown or already evicted)", file=sys.stderr)
+        failed.extend(missing)
     if args.active:
         wanted = [s for s in wanted if s.get("active")]
 
     total = 0
     ok = 0
-    failed = []
     for meta in wanted:
         sid = meta["id"]
-        out_path = os.path.join(args.out, "sessions", f"{sid}.jsonl")
+        # A session id is a path component here. Ids come from the proxy today, but
+        # --api points this at an arbitrary host, which is where trusting them stops
+        # being free -- a "/" or ".." would otherwise write outside sessions/.
+        safe_sid = sid.replace(os.sep, "_").replace("/", "_").strip(".") or "unnamed"
+        out_path = os.path.join(args.out, "sessions", f"{safe_sid}.jsonl")
         try:
             n = dump_events(base, sid, out_path, args.full)
         except Exception as exc:
@@ -217,8 +230,9 @@ def main():
 
     # Counted and exited on separately from the successes: a partial dump that
     # exits 0 is one a cron job or a `&&` chain reads as a complete one, and the
-    # per-session line scrolls past. Side metadata above stays non-fatal -- it is
-    # not what was asked for.
+    # per-session line scrolls past. Both doors count -- a session that failed
+    # mid-dump and one that was never attempted because the index did not list it.
+    # Side metadata above stays non-fatal -- it is not what was asked for.
     if failed:
         print(f"{len(failed)} session(s) FAILED: {', '.join(failed)}", file=sys.stderr)
         return 1
