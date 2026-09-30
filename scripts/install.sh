@@ -1226,6 +1226,10 @@ offer_path_setup() {
 # memory-only, so without it a restart is unrecoverable data loss and the only
 # readers are abctl and raw curl.
 #
+# STOPGAP: rossoctl/cortex#901 ("persist sessions") is the real fix -- the proxy
+# writing sessions itself, rather than a helper someone has to remember to run.
+# Expect this whole block to be removed when that lands.
+#
 # Fetched from the repo at ${version} rather than added to the release tarballs:
 # the checksum step above asserts EXACTLY two verified archives and refuses to
 # install when it sees anything else, so a third asset would mean reworking the
@@ -1245,7 +1249,12 @@ install_session_dump() {
 	fi
 	_dump_url="https://raw.githubusercontent.com/${REPO}/${version}/scripts/dev/cortex-session-dump.py"
 	_dump_dest="${BIN_DIR}/cortex-session-dump"
-	_dump_tmp="${CORTEX_DIR}/cortex-session-dump.part"
+	# TMPDIR, not CORTEX_DIR: nothing in this script creates CORTEX_DIR, and
+	# ensure_tmpdir only makes CORTEX_DIR/tmp on its fallback path -- so on a fresh
+	# install with a writable TMPDIR the directory does not exist yet and `curl -o`
+	# fails with exit 23 (verified), silently skipping the helper. ensure_tmpdir has
+	# guaranteed TMPDIR is writable and exported by the time this runs.
+	_dump_tmp="${TMPDIR%/}/cortex-session-dump.part"
 
 	if ! curl -fsSL "${_dump_url}" -o "${_dump_tmp}" 2>/dev/null; then
 		rm -f "${_dump_tmp}"

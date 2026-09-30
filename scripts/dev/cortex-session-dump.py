@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """Dump Cortex in-memory session data to files via the session API.
 
+STOPGAP. Durable session storage is tracked in rossoctl/cortex#901 ("persist
+sessions"), which will have the proxy write sessions itself rather than depending
+on someone running this first. Prefer commenting on #901 over growing this script.
+
 The session store is in memory only -- nothing survives a proxy restart. This
 walks the read APIs on listener.session_api_addr (127.0.0.1:47601 in the
 laptop preset) and writes what is currently resident to disk.
@@ -146,6 +150,11 @@ def main():
     ap.add_argument("--session", action="append", dest="sessions", help="dump only this session id (repeatable)")
     ap.add_argument("--active", action="store_true", help="dump only sessions currently marked active")
     ap.add_argument("--full", action="store_true", help="include message bodies (much larger; may contain secrets)")
+    ap.add_argument(
+        "--reuse-dir",
+        action="store_true",
+        help="write into an existing dump directory, leaving session files this run did not produce",
+    )
     args = ap.parse_args()
 
     base = resolve_api(args.api)
@@ -155,7 +164,22 @@ def main():
         sys.exit(f"cannot reach session API at {base}: {exc}")
 
     print(f"session API: {base}")
-    os.makedirs(os.path.join(args.out, "sessions"), exist_ok=True)
+
+    # Refuse a directory that already holds a dump, rather than merging into it.
+    # A --session or --active run writes only its selection, so reusing a previous
+    # full dump silently leaves session files this run did not produce -- next to a
+    # sessions.json that no longer lists some of them, and including sessions since
+    # evicted. Refusing beats deleting: --out is a user-supplied path, and this
+    # script has no business removing files it cannot prove it wrote.
+    sessions_dir = os.path.join(args.out, "sessions")
+    if not args.reuse_dir and os.path.isdir(sessions_dir) and os.listdir(sessions_dir):
+        sys.exit(
+            f"{sessions_dir} already contains a dump.\n"
+            "Use a new --out directory, delete that one, or pass --reuse-dir to write\n"
+            "into it anyway (leaving session files this run does not produce)."
+        )
+
+    os.makedirs(sessions_dir, exist_ok=True)
     write_json(os.path.join(args.out, "sessions.json"), index)
 
     # Side metadata: nice to have, but never fail the dump over it.
@@ -172,6 +196,8 @@ def main():
         wanted = [s for s in wanted if s.get("active")]
 
     total = 0
+    ok = 0
+    failed = []
     for meta in wanted:
         sid = meta["id"]
         out_path = os.path.join(args.out, "sessions", f"{sid}.jsonl")
@@ -179,14 +205,25 @@ def main():
             n = dump_events(base, sid, out_path, args.full)
         except Exception as exc:
             print(f"  {sid}: FAILED {exc}", file=sys.stderr)
+            failed.append(sid)
             continue
         total += n
+        ok += 1
         print(f"  {sid}  {n} events (reported {meta.get('eventCount', '?')})")
 
-    print(f"\n{len(wanted)} sessions, {total} events -> {args.out}/")
+    print(f"\n{ok} sessions, {total} events -> {args.out}/")
     if args.full:
         print("NOTE: --full output contains request/response bodies. Do not commit.")
 
+    # Counted and exited on separately from the successes: a partial dump that
+    # exits 0 is one a cron job or a `&&` chain reads as a complete one, and the
+    # per-session line scrolls past. Side metadata above stays non-fatal -- it is
+    # not what was asked for.
+    if failed:
+        print(f"{len(failed)} session(s) FAILED: {', '.join(failed)}", file=sys.stderr)
+        return 1
+    return 0
+
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

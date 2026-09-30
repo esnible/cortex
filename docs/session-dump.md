@@ -1,5 +1,12 @@
 # Dumping sessions to files
 
+> **This is a stopgap.** Durable session storage is tracked in
+> [#901](https://github.com/rossoctl/cortex/issues/901) (*feature: persist
+> sessions*), which will make the proxy write sessions itself instead of relying
+> on someone remembering to run a script. Until that lands, this is how you keep
+> session data. Expect it to be superseded — and prefer commenting on #901 over
+> extending this script.
+
 Cortex keeps intercepted sessions **in memory only**. Nothing is written to disk,
 so a proxy restart loses every session it was holding. `cortex-session-dump`
 walks the [Session Events API](#where-the-data-comes-from) and writes what is
@@ -8,6 +15,10 @@ currently resident to files.
 Reach for it when you want to keep a session past a restart, hand traffic to
 someone who cannot reach the proxy, or analyse many sessions at once — anything
 beyond what the `abctl` TUI shows live.
+
+Its limits follow from being a snapshot tool rather than storage: it captures
+only what the store still holds at the moment it runs, and it has to be run
+before the thing you want to keep is gone. That is the gap #901 closes.
 
 ## Install
 
@@ -45,6 +56,13 @@ cortex-session-dump --active                 # only sessions still receiving tra
 cortex-session-dump --session <id> --full    # one session, repeatable
 cortex-session-dump --out ~/cortex-snapshots/2026-09-30
 ```
+
+Each run wants its own `--out`. Writing into a directory that already holds a
+dump is refused, because a `--session` or `--active` run only writes its own
+selection — so reusing a previous full dump would leave session files this run
+did not produce, beside a `sessions.json` that no longer lists them. Pass
+`--reuse-dir` to override. It exits nonzero if any selected session failed, so a
+partial dump is not mistaken for a complete one in a cron job or a `&&` chain.
 
 It finds the API itself, probing `127.0.0.1:47601` (what `authbridge-proxy
 --local` pins) then `127.0.0.1:9094` (the mode presets' default). For anything
@@ -131,7 +149,9 @@ was already evicted, and nothing survives a restart.
 
 For continuous capture rather than snapshots, the API also exposes an SSE stream
 (`GET /v1/events`) that a small consumer can append to a rolling file. That is
-not what this script does.
+not what this script does, and it is not the plan either —
+[#901](https://github.com/rossoctl/cortex/issues/901) proposes the proxy persist
+sessions itself, which removes the need for an external consumer altogether.
 
 ## Where the logs are
 
