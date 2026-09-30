@@ -22,6 +22,7 @@ import (
 
 	"github.com/rossoctl/cortex/core/config"
 	"github.com/rossoctl/cortex/core/cost/usage"
+	"github.com/rossoctl/cortex/core/session"
 )
 
 // writeBuiltinConfig must produce a config file in cortexDir that loads, presets,
@@ -610,5 +611,27 @@ func TestBuiltinConfig_CommentedRetentionDoesNotTruncateAMonth(t *testing.T) {
 			"touch — config.Validate refuses a non-zero value under that floor, so uncommenting "+
 			"this line would stop the proxy loading at all",
 			got, usage.Window7dLocalDays)
+	}
+}
+
+// TestBuiltinConfig_SeparatesCodingAgentSessions pins the laptop preset's session block:
+// Bob's X-Task-Id must be listed — an explicit id_headers REPLACES the built-in default,
+// so leaving it out disabled Bob's bucketing under --local — and client_affinity is on,
+// since a laptop is where two coding agents share one proxy.
+func TestBuiltinConfig_SeparatesCodingAgentSessions(t *testing.T) {
+	cortexDir := t.TempDir()
+	p, err := writeBuiltinConfig(cortexDir, filepath.Join(cortexDir, "ca"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Session.ClientAffinity {
+		t.Error("built-in config: session.client_affinity is off, want on")
+	}
+	if !slices.Contains(cfg.Session.SessionIDHeaders(), session.BobSessionHeader) {
+		t.Errorf("built-in config: id_headers = %v, want it to include %s", cfg.Session.SessionIDHeaders(), session.BobSessionHeader)
 	}
 }
