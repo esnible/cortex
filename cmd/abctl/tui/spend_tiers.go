@@ -8,6 +8,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/rossoctl/cortex/cmd/abctl/money"
 	"github.com/rossoctl/cortex/core/cost/pricing"
 	"github.com/rossoctl/cortex/core/cost/usage"
 )
@@ -127,6 +128,13 @@ var tierOrder = [numTierRows]pricing.Tier{
 // Figures read in CENTS, like every other scanned money surface; see the precision rule beside
 // formatUSDTotal.
 func renderTierRows(c usage.Counts, width int) []string {
+	return renderTierRowsIn(c, width, "")
+}
+
+// renderTierRowsIn is renderTierRows with its money cells in unit ("" or USD for dollars, rendered
+// exactly as renderTierRows always has). A caller whose totals span units must not call it: a
+// tier's share of a cross-unit sum is not a share of anything — see renderSpendDrawer.
+func renderTierRowsIn(c usage.Counts, width int, unit string) []string {
 	tiers, ok := c.ApportionTiers()
 
 	// Ranked by cost, descending, ties broken on the label so two equal tiers do not swap
@@ -178,11 +186,11 @@ func renderTierRows(c usage.Counts, width int) []string {
 			row = fmt.Sprintf("%-*s %s %-*s %s", tierLabelWidth, label,
 				tierShareCell(shares[tier], tiers[tier]),
 				budget, tierBar(tiers[tier], peak, budget),
-				tierMoneyCell(tiers[tier]))
+				tierMoneyCellIn(tiers[tier], unit))
 		default:
 			// The bar is gone and the two figures remain — see tierBarBudget.
 			row = fmt.Sprintf("%-*s %s %s", tierLabelWidth, label,
-				tierShareCell(shares[tier], tiers[tier]), tierMoneyCell(tiers[tier]))
+				tierShareCell(shares[tier], tiers[tier]), tierMoneyCellIn(tiers[tier], unit))
 		}
 		out[i] = clipRow(row, width)
 	}
@@ -196,7 +204,7 @@ func renderTierRows(c usage.Counts, width int) []string {
 	// split was reported the child renders the not-known cell, which is exactly what an
 	// absent TIER does two branches above.
 	return insertAfterOutput(out[:], order,
-		reasoningChildRow(c, tiers, ok, peak, budget, width))
+		reasoningChildRow(c, tiers, ok, peak, budget, width, unit))
 }
 
 // reasoningChildRow renders the reasoning row that hangs under output.
@@ -219,7 +227,7 @@ func renderTierRows(c usage.Counts, width int) []string {
 // cannot state a percentage of one total beside a figure from another" — and the
 // containment reads from the indent anyway: 15% under 27% is visibly a part of it.
 func reasoningChildRow(c usage.Counts, tiers [pricing.NumTiers]int64, ok bool,
-	peak int64, budget, width int) string {
+	peak int64, budget, width int, unit string) string {
 	// No marker on the not-known cell: inexactMarker qualifies a FIGURE, and there is none.
 	notKnown := clipRow(fmt.Sprintf("%-*s %s", tierLabelWidth, childTierLabel, emptyCell), width)
 
@@ -277,9 +285,9 @@ func reasoningChildRow(c usage.Counts, tiers [pricing.NumTiers]int64, ok bool,
 	//
 	// NOT ON A REPORTED ZERO: zero tokens cost zero whatever the output rate, so that is the
 	// one child figure with no token-ratio approximation in it for a marker to qualify.
-	money := tierMoneyCell(micros)
+	money := tierMoneyCellIn(micros, unit)
 	if !reportedZero {
-		money = padLeft(inexactMarker+formatUSDTotalMicros(micros), tierMoneyWidth)
+		money = padLeft(inexactMarker+tierAmount(micros, unit, tierMoneyWidth-len(inexactMarker)), tierMoneyWidth)
 	}
 	var row string
 	switch {
@@ -342,7 +350,21 @@ func tierShareCell(pct int, micros int64) string {
 // tierMoneyCell is one tier's apportioned figure, right-aligned so the decimal points line up
 // down the panel. Same padding rule as tierShareCell, for the same reason.
 func tierMoneyCell(micros int64) string {
-	return padLeft(formatUSDTotalMicros(micros), tierMoneyWidth)
+	return tierMoneyCellIn(micros, "")
+}
+
+func tierMoneyCellIn(micros int64, unit string) string {
+	return padLeft(tierAmount(micros, unit, tierMoneyWidth), tierMoneyWidth)
+}
+
+// tierAmount is a tier figure in unit, fitted to budget where the unit name allows; dollars are
+// formatUSDTotalMicros exactly.
+func tierAmount(micros int64, unit string, budget int) string {
+	dollars := formatUSDTotalMicros(micros)
+	if out := money.Relabel(dollars, unit, budget); out != "" {
+		return out
+	}
+	return money.Relabel(dollars, unit, 0)
 }
 
 // tierShares turns the apportioned figures into whole percentages that sum to 100.

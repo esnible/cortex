@@ -8,6 +8,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/rossoctl/cortex/cmd/abctl/money"
 	"github.com/rossoctl/cortex/core/cost/usage"
 )
 
@@ -543,6 +544,21 @@ func (m *model) drawerLabels() (usage.Group, string) {
 type drawerRow struct {
 	label  string
 	counts usage.Counts
+	// units is what this row's figures are in; nil is dollars. See drawerRowUnits.
+	units []string
+}
+
+// drawerRowUnits labels each row with its series' own units (Snapshot.SeriesCurrencies), falling
+// back to the window's list — which is also what the folded tail row gets, since it sums series
+// whose units nothing here tracks individually. The fallback over-withholds rather than borrows.
+func drawerRowUnits(snap *usage.Snapshot, rows []drawerRow) {
+	for i := range rows {
+		units, ok := snap.SeriesCurrencies[rows[i].label]
+		if !ok || rows[i].label == tailLabel {
+			units = snap.Currencies
+		}
+		rows[i].units = units
+	}
 }
 
 // spendDrawerRows folds a snapshot's series into the rows the drawer draws.
@@ -741,6 +757,9 @@ func renderSpendDrawer(snap *usage.Snapshot, err error, axis usage.Group, window
 		), width))
 	}
 	rows := spendDrawerRows(snap, spendDrawerSeries)
+	if snap != nil {
+		drawerRowUnits(snap, rows)
+	}
 	// TWO COLUMNS: what the money was spent ON, and who spent it. They answer different
 	// questions, and with a single model in the window the series column alone restated the
 	// band's own window total and saving verbatim — a breakdown of one thing is not a
@@ -749,7 +768,17 @@ func renderSpendDrawer(snap *usage.Snapshot, err error, axis usage.Group, window
 	seriesWidth := width
 	var tiers []string
 	if twoCol {
-		tiers = renderTierRows(drawerTotals(snap), tierColumnWidth)
+		// A WINDOW IN SEVERAL UNITS HAS NO TIER SPLIT: each tier's figure would be credits plus
+		// dollars, and its share a share of that sum. One line says so instead.
+		var currencies []string
+		if snap != nil {
+			currencies = snap.Currencies
+		}
+		if unit, ok := money.WindowUnit(currencies); ok {
+			tiers = renderTierRowsIn(drawerTotals(snap), tierColumnWidth, unit)
+		} else {
+			tiers = []string{clipRow(fmt.Sprintf("%-*s %s", tierLabelWidth, "tiers", money.Mixed), tierColumnWidth)}
+		}
 		seriesWidth = width - tierColumnWidth - drawerColumnGutter - 2
 	}
 
@@ -862,6 +891,7 @@ const (
 )
 
 func drawerFigures(r drawerRow) []stripFigure {
+	unit, unitOK := money.WindowUnit(r.units)
 	// POSITIONAL, so column N means the same thing on every row. Built as a fixed set of slots and
 	// trimmed at the end rather than appended to conditionally: appending shifted a row's tokens
 	// into the request column whenever Requests was absent, which is the whole failure this table
@@ -880,7 +910,7 @@ func drawerFigures(r drawerRow) []stripFigure {
 	// Both are covered; see TestDrawerFigures_AnEmptyMiddleColumnHoldsItsPlace. The placeholder
 	// itself lives in stripFigure.pad, which has to spell the empty case out because padLeft and
 	// padRight deliberately leave "" alone.
-	var money, note, req, tokens, saved stripFigure
+	var amount, note, req, tokens, saved stripFigure
 	figs := []stripFigure{plainFigure(r.label).inColumn(drawerLabelWidth, true)}
 	switch {
 	case negativeCost(r.counts.CostMicros):
@@ -893,7 +923,10 @@ func drawerFigures(r drawerRow) []stripFigure {
 		// NO COVERAGE NOTE beside it, unlike the unpriced branch below: the gap may well be zero
 		// here — every request priced, and the sum still impossible — so coverage is not what is
 		// wrong and naming it would point a reader at the rate table.
-		money = plainFigure("cost unavailable")
+		amount = plainFigure("cost unavailable")
+	case !unitOK && (r.counts.PricedRequests > 0 || r.counts.CostMicros > 0):
+		// A row in several units has no amount; see money.Mixed.
+		amount = plainFigure(money.Mixed)
 	case r.counts.PricedRequests > 0 || r.counts.CostMicros > 0:
 		// Cents, through moneyFigureTotal: this column is scanned and compared down its length,
 		// which is the side of the precision rule cents is for. It read four decimals until the
@@ -909,7 +942,7 @@ func drawerFigures(r drawerRow) []stripFigure {
 		full := moneyFigureTotal(float64(r.counts.CostMicros)/1e6, "",
 			gapOf(r.counts), r.counts.PriceableRequests, r.counts.IncompleteRequests, nil,
 			r.counts.Saturated)
-		money = plainFigure(full.compact)
+		amount = plainFigure(money.Relabel(full.compact, unit, 0))
 		if n := moneyCaveatNote(gapOf(r.counts), r.counts.PriceableRequests,
 			r.counts.IncompleteRequests, nil, r.counts.Saturated); n != "" {
 			note = plainFigure(n)
@@ -929,7 +962,7 @@ func drawerFigures(r drawerRow) []stripFigure {
 		// occupied the request column on this row and the money column on every other, which is
 		// the misalignment the table exists to end; as the trailing note it sits where every
 		// other row's caveats sit and yields to width pressure the same way.
-		money = plainFigure("cost unavailable")
+		amount = plainFigure("cost unavailable")
 		note = plainFigure("(" + coverageNote(gapOf(r.counts), r.counts.PriceableRequests) + ")")
 	case r.counts.Requests > 0:
 		// NOTHING HERE COULD EVER CARRY A PRICE, which is a different answer from the branch
@@ -946,7 +979,7 @@ func drawerFigures(r drawerRow) []stripFigure {
 		// And a blank was the third wrong answer: before this branch the row rendered
 		// "some-endpoint  9 req  8.0k tokens" with the cost slot simply missing, which reads as
 		// a drawer that failed to fill a cell rather than as an answer.
-		money = plainFigure("not priceable")
+		amount = plainFigure("not priceable")
 	}
 	if r.counts.Requests > 0 {
 		req = stripFigure{
@@ -967,14 +1000,18 @@ func drawerFigures(r drawerRow) []stripFigure {
 	// this figure's identity rather than an explanation of it, so it is not the part that yields;
 	// the strip's own saved figure made the same argument before it was replaced.
 	if r.counts.AvoidedMicros > 0 {
-		saved = plainFigure("saved " + formatUSDTotalMicros(r.counts.AvoidedMicros))
+		figure := money.Mixed
+		if unitOK {
+			figure = money.Relabel(formatUSDTotalMicros(r.counts.AvoidedMicros), unit, 0)
+		}
+		saved = plainFigure("saved " + figure)
 	}
 
 	// THE COLUMNAR SLOTS, IN ORDER, each at its own width. A slot with nothing in it still occupies
 	// its column when a later COLUMN is filled — that is what keeps a tokens figure out of the
 	// request column on an MCP-only row.
 	cols := []stripFigure{
-		money.inColumn(drawerMoneyWidth, false),
+		amount.inColumn(drawerMoneyWidth, false),
 		req.inColumn(drawerReqWidth, false),
 		tokens.inColumn(drawerTokensWidth, false),
 		saved.inColumn(drawerSavedWidth, false),

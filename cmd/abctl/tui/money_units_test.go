@@ -198,3 +198,52 @@ func TestFetchSpendSpan_AsksForAUnitSplitOnlyForAMixedWindow(t *testing.T) {
 		})
 	}
 }
+
+// A dollars-only drawer renders exactly as it did: units nil and units [USD] are the same drawer.
+func TestRenderSpendDrawer_DollarsAreUnchanged(t *testing.T) {
+	snap := &usage.Snapshot{Group: usage.GroupModel, Buckets: []usage.Bucket{{
+		Counts: usage.Counts{Requests: 5, PricedRequests: 5, CostMicros: 6_200_000, InputCostMicros: 6_200_000},
+		Series: map[string]usage.Counts{
+			"claude-opus-5": {Requests: 5, PricedRequests: 5, CostMicros: 6_200_000, AvoidedMicros: 70_000},
+		},
+	}}}
+	want := renderSpendDrawer(snap, nil, usage.GroupModel, "1h", 140)
+	snap.Currencies = []string{"USD"}
+	snap.SeriesCurrencies = map[string][]string{"claude-opus-5": {"USD"}}
+	got := renderSpendDrawer(snap, nil, usage.GroupModel, "1h", 140)
+	if strings.Join(got, "\n") != strings.Join(want, "\n") {
+		t.Errorf("a USD-labelled drawer differs from an unlabelled one:\n got %q\nwant %q", got, want)
+	}
+}
+
+// In a Bob + Claude window each row is in its own unit, and the tier column — which would split a
+// cross-unit sum — is withheld.
+func TestRenderSpendDrawer_EachRowInItsOwnUnitAndNoMixedTiers(t *testing.T) {
+	snap := &usage.Snapshot{
+		Group:      usage.GroupEndpoint,
+		Currencies: []string{"Bobcoins", "USD"},
+		SeriesCurrencies: map[string][]string{
+			"api.us-east.bob.ibm.com": {"Bobcoins"}, "gw.internal": {"USD"},
+		},
+		Buckets: []usage.Bucket{{
+			Counts: usage.Counts{Requests: 8, PricedRequests: 8, CostMicros: 6_207_800, InputCostMicros: 6_207_800},
+			Series: map[string]usage.Counts{
+				"api.us-east.bob.ibm.com": {Requests: 3, PricedRequests: 3, CostMicros: 7_800},
+				"gw.internal":             {Requests: 5, PricedRequests: 5, CostMicros: 6_200_000},
+			},
+		}},
+	}
+	out := strings.Join(renderSpendDrawer(snap, nil, usage.GroupEndpoint, "1h", 140), "\n")
+	if !strings.Contains(out, "$6.20") {
+		t.Errorf("Claude's endpoint lost its dollars:\n%s", out)
+	}
+	if !strings.Contains(out, "0.01 Bobcoins") {
+		t.Errorf("Bob's endpoint is not in Bobcoins:\n%s", out)
+	}
+	if strings.Contains(out, "$6.21") || strings.Contains(out, "$0.01") {
+		t.Errorf("a cross-unit sum or a Bobcoins figure reached the drawer as dollars:\n%s", out)
+	}
+	if !strings.Contains(out, "tiers") || !strings.Contains(out, money.Mixed) {
+		t.Errorf("the tier column split a cross-unit total instead of withholding it:\n%s", out)
+	}
+}
