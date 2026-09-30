@@ -206,6 +206,11 @@ func isErrorStatus(label string) bool {
 // one trades it for the breakdown. That is the reason "ungrouped" is its own
 // cycle state rather than a special case of grouping.
 func renderStackedBars(buckets []usage.Bucket, m usageMetric, group usage.Group, width, height int) []string {
+	return renderStackedBarsIn(buckets, m, group, width, height, "")
+}
+
+// renderStackedBarsIn is renderStackedBars with cost labels in unit; see renderBarsIn.
+func renderStackedBarsIn(buckets []usage.Bucket, m usageMetric, group usage.Group, width, height int, unit string) []string {
 	if len(buckets) == 0 {
 		return []string{"  (no data)"}
 	}
@@ -222,7 +227,7 @@ func renderStackedBars(buckets []usage.Bucket, m usageMetric, group usage.Group,
 		// Grouped view with no labelled traffic yet: fall back to the ungrouped
 		// bars rather than an empty frame, so the pane still shows the volume it
 		// does know about.
-		return renderBars(buckets, m, width, height)
+		return renderBarsIn(buckets, m, width, height, unit)
 	}
 
 	// Fold everything past maxNamedSeries into one band BEFORE drawing, so every
@@ -271,7 +276,7 @@ func renderStackedBars(buckets []usage.Bucket, m usageMetric, group usage.Group,
 		// labels reads as a bug rather than as a collapsed scale.
 		labelled := false
 		if row%2 == 0 && peak > 0 {
-			if label := m.label(peak * int64(row) / int64(plotRows)); label != lastAxisLabel {
+			if label := m.labelIn(peak*int64(row)/int64(plotRows), unit); label != lastAxisLabel {
 				lastAxisLabel = label
 				sb.WriteString(fmt.Sprintf("%5s ", label))
 				labelled = true
@@ -289,9 +294,9 @@ func renderStackedBars(buckets []usage.Bucket, m usageMetric, group usage.Group,
 
 	out = append(out, renderAxis(len(buckets)))
 	out = append(out, renderTimeLabels(buckets))
-	out = append(out, renderValues(buckets, m))
+	out = append(out, renderValues(buckets, m, unit))
 	out = append(out, "")
-	out = append(out, renderLegend(legendSeries, group, m, letters, rank, width)...)
+	out = append(out, renderLegendIn(legendSeries, group, m, letters, rank, width, unit)...)
 	return out
 }
 
@@ -480,6 +485,12 @@ func paintSegment(text, label string, group usage.Group) string {
 // colour anyway.
 func renderLegend(series []seriesKey, group usage.Group, m usageMetric,
 	letters map[string]rune, rank map[string]int, width int) []string {
+	return renderLegendIn(series, group, m, letters, rank, width, "")
+}
+
+// renderLegendIn is renderLegend with cost totals in unit; see renderBarsIn.
+func renderLegendIn(series []seriesKey, group usage.Group, m usageMetric,
+	letters map[string]rune, rank map[string]int, width int, unit string) []string {
 	const sep = "   "
 	const indent = "  "
 
@@ -505,7 +516,7 @@ func renderLegend(series []seriesKey, group usage.Group, m usageMetric,
 	for _, s := range named {
 		mark := seriesStyle(rank[s.label], isErrorSeries(s.label, group)).
 			Render(string(letters[s.label]))
-		text := fmt.Sprintf(" %s (%s)", s.label, m.label(s.total))
+		text := fmt.Sprintf(" %s (%s)", s.label, m.labelIn(s.total, unit))
 		// Measured on the plain text: the mark is one column however many bytes of
 		// escape sequence it carries.
 		cost := 1 + len([]rune(text))

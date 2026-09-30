@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/rossoctl/cortex/cmd/abctl/money"
 	"github.com/rossoctl/cortex/core/cost/usage"
 	"github.com/rossoctl/cortex/core/pipeline"
 )
@@ -106,6 +107,21 @@ func (m usageMetric) label(v int64) string {
 	} else {
 		s = humanizeCount(v)
 	}
+	if len([]rune(s)) > maxCountLabelLen {
+		return string([]rune(s)[:maxCountLabelLen])
+	}
+	return s
+}
+
+// labelIn is label for a cost metric in a foreign unit: the same magnitude ladder without its "$",
+// because a five-column axis label has no room for a unit name. The unit is named where there is
+// room — the COST line of the summary (renderCostSummary) — and a figure in a foreign unit never
+// wears a dollar sign. Dollars, and every non-cost metric, are label exactly.
+func (m usageMetric) labelIn(v int64, unit string) string {
+	if !m.isCost() || money.IsDefault(unit) {
+		return m.label(v)
+	}
+	s := strings.Replace(humanizeCostMicros(v), "$", "", 1)
 	if len([]rune(s)) > maxCountLabelLen {
 		return string([]rune(s)[:maxCountLabelLen])
 	}
@@ -224,6 +240,12 @@ func axisCaption(m usageMetric, width, height, floor int) string {
 // bucket versus a very small one; a fractional top cell) are precisely the ones
 // eyes skip over.
 func renderBars(buckets []usage.Bucket, m usageMetric, width, height int) []string {
+	return renderBarsIn(buckets, m, width, height, "")
+}
+
+// renderBarsIn is renderBars with cost labels in unit; "" or USD draws exactly what renderBars
+// always has. See usageMetric.labelIn.
+func renderBarsIn(buckets []usage.Bucket, m usageMetric, width, height int, unit string) []string {
 	if len(buckets) == 0 {
 		return []string{"  (no data)"}
 	}
@@ -260,7 +282,7 @@ func renderBars(buckets []usage.Bucket, m usageMetric, width, height int) []stri
 		// call, formatting ten values to use five.
 		labelled := false
 		if row%2 == 0 && peak > 0 {
-			if label := m.label(peak * int64(row) / int64(plotRows)); label != lastAxisLabel {
+			if label := m.labelIn(peak*int64(row)/int64(plotRows), unit); label != lastAxisLabel {
 				lastAxisLabel = label
 				sb.WriteString(fmt.Sprintf("%5s ", label))
 				labelled = true
@@ -275,7 +297,7 @@ func renderBars(buckets []usage.Bucket, m usageMetric, width, height int) []stri
 
 	out = append(out, renderAxis(len(buckets)))
 	out = append(out, renderTimeLabels(buckets))
-	out = append(out, renderValues(buckets, m))
+	out = append(out, renderValues(buckets, m, unit))
 	return out
 }
 
@@ -383,7 +405,7 @@ func renderTimeLabels(buckets []usage.Bucket) string {
 // "0" rather than blank: a chart with a missing bar cannot otherwise distinguish
 // no traffic from traffic too small to plot, and that is exactly the gap an
 // operator is hunting when usage looks wrong.
-func renderValues(buckets []usage.Bucket, m usageMetric) string {
+func renderValues(buckets []usage.Bucket, m usageMetric, unit string) string {
 	// Column-painted for the same reason as renderTimeLabels: a 5-character
 	// value under a 4-column bar would otherwise shove its neighbours right.
 	row := make([]byte, axisLabel+len(buckets)*barStride+8)
@@ -394,7 +416,7 @@ func renderValues(buckets []usage.Bucket, m usageMetric) string {
 		v := m.value(b)
 		label := "0" // an idle bucket is stated, never blank
 		if v != 0 {
-			label = m.label(v)
+			label = m.labelIn(v, unit)
 		}
 		at := axisLabel - 1 + i*barStride
 		if at+len(label) <= len(row) {
@@ -510,6 +532,16 @@ func renderCostSummary(snap *usage.Snapshot) string {
 		// Micros, not the float: the integer is already in hand, and the float64 entry point
 		// exists for callers that only have dollars.
 		cell = "COST " + formatUSDTotalMicros(micros)
+		if unit, ok := money.WindowUnit(snap.Currencies); !ok {
+			// A cross-unit sum is not a cost: name the units instead of an amount.
+			units := make([]string, 0, len(snap.Currencies))
+			for _, u := range snap.Currencies {
+				units = append(units, sanitizeLabel(u))
+			}
+			cell = "COST " + money.Mixed + ": " + strings.Join(units, ", ")
+		} else {
+			cell = "COST " + money.Relabel(formatUSDTotalMicros(micros), unit, 0)
+		}
 	}
 	// Compared against PRICEABLE requests, not all of them. Requests counts every
 	// proxied response — MCP tool calls, health checks, anything else the sidecar

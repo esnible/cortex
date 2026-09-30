@@ -247,3 +247,59 @@ func TestRenderSpendDrawer_EachRowInItsOwnUnitAndNoMixedTiers(t *testing.T) {
 		t.Errorf("the tier column split a cross-unit total instead of withholding it:\n%s", out)
 	}
 }
+
+func costChartSnapshot(currencies []string) *usage.Snapshot {
+	snap := &usage.Snapshot{Priced: true, Currencies: currencies}
+	for i, c := range []int64{30_000, 7_800_000, 123_450_000} {
+		b := usage.Bucket{Counts: usage.Counts{Requests: int64(i + 1), PricedRequests: int64(i + 1), CostMicros: c}}
+		snap.Buckets = append(snap.Buckets, b)
+		snap.Totals.Add(b.Counts)
+	}
+	return snap
+}
+
+// The usage pane's cost chart and COST line are unchanged for dollars, carry no "$" for a foreign
+// unit, and refuse to chart a window that mixes units.
+func TestUsagePane_CostIsInTheWindowsUnit(t *testing.T) {
+	want := strings.Join(renderUsageChart(costChartSnapshot(nil), metricCost, "", 60, 12), "\n")
+	if got := strings.Join(renderUsageChart(costChartSnapshot([]string{"USD"}), metricCost, "", 60, 12), "\n"); got != want {
+		t.Errorf("a USD-labelled chart differs from an unlabelled one:\n got %s\nwant %s", got, want)
+	}
+	if got, want := renderCostSummary(costChartSnapshot([]string{"USD"})), renderCostSummary(costChartSnapshot(nil)); got != want {
+		t.Errorf("USD COST line = %q, want %q", got, want)
+	}
+
+	bob := costChartSnapshot([]string{"Bobcoins"})
+	if chart := strings.Join(renderUsageChart(bob, metricCost, "", 60, 12), "\n"); strings.Contains(chart, "$") {
+		t.Errorf("a Bobcoins chart is labelled in dollars:\n%s", chart)
+	}
+	if got := renderCostSummary(bob); !strings.HasPrefix(got, "COST 131.28 Bobcoins") {
+		t.Errorf("Bobcoins COST line = %q, want it to start COST 131.28 Bobcoins", got)
+	}
+
+	mixed := costChartSnapshot([]string{"Bobcoins", "USD"})
+	if chart := renderUsageChart(mixed, metricCost, "", 60, 12); len(chart) != 1 || !strings.Contains(chart[0], "withheld") {
+		t.Errorf("a mixed cost chart was drawn: %q", chart)
+	}
+	if got := renderCostSummary(mixed); !strings.HasPrefix(got, "COST (mixed): Bobcoins, USD") {
+		t.Errorf("mixed COST line = %q", got)
+	}
+	// Tokens chart normally over the same mixed window: only money has a unit.
+	if chart := renderUsageChart(mixed, metricTokens, "", 60, 12); len(chart) < 2 {
+		t.Errorf("the tokens chart was withheld too: %q", chart)
+	}
+}
+
+// The no-agent note keeps its dollar amount, and drops it for any other unit.
+func TestCostUngroupedRow_OnlyDollarsCarryAnAmount(t *testing.T) {
+	residual := int64(250_000)
+	snap := &usage.Snapshot{UngroupedCostMicros: &residual}
+	want := costUngroupedRow(snap, "claude-code/2.1.284")
+	if !strings.Contains(want, "$0.25") {
+		t.Fatalf("dollar note = %q, want the amount", want)
+	}
+	snap.Currencies = []string{"Bobcoins"}
+	if got := costUngroupedRow(snap, "bob-shell/2.0.5"); strings.Contains(got, "$") || got == "" {
+		t.Errorf("Bobcoins note = %q, want the note without a dollar amount", got)
+	}
+}
