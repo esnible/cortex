@@ -53,7 +53,7 @@ func runCost(args []string, stdout, stderr io.Writer) int {
 		"session API URL of the proxy (default: the Cortex installed on this machine)")
 	agent := fs.String("agent", "",
 		"report only this `agent`, spelled as the AGENTS pane in \"abctl observe\" shows it "+
-			"(e.g. bob-shell/2.0.5); omit for every agent together")
+			"(e.g. bob-shell); omit for every agent together")
 	by := fs.String("by", "",
 		"break the total down by this `axis` and print a row each — "+costByAxes+
 			"; omit for a single total")
@@ -67,7 +67,7 @@ Usage:
   abctl cost --window 1h         a rolling hour, from the in-memory ring
   abctl cost --json              the totals as JSON, for a script
   abctl cost --endpoint URL      ask a specific proxy rather than the local one
-  abctl cost --agent NAME        only this coding agent, e.g. bob-shell/2.0.5
+  abctl cost --agent NAME        only this coding agent, e.g. bob-shell
   abctl cost --by agent          a row per agent, costliest first
 
 --by breaks the total into a row per label. A row nothing could price shows "—" and
@@ -76,10 +76,11 @@ never "$0.00": an unpriced figure is not a free one. A ledger-served window ("to
 duration window, and asking for one the window cannot serve prints what the server
 answered with instead of a table pretending to be a breakdown.
 
---agent reports ONE agent's figures. The name is the User-Agent the agent sends, as
-the AGENTS pane in "abctl observe" spells it; an unknown name fails and lists the ones
-seen in the window. Per-agent figures need not sum to the window total — some cost is
-attributed to no agent at all, and a scoped run says how much when there is any.
+--agent reports ONE agent's figures, every version of it together. The name is the
+agent the User-Agent names, as the AGENTS pane in "abctl observe" spells it; an
+unknown name fails and lists the ones seen in the window. Per-agent figures need not
+sum to the window total — some cost is attributed to no agent at all, and a scoped
+run says how much when there is any.
 
 "today", "month" and "7d" are served from Cortex's durable cost ledger, which is on
 for a local install and off in Kubernetes. Where it is off, the proxy answers with the

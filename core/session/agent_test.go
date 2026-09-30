@@ -36,19 +36,19 @@ func TestListSessions_NamesTheSessionsAgent(t *testing.T) {
 	s.Append("claude-1", evFrom(nil))
 	s.Append("claude-1", evFrom(claude))
 	s.Append("claude-1", evFrom(bob))
-	if got := agentOf(t, s, "claude-1"); got != claude.Label() {
-		t.Errorf("claude-1 agent = %q, want %q (first known agent wins)", got, claude.Label())
+	if got := agentOf(t, s, "claude-1"); got != "claude-code" {
+		t.Errorf("claude-1 agent = %q, want claude-code (first known agent wins)", got)
 	}
 	s.Append("claude-2", evFrom(claudeNext))
-	if got := agentOf(t, s, "claude-2"); got != claudeNext.Label() {
-		t.Errorf("claude-2 agent = %q, want %q: each version is its own agent row", got, claudeNext.Label())
+	if got := agentOf(t, s, "claude-2"); got != "claude-code" {
+		t.Errorf("claude-2 agent = %q, want claude-code: an agent's releases are one agent", got)
 	}
 
 	s.Claim("task-1", "bob-shell")
 	s.Append("task-1", evFrom(claude))
 	s.Append("task-1", evFrom(bob))
-	if got := agentOf(t, s, "task-1"); got != bob.Label() {
-		t.Errorf("task-1 agent = %q, want %q (the owner that claimed it)", got, bob.Label())
+	if got := agentOf(t, s, "task-1"); got != "bob-shell" {
+		t.Errorf("task-1 agent = %q, want bob-shell (the owner that claimed it)", got)
 	}
 	s.Claim("task-2", "bob-shell")
 	s.Append("task-2", evFrom(claude))
@@ -72,7 +72,7 @@ func TestListSessions_NamesTheSessionsAgent(t *testing.T) {
 }
 
 // The agent a session names is a key the usage ring's group=agent series has for the same
-// events, so a client can match one against the other — a long version included.
+// events, so a client can match one against the other — a long version (folded away) included.
 func TestListSessions_AgentIsTheGroupAgentLabel(t *testing.T) {
 	clients := []*pipeline.EventClient{
 		{Name: "claude-code", Version: "2.1.284"},

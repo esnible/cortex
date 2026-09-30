@@ -1227,11 +1227,39 @@ func TestFold_GroupAgentBreaksDownByAgent(t *testing.T) {
 	if totals.CostMicros != 300 {
 		t.Errorf("totals.CostMicros = %d, want 300", totals.CostMicros)
 	}
-	if got := series["claude-code/2.1.14"].CostMicros; got != 100 {
+	if got := series["claude-code"].CostMicros; got != 100 {
 		t.Errorf("claude-code CostMicros = %d, want 100", got)
 	}
-	if got := series["opencode/0.4.2"].CostMicros; got != 200 {
+	if got := series["opencode"].CostMicros; got != 200 {
 		t.Errorf("opencode CostMicros = %d, want 200", got)
+	}
+}
+
+// The ledger keeps each row's version on disk and drops it on read, so a day that spans a
+// release is one row per agent — including rows written before the fold existed.
+func TestFold_GroupAgentFoldsAnAgentsVersions(t *testing.T) {
+	rows := []Row{
+		{Endpoint: "gw", Model: "m", Agent: "claude-code/2.1.284", Counts: usage.Counts{Requests: 1, CostMicros: 100}},
+		{Endpoint: "gw", Model: "m", Agent: "claude-code/2.1.285", Counts: usage.Counts{Requests: 1, CostMicros: 200}},
+		{Endpoint: "gw", Model: "m", Agent: "bob-shell/2.0.5", Counts: usage.Counts{Requests: 1, CostMicros: 400}},
+	}
+
+	_, series, _, _ := Fold(rows, usage.GroupAgent)
+	if got := series["claude-code"].CostMicros; got != 300 || len(series) != 2 {
+		t.Errorf("series = %v, want claude-code at 300 beside bob-shell", series)
+	}
+	if got := FilterAgent(rows, "claude-code"); len(got) != 2 {
+		t.Errorf("FilterAgent(claude-code) kept %d rows, want both releases", len(got))
+	}
+}
+
+// The ring and the ledger file one client under one key, so a client merging the two sources
+// shows one row for it.
+func TestLedgerAndRingAgreeOnAVersionedAgent(t *testing.T) {
+	c := &pipeline.EventClient{Name: "claude-code", Version: "2.1.285"}
+	ledgerKey, _ := labelFor(Row{Agent: agentLabel(c)}, usage.GroupAgent)
+	if ringKey := usage.AgentLabel(c); ledgerKey != ringKey {
+		t.Errorf("ledger key %q != ring key %q", ledgerKey, ringKey)
 	}
 }
 

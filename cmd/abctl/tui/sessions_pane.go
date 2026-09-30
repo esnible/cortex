@@ -1475,8 +1475,8 @@ func sessionsColumnsFor(termWidth int) []table.Column {
 	return sessionsColumnsWithAgent(termWidth, false)
 }
 
-// sessionsAgentWidth fits "claude-code/2.1.284", an agent label with its version.
-const sessionsAgentWidth = 19
+// sessionsAgentWidth fits "claude-code", an agent label (versionless; see pipeline.AgentName).
+const sessionsAgentWidth = 11
 
 // sessionsColumnsWithAgent is sessionsColumnsFor plus an AGENT column after TITLE when agent is set
 // and the column fits without narrowing any other; see rebuildSessionsTable for when it is asked.

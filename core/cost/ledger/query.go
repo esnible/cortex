@@ -519,11 +519,14 @@ func labelFor(r Row, group usage.Group) (string, bool) {
 	// absence losslessly as "", and here it becomes the same display string /v1/usage
 	// returns from the ring, so group=agent answers identically from either source.
 	// See Row.Agent.
+	//
+	// Versionless, as the ring keys it: the row keeps "claude-code/2.1.285" and this reads
+	// "claude-code", so rows from before the fold join the same series. See pipeline.AgentName.
 	case usage.GroupAgent:
 		if r.Agent == "" {
 			return unknownAgentLabel, true
 		}
-		return r.Agent, true
+		return pipeline.AgentName(r.Agent), true
 	default:
 		return "", false
 	}

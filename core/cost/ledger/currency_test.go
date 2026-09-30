@@ -486,12 +486,12 @@ func TestSeriesCurrenciesIn_NamesEachAgentsUnits(t *testing.T) {
 		{Endpoint: "litellm", Agent: "claude-code/2.1.284", Currency: "usd", Counts: usage.Counts{Requests: 1, PricedRequests: 1}},
 	}
 	got := SeriesCurrenciesIn(rows, usage.GroupAgent, foldSeries(rows, usage.GroupAgent))
-	if want := []string{"credits"}; !slices.Equal(got["bob-shell/2.0.5"], want) {
-		t.Errorf("bob-shell = %v, want %v", got["bob-shell/2.0.5"], want)
+	if want := []string{"credits"}; !slices.Equal(got["bob-shell"], want) {
+		t.Errorf("bob-shell = %v, want %v", got["bob-shell"], want)
 	}
-	if want := []string{pricing.CurrencyUSD}; !slices.Equal(got["claude-code/2.1.284"], want) {
+	if want := []string{pricing.CurrencyUSD}; !slices.Equal(got["claude-code"], want) {
 		t.Errorf("claude-code = %v, want %v; a legacy row and an explicit usd one are one unit",
-			got["claude-code/2.1.284"], want)
+			got["claude-code"], want)
 	}
 	if got := SeriesCurrenciesIn(rows, usage.GroupEndpoint, foldSeries(rows, usage.GroupEndpoint))["bob"]; !slices.Equal(got, []string{"credits"}) {
 		t.Errorf("endpoint bob = %v, want [credits]; the drawer's endpoint axis labels by this", got)

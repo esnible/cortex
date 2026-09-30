@@ -184,7 +184,7 @@ install) is the aggregate behind `abctl cost`. Query parameters:
 | `group` | `none`, `model`, `endpoint`, `session`, `agent`, `currency`, `status`, `plugin`, `host` (`method` aliases `model`) | See the caveat below. |
 | `resolution` | a duration | Bucket size on a ring-served window. A ledger-backed window is answered as one bucket spanning the whole window and does not read this at all; `bucketSeconds` reports the span actually served. |
 | `session` | a session id | Combining it with a symbolic window (`today`, `month`, `7d`) is rejected with 400. |
-| `agent` | an agent label, as `group=agent` reports it (`claude-code/2.1.284`, `unknown`) | Narrows the window to that agent's traffic. Longer than 96 bytes is rejected with 400. |
+| `agent` | an agent label, as `group=agent` reports it (`claude-code`, `unknown`) — versionless; a versioned label such as `claude-code/2.1.284` is read as its agent | Narrows the window to that agent's traffic, every version together. Longer than 96 bytes is rejected with 400. |
 
 Response envelope: `window`, `bucketSeconds`, `group`, `buckets[]`, `totals` and `priced` are
 always present. Every other field is `omitempty` and appears only when it applies, so a clean
