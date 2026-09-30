@@ -472,13 +472,48 @@ func capTitleRunes(s string) string {
 	}
 	r := []rune(s)
 	cut := claude.MaxTitleLen
-	// Walk back while the rune AT the cut would be orphaned from what precedes it. Bounded by
-	// construction: index 0 stops the loop, and a title of nothing but combining marks collapses to
-	// "" — which is the honest answer and one sessionHasTitle already handles.
-	for cut > 0 && bindsToPrevious(r[cut]) {
+	// Walk back while the rune AT the cut would be orphaned from what precedes it.
+	//
+	// BOUNDED BY AT MOST ONE STEP FOR MARKS AND ZWJ, because a mark cannot follow a mark and still
+	// be the first orphan — but regional indicators are different, and a naive walk over them is a
+	// defect this loop used to have. They pair into flags, so in a RUN of them only every second one
+	// binds; treating all of them as binders walked to index 0 across the run, capping 41 consecutive
+	// flags to "" and taking 11 runes off "a"*70 + 10 flags rather than the "rune or two" this
+	// function's doc promises. That is not cosmetic: sessionHasTitle reads sessionTitle, so an emptied
+	// title flips a named row to unnamed and restarts the permanent ~3-minute re-harvest — the same
+	// failure f5a0a615 fixed for whitespace, reached by a second route.
+	//
+	// riBindsAtCut resolves the pairing by counting the run that PRECEDES the cut, so the scan is
+	// bounded by that run and the loop takes at most one step for it.
+	for cut > 0 {
+		if r[cut] >= 0x1F1E6 && r[cut] <= 0x1F1FF {
+			if !riBindsAtCut(r, cut) {
+				break
+			}
+		} else if !bindsToPrevious(r[cut]) {
+			break
+		}
 		cut--
 	}
 	return strings.TrimSpace(string(r[:cut]))
+}
+
+// riBindsAtCut reports whether the regional indicator at r[cut] is the SECOND half of a flag, so
+// cutting before it would leave a bare letter where a flag was.
+//
+// Regional indicators are the one binder whose binding depends on POSITION rather than on the rune:
+// they pair left to right, so in "🇺🇸🇬🇧" the first and third bind to nothing while the second and
+// fourth complete a flag. Counting the unbroken run of them that precedes the cut gives the parity —
+// an even-length run means r[cut] starts a fresh pair and the cut is already on a boundary.
+//
+// The scan is bounded by the run, not by the title: it stops at the first non-RI rune. A title that
+// is nothing but flags is the worst case, and it is exactly the case a global walk got wrong.
+func riBindsAtCut(r []rune, cut int) bool {
+	run := 0
+	for i := cut - 1; i >= 0 && r[i] >= 0x1F1E6 && r[i] <= 0x1F1FF; i-- {
+		run++
+	}
+	return run%2 == 1
 }
 
 // bindsToPrevious reports that r renders as part of the cluster started by the rune before it, so a
@@ -490,6 +525,20 @@ func capTitleRunes(s string) string {
 // more bind without any category saying so: U+200D ZWJ is what joins the codepoints of a
 // multi-part emoji, and Regional_Indicator runes pair up into flags, so a cut between two leaves a
 // bare letter where a flag was.
+//
+// REGIONAL INDICATORS ANSWER TRUE HERE BUT ARE NOT DECIDED HERE. Their binding depends on position,
+// not on the rune — only the second of a pair binds — and this function sees one rune with no
+// context. capTitleRunes routes them through riBindsAtCut instead; this arm remains so the
+// predicate's answer to "can this rune ever bind?" stays honest for any other caller.
+//
+// THE ZWJ ARM IS UNREACHABLE FROM BOTH PRODUCTION CALLERS TODAY, and deliberately kept. Since
+// sanitizeLabel began delegating to pipeline.IsControlRune, a ZWJ is replaced by U+FFFD before either
+// cap site sees it, and U+FFFD binds to nothing. So the hazard the paragraph above describes cannot
+// currently occur on either path. It is kept because the unreachability is incidental — it depends on
+// a sanitiser in another file continuing to treat ZWJ as a control rune, which is a rule about
+// terminal safety and not about grapheme clusters. A future caller that caps an unsanitised string,
+// or a narrowing of IsControlRune, restores the hazard silently. A dead rune test is cheaper than
+// that coupling.
 //
 // DELIBERATELY NOT Lm. Modifier LETTERS (U+02B0 ʰ and the like) read as though they belong here and
 // Grapheme_Extend excludes them — and the category also holds runes that legitimately START a
@@ -590,7 +639,14 @@ const noServedTitle = ""
 // flat, which an earlier version of this comment claimed and the code does not do. Two passes still
 // run over the UNTRUNCATED string before the cap can apply: sanitizeLabel builds a new string with
 // b.Grow(len(s)), and the cap's own rune count walks it. Both are linear, so a 200k-rune title still
-// costs ~1.6MB of transient allocation and a couple of walks per row per rebuild. Linear is the
+// costs ~1.6MB of transient allocation and a couple of walks per row per rebuild.
+//
+// TWO IS THE FLOOR, AND IT WAS THREE. Review caught sessionTitleFor calling titleIsBlank(served) and
+// then sanitizeLabel(served), which sanitised the untruncated string TWICE — ~3.2MB, not ~1.6MB, for
+// the same answer, because sanitizeLabel is idempotent and the second copy was pure waste. It now
+// sanitises into a local and blank-checks that (see blankSanitized). Anything that reintroduces a
+// second sanitise, or a second []rune conversion, doubles the number in this paragraph; there is no
+// benchmark that would notice, so read the call sites. Linear is the
 // difference between a laggy column and an unusable one — the measured 4.50s at 20003 runes was the
 // quadratic search, not these — but "flat" was wrong, and the honest bound is what a future reader
 // needs when deciding whether to cap EARLIER, at the decode in apiclient, where it would be.
@@ -614,20 +670,33 @@ func (m *model) sessionTitleFor(id, served string) string {
 	if title := m.sessionTitle(id); !titleIsBlank(title) {
 		return title
 	}
-	// BLANK-CHECKED ON THIS SIDE TOO, because titleIsBlank was applied to the harvested title and
-	// not to this one — so a whitespace-only served title painted spaces into the cell while
-	// sessionLabel, which blank-checks what this returns, showed the bare id. The same session named
-	// two different ways by two callers of one accessor. Returning "" makes the cell agree with the
-	// header, and "" is what both already do when nothing names a session.
-	if titleIsBlank(served) {
-		return ""
-	}
+	// SANITISE ONCE, INTO A LOCAL, then use it for both the blank check and the cap.
+	//
 	// SANITISE BEFORE CAPPING, matching sessionTitle, so the cluster walk inside the cap sees the
 	// string that will actually render. sanitizeLabel is rune-for-rune, so the two orders agree on
 	// WHERE the cut lands — but only one of them agrees on WHAT is at the cut: sanitising afterwards
 	// would walk back off a combining mark that sanitizeLabel then replaces with U+FFFD, a standalone
 	// glyph that never needed the walk. Ordering it this way keeps one rule for both sources.
-	return capTitleRunes(sanitizeLabel(served))
+	//
+	// ONE PASS, NOT TWO: this used to call titleIsBlank(served) and then sanitizeLabel(served) on the
+	// next line. Both sanitise, and sanitizeLabel is O(len) with a b.Grow(len(s)) on the UNTRUNCATED
+	// input, so the pair built two full copies of a served title to reach one answer — doubling the
+	// transient allocation this function's own cost note bounds, per row per rebuild. Idempotent made
+	// it harmless but not free.
+	clean := sanitizeLabel(served)
+	// BLANK-CHECKED ON THIS SIDE TOO, because titleIsBlank was applied to the harvested title and
+	// not to this one — so a whitespace-only served title painted spaces into the cell while
+	// sessionLabel, which blank-checks what this returns, showed the bare id. The same session named
+	// two different ways by two callers of one accessor. Returning "" makes the cell agree with the
+	// header, and "" is what both already do when nothing names a session.
+	//
+	// blankSanitized rather than titleIsBlank because clean has already been through sanitizeLabel —
+	// and the ORDER that check documents is preserved, not dropped: sanitising happened above, and the
+	// trim happens here, which is the same sanitise-then-trim titleIsBlank performs internally.
+	if blankSanitized(clean) {
+		return ""
+	}
+	return capTitleRunes(clean)
 }
 
 // sessionTitleCell is sessionTitleFor fitted to the TITLE column, truncated from the LEFT.

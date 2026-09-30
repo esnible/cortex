@@ -164,13 +164,13 @@ the served title either, which arrives over the API and not from any file.
 
 A harvest that cannot run is never fatal, and it costs less than it used to: the viewer
 still opens, and a session the proxy has named still shows that name, because the served
-title arrives over the API and not from this file. What a missing or unreadable file costs
-is therefore the `TITLE` column only for sessions the proxy has not named — which, on a
-machine whose agents all route through the proxy, may be none of them. A file that does not parse is
-rebuilt from the transcripts rather than costing anything; the entries a rebuild cannot
-recover are sessions whose transcripts Claude Code has already pruned. The failures that
-need a human, such as an unreadable metadata file, print one line to stderr with the
-repair before the viewer starts; success says nothing.
+title arrives over the API and not from this file. What a missing or unreadable file
+costs is therefore the `TITLE` column only for sessions the proxy has not named — which,
+on a machine whose agents all route through the proxy, may be none of them. A file that
+does not parse is rebuilt from the transcripts rather than costing anything; the entries
+a rebuild cannot recover are sessions whose transcripts Claude Code has already pruned.
+The failures that need a human, such as an unreadable metadata file, print one line to
+stderr with the repair before the viewer starts; success says nothing.
 
 The config directory is `CLAUDE_CONFIG_DIR` when set, and `~/.claude`
 otherwise. To read a different directory, or to force a full re-read of every
@@ -598,11 +598,11 @@ abctl is for, and the other three are surfaces you visit and leave.
   — or when the proxy has stopped listing the session, since a row kept alive by
   its cached events alone has no summary to carry a served title. A session named
   only by the proxy therefore loses its name at that point while its events
-  remain, which is the one case where a title visibly disappears. The harvested title wins when both exist — a fixed precedence, not a
-  claim that it is always the better string; the two sides rank candidates
-  differently and may not agree on a given session. The column does not say which
-  source it used. Numerics are right-aligned
-  so the digits line up between rows.
+  remain, which is the one case where a title visibly disappears. The harvested
+  title wins when both exist — a fixed precedence, not a claim that it is always
+  the better string; the two sides rank candidates differently and may not agree
+  on a given session. The column does not say which source it used. Numerics are
+  right-aligned so the digits line up between rows.
 
   `CONTEXT(1M)` is a gauge, not a figure: how full the **conversation's**
   context was on its latest turn, against a fixed one-million-token window. The
