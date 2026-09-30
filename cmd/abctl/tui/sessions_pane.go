@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/bubbles/table"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/rossoctl/cortex/core/observe/claude"
 	"github.com/rossoctl/cortex/core/pipeline"
 )
 
@@ -453,9 +454,29 @@ const noServedTitle = ""
 // (app.go's streamed-event path), so its row shows no served title until the next poll fills the
 // summary in — under two seconds, and it self-corrects with no help from here. Worth knowing only
 // because it makes a blank cell briefly ambiguous; nothing downstream needs to tell the two apart.
+// served IS CAPPED HERE, and this is the only thing that bounds it. The harvested title arrives
+// already capped at claude.MaxTitleLen runes, and the existing cross-module cap test asserts that
+// against a harvested fixture — a path the served title never takes. The proxy does cap at its own
+// maxTitleLen, but that is 80 in ANOTHER MODULE, unexported on purpose (its doc: "deliberately NOT
+// that constant"), so nothing here can assert it and no client should assume it. /v1/sessions is
+// unauthenticated and operator-pointed, so a title of any length is a thing abctl can be handed.
+//
+// What that costs without a cap is not a wide cell — truncLeft/truncRight bound the OUTPUT — it is
+// the SEARCH inside them. Their fast path is disabled by any zero-width rune, and a served title
+// keeps its combining marks, so a long one runs a quadratic scan: measured, 20003 runes takes 4.50s
+// on ONE call, and 200003 did not finish in two minutes. That is the UI goroutine, once per row per
+// rebuild. Capping the input is what makes the render cost flat.
+//
+// AT THE HARVESTER'S CAP, reusing claude.MaxTitleLen rather than a new number: it is what the other
+// source is already capped to, so the two titles get the same budget and the column keeps one rule.
+// Runes, not columns, matching what that constant counts — the width re-measure downstream is what
+// turns either into a fitted cell.
 func (m *model) sessionTitleFor(id, served string) string {
 	if title := m.sessionTitle(id); !titleIsBlank(title) {
 		return title
+	}
+	if r := []rune(served); len(r) > claude.MaxTitleLen {
+		served = string(r[:claude.MaxTitleLen])
 	}
 	return sanitizeLabel(served)
 }
@@ -611,6 +632,12 @@ func truncRight(s string, n int) string {
 	// lower bound. This had the identical quadratic shape — 2500 runes 39ms, 20000 2.30s on one call
 	// — and is reachable the same way, since looksLikePath needs a leading "/" so a RELATIVE cwd
 	// routes down this branch while just as uncapped.
+	//
+	// AND THE GUARD'S SLOW PATH RUNS HERE TOO, for the reason truncLeft now spells out: a title
+	// served by /v1/sessions keeps its combining marks, so an accent or an emoji turns the skip off.
+	// Prose is the COMMON shape for a served title — it is folded from a user's own message — so this
+	// branch is the likelier of the two to meet one. Correctness is unaffected; the cost is bounded
+	// by sessionTitleFor's cap, not by anything here.
 	r := []rune(s)
 	if len(r) > n && zeroWidthFree(s) {
 		r = r[:n]
@@ -658,7 +685,8 @@ func truncLeft(s string, n int) string {
 	// AND IT IS NOT THE LAST MEASUREMENT THE CELL MEETS. bubbles v1.0.0 runs runewidth.Truncate over
 	// every cell before styling, and runewidth does not skip ANSI. Measuring here in display columns
 	// is therefore necessary but not sufficient: it holds only while the cell is PLAIN, which for a
-	// title is guaranteed upstream (core/observe/claude normalises every one) and asserted below.
+	// title is guaranteed upstream (core/observe/claude normalises a harvested one; sessionTitleFor
+	// runs sanitizeLabel over a served one) and asserted below.
 	// Styling a title would put escape bytes inside that second budget and collapse a narrow cell to
 	// a lone ellipsis.
 	if lipgloss.Width(s) <= n {
@@ -685,11 +713,21 @@ func truncLeft(s string, n int) string {
 	// different bytes.
 	//
 	// So skipping is conditional on the premise: zeroWidthFree reports whether s contains any
-	// zero-width rune, and only then is the prefix provably untestable. A title reaching this file
-	// never contains one — core/observe/claude drops every Mn/Me/Cf/Cc/Sk, asserted there across
-	// the whole Unicode range — so the fast path is what actually runs. The fallback exists because
-	// these are general helpers with callers that make no such promise, and a wrong answer is worse
-	// than a slow one.
+	// zero-width rune, and only then is the prefix provably untestable.
+	//
+	// THE SLOW PATH IS REACHABLE, and the comment here used to deny it. It read that a title never
+	// contains a zero-width rune because core/observe/claude drops every Mn/Me/Cf/Cc/Sk — true of a
+	// HARVESTED title, and no longer the only kind. A title served by /v1/sessions goes through
+	// core/session.sanitizeTitle instead, which deliberately KEEPS combining marks (its own doc: "so
+	// café survives"), and pipeline.IsControlRune covers C0/C1/DEL/BIDI/Cf but not Mn/Me/Sk. So an
+	// accented word or any ordinary emoji — U+FE0F VARIATION SELECTOR-16 is Mn — makes zeroWidthFree
+	// false and runs the quadratic search this comment claimed never executes. Measured on one call
+	// with a combining mark every other rune: 2503 runes 72ms, 5003 287ms, 10003 1.12s, 20003 4.50s,
+	// which is worse than the ASCII figures above because each measurement now folds a mark too.
+	//
+	// The guard is STRUCTURAL, so the answer stays correct either way — this is about the premise,
+	// not a bug. It is called out because the premise is what someone would delete the guard on, and
+	// because the cost is only bounded by sessionTitleFor capping its input; see the cap there.
 	r := []rune(s)
 	start := 0
 	if len(r) > n && zeroWidthFree(s) {

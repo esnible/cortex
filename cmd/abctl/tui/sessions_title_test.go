@@ -2410,3 +2410,43 @@ func TestSessionMetadata_ServedTitleDoesNotSatisfyTheHarvestBackoff(t *testing.T
 		t.Errorf("sessionTitleFor = %q, want the served title on screen throughout", got)
 	}
 }
+
+// THE SERVED TITLE IS CAPPED CLIENT-SIDE, and nothing upstream of abctl is what guarantees it.
+//
+// The pairing this closes: TestTitleCap_IsSafeOnlyBecauseTheRendererRemeasures covers the HARVESTED
+// title's cap against claude.MaxTitleLen, and the served title never touches that path. The proxy has
+// its own cap, but it is unexported in another module on purpose, /v1/sessions is unauthenticated, and
+// abctl is pointed at whatever host an operator names — so "the producer caps it" is not an assertion
+// this side can make.
+//
+// WHY A LENGTH AND NOT A DEADLINE. What an uncapped title costs is not a malformed cell — truncLeft
+// and truncRight bound their output regardless — but the quadratic search inside them, whose fast path
+// any combining mark disables and which a served title keeps its marks through. Measured on one call,
+// 20003 runes took 4.50s and 200003 did not finish in two minutes, on the UI goroutine, per row per
+// rebuild. A timing assertion would encode a machine's speed and flake in CI, so this pins the INPUT
+// bound that makes the cost flat instead.
+//
+// THE FIXTURE CARRIES COMBINING MARKS, which is what makes it the real shape rather than a long
+// string: an ASCII title of the same length takes the fast path and would pass a weaker cap.
+func TestSessionsPane_ServedTitleIsCappedBeforeTruncation(t *testing.T) {
+	// Every other rune is U+0301, so zeroWidthFree is false and the slow path is what a missing cap
+	// would hand this to.
+	served := strings.Repeat("é", 5000)
+	if zeroWidthFree(served) {
+		t.Fatal("fixture takes the fast path — it no longer exercises the cost a cap prevents")
+	}
+
+	m := newServedTitleModel(t, map[string]SessionMetadata{}, map[string]string{"s1": served}, "s1")
+
+	got := m.sessionTitleFor("s1", served)
+	if n := len([]rune(got)); n > claude.MaxTitleLen {
+		t.Errorf("sessionTitleFor returned %d runes, want at most %d — an uncapped served title "+
+			"reaches truncLeft/truncRight's quadratic path on the UI goroutine", n, claude.MaxTitleLen)
+	}
+
+	// AND THROUGH THE HEADER TOO, which reaches the same accessor by id alone. Without this, a cap
+	// applied only in the cell's own call path would pass.
+	if n := len([]rune(m.sessionLabel("s1"))); n > claude.MaxTitleLen+len(" (s1)") {
+		t.Errorf("sessionLabel is %d runes, want the served title capped before it is labelled", n)
+	}
+}

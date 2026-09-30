@@ -734,9 +734,15 @@ type SessionSummary struct {
 	// lost when the event carrying it is evicted.
 	//
 	// omitempty on the standing rule CostMicros states below: an unknown value must not
-	// render as a real one. No consumer reads this yet — abctl's TITLE column still comes
-	// from harvested Claude Code transcripts — so an absent key is what a client that starts
-	// reading it should expect for a session the events never named.
+	// render as a real one, so an absent key is what a client should expect for a session the
+	// events never named.
+	//
+	// ABSENT IS A DISPLAYED STATE NOW, not just an unread one. abctl renders this in its TITLE
+	// column as a FALLBACK: it prefers a title harvested from Claude Code's transcripts and
+	// reaches for this one only when that harvest named nothing. So the sessions where this
+	// field decides what an operator sees are exactly those with no transcript on the machine
+	// running abctl — an agent that routes through the proxy without writing Claude Code
+	// transcripts is the case that motivated it. Do not assume a change here is invisible.
 	Title       string `json:"title,omitempty"`
 	TotalTokens int    `json:"totalTokens,omitempty"` // sum of Inference.TotalTokens across response events
 	// CostMicros is what this session's events cost, in millionths of a dollar, summed from
