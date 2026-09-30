@@ -160,10 +160,9 @@ func saveUserConfig(path string, s tui.UserSettings) error {
 }
 
 // fileHeader explains the file to whoever opens it, since it is meant to be
-// hand-editable. The absent-means-visible rule is the one thing that is not
-// guessable from the contents.
+// hand-editable.
 var fileHeader = []byte("# abctl user settings. Written by abctl; safe to hand-edit or delete.\n" +
-	"# Columns not listed under events.columns are visible — only deviations are recorded.\n")
+	"# Columns not listed under events.columns keep their default — only deviations are recorded.\n")
 
 // writeAll is io.Writer.Write, indirected so a test can make a write fail. The
 // shadowing bug above was invisible to every test because a write to a tempfile on

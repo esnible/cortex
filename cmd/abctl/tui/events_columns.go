@@ -169,6 +169,15 @@ func numKey[T int | int64 | float64 | time.Duration](n T) sortValue {
 
 func strKey(s string) sortValue { return sortValue{str: s} }
 
+// durationSortKey ranks a tunnel row with the blank ones: its DURATION is how long the
+// tunnel stayed open, not how long a call took.
+func durationSortKey(c cellContext) sortValue {
+	if c.row.event.Tunnel {
+		return numKey(0)
+	}
+	return numKey(c.row.event.Duration)
+}
+
 // Keep ranks. Only the ordering matters, not the values.
 const (
 	keepLow    = 0 // give these up first
@@ -240,12 +249,11 @@ var eventColumns = []eventColumn{
 	{id: colDuration, width: 10, defaultOn: true, keep: keepLow, rightAlign: true,
 		desc:    "how long the exchange took",
 		cell:    func(c cellContext) string { return durationCell(*c.row.event) },
-		sortKey: func(c cellContext) sortValue { return numKey(c.row.event.Duration) }},
+		sortKey: durationSortKey},
 	// Off by default: only an opaque tunnel's close row has a figure, so a column on for
-	// everyone would spend 15 columns of every terminal on a mostly blank one. 15 fits
-	// the widest cell, "↑999.9M ↓999.9M". The total is the sort key, so a descending
-	// sort finds the tunnel that carried the most.
-	{id: colBytes, width: 15, defaultOn: false, keep: keepLow, rightAlign: true,
+	// everyone would spend columns of every terminal on a mostly blank one. The total is
+	// the sort key, so a descending sort finds the tunnel that carried the most.
+	{id: colBytes, width: 17, defaultOn: false, keep: keepLow, rightAlign: true,
 		desc:    "bytes an opaque tunnel carried: ↑ sent, ↓ received",
 		cell:    func(c cellContext) string { return bytesCell(*c.row.event) },
 		sortKey: func(c cellContext) sortValue { return numKey(c.row.event.BytesUp + c.row.event.BytesDown) }},

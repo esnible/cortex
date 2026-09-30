@@ -184,7 +184,7 @@ func (s *Server) HandleTransparentConn(clientConn net.Conn, dst string) {
 				// bridgeServe fell open (upstream-verify failed) → re-dial for the tunnel.
 				up2, derr := net.DialTimeout("tcp", dst, connectDialTimeout)
 				if derr != nil {
-					tl.close(http.StatusBadGateway, dialError(derr), 0, 0)
+					tl.close(http.StatusOK, dialError(derr), 0, 0)
 					return
 				}
 				sent, received := tunnel(clientConn, up2)
@@ -206,10 +206,10 @@ func (s *Server) HandleTransparentConn(clientConn net.Conn, dst string) {
 // entries are still meaningful.
 //
 // It returns the bucket the row went to, so the tunnel's close row can land beside it;
-// "" when session tracking is off.
-func (s *Server) recordTunnelOpened(pctx *pipeline.Context, reason pipeline.TunnelReason) string {
+// nil when session tracking is off.
+func (s *Server) recordTunnelOpened(pctx *pipeline.Context, reason pipeline.TunnelReason) *session.Bucket {
 	if s.Sessions == nil {
-		return ""
+		return nil
 	}
 	// Without client affinity this reads ActiveSession() at recording time, as it always
 	// has, ignoring the identity the tunnel was gated under (#1187). With it, the pin set
@@ -252,8 +252,7 @@ func (s *Server) recordTunnelOpened(pctx *pipeline.Context, reason pipeline.Tunn
 	// Always record the tunnel-open so passthrough/non-bridged tunnels (no
 	// plugin activity) are still visible. For a TLS-bridged call abctl folds
 	// this CONNECT event into the decrypted inner-request row.
-	s.Sessions.Append(sid, ev)
-	return sid
+	return s.Sessions.AppendBucket(sid, ev)
 }
 
 // recordTunnelClosed emits the SessionResponse row for a tunnel that ended, or that
@@ -261,7 +260,7 @@ func (s *Server) recordTunnelOpened(pctx *pipeline.Context, reason pipeline.Tunn
 // RequestID, which is how abctl pairs the two into one exchange with a STATUS and a
 // DURATION.
 //
-// sid is the bucket the open was recorded under, reused rather than re-resolved: a long
+// b is the bucket the open was recorded under, reused rather than re-resolved: a long
 // tunnel closes minutes after it opened, when whichever session spoke last says nothing
 // about whose tunnel this was.
 //
@@ -274,14 +273,11 @@ func (s *Server) recordTunnelOpened(pctx *pipeline.Context, reason pipeline.Tunn
 //
 // No Invocations and no Plugins: nothing runs on a tunnel's response, so there is
 // nothing to snapshot that the open row does not already carry.
-func (s *Server) recordTunnelClosed(pctx *pipeline.Context, sid string, reason pipeline.TunnelReason, statusCode int, fail *pipeline.EventError, up, down int64) {
+func (s *Server) recordTunnelClosed(pctx *pipeline.Context, b *session.Bucket, reason pipeline.TunnelReason, statusCode int, fail *pipeline.EventError, up, down int64) {
 	if s.Sessions == nil {
 		return
 	}
-	if sid == "" {
-		sid = session.DefaultSessionID
-	}
-	s.Sessions.Append(sid, pipeline.SessionEvent{
+	s.Sessions.AppendTrailing(b, pipeline.SessionEvent{
 		At:           time.Now(),
 		Direction:    pipeline.Outbound,
 		Phase:        pipeline.SessionResponse,

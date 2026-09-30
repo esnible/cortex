@@ -318,6 +318,34 @@ func (s *Store) backgroundCleanup() {
 // doesn't exist. Updates activeID to this session. Evicts the oldest event if the
 // session exceeds maxEvents — which by default it cannot, maxEvents being unset.
 func (s *Store) Append(sessionID string, event pipeline.SessionEvent) {
+	s.append(sessionID, nil, event)
+}
+
+// Bucket is the session an event was appended to. It follows that session through a
+// Rekey or an Adopt, which rename a session rather than replace it, and names nothing once
+// the store has evicted or expired it.
+type Bucket struct{ e *entry }
+
+// AppendBucket is Append, returning the bucket the event went into.
+func (s *Store) AppendBucket(sessionID string, event pipeline.SessionEvent) *Bucket {
+	return &Bucket{e: s.append(sessionID, nil, event)}
+}
+
+// AppendTrailing appends an event that ends something b's session started earlier — a
+// tunnel's close, recorded when the tunnel ends. It is not that session speaking now, so
+// it neither makes the session active nor refreshes its UpdatedAt. It reports false, and
+// records nothing, when b's session has been evicted or has expired: the event would pair
+// with nothing, and re-creating the session to hold it could evict another.
+func (s *Store) AppendTrailing(b *Bucket, event pipeline.SessionEvent) bool {
+	if b == nil {
+		return false
+	}
+	return s.append("", b, event) != nil
+}
+
+// append is Append when b is nil, and AppendTrailing when it is not. It returns the
+// session the event went into, nil when AppendTrailing refused it.
+func (s *Store) append(sessionID string, b *Bucket, event pipeline.SessionEvent) *entry {
 	if len(sessionID) > MaxSessionIDLen {
 		sessionID = sessionID[:MaxSessionIDLen]
 	}
@@ -359,19 +387,27 @@ func (s *Store) Append(sessionID string, event pipeline.SessionEvent) {
 	defer s.mu.Unlock()
 
 	now := time.Now()
-	sessionID = s.followAdoptedLocked(sessionID)
-
-	sess, ok := s.sessions[sessionID]
-	if !ok {
-		sess = &entry{
-			ID:        sessionID,
-			CreatedAt: now,
-			// NOT THE ZERO VALUE: rankRename is 0, so a zero-valued titleRank would claim this
-			// session had already been renamed and no candidate could ever beat it — the first
-			// prose message would be unnameable. rankNone is the "nothing has named it" rank.
-			titleRank: rankNone,
+	var sess *entry
+	if b != nil {
+		if s.sessions[b.e.ID] != b.e || s.isExpired(b.e, now) {
+			return nil
 		}
-		s.sessions[sessionID] = sess
+		sess, sessionID = b.e, b.e.ID
+	} else {
+		sessionID = s.followAdoptedLocked(sessionID)
+		var ok bool
+		sess, ok = s.sessions[sessionID]
+		if !ok {
+			sess = &entry{
+				ID:        sessionID,
+				CreatedAt: now,
+				// NOT THE ZERO VALUE: rankRename is 0, so a zero-valued titleRank would claim this
+				// session had already been renamed and no candidate could ever beat it — the first
+				// prose message would be unnameable. rankNone is the "nothing has named it" rank.
+				titleRank: rankNone,
+			}
+			s.sessions[sessionID] = sess
+		}
 	}
 
 	// Stamp the bucket ID so downstream consumers can attribute the event
@@ -471,8 +507,10 @@ func (s *Store) Append(sessionID string, event pipeline.SessionEvent) {
 	if agentName != "" && sessionID != DefaultSessionID && !strings.HasPrefix(sessionID, PendingPrefix) && sess.agentLabel(agentName) == "" {
 		sess.agents = append(sess.agents, sessionAgent{name: agentName, label: usage.AgentLabel(event.Client)})
 	}
-	sess.UpdatedAt = now
-	s.activeID = sessionID
+	if b == nil {
+		sess.UpdatedAt = now
+		s.activeID = sessionID
+	}
 
 	logAppended(sessionID, &event)
 	s.publishLocked(event)
@@ -513,6 +551,7 @@ func (s *Store) Append(sessionID string, event pipeline.SessionEvent) {
 	if s.maxSessions > 0 && len(s.sessions) > s.maxSessions {
 		s.evictOldestLocked()
 	}
+	return sess
 }
 
 // isIntentEvent matches the SessionView.LastIntent predicate: an

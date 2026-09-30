@@ -937,7 +937,7 @@ abctl is for, and the other three are surfaces you visit and leave.
   there is an opaque CONNECT, where METHOD is blank because opaque bytes carry
   no request line. The tunnel's STATUS arrives on its `resp` row when it closes,
   with DURATION for how long it stayed open and, in BYTES, what it carried each
-  way — so a tunnel with no `resp` row yet is still open. That STATUS is the
+  way. That STATUS is the
   CONNECT's own (200, or 502 when the destination could not be reached), never
   the destination's, which travels inside the client's TLS. The TOKENS and COST figures on a request
   row carry what `tool-prune` saved in parentheses — `−` for a counted saving,
@@ -1243,7 +1243,7 @@ config — that is `~/.cortex/config.yaml`, and `--config` on `abctl service` an
 
 ```yaml
 # abctl user settings. Written by abctl; safe to hand-edit or delete.
-# Columns not listed under events.columns are visible — only deviations are recorded.
+# Columns not listed under events.columns keep their default — only deviations are recorded.
 events:
   columns:
     - name: COST

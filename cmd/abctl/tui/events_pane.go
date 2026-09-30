@@ -421,10 +421,11 @@ func (m *model) selectedEventRow() (eventRow, bool) {
 // (passthrough) tunnel has no inner request following it, so it stands as its
 // own row — it IS the whole message.
 func buildEventRows(events []pipeline.SessionEvent) []eventRow {
+	closed := closedTunnels(events)
 	rows := make([]eventRow, 0, len(events))
 	for i := 0; i < len(events); i++ {
 		e := &events[i]
-		if i+1 < len(events) && isTunnelOpen(e) {
+		if i+1 < len(events) && isTunnelOpen(e) && !stayedOpaque(e, closed) {
 			inner := &events[i+1]
 			if isBridgedInner(e, inner) {
 				rows = append(rows, eventRow{event: inner, tunnel: e})
@@ -448,6 +449,34 @@ func buildEventRows(events []pipeline.SessionEvent) []eventRow {
 // that request into itself and the close vanished from the timeline.
 func isTunnelOpen(e *pipeline.SessionEvent) bool {
 	return e.Tunnel && e.Phase == pipeline.SessionRequest
+}
+
+// isTunnelClose reports whether e is the row the proxy records when a tunnel ends.
+func isTunnelClose(e *pipeline.SessionEvent) bool {
+	return e.Tunnel && e.Phase == pipeline.SessionResponse
+}
+
+// stayedOpaque reports whether open's tunnel is known to have carried no decrypted
+// request: its reason says why the bytes stayed opaque, or events hold a close for it,
+// which the proxy records only for a tunnel no decrypted request answered. The reason
+// alone is not enough: the transparent listener records a reachable destination's open
+// with no reason, whether or not the bytes then stay opaque.
+func stayedOpaque(open *pipeline.SessionEvent, closed map[string]bool) bool {
+	return open.TunnelReason != "" || (open.RequestID != "" && closed[open.RequestID])
+}
+
+// closedTunnels is the RequestIDs events holds a tunnel close for.
+func closedTunnels(events []pipeline.SessionEvent) map[string]bool {
+	var out map[string]bool
+	for i := range events {
+		if e := &events[i]; isTunnelClose(e) && e.RequestID != "" {
+			if out == nil {
+				out = make(map[string]bool)
+			}
+			out[e.RequestID] = true
+		}
+	}
+	return out
 }
 
 // isBridgedInner reports whether inner is the decrypted request the TLS bridge
@@ -781,7 +810,21 @@ func bytesCell(e pipeline.SessionEvent) string {
 	if e.BytesUp == 0 && e.BytesDown == 0 {
 		return ""
 	}
-	return "↑" + formatCompact(float64(e.BytesUp)) + " ↓" + formatCompact(float64(e.BytesDown))
+	return "↑" + formatBytes(e.BytesUp) + " ↓" + formatBytes(e.BytesDown)
+}
+
+// formatBytes renders a byte count in decimal units, 1kB being 1000 bytes. Like
+// formatCompact it promotes where the rounding carries, so no tier prints "1000.0".
+func formatBytes(n int64) string {
+	if n < 1000 {
+		return fmt.Sprintf("%dB", n)
+	}
+	units := [...]string{"kB", "MB", "GB", "TB", "PB", "EB"}
+	v, i := float64(n)/1000, 0
+	for v >= 999.95 && i < len(units)-1 {
+		v, i = v/1000, i+1
+	}
+	return fmt.Sprintf("%.1f%s", v, units[i])
 }
 
 // durationCell renders a duration at the precision a reader wants for its size:
@@ -806,7 +849,8 @@ func durationCell(e pipeline.SessionEvent) string {
 	if secs < 3600 {
 		return fmt.Sprintf("%dm%02ds", secs/60, secs%60)
 	}
-	return fmt.Sprintf("%dh%02dm", secs/3600, secs%3600/60)
+	mins := (ms + 30_000) / 60_000
+	return fmt.Sprintf("%dh%02dm", mins/60, mins%60)
 }
 
 func truncStr(s string, n int) string {

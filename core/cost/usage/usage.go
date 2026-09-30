@@ -229,7 +229,7 @@ type Counts struct {
 	// complete one.
 	//
 	// NOT Requests-minus-PricedRequests. Requests counts every proxied response — MCP
-	// tool calls, health checks, tunnels — none of which can ever carry a price, so
+	// tool calls, health checks — none of which can ever carry a price, so
 	// that difference never reaches zero and a client obeying it marks every total
 	// partial forever. Requests is not the denominator for coverage;
 	// PriceableRequests is.
@@ -269,12 +269,11 @@ type Counts struct {
 	// model and a non-zero token count.
 	//
 	// It exists because Requests is the wrong denominator for coverage. Requests
-	// counts every proxied response, including MCP tool calls, health checks and any
-	// other non-LLM traffic the sidecar handled, while PricedRequests can only ever
-	// cover inference. Dividing one by the other made a CORRECTLY configured
-	// deployment read "1/10 priced" forever with an empty gap list — a permanent
-	// warning with nothing to act on, which trains an operator to ignore the one
-	// signal that matters.
+	// counts every proxied response, including MCP tool calls and health checks, while
+	// PricedRequests can only ever cover inference. Dividing one by the other made a
+	// CORRECTLY configured deployment read "1/10 priced" forever with an empty gap
+	// list — a permanent warning with nothing to act on, which trains an operator to
+	// ignore the one signal that matters.
 	//
 	// Priced-versus-priceable is the ratio that answers "is my cost total complete",
 	// and it reaches parity when it should.

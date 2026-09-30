@@ -759,20 +759,25 @@ func (s *Server) bridgeServe(client net.Conn, authority, host string, tl *tunnel
 	markBridged(tl)
 
 	// 3) Serve the decrypted conn through the UNCHANGED pipeline.
-	tlsbridge.ServeConn(tconn, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		tl.served.Add(1)
-		r.URL.Scheme = "https"
-		r.URL.Host = authority // host:port — preserves non-443 origins
-		s.serveOutbound(w, r, true)
-	}))
+	tlsbridge.ServeConn(tconn, s.bridgedHandler(authority, tl))
 	// ServeConn returns once the connection has closed. A bridged tunnel's decrypted
 	// requests answer it and abctl folds the open into the first of them, so a close row
 	// here would render as an orphan response. With no request at all there is nothing to
 	// fold into, and the open would otherwise be the one tunnel row that never finished.
-	if tl.served.Load() == 0 {
-		tl.close(http.StatusOK, nil, 0, 0)
-	}
+	tl.closeUnserved()
 	return true
+}
+
+// bridgedHandler serves one bridged tunnel's decrypted requests through the pipeline.
+func (s *Server) bridgedHandler(authority string, tl *tunnelLog) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !tl.admit() {
+			return
+		}
+		r.URL.Scheme = "https"
+		r.URL.Host = authority // host:port — preserves non-443 origins
+		s.serveOutbound(w, r, true)
+	})
 }
 
 // resolveOutboundSessionID picks the bucket an outbound event is recorded
@@ -1922,9 +1927,8 @@ func handshakeFailureReason(err error) pipeline.TunnelReason {
 //
 // Both rows are recorded at most once. The guard defends against a future exit rather
 // than any current one — no path calls either twice today, which is exactly why only a
-// direct test can hold it (TestTunnelLog_RecordsEachRowAtMostOnce). It lives in the
-// methods rather than in each caller, so a branch added later cannot be uncovered by
-// forgetting to re-check a flag.
+// direct test can hold it. It lives in the methods rather than in each caller, so a
+// branch added later cannot be uncovered by forgetting to re-check a flag.
 //
 // skipped means the destination matched SkipHosts, where no plugin ran and there is
 // nothing to attribute an event to: neither row is recorded.
@@ -1936,15 +1940,15 @@ type tunnelLog struct {
 	mu     sync.Mutex
 	opened bool
 	closed bool
-	// sid and reason are what the open row was recorded with. The close reuses both, so
+	// bucket and reason are what the open row was recorded with. The close reuses both, so
 	// it lands in the open's session and explains itself with the open's reason.
-	sid    string
+	bucket *session.Bucket
 	reason pipeline.TunnelReason
 
 	// served counts the decrypted requests a bridged tunnel carried. Their own response
 	// rows answer the tunnel, and abctl folds its open into the first of them, so
 	// bridgeServe records a close only when this is still zero.
-	served atomic.Int64
+	served int
 }
 
 func (s *Server) newTunnelLog(pctx *pipeline.Context, skipped bool) *tunnelLog {
@@ -1962,7 +1966,7 @@ func (t *tunnelLog) open(reason pipeline.TunnelReason) {
 		return
 	}
 	t.opened, t.reason = true, reason
-	t.sid = t.s.recordTunnelOpened(t.pctx, reason)
+	t.bucket = t.s.recordTunnelOpened(t.pctx, reason)
 }
 
 // close records the tunnel's close row: the first call wins, and a close with no open
@@ -1974,11 +1978,42 @@ func (t *tunnelLog) close(status int, fail *pipeline.EventError, up, down int64)
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	t.closeLocked(status, fail, up, down)
+}
+
+func (t *tunnelLog) closeLocked(status int, fail *pipeline.EventError, up, down int64) {
 	if !t.opened || t.closed {
 		return
 	}
 	t.closed = true
-	t.s.recordTunnelClosed(t.pctx, t.sid, t.reason, status, fail, up, down)
+	t.s.recordTunnelClosed(t.pctx, t.bucket, t.reason, status, fail, up, down)
+}
+
+// admit counts a decrypted request the bridged tunnel is about to serve, and refuses it
+// once the close has been recorded. On h2 that can happen: ServeConn returns without
+// waiting for a request's handler to start, and by then the connection is closed and the
+// request's context cancelled. Serving it would record a request beside a close that says
+// the tunnel carried none.
+func (t *tunnelLog) admit() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.closed {
+		return false
+	}
+	t.served++
+	return true
+}
+
+// closeUnserved records the close of a bridged tunnel no request was admitted to.
+func (t *tunnelLog) closeUnserved() {
+	if t.skipped {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.served == 0 {
+		t.closeLocked(http.StatusOK, nil, 0, 0)
+	}
 }
 
 // dialError is a close row's error for a destination the proxy could not reach. The

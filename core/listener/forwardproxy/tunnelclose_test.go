@@ -2,9 +2,11 @@ package forwardproxy
 
 import (
 	"bufio"
+	"context"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -265,18 +267,10 @@ func TestHandleConnect_CloseLandsInTheOpensSession(t *testing.T) {
 	proxyAddr, done := connectProxy(t, s)
 
 	raw, br, _ := sendConnect(t, proxyAddr, pingPongOrigin(t))
-	deadline := time.Now().Add(5 * time.Second)
-	for {
-		if opens, _ := tunnelRows(store, "sess-A"); len(opens) == 1 {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("the tunnel open never landed in sess-A")
-		}
-		time.Sleep(5 * time.Millisecond)
-	}
+	waitOpen(t, store, "sess-A")
 	// Another session speaks while the tunnel is open.
 	store.Append("sess-B", pipeline.SessionEvent{At: time.Now(), Direction: pipeline.Outbound, Phase: pipeline.SessionRequest})
+	speakerAt := updatedAt(t, store, "sess-A")
 
 	pingPong(t, raw, br)
 	waitDone(t, done)
@@ -284,6 +278,97 @@ func TestHandleConnect_CloseLandsInTheOpensSession(t *testing.T) {
 	onePair(t, store, "sess-A")
 	if opens, closes := tunnelRows(store, "sess-B"); len(opens)+len(closes) != 0 {
 		t.Errorf("sess-B, which spoke while the tunnel was open, got %d tunnel rows; want 0", len(opens)+len(closes))
+	}
+	// Landing in sess-A is not sess-A speaking. Every reader of "who spoke last" —
+	// ActiveSession's fallback, the session list's order, eviction, affinity's newest
+	// session — must still see sess-B.
+	if got := store.ActiveSession(); got != "sess-B" {
+		t.Errorf("ActiveSession() = %q after the close; want sess-B, which spoke last", got)
+	}
+	if got := updatedAt(t, store, "sess-A"); !got.Equal(speakerAt) {
+		t.Errorf("sess-A UpdatedAt moved from %v to %v on the close; a close is not activity", speakerAt, got)
+	}
+	if list := store.ListSessions(); len(list) == 0 || list[0].ID != "sess-B" {
+		t.Errorf("session list leads with %+v after the close; want sess-B", list)
+	}
+}
+
+// waitOpen waits for sid to hold exactly one tunnel open: handleConnect records it on
+// its own goroutine, after answering the CONNECT.
+func waitOpen(t *testing.T, store *session.Store, sid string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if opens, _ := tunnelRows(store, sid); len(opens) == 1 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the tunnel open never landed in %s", sid)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func updatedAt(t *testing.T, store *session.Store, sid string) time.Time {
+	t.Helper()
+	for _, s := range store.ListSessions() {
+		if s.ID == sid {
+			return s.UpdatedAt
+		}
+	}
+	t.Fatalf("no session %q", sid)
+	return time.Time{}
+}
+
+// A first-turn tunnel opens under the default bucket, and the A2A path rekeys that bucket
+// to the conversation's contextId while the tunnel is still open. The close must follow its
+// open there, not re-create a default bucket for the next conversation's rekey to inherit.
+func TestHandleConnect_CloseFollowsARekeyedOpen(t *testing.T) {
+	store := session.New(5*time.Minute, 100, 0)
+	defer store.Close()
+	s := connectServer(t, store, nil)
+	proxyAddr, done := connectProxy(t, s)
+
+	raw, br, _ := sendConnect(t, proxyAddr, pingPongOrigin(t))
+	waitOpen(t, store, session.DefaultSessionID)
+	store.Rekey(session.DefaultSessionID, "ctx-1")
+	// The next conversation's first turn opens a default bucket of its own.
+	store.Append(session.DefaultSessionID, pipeline.SessionEvent{At: time.Now(), Direction: pipeline.Inbound, Phase: pipeline.SessionRequest})
+
+	pingPong(t, raw, br)
+	waitDone(t, done)
+
+	onePair(t, store, "ctx-1")
+	if opens, closes := tunnelRows(store, session.DefaultSessionID); len(opens)+len(closes) != 0 {
+		t.Errorf("the new default bucket got %d tunnel rows; want 0 — they belong to ctx-1", len(opens)+len(closes))
+	}
+}
+
+// A session evicted while its tunnel was open is gone, open row included. Its close would
+// be a response pairing with nothing, and re-creating the session to hold it would evict
+// another one in its place.
+func TestHandleConnect_CloseOfAnEvictedSessionRecordsNothing(t *testing.T) {
+	store := session.New(5*time.Minute, 100, 1)
+	defer store.Close()
+	store.Append("sess-A", pipeline.SessionEvent{At: time.Now(), Direction: pipeline.Outbound, Phase: pipeline.SessionRequest})
+	s := connectServer(t, store, nil)
+	proxyAddr, done := connectProxy(t, s)
+
+	raw, br, _ := sendConnect(t, proxyAddr, pingPongOrigin(t))
+	waitOpen(t, store, "sess-A")
+	store.Append("sess-B", pipeline.SessionEvent{At: time.Now(), Direction: pipeline.Outbound, Phase: pipeline.SessionRequest})
+	if store.View("sess-A") != nil {
+		t.Fatal("sess-A survived; the test needs it evicted while the tunnel is open")
+	}
+
+	pingPong(t, raw, br)
+	waitDone(t, done)
+
+	if v := store.View("sess-A"); v != nil {
+		t.Errorf("the close re-created evicted sess-A holding %d event(s); want it left gone", len(v.Events))
+	}
+	if store.View("sess-B") == nil {
+		t.Error("sess-B was evicted to make room for the close of a session that no longer exists")
 	}
 }
 
@@ -490,6 +575,49 @@ func TestHandleConnect_BridgedTunnelWithNoRequestRecordsItsClose(t *testing.T) {
 	}
 }
 
+// On h2 each request's handler runs on its own goroutine, and ServeConn returns without
+// waiting for one to start. So a request can reach the handler after the tunnel's close
+// was recorded for serving nothing. Its client has gone — ServeConn cancelled its stream
+// before returning — and serving it would put a decrypted request beside a close row that
+// says the tunnel carried none.
+func TestBridgedHandler_RequestAfterTheCloseRecordsNothing(t *testing.T) {
+	store := session.New(5*time.Minute, 100, 0)
+	defer store.Close()
+	s := connectServer(t, store, nil)
+	tl := s.newTunnelLog(&pipeline.Context{Direction: pipeline.Outbound, Host: "example.com:443"}, false)
+	tl.open("")
+	tl.closeUnserved() // ServeConn returned before any handler started
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	req := httptest.NewRequest(http.MethodGet, "https://example.com/x", nil).WithContext(ctx)
+	s.bridgedHandler("example.com:443", tl).ServeHTTP(httptest.NewRecorder(), req)
+
+	onePair(t, store, session.DefaultSessionID)
+	if v := store.View(session.DefaultSessionID); len(v.Events) != 2 {
+		t.Errorf("%d events after a request reached a closed tunnel; want only its open and close", len(v.Events))
+	}
+}
+
+// The other order: a request admitted before ServeConn returns is what answers the tunnel,
+// so no close is recorded for it.
+func TestTunnelLog_AdmittedRequestSuppressesTheClose(t *testing.T) {
+	store := session.New(5*time.Minute, 100, 0)
+	defer store.Close()
+	s := &Server{Sessions: store}
+	tl := s.newTunnelLog(&pipeline.Context{Direction: pipeline.Outbound, Host: "example.com:443"}, false)
+	tl.open("")
+
+	if !tl.admit() {
+		t.Fatal("a request arriving before the close was refused")
+	}
+	tl.closeUnserved()
+
+	if _, closes := tunnelRows(store, session.DefaultSessionID); len(closes) != 0 {
+		t.Errorf("a tunnel that served a request recorded %d close(s); want none", len(closes))
+	}
+}
+
 // A failed forged handshake kills the connection, so its tunnel row gets a close that
 // says so rather than looking still open.
 func TestBridgeServe_HandshakeFailureRecordsItsClose(t *testing.T) {
@@ -568,6 +696,64 @@ func TestHandleTransparentConn_DialFailureRecordsA502(t *testing.T) {
 		t.Errorf("close = {status %d, error %+v}, want {502, kind dial_failed}", closed.StatusCode, closed.Error)
 	}
 }
+
+// The transparent twin of TestHandleConnect_FallOpenRedialFailureRecordsTheError. The
+// destination was dialled once before the bridge fell open, so the close row is the same
+// as CONNECT's for the same failure: 200 with the dial error. 502 is the status of a
+// destination never reached, which is what the open's dial-failed reason says.
+func TestHandleTransparentConn_FallOpenRedialFailureRecordsTheError(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	dst := ln.Addr().String()
+	gone := make(chan struct{})
+	go func() {
+		// Accept the first dial, then disappear, so the re-dial is refused.
+		if c, err := ln.Accept(); err == nil {
+			_ = c.Close()
+		}
+		_ = ln.Close()
+		close(gone)
+	}()
+	engine := bridgeEngine(t, portOf(dst), nil)
+	// The bridge verifies the origin before forging. Held until the origin has gone, so
+	// the verification fails and the re-dial after it is refused, in that order.
+	engine.Upstream = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		<-gone
+		return nil, errors.New("origin gone")
+	})}
+
+	store := session.New(5*time.Minute, 100, 0)
+	defer store.Close()
+	s := connectServer(t, store, engine)
+
+	agent, proxySide := net.Pipe()
+	defer func() { _ = agent.Close() }()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		s.HandleTransparentConn(proxySide, dst)
+	}()
+	_ = agent.SetDeadline(time.Now().Add(10 * time.Second))
+	if _, err := agent.Write(tlsRecordHead); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	_, _ = io.ReadAll(agent)
+	waitClosed(t, done)
+
+	_, closed := onePair(t, store, session.DefaultSessionID)
+	if closed.StatusCode != http.StatusOK {
+		t.Errorf("close status = %d, want 200 — the destination was reached before the bridge fell open", closed.StatusCode)
+	}
+	if closed.Error == nil || closed.Error.Kind != "dial_failed" {
+		t.Errorf("close error = %+v, want kind dial_failed", closed.Error)
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
 
 func waitClosed(t *testing.T, done <-chan struct{}) {
 	t.Helper()

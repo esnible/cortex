@@ -543,7 +543,7 @@ Every plugin emits one of these 5 action values per invocation, so operators can
 
 Use `reason` to discriminate within an action — e.g. `skip/path_bypass` vs `skip/no_matching_route` tell different stories at the detail-pane level but both scan as "skip" in the at-a-glance timeline.
 
-**abctl's ACTION column is not only this vocabulary.** Two of its values are rendering, not plugin output: `—` when nothing acted, and `tunnel` for an opaque CONNECT — a row where no plugin ran and no protocol was parsed, so METHOD is blank and the label is the only thing identifying it. The open row has no STATUS either; the close row recorded when the tunnel ends does, and pairs with the open on the `#` column, so a tunnel with no `resp` row yet is still open. Neither is ever emitted by a plugin, and neither is a verdict on the request.
+**abctl's ACTION column is not only this vocabulary.** Two of its values are rendering, not plugin output: `—` when nothing acted, and `tunnel` for an opaque CONNECT — a row where no plugin ran and no protocol was parsed, so METHOD is blank and the label is the only thing identifying it. The open row has no STATUS either; the close row recorded when the tunnel ends does, and pairs with the open on the `#` column. Neither is ever emitted by a plugin, and neither is a verdict on the request.
 
 > **Producer-side contract:** the authoritative definition of the 5-value vocabulary, the `Invocation` struct fields, and which diagnostic fields each plugin type populates lives in [`docs/plugin-reference.md`](docs/plugin-reference.md#emitting-session-events). Edit that file when the vocabulary changes; this table is the consumer-side summary.
 
