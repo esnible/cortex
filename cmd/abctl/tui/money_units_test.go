@@ -5,12 +5,14 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/rossoctl/cortex/cmd/abctl/apiclient"
 	"github.com/rossoctl/cortex/cmd/abctl/money"
 	"github.com/rossoctl/cortex/core/cost/usage"
+	"github.com/rossoctl/cortex/core/session"
 )
 
 // moneySweep is a spread of figures across every rung of the money ladders: sub-cent, cents,
@@ -169,7 +171,9 @@ func TestFetchSpendSpan_AsksForAUnitSplitOnlyForAMixedWindow(t *testing.T) {
 				`"Bobcoins":{"costMicros":7800},"USD":{"costMicros":6200000}}}],"totals":{}}`,
 			1, map[string]int64{"Bobcoins": 7_800, "USD": 6_200_000}},
 		{"downgraded split", `{"window":"today","currencies":["Bobcoins","USD"],"buckets":[],"totals":{}}`,
-			`{"window":"today","group":"none","buckets":[],"totals":{}}`, 1, nil},
+			// Currencies present and the grouping downgraded: read as a split, this would print a
+			// zero figure for every unit.
+			`{"window":"today","group":"none","currencies":["Bobcoins","USD"],"buckets":[],"totals":{}}`, 1, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			splits := 0
@@ -187,7 +191,7 @@ func TestFetchSpendSpan_AsksForAUnitSplitOnlyForAMixedWindow(t *testing.T) {
 			if splits != tc.wantSplits {
 				t.Errorf("split requests = %d, want %d", splits, tc.wantSplits)
 			}
-			if len(msg.byUnit) != len(tc.wantByUnit) {
+			if (msg.byUnit == nil) != (tc.wantByUnit == nil) || len(msg.byUnit) != len(tc.wantByUnit) {
 				t.Fatalf("byUnit = %v, want %v", msg.byUnit, tc.wantByUnit)
 			}
 			for u, v := range tc.wantByUnit {
@@ -337,5 +341,68 @@ func TestUsageChart_CaptionNamesTheUnit(t *testing.T) {
 	bob := strings.Join(renderUsageChart(costChartSnapshot([]string{"Bobcoins"}), metricCost, "", width, height), "\n")
 	if strings.Contains(bob, "USD") || !strings.Contains(bob, "Bobc…") {
 		t.Errorf("a Bobcoins chart is captioned wrongly:\n%s", bob)
+	}
+}
+
+// The wiring, end to end through the model: a Bobcoins session's row in the sessions table, and a
+// mixed hour's reply through applySpendLoaded into the band reading.
+func TestUnits_ReachTheTablesAndTheBandThroughTheModel(t *testing.T) {
+	m := &model{width: 200}
+	m.sessionsTbl = newSessionsTable()
+	m.sessions = []session.SessionSummary{{
+		ID: "ebc67cf8fa68", UpdatedAt: time.Now(), EventCount: 18,
+		TotalTokens: 5_300, CostMicros: 10_600, Currencies: []string{"Bobcoins"},
+	}}
+	m.rebuildSessionsTable()
+	rows := m.sessionsTbl.Rows()
+	if len(rows) != 1 {
+		t.Fatalf("rows = %d, want 1", len(rows))
+	}
+	if row := strings.Join(rows[0], " "); strings.Contains(row, "$") || !strings.Contains(row, "Bob") {
+		t.Errorf("Bob's session row %q is not in Bobcoins", row)
+	}
+
+	m.spend.chains[spanHour].reqSeq = 7
+	m.applySpendLoaded(spendLoadedMsg{span: spanHour, req: 7,
+		snap: &usage.Snapshot{Window: "1h0m0s", Priced: true, Currencies: []string{"Bobcoins", "USD"},
+			Totals: usage.Counts{Requests: 4, PricedRequests: 4, PriceableRequests: 4, CostMicros: 6_207_800}},
+		byUnit: map[string]int64{"Bobcoins": 7_800, "USD": 6_200_000}})
+	if got := bandValue(m.spanReadings()[spanHour]); got != "$6.20 + 0.01 Bobcoins" {
+		t.Errorf("hour cell = %q, want $6.20 + 0.01 Bobcoins", got)
+	}
+}
+
+// The AGENTS fetch carries each agent's units from the reply into its rows.
+func TestFetchAgentRows_CarriesEachAgentsUnits(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"window":"today","group":"agent","currencies":["Bobcoins","USD"],` +
+			`"seriesCurrencies":{"bob-shell/2.0.5":["Bobcoins"],"claude-code/2.1.284":["USD"]},` +
+			`"buckets":[{"series":{"bob-shell/2.0.5":{"requests":3,"pricedRequests":3,"costMicros":7800},` +
+			`"claude-code/2.1.284":{"requests":9,"pricedRequests":9,"costMicros":6200000}}}],"totals":{}}`))
+	}))
+	defer ts.Close()
+	m := &model{client: apiclient.New(ts.URL)}
+	msg, ok := m.fetchAgentRowsCmd(agentsOpenOnPress, paneSessions)().(agentRowsLoadedMsg)
+	if !ok || msg.err != nil {
+		t.Fatalf("fetch = %+v", msg)
+	}
+	seen := 0
+	for _, r := range msg.rows {
+		cell := agentCostCellIn(r.Counts, r.units, agentsCostWidth)
+		switch r.label {
+		case "claude-code/2.1.284":
+			seen++
+			if cell != "$6.20" {
+				t.Errorf("claude-code via the fetch = %q, want $6.20", cell)
+			}
+		case "bob-shell/2.0.5":
+			seen++
+			if strings.Contains(cell, "$") || !strings.Contains(cell, "Bob") {
+				t.Errorf("bob-shell via the fetch = %q, want a Bobcoins figure", cell)
+			}
+		}
+	}
+	if seen != 2 {
+		t.Fatalf("saw %d of the 2 agents in %+v", seen, msg.rows)
 	}
 }

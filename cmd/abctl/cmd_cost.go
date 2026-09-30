@@ -1029,14 +1029,6 @@ func costWindowLabel(window string) string {
 	}
 }
 
-// costUSD formats a dollar figure for a headline.
-//
-// Two decimals, because this is a session or a day total and cents are the unit a
-// human reasons in. A real charge below half a cent renders as "<$0.01" rather than
-// "$0.00": the floor exists so a small non-zero figure is never printed as the one
-// string this command is forbidden to print for an unknown cost.
-func costUSD(v float64) string { return money.USD(v) }
-
 // costIn formats a money figure in the unit it is actually denominated in.
 //
 // THE GLYPH IS A CLAIM, and costUSD makes it unconditionally. That was a rendering while every
