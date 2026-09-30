@@ -221,13 +221,23 @@ const (
 // unit in every label, so a fixed "ms" above them would contradict labels reading
 // "4.1s". See the comment at the top of that renderer.
 func axisCaption(m usageMetric, width, height, floor int) string {
+	return axisCaptionIn(m, width, height, floor, "")
+}
+
+// axisCaptionIn is axisCaption naming unit for a cost chart in a foreign one; dollars and every
+// other metric caption exactly as before.
+func axisCaptionIn(m usageMetric, width, height, floor int, unit string) string {
 	if width < axisCaptionWidth {
 		return ""
 	}
 	if height > 0 && height < floor+1 {
 		return ""
 	}
-	return fmt.Sprintf("%*s", maxCountLabelLen, m.unit())
+	caption := m.unit()
+	if m.isCost() && !money.IsDefault(unit) {
+		caption = money.UnitName(unit, maxCountLabelLen)
+	}
+	return fmt.Sprintf("%*s", maxCountLabelLen, caption)
 }
 
 // renderBars draws the ungrouped bar chart: a y-axis with humanized labels, one
@@ -267,7 +277,7 @@ func renderBarsIn(buckets []usage.Bucket, m usageMetric, width, height int, unit
 	}
 
 	out := make([]string, 0, plotRows+4)
-	if caption := axisCaption(m, width, height, barChartFloor); caption != "" {
+	if caption := axisCaptionIn(m, width, height, barChartFloor, unit); caption != "" {
 		out = append(out, caption)
 	}
 

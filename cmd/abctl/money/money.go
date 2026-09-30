@@ -116,6 +116,24 @@ func Relabel(dollars, unit string, budget int) string {
 	return ""
 }
 
+// UnitName is unit as a caption: printable, and shortened with an ellipsis to fit budget columns
+// ("Bobc…" in five). Dollars are "USD".
+func UnitName(unit string, budget int) string {
+	if IsDefault(unit) {
+		return pricing.CurrencyUSD
+	}
+	name := []rune(printable(unit))
+	if budget <= 0 || lipgloss.Width(string(name)) <= budget {
+		return string(name)
+	}
+	for k := len(name) - 1; k >= 1; k-- {
+		if short := string(name[:k]) + "…"; lipgloss.Width(short) <= budget {
+			return short
+		}
+	}
+	return unknownUnit
+}
+
 // printable is unit restricted to the characters a configured unit may contain — letters, digits,
 // '-' and '_', the rule core's config enforces — because the name reaches a terminal from a
 // server abctl does not control. Nothing left means "¤".

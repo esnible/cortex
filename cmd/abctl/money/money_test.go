@@ -78,3 +78,16 @@ func TestSeriesUnit_PrefersTheSeriesOwnUnits(t *testing.T) {
 		t.Errorf("an older server = %q, %v; want USD, the only unit there was", u, ok)
 	}
 }
+
+// A caption-width unit name is shortened with an ellipsis and never exceeds its budget.
+func TestUnitName_FitsItsBudget(t *testing.T) {
+	for _, tc := range []struct {
+		unit   string
+		budget int
+		want   string
+	}{{"Bobcoins", 5, "Bobc…"}, {"Bobcoins", 0, "Bobcoins"}, {"cr", 5, "cr"}, {"", 5, "USD"}, {"Bobcoins", 1, "¤"}} {
+		if got := UnitName(tc.unit, tc.budget); got != tc.want {
+			t.Errorf("UnitName(%q, %d) = %q, want %q", tc.unit, tc.budget, got, tc.want)
+		}
+	}
+}

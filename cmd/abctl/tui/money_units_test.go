@@ -326,3 +326,16 @@ func TestCostCell_ARecordInAForeignUnitIsLabelledSo(t *testing.T) {
 		t.Errorf("response COST = %q, want 0.0352 Bobcoins", got)
 	}
 }
+
+// The y-axis caption of a Bobcoins cost chart names Bobcoins, not USD; a dollar chart keeps USD.
+func TestUsageChart_CaptionNamesTheUnit(t *testing.T) {
+	width, height := axisCaptionWidth+20, 24
+	dollars := strings.Join(renderUsageChart(costChartSnapshot(nil), metricCost, "", width, height), "\n")
+	if !strings.Contains(dollars, "USD") {
+		t.Fatalf("the dollar chart has no USD caption at width %d, so this pins nothing:\n%s", width, dollars)
+	}
+	bob := strings.Join(renderUsageChart(costChartSnapshot([]string{"Bobcoins"}), metricCost, "", width, height), "\n")
+	if strings.Contains(bob, "USD") || !strings.Contains(bob, "Bobc…") {
+		t.Errorf("a Bobcoins chart is captioned wrongly:\n%s", bob)
+	}
+}
