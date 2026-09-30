@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -74,14 +75,15 @@ func sessionsFixture() []session.SessionSummary {
 // Scoped, the sessions pane lists that agent's sessions only; the buckets that belong to no one
 // agent go too.
 func TestSessionsPane_ScopeListsOnlyThatAgentsSessions(t *testing.T) {
-	m := &model{width: 200, sessions: sessionsFixture(), agentScope: "bob-shell/2.0.5"}
+	m := &model{width: 200, sessions: sessionsFixture(), agentScope: "bob-shell/2.0.5",
+		events: map[string][]pipeline.SessionEvent{"evicted-1": {{}}}}
 	m.rebuildSessionsTable()
 	if got := strings.Join(m.sessionRowIDs, ","); got != "task-1" {
 		t.Errorf("scoped to bob: rows %q, want task-1 alone", got)
 	}
 	m.agentScope = ""
 	m.rebuildSessionsTable()
-	if got := strings.Join(m.sessionRowIDs, ","); got != "claude-1,task-1,default" {
+	if got := strings.Join(m.sessionRowIDs, ","); got != "claude-1,task-1,default,evicted-1" {
 		t.Errorf("unscoped: rows %q, want every session", got)
 	}
 }
@@ -103,6 +105,13 @@ func TestSessionsPane_AgentColumnOnlyWhenTwoAgentsAreListed(t *testing.T) {
 // Under a scope the drawer's agent axis would be one row, so `a` never lands on it.
 func TestCycleSpendAxis_SkipsTheAgentAxisUnderAScope(t *testing.T) {
 	m := &model{agentScope: "bob-shell/2.0.5"}
+	if slices.Contains(m.spendAxes(), usage.GroupAgent) {
+		t.Errorf("the hint's axis cycle %v lists the agent axis under a scope", m.spendAxes())
+	}
+	m.spend.groupIdx = slices.Index(spendDrawerAxes, usage.GroupAgent)
+	if m.spendAxis() == usage.GroupAgent {
+		t.Error("a scope set while the drawer was on the agent axis still asks for it")
+	}
 	for range 2 * len(spendDrawerAxes) {
 		m.cycleSpendAxis()
 		if m.spend.axis() == usage.GroupAgent {
