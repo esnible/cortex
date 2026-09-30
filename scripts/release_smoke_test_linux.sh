@@ -20,6 +20,13 @@ ABCTL="${HOME}/.local/bin/abctl"
 CFG="${HOME}/.cortex/config.yaml"
 UNIT="${HOME}/.config/systemd/user/cortex.service"
 
+# One temp dir, cleaned up on any exit (success, an assertion's exit 1, or an
+# uncaught error under set -e) — the same pattern scripts/install_test.sh and
+# scripts/dev/verify-moved-ca-diagnostics.sh already use, rather than a
+# scattered rm -f after each individual mktemp that an early exit would skip.
+TMP_DIR="$(mktemp -d)"
+trap 'rm -rf "${TMP_DIR}"' EXIT
+
 # Downloads to a temp file first rather than piping curl straight into sh:
 # /bin/sh on ubuntu-latest is dash, which has no pipefail, so a failed
 # download (a 404, a network blip) would otherwise leave sh reading empty
@@ -34,19 +41,16 @@ UNIT="${HOME}/.config/systemd/user/cortex.service"
 # redirection (rather than running it as `sh /path/to/tmpfile`) keeps that
 # property: $0 stays "sh", not a file path.
 install_cortex() {
-	tmp="$(mktemp)"
+	tmp="$(mktemp "${TMP_DIR}/install.XXXXXX")"
 	if ! curl -fsSL -o "${tmp}" https://raw.githubusercontent.com/rossoctl/cortex/main/scripts/install.sh; then
 		echo "FAIL: could not download install.sh" >&2
-		rm -f "${tmp}"
 		exit 1
 	fi
 	if [ ! -s "${tmp}" ]; then
 		echo "FAIL: downloaded install.sh is empty" >&2
-		rm -f "${tmp}"
 		exit 1
 	fi
 	sh -s -- --ref="$1" --yes <"${tmp}"
-	rm -f "${tmp}"
 }
 
 log() { printf '\n== %s ==\n' "$1"; }
@@ -62,10 +66,9 @@ assert_contains() {
 }
 
 assert_healthy() {
-	out="$(mktemp)"
+	out="$(mktemp "${TMP_DIR}/status.XXXXXX")"
 	"${ABCTL}" service status | tee "${out}"
 	assert_contains "${out}" "healthy:" "abctl service status did not report healthy"
-	rm -f "${out}"
 }
 
 # The most recent STABLE release created strictly BEFORE the tag under test —
@@ -133,16 +136,14 @@ log "No-op re-run: ${TAG}"
 # kill that subshell, with the pipeline's own exit status coming from tee
 # (which sees a closed/empty stdin and exits 0 regardless), silently hiding
 # exactly the failure this function's error handling exists to surface.
-reinstall_out="$(mktemp)"
+reinstall_out="$(mktemp "${TMP_DIR}/reinstall.XXXXXX")"
 if ! install_cortex "${TAG}" >"${reinstall_out}" 2>&1; then
 	echo "FAIL: re-running install failed" >&2
 	cat "${reinstall_out}" >&2
-	rm -f "${reinstall_out}"
 	exit 1
 fi
 cat "${reinstall_out}"
 assert_contains "${reinstall_out}" "Already current" "re-running install was not a no-op"
-rm -f "${reinstall_out}"
 
 log "Uninstall"
 # Existence alone survives truncation or a rewrite — the promise being tested
@@ -150,10 +151,9 @@ log "Uninstall"
 # is what actually proves that, not just that something is still there
 # afterward.
 cfg_before="$(cksum <"${CFG}")"
-uninstall_out="$(mktemp)"
+uninstall_out="$(mktemp "${TMP_DIR}/uninstall.XXXXXX")"
 "${ABCTL}" service uninstall --yes | tee "${uninstall_out}"
 assert_contains "${uninstall_out}" "Removed" "uninstall did not report success"
-rm -f "${uninstall_out}"
 if [ -f "${UNIT}" ]; then
 	echo "FAIL: unit file still present after uninstall: ${UNIT}" >&2
 	exit 1
