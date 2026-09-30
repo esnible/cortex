@@ -580,3 +580,46 @@ func TestContextClientInfo_MemoizesTheNilCase(t *testing.T) {
 		t.Errorf("ClientInfo() = %+v after a memoized nil; want the nil to stick", got)
 	}
 }
+
+// TestAffinityName pins which coding agent a request is filed with when it carries no
+// session header. The Claude-User row is the reason this is not just Name: Claude Code's
+// WebFetch announces itself only inside a comment, which the parser deliberately does
+// not read.
+func TestAffinityName(t *testing.T) {
+	cases := []struct {
+		ua   string
+		want string
+	}{
+		{"claude-cli/2.1.284 (external, cli)", "claude-code"},
+		{"Claude-User (claude-code/2.1.284; +https://support.anthropic.com/)", "claude-code"},
+		{"ai-sdk/5.0.1 openai-compatible/3.0.36 bob-shell/2.0.5", "bob-shell"},
+		{"bob-shell/2.0.5", "bob-shell"},
+		{"Go-http-client/1.1", ""},
+		{"python-httpx/0.27.0", ""},
+		{"axios/1.15.2", ""},
+		{"node", ""},
+		// A comment naming a product that is not a coding agent claims nothing.
+		{"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)", ""},
+	}
+	for _, tc := range cases {
+		if got := ParseUserAgent(tc.ua).AffinityName(); got != tc.want {
+			t.Errorf("AffinityName(%q) = %q, want %q", tc.ua, got, tc.want)
+		}
+	}
+	if got := (*EventClient)(nil).AffinityName(); got != "" {
+		t.Errorf("nil client: AffinityName() = %q, want \"\"", got)
+	}
+}
+
+// TestAffinityName_LeavesTheLabelAlone pins the other half: reading claude-code out of
+// the Claude-User comment is for session attribution ONLY. Label is the ledger's agent key
+// and the AGENTS pane's row name, and changing it would re-file new cost rows under a
+// different agent than the history beside them.
+func TestAffinityName_LeavesTheLabelAlone(t *testing.T) {
+	const ua = "Claude-User (claude-code/2.1.284; +https://support.anthropic.com/)"
+	c := ParseUserAgent(ua)
+	if c.Name != "" || c.Label() != ua {
+		t.Fatalf("ParseUserAgent(%q) = {Name:%q Label:%q}, want an unrecognised client labelled by its raw value",
+			ua, c.Name, c.Label())
+	}
+}

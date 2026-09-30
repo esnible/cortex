@@ -448,3 +448,34 @@ func (c *EventClient) Label() string {
 	}
 	return c.Name + "/" + c.Version
 }
+
+// AffinityName is the coding agent a request belongs to for SESSION ATTRIBUTION: Name when
+// the User-Agent was recognised, else a known agent's canonical name found in any token —
+// comments included — else "". See session.Store.SessionForClient for what it decides.
+//
+// WIDER THAN Name, AND ONLY HERE. Claude Code's WebFetch sends
+// "Claude-User (claude-code/2.1.284; …)", naming its agent only inside the comment the parser
+// deliberately skips. Reading comments into Name would move those rows to a different agent in
+// the ledger and the AGENTS pane than the history beside them; for attribution the only
+// question is which agent's session a header-less call joins, and there the comment is right.
+//
+// Canonical names, not knownClients' keys: the comment says "claude-code", while the key is
+// the product token "claude-cli". Nil-safe, like Label.
+func (c *EventClient) AffinityName() string {
+	if c == nil {
+		return ""
+	}
+	if c.Name != "" {
+		return c.Name
+	}
+	for _, f := range strings.Fields(c.Raw) {
+		product, _, _ := strings.Cut(strings.Trim(f, "();,"), "/")
+		product = strings.ToLower(product)
+		for _, name := range knownClients {
+			if product == name {
+				return name
+			}
+		}
+	}
+	return ""
+}
