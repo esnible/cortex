@@ -139,7 +139,7 @@ func TestClientAffinity_SeparatesBobFromClaudeCode(t *testing.T) {
 	)
 	store := session.New(5*time.Minute, 100, 0)
 	defer store.Close()
-	_, client, backendURL := newAffinityProxy(t, store)
+	probe, client, backendURL := newAffinityProxy(t, store)
 
 	send := func(path, ua, header, sid string) {
 		t.Helper()
@@ -187,6 +187,12 @@ func TestClientAffinity_SeparatesBobFromClaudeCode(t *testing.T) {
 	if v := store.View(session.PendingSessionID("bob-shell")); v != nil {
 		t.Errorf("pending:bob-shell still holds %d events after Bob's first header", len(v.Events))
 	}
+	// The axios call is recorded under default but its PLUGINS hear no identity, the same
+	// answer resolvePluginSessionID gives when nothing is known. Handing them "default"
+	// would satisfy sessionbudget's opt-in DefaultSessionFallback.
+	if got := probe.sawID[len(probe.sawID)-1]; got != "" {
+		t.Errorf("plugins saw %q for an unknown client beside two live agents, want \"\"", got)
+	}
 	// Every response followed its request, including the classifier's, which was
 	// pinned to the pending id before the adoption.
 	for id := range want {
@@ -223,5 +229,34 @@ func TestRecordTunnelOpened_UsesTheGatedSessionOnlyUnderAffinity(t *testing.T) {
 			t.Errorf("affinity=%v: tunnel row not recorded under %q", affinity, want)
 		}
 		store.Close()
+	}
+}
+
+// TestClientAffinity_OffKeepsTodaysAttribution pins the knob's off position to the
+// attribution it replaces, misfiling included: Bob's pre-header probe lands in Claude's
+// session because Claude's was the one updated last. A change that turned affinity on
+// regardless of the knob passes every in-cluster test — those are built to be unaffected —
+// and fails this one.
+func TestClientAffinity_OffKeepsTodaysAttribution(t *testing.T) {
+	store := session.New(5*time.Minute, 100, 0)
+	defer store.Close()
+	s := &Server{Sessions: store, SessionIDHeaders: []string{session.ClaudeCodeSessionHeader, session.BobSessionHeader}}
+	store.Append("claude-1", pipeline.SessionEvent{At: time.Now(), Direction: pipeline.Outbound, Phase: pipeline.SessionRequest})
+	h := http.Header{"User-Agent": []string{"bob-shell/2.0.5"}}
+	if got := s.resolveOutboundSessionID(h); got != "claude-1" {
+		t.Fatalf("knob off: Bob's header-less probe = %q, want claude-1 (today's ActiveSession answer)", got)
+	}
+}
+
+// TestClientAffinity_NeedsHeaderBucketing pins affinityOn's id_headers term: with header
+// bucketing off no session is ever any agent's, so a known agent would collect in its
+// pending bucket forever. The knob then does nothing.
+func TestClientAffinity_NeedsHeaderBucketing(t *testing.T) {
+	store := session.New(5*time.Minute, 100, 0)
+	defer store.Close()
+	s := &Server{Sessions: store, SessionIDHeaders: []string{}, ClientAffinity: true}
+	h := http.Header{"User-Agent": []string{"bob-shell/2.0.5"}}
+	if got := s.resolveOutboundSessionID(h); got != session.DefaultSessionID {
+		t.Fatalf("id_headers: [] with client_affinity = %q, want %q (affinity inert)", got, session.DefaultSessionID)
 	}
 }
