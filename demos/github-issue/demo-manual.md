@@ -172,7 +172,7 @@ Envoy — the agent application never sees them. This is tested in
 ## Prerequisites
 
 Ensure you have completed the Rossoctl platform setup as described in the
-[Installation Guide](https://github.com/rossoctl/rossoctl/blob/main/docs/getting-started/install.md).
+[Installation Guide](https://github.com/rossoctl/rossoctl/blob/main/docs/operate/install-kubernetes.md).
 
 You should also have:
 - The [cortex](https://github.com/rossoctl/cortex) repo cloned

@@ -135,7 +135,7 @@ more Cortex capabilities.
 Cluster-backed demos (everything above except the session-budget local
 walkthrough) require:
 - A Kubernetes cluster with the Rossoctl platform installed
-  ([Installation Guide](https://github.com/rossoctl/rossoctl/blob/main/docs/getting-started/install.md))
+  ([Installation Guide](https://github.com/rossoctl/rossoctl/blob/main/docs/operate/install-kubernetes.md))
 - Keycloak deployed in the `keycloak` namespace (not used by the Lineage demo)
 - SPIRE deployed (for demos using SPIFFE identity; not used by the Lineage demo)
 
