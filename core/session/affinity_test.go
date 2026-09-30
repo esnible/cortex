@@ -44,6 +44,14 @@ func TestSessionForClient_ResolutionOrder(t *testing.T) {
 	if got := s.SessionForClient(""); got != DefaultSessionID {
 		t.Fatalf("unknown client beside two known agents = %q, want the default bucket", got)
 	}
+	// Recent traffic, not expiry, decides: ttl defaults to never, so one finished Bob run
+	// would otherwise send every unknown client to default for the proxy's life.
+	s.mu.Lock()
+	s.sessions["pending:bob-shell"].UpdatedAt = time.Now().Add(-ambiguityWindow - time.Second)
+	s.mu.Unlock()
+	if got := s.SessionForClient(""); got != "" {
+		t.Fatalf("Bob quiet past ambiguityWindow = %q, want \"\" (fall back to ActiveSession)", got)
+	}
 }
 
 func TestSessionForClient_PicksTheNewestOfTheClientsSessions(t *testing.T) {

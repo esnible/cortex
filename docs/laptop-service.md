@@ -85,7 +85,8 @@ Some limitations worth knowing:
   `session.client_affinity: true` files a header-less request under the newest session of
   the same agent (by `User-Agent`). An agent's calls before its first header wait in a
   `pending:<agent>` bucket that its first session then absorbs, and a request from no
-  known agent goes to `default` while two agents are live. Two sessions of the SAME agent
+  known agent goes to `default` while two agents have both sent traffic in the last five
+  minutes (a tunnel's own row keeps today's attribution). Two sessions of the SAME agent
   still share by timing. The built-in `--local` preset turns it on for new installs; an
   existing `~/.cortex/config.yaml` is never rewritten, so add the line yourself. It is not
   hot-reloadable — restart the proxy after changing it.

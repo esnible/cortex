@@ -112,12 +112,19 @@ func (s *Store) followAdoptedLocked(id string) string {
 	return id
 }
 
+// ambiguityWindow is how recently a known agent must have sent traffic to count toward
+// SessionForClient's ambiguous case. Expiry cannot serve: session.ttl defaults to never,
+// so one Bob run would otherwise send every unknown client to default for the rest of the
+// proxy's life.
+const ambiguityWindow = 5 * time.Minute
+
 // SessionForClient is where a request with no session header goes under client affinity,
 // or "" to fall back to ActiveSession():
 //
 //  1. A known client (client != ""): its newest live session, else its pending bucket.
-//  2. An unknown client while two or more known clients hold live sessions: the default
-//     bucket, because the owner is ambiguous and guessing files it into one of theirs.
+//  2. An unknown client while two or more known clients have each sent traffic within
+//     ambiguityWindow: the default bucket, because the owner is ambiguous and guessing
+//     files it into one of theirs.
 //  3. Anything else: "", so ActiveSession() answers exactly as it does without affinity.
 //     This is the in-cluster case — an A2A agent is no known coding agent, and
 //     ActiveSession() is what ties its outbound calls to the inbound turn that caused them.
@@ -144,7 +151,7 @@ func (s *Store) SessionForClient(client string) string {
 	}
 	seen := make(map[string]struct{}, 2)
 	for id, sess := range s.sessions {
-		if s.isExpired(sess, now) {
+		if s.isExpired(sess, now) || now.Sub(sess.UpdatedAt) > ambiguityWindow {
 			continue
 		}
 		owner := s.owners[id]

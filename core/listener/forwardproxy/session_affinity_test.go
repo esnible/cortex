@@ -1,6 +1,10 @@
 package forwardproxy
 
 import (
+	"bufio"
+	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -258,5 +262,74 @@ func TestClientAffinity_NeedsHeaderBucketing(t *testing.T) {
 	h := http.Header{"User-Agent": []string{"bob-shell/2.0.5"}}
 	if got := s.resolveOutboundSessionID(h); got != session.DefaultSessionID {
 		t.Fatalf("id_headers: [] with client_affinity = %q, want %q (affinity inert)", got, session.DefaultSessionID)
+	}
+}
+
+// TestClientAffinity_TunnelRowsKeepTodaysSessionWhenTheOwnerIsAmbiguous replays the
+// review's case: tunnels with no User-Agent — most of a laptop's CONNECTs — while two
+// agents are recent. Filing those under default split every bridged call from the
+// request it carries. A known agent's tunnel still follows its pin.
+func TestClientAffinity_TunnelRowsKeepTodaysSessionWhenTheOwnerIsAmbiguous(t *testing.T) {
+	backend, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = backend.Close() }()
+	go func() {
+		for c, err := backend.Accept(); err == nil; c, err = backend.Accept() {
+			go func() { _, _ = io.Copy(io.Discard, c); _ = c.Close() }()
+		}
+	}()
+	store := session.New(0, 100, 0) // Bob then Claude Code just spoke: ActiveSession() is claude-1
+	defer store.Close()
+	for _, c := range [][2]string{{"task-1", "bob-shell"}, {"claude-1", "claude-code"}} {
+		store.Claim(c[0], c[1])
+		store.Append(c[0], pipeline.SessionEvent{At: time.Now(), Direction: pipeline.Outbound, Phase: pipeline.SessionRequest})
+	}
+	p, _ := pipeline.New(nil)
+	srv := &Server{OutboundPipeline: pipeline.NewHolder(p), Sessions: store, Client: http.DefaultClient,
+		SessionIDHeaders: []string{session.ClaudeCodeSessionHeader, session.BobSessionHeader}, ClientAffinity: true}
+	proxy := httptest.NewServer(srv.Handler())
+	defer proxy.Close()
+	waitFor := func(id string, want int) {
+		t.Helper()
+		for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(5 * time.Millisecond) {
+			n := 0
+			for _, e := range store.View(id).Events {
+				if e.HTTPMethod == http.MethodConnect {
+					n++
+				}
+			}
+			if n >= want {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatalf("%s holds %d tunnel rows, want %d; default holds %v", id, n, want, store.View(session.DefaultSessionID))
+			}
+		}
+	}
+	connect := func(uaLine string) {
+		t.Helper()
+		c, err := net.Dial("tcp", proxy.Listener.Addr().String())
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = c.Close() }()
+		_, _ = fmt.Fprintf(c, "CONNECT %[1]s HTTP/1.1\r\nHost: %[1]s\r\n%[2]s\r\n", backend.Addr(), uaLine)
+		if resp, err := http.ReadResponse(bufio.NewReader(c), nil); err != nil || resp.StatusCode != http.StatusOK {
+			t.Fatalf("CONNECT: %v %v", resp, err)
+		}
+	}
+	connect("")
+	waitFor("claude-1", 1)
+	client, server := net.Pipe()
+	defer func() { _ = client.Close() }()
+	go srv.HandleTransparentConn(server, backend.Addr().String())
+	waitFor("claude-1", 2)
+	connect("User-Agent: bob-shell/2.0.5\r\n")
+	waitFor("task-1", 1)
+	// The reject paths file through tunnelSessionID rather than the pin.
+	if got, def := srv.tunnelSessionID("", nil), srv.recordingSessionID("", nil); got != "task-1" || def != session.DefaultSessionID {
+		t.Errorf("ambiguous denial filed under %q (recordingSessionID %q), want task-1, today's ActiveSession()", got, def)
 	}
 }

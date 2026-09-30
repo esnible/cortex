@@ -126,16 +126,15 @@ func (s *Server) HandleTransparentConn(clientConn net.Conn, dst string) {
 	action := s.OutboundPipeline.Run(ctx, pctx)
 	if action.Type == pipeline.Reject {
 		// Carry the identity this connection was gated under, so the denial lands
-		// in the session whose traffic it was. Empty only when nothing was active,
-		// where recording applies the default bucket as it always did.
-		s.recordOutboundReject(pctx, action, s.recordingSessionID(sessionID, nil))
+		// in the session whose traffic it was.
+		s.recordOutboundReject(pctx, action, s.tunnelSessionID(sessionID, nil))
 		slog.Warn("transparent-proxy: outbound rejected by policy", "host", host)
 		return
 	}
 
 	// See handleConnect's pin: same rule, with no headers to read.
-	if s.ClientAffinity && s.Sessions != nil {
-		pctx.OutboundSessionID = s.recordingSessionID(sessionID, nil)
+	if s.ClientAffinity && s.Sessions != nil && sessionID != "" {
+		pctx.OutboundSessionID = sessionID
 	}
 
 	// Always dial the original IP (dst), never the sniffed name — the agent

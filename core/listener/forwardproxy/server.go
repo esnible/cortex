@@ -823,6 +823,21 @@ func (s *Server) recordingSessionID(resolved string, clientHeaders http.Header) 
 	return s.resolveOutboundSessionID(clientHeaders)
 }
 
+// tunnelSessionID is recordingSessionID for a tunnel's own row. Under client affinity
+// resolved is "" only for affinity's ambiguous answer or for no identity at all, and
+// neither sends a tunnel row to default: a CONNECT rarely carries a User-Agent, so the
+// ambiguous answer would file nearly every tunnel away from the request it carries.
+// Those rows keep ActiveSession() at recording time, as without affinity.
+func (s *Server) tunnelSessionID(resolved string, clientHeaders http.Header) string {
+	if s.ClientAffinity && resolved == "" && s.Sessions != nil {
+		if sid := s.Sessions.ActiveSession(); sid != "" {
+			return sid
+		}
+		return session.DefaultSessionID
+	}
+	return s.recordingSessionID(resolved, clientHeaders)
+}
+
 // resolvePluginSessionID is resolveOutboundSessionID without the default-bucket
 // fallback: it returns "" when neither a client header nor an active session
 // names one, and is the identity handed to plugins.
@@ -1396,7 +1411,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		// HTTP body (parsers) see no body, which they handle gracefully.
 		action := s.OutboundPipeline.Run(r.Context(), pctx)
 		if action.Type == pipeline.Reject {
-			s.recordOutboundReject(pctx, action, s.recordingSessionID(sessionID, r.Header))
+			s.recordOutboundReject(pctx, action, s.tunnelSessionID(sessionID, r.Header))
 			// Render as a JSON-RPC error frame when the rejected
 			// request was MCP JSON-RPC, so the agent's MCP client
 			// surfaces this as one failed tool call rather than a
@@ -1409,9 +1424,10 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 
 	// Under client affinity the tunnel row joins the session this CONNECT was gated
 	// under, not ActiveSession() at recording time. Pinned only now, after the
-	// pipeline, for the reason sessionID is a local. See recordTunnelOpened.
-	if s.ClientAffinity && !skipped && s.Sessions != nil {
-		pctx.OutboundSessionID = s.recordingSessionID(sessionID, r.Header)
+	// pipeline, for the reason sessionID is a local; left unpinned where affinity had no
+	// answer, for the reason in tunnelSessionID. See recordTunnelOpened.
+	if s.ClientAffinity && !skipped && s.Sessions != nil && sessionID != "" {
+		pctx.OutboundSessionID = sessionID
 	}
 
 	// Verify hijack capability BEFORE dialing upstream. If hijacking
