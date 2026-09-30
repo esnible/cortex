@@ -192,6 +192,9 @@ After installing, to cut Claude Code's token cost:
   abctl tools scan --write ~/.cortex/config.yaml   (proposes which tools to prune)
 Then watch the $ saved on every prompt Claude Code sends, live in:
   abctl
+
+The session store is memory-only. To write it to files before it is lost:
+  cortex-session-dump --out ./cortex-dump
 USAGE
 }
 
@@ -1216,6 +1219,56 @@ offer_path_setup() {
 	info "Added to ${_profile}. It applies to new terminals; for this one:"
 	info "  export PATH=\"${BIN_DIR}:\$PATH\""
 }
+
+# --- session dump helper ---
+#
+# cortex-session-dump writes the in-memory session store to files. The store is
+# memory-only, so without it a restart is unrecoverable data loss and the only
+# readers are abctl and raw curl.
+#
+# Fetched from the repo at ${version} rather than added to the release tarballs:
+# the checksum step above asserts EXACTLY two verified archives and refuses to
+# install when it sees anything else, so a third asset would mean reworking the
+# one step whose whole job is not to fail open. A helper script does not justify
+# that.
+#
+# Never fatal. A missing dump helper must not fail an install that otherwise
+# produced a working proxy, and this runs after the binaries are already in place.
+# Requires python3, which is not a dependency of anything else here -- so the
+# absence of it is reported, not repaired.
+install_session_dump() {
+	# AUTHBRIDGE_SKIP_DOWNLOAD=1 means "do not touch the network", and sets version
+	# to a prose string rather than a ref -- which would build a nonsense URL. An
+	# offline re-run keeps whatever copy is already there.
+	if [ "${AUTHBRIDGE_SKIP_DOWNLOAD:-}" = "1" ]; then
+		return 0
+	fi
+	_dump_url="https://raw.githubusercontent.com/${REPO}/${version}/scripts/dev/cortex-session-dump.py"
+	_dump_dest="${BIN_DIR}/cortex-session-dump"
+	_dump_tmp="${CORTEX_DIR}/cortex-session-dump.part"
+
+	if ! curl -fsSL "${_dump_url}" -o "${_dump_tmp}" 2>/dev/null; then
+		rm -f "${_dump_tmp}"
+		warn "could not fetch cortex-session-dump (skipping; the proxy is unaffected)"
+		return 0
+	fi
+	# A 404 body would otherwise install as a "script" that fails on first run.
+	if ! head -n 1 "${_dump_tmp}" | grep -q '^#!/usr/bin/env python3'; then
+		rm -f "${_dump_tmp}"
+		warn "fetched cortex-session-dump did not look like the expected script (skipping)"
+		return 0
+	fi
+	chmod +x "${_dump_tmp}"
+	mv -f "${_dump_tmp}" "${_dump_dest}"
+	if [ "$os" = "darwin" ] && command -v xattr >/dev/null 2>&1; then
+		xattr -d com.apple.quarantine "${_dump_dest}" 2>/dev/null || true
+	fi
+	command -v python3 >/dev/null 2>&1 \
+		|| warn "cortex-session-dump needs python3, which is not on your PATH"
+	return 0
+}
+
+install_session_dump
 
 # --- report ---
 proxy="${BIN_DIR}/authbridge-proxy"
