@@ -124,6 +124,13 @@ reads those transcripts and writes what it finds to
 `~/.cortex/session-metadata.json`, so the sessions table can show a `TITLE`
 column instead of a bare id.
 
+This is **one of two** routes to a name, and the one this section is about. The
+proxy also derives a title from a session's own events and serves it on
+`/v1/sessions`; `TITLE` prefers the harvested name and falls back to that one,
+so the column can be populated for a session with no transcript here at all.
+Everything below concerns the harvest only — including `--skip-claude-metadata`,
+which suppresses this route and not the served fallback.
+
 The scan runs in the **background**, while the viewer is already up: `abctl observe` paints
 immediately and the titles appear when the scan finishes — usually before you have
 picked a pod. The viewer opens with whatever titles the last run recorded, so a scan
@@ -150,15 +157,20 @@ full scan, and milliseconds once the file exists.
 Pass `--skip-claude-metadata` when the scan is unwanted, or when `~/.claude` should
 simply not be touched. It suppresses only the *scan*: the viewer still reads
 `~/.cortex/session-metadata.json`, so titles recorded by earlier runs keep rendering and
-only sessions new or renamed since the last scan show as bare ids. There is no flag that
-hides titles already on disk — delete the file for that.
+only sessions new or renamed since the last scan go unharvested — and those still show the
+title the proxy serves, if it derived one, rather than a bare id. There is no flag that
+hides titles already on disk — delete the file for that, and note that it does not suppress
+the served title either, which arrives over the API and not from any file.
 
-A harvest that cannot run is never fatal — the worst a missing or unreadable file
-costs is the `TITLE` column, and the viewer still opens. A file that does not parse is
-rebuilt from the transcripts rather than costing anything; the entries a rebuild cannot
-recover are sessions whose transcripts Claude Code has already pruned. The failures that
-need a human, such as an unreadable metadata file, print one line to stderr with the
-repair before the viewer starts; success says nothing.
+A harvest that cannot run is never fatal, and it costs less than it used to: the viewer
+still opens, and a session the proxy has named still shows that name, because the served
+title arrives over the API and not from this file. What a missing or unreadable file
+costs is therefore the `TITLE` column only for sessions the proxy has not named — which,
+on a machine whose agents all route through the proxy, may be none of them. A file that
+does not parse is rebuilt from the transcripts rather than costing anything; the entries
+a rebuild cannot recover are sessions whose transcripts Claude Code has already pruned.
+The failures that need a human, such as an unreadable metadata file, print one line to
+stderr with the repair before the viewer starts; success says nothing.
 
 The config directory is `CLAUDE_CONFIG_DIR` when set, and `~/.claude`
 otherwise. To read a different directory, or to force a full re-read of every
@@ -577,15 +589,20 @@ abctl is for, and the other three are surfaces you visit and leave.
 
 - **Sessions** (default): table of active sessions in the store, most
   recently updated first. Columns: session (truncated), title, updated
-  (relative), event count, tokens, cost, saved, context. `TITLE` is populated
-  from Claude Code's transcripts — see
+  (relative), event count, tokens, cost, saved, context. `TITLE` comes from
+  Claude Code's transcripts — see
   [`--skip-claude-metadata`](#naming-sessions-from-claude-code---skip-claude-metadata)
-  — and is empty for a session nothing has harvested. The proxy now also derives
-  a title of its own from the session's events and reports it as `title` on
-  `/v1/sessions`; **this pane does not read that field yet**, so a harvested
-  title is still the only thing that fills this column. Reconciling the two is
-  outstanding work. Numerics are right-aligned
-  so the digits line up between rows.
+  — and **falls back to the title the proxy serves** on `/v1/sessions`, which it
+  derives from the session's own events. So a session with no transcript on this
+  machine can still be named, and the cell is empty when neither source names it
+  — or when the proxy has stopped listing the session, since a row kept alive by
+  its cached events alone has no summary to carry a served title. A session named
+  only by the proxy therefore loses its name at that point while its events
+  remain, which is the one case where a title visibly disappears. The harvested
+  title wins when both exist — a fixed precedence, not a claim that it is always
+  the better string; the two sides rank candidates differently and may not agree
+  on a given session. The column does not say which source it used. Numerics are
+  right-aligned so the digits line up between rows.
 
   `CONTEXT(1M)` is a gauge, not a figure: how full the **conversation's**
   context was on its latest turn, against a fixed one-million-token window. The
