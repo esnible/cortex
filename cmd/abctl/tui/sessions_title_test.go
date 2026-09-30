@@ -2232,6 +2232,118 @@ func TestSessionMetadata_ServedTitleIsPerSession(t *testing.T) {
 	}
 }
 
+// The ROW LOOP pairs each session with ITS OWN served title, which only two rows can show.
+//
+// The sibling above pins the same property for the HEADER, and that is why this one is separate
+// rather than an extra assertion there: the two paths reach the served title differently. The header
+// calls servedTitle(id), a lookup by id. The row loop never looks anything up — it renders from the
+// summary it is already iterating and passes s.Title straight into sessionTitleCell. A lookup can be
+// wrong about WHICH id it matched; a loop can be wrong about WHICH ITERATION it read from, and no
+// test of the lookup can see that.
+//
+// Review found the gap by mutating the loop to pass m.sessions[0].Title instead of s.Title — every
+// row rendering the FIRST session's title — and the whole package stayed green, because every
+// fixture that put a served title in the table had exactly one row. On a pod listing two sessions
+// that mutant labels B's row with A's name, which is indistinguishable from the bug this feature
+// exists to fix except that it is confidently wrong rather than blank.
+//
+// Distinct titles in BOTH directions, so neither "always the first" nor "always the last" passes.
+func TestSessionsPane_ServedTitleCellIsPerRow(t *testing.T) {
+	m := newServedTitleModel(t, map[string]SessionMetadata{},
+		map[string]string{"s1": "first session", "s2": "second session"}, "s1", "s2")
+	m.rebuildSessionsTable()
+
+	for id, want := range map[string]string{
+		"s1": "first session",
+		"s2": "second session",
+	} {
+		if got := sessionsCell(t, m, titleRow(t, m, id), "TITLE"); got != want {
+			t.Errorf("TITLE for %s = %q, want %q", id, got, want)
+		}
+	}
+}
+
+// capTitleRunes MUST NOT EMPTY A TITLE THAT RENDERS SOMETHING, whatever the cluster structure.
+//
+// This is the property, stated once, over every degenerate shape found so far. It matters because
+// sessionHasTitle reads sessionTitle: a named row whose title caps to "" reads as UNNAMED, which
+// zeroes untitledMisses and restarts the permanent ~3-minute re-harvest. f5a0a615 fixed that for
+// whitespace; two more routes to the same failure have shipped since, both in the cap's walk:
+//
+//   - 41 consecutive flags capped to "", because regional indicators pair and a walk that treated
+//     every one as a binder ran to index 0.
+//   - "a" + 100 combining marks capped to "", because the walk's documented bound — "a mark cannot
+//     follow a mark" — is false. Marks stack, so the run walked to the base and past it.
+//
+// Both were found by review rather than by a test, which is the argument for asserting the INVARIANT
+// over a table of shapes instead of the arithmetic of any one of them. A new binder class added to
+// bindsToPrevious gets this check for free; an expected-length assertion would not.
+func TestSessionsPane_CapNeverEmptiesANonBlankTitle(t *testing.T) {
+	const acute = "\u0301" // Mn, stacks without limit
+	flag := "\U0001F1FA\U0001F1F8"
+
+	for _, tc := range []struct{ name, in string }{
+		// The two shipped defects, at the sizes they were measured at.
+		{"base plus a long mark run", "a" + strings.Repeat(acute, 100)},
+		{"consecutive flags", strings.Repeat(flag, 41)},
+		{"text then flags", strings.Repeat("a", 70) + strings.Repeat(flag, 10)},
+		// No base character at all: every rune binds, so there is no boundary to cut on and the
+		// cluster-start walk correctly reports 0. The blunt cut is the deliberate fallback — a
+		// dangling mark renders oddly, "" restarts the re-harvest.
+		{"nothing but marks", strings.Repeat(acute, 100)},
+		{"nothing but one flag half", strings.Repeat("\U0001F1FA", 100)},
+		// Mixed, because a run of one binder class is not the only degenerate shape.
+		{"marks and flags interleaved", strings.Repeat(acute+flag, 40)},
+	} {
+		got := capTitleRunes(tc.in)
+		if titleIsBlank(tc.in) {
+			t.Fatalf("%s: fixture is blank before capping, so it proves nothing", tc.name)
+		}
+		if titleIsBlank(got) {
+			t.Errorf("%s: capTitleRunes(%d runes) = %q, which is blank — this flips sessionHasTitle and restarts the re-harvest",
+				tc.name, utf8.RuneCountInString(tc.in), got)
+		}
+		if n := utf8.RuneCountInString(got); n > claude.MaxTitleLen {
+			t.Errorf("%s: capTitleRunes returned %d runes, over the %d cap", tc.name, n, claude.MaxTitleLen)
+		}
+	}
+}
+
+// THE WALK IS BOUNDED BY ONE CLUSTER, not by the title — the claim the old comment got wrong.
+//
+// The superseded bound was "at most one step for marks and ZWJ, because a mark cannot follow a
+// mark". Marks do follow marks, so the real bound has to come from somewhere else: clusterStart
+// stops at the first rune that does not bind, so the work and the loss are both proportional to the
+// ONE cluster straddling the cut.
+//
+// Growing that cluster from 5 marks to 2000 must not move the cut, and marks parked far past the cut
+// must not move it either. An expected-length assertion is the point here rather than an invariant:
+// the defect this replaces was measurable only as "how much did it lose", and 2000 marks losing the
+// same 1 rune as 5 is what says the walk terminates at the base instead of running through it.
+func TestSessionsPane_CapWalkIsBoundedByOneCluster(t *testing.T) {
+	const acute = "\u0301"
+
+	// A cluster straddling the cut: 79 plain runes, then a base at 79 carrying every mark. The only
+	// boundary at or before the cut is 79, so that is where it must land, for any run length.
+	for _, marks := range []int{5, 40, 200, 2000} {
+		in := strings.Repeat("a", 79) + "e" + strings.Repeat(acute, marks) + "tail"
+		got := capTitleRunes(in)
+		if want := strings.Repeat("a", 79); got != want {
+			t.Errorf("straddling cluster with %d marks: got %d runes, want the 79 before the base",
+				marks, utf8.RuneCountInString(got))
+		}
+	}
+	// Marks far PAST the cut are not the cut's business at all: index 80 sits inside a run of plain
+	// letters, which is already a boundary, so nothing should be walked back.
+	for _, marks := range []int{2, 200, 2000} {
+		in := strings.Repeat("a", 100) + strings.Repeat(acute, marks)
+		if got := utf8.RuneCountInString(capTitleRunes(in)); got != claude.MaxTitleLen {
+			t.Errorf("trailing %d marks: got %d runes, want the full %d — the cut is on a boundary already",
+				marks, got, claude.MaxTitleLen)
+		}
+	}
+}
+
 // Harvest wins when both sources name the session.
 //
 // A fixed precedence, not a judgement about which string is better — see sessionTitleFor. Neither
@@ -2921,17 +3033,30 @@ func TestSessionsPane_ServedTitleIsSanitizedBeforeCapping(t *testing.T) {
 	}
 }
 
-// A title of nothing but combining marks caps to "", and that is the honest answer.
+// A title of nothing but combining marks KEEPS ITS CAP-LENGTH PREFIX rather than capping to "".
 //
-// THE DEGENERATE END of the boundary walk, asserted so the loop's bound is not merely argued. Every
-// rune binds to its predecessor, so the walk runs to index 0 and there is no cluster to keep. It must
-// terminate rather than spin, and "" is what sessionHasTitle already handles — the same answer a
-// whitespace-only clip produces.
-func TestSessionsPane_CapOfOnlyCombiningMarksIsEmpty(t *testing.T) {
+// THIS TEST ASSERTED THE OPPOSITE AND WAS WRONG, in the same way the lone-regional-indicator test
+// was wrong an earlier round: it characterised what the walk did instead of what the cap owes its
+// callers. Its old reasoning was that every rune binds, so the walk runs to index 0 and "there is no
+// cluster to keep" — and that "\"\" is what sessionHasTitle already handles". That last clause is
+// the defect, stated as the justification. sessionHasTitle does not "handle" "": it reads it as
+// UNNAMED, which zeroes untitledMisses and restarts the permanent ~3-minute re-harvest for a session
+// that had a perfectly good name. Returning "" is the expensive answer, not the honest one.
+//
+// The degenerate end of the walk is still worth pinning, so this keeps the fixture and inverts the
+// expectation. With no base character anywhere there IS no boundary to cut on, so the cap takes its
+// blunt prefix and accepts a split cluster. That trade is deliberate and one-directional: a dangling
+// mark renders as an odd glyph on one row, while "" silently costs a transcript scan every three
+// minutes for as long as the pane is open.
+func TestSessionsPane_CapOfOnlyCombiningMarksKeepsAPrefix(t *testing.T) {
 	title := strings.Repeat("\u0301", claude.MaxTitleLen+20)
 
-	if got := capTitleRunes(title); got != "" {
-		t.Errorf("capTitleRunes = %q, want \"\" — nothing in this title starts a cluster", got)
+	got := capTitleRunes(title)
+	if titleIsBlank(got) {
+		t.Errorf("capTitleRunes = %q, which is blank — a named session would read as unnamed and re-harvest forever", got)
+	}
+	if n := utf8.RuneCountInString(got); n != claude.MaxTitleLen {
+		t.Errorf("capTitleRunes returned %d runes, want the blunt %d-rune prefix", n, claude.MaxTitleLen)
 	}
 }
 

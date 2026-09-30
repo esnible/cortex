@@ -472,30 +472,73 @@ func capTitleRunes(s string) string {
 	}
 	r := []rune(s)
 	cut := claude.MaxTitleLen
-	// Walk back while the rune AT the cut would be orphaned from what precedes it.
+	// Walk back off a cut that would orphan r[cut] from what precedes it.
 	//
-	// BOUNDED BY AT MOST ONE STEP FOR MARKS AND ZWJ, because a mark cannot follow a mark and still
-	// be the first orphan — but regional indicators are different, and a naive walk over them is a
-	// defect this loop used to have. They pair into flags, so in a RUN of them only every second one
-	// binds; treating all of them as binders walked to index 0 across the run, capping 41 consecutive
-	// flags to "" and taking 11 runes off "a"*70 + 10 flags rather than the "rune or two" this
-	// function's doc promises. That is not cosmetic: sessionHasTitle reads sessionTitle, so an emptied
-	// title flips a named row to unnamed and restarts the permanent ~3-minute re-harvest — the same
-	// failure f5a0a615 fixed for whitespace, reached by a second route.
+	// ONE CLUSTER IS THE WHOLE BUDGET, and saying so is the entire reason this is a loop with a
+	// floor rather than a while-it-binds walk. Two earlier versions each walked until the rune at
+	// the cut stopped binding, and each emptied a non-blank title on a long enough run:
 	//
-	// riBindsAtCut resolves the pairing by counting the run that PRECEDES the cut, so the scan is
-	// bounded by that run and the loop takes at most one step for it.
-	for cut > 0 {
-		if r[cut] >= 0x1F1E6 && r[cut] <= 0x1F1FF {
-			if !riBindsAtCut(r, cut) {
-				break
-			}
-		} else if !bindsToPrevious(r[cut]) {
-			break
-		}
-		cut--
+	//   - Regional indicators pair into flags, so in a run only every second one binds. Treating
+	//     all of them as binders walked to index 0: 41 consecutive flags capped to "".
+	//   - Combining marks STACK — "a mark cannot follow a mark" is false, and this comment used to
+	//     assert it as the loop's bound. "a" + 100 U+0301 capped to "", and "a"*60 + 40 marks lost
+	//     21 runes against a documented bound of one step.
+	//
+	// Both are the same bug reached by different routes, and the shared root cause is that the
+	// binding predicate answers "is this rune part of a cluster?" while the loop needed "where does
+	// this cluster START?". An unbounded walk answers the first question repeatedly and can consume
+	// the whole title; a degenerate cluster is not a reason to return nothing.
+	//
+	// Emptying the title is the failure that matters, not the shortening: sessionHasTitle reads
+	// sessionTitle, so a named row that caps to "" reads as unnamed and restarts the permanent
+	// ~3-minute re-harvest. That is the same failure f5a0a615 fixed for whitespace, which is why
+	// this walk now has a floor that cannot reach 0 while any non-binder precedes the cut.
+	//
+	// So: find the start of the cluster the cut lands inside, then take all of it or none of it.
+	// clusterStart is bounded by one cluster, and the ONLY way to lose the whole title is a string
+	// that is a single degenerate cluster from index 0 — a title with no base character at all,
+	// which no longer costs anything, because the fallback below keeps MaxTitleLen runes of it
+	// rather than returning "".
+	// A LEADING DEGENERATE CLUSTER IS THE ONE SHAPE WITH NO BOUNDARY TO CUT ON, and it is decided
+	// STRUCTURALLY — by clusterStart reporting 0 — rather than by noticing afterwards that the
+	// result came out blank. That distinction is the whole reason this reads the way it does. A
+	// blanket "if the cap emptied a non-blank title, cut bluntly instead" guard was written here
+	// first and rejected: it rescues the output of ANY walk, including the unbounded one this
+	// replaces, so every mutation test of the walk passed under it. A fallback that makes the
+	// broken and the fixed implementation indistinguishable is not a safety net, it is a mask.
+	//
+	// clusterStart == 0 means r[0] itself binds to what precedes it, i.e. the title opens with
+	// marks or an odd flag half and there is no earlier boundary in the string. Cutting bluntly at
+	// MaxTitleLen splits that cluster, which is the lesser evil by a wide margin: a dangling accent
+	// renders as one odd glyph, whereas "" flips sessionHasTitle to unnamed and restarts the
+	// permanent ~3-minute re-harvest.
+	if start := clusterStart(r, cut); start > 0 {
+		cut = start
 	}
 	return strings.TrimSpace(string(r[:cut]))
+}
+
+// clusterStart returns the index of the first rune of the grapheme cluster that r[cut] belongs to,
+// or cut itself when r[cut] starts its own cluster and the cut is already on a boundary.
+//
+// BOUNDED BY ONE CLUSTER. The scan stops at the first rune that does not bind to what precedes it,
+// so the work is proportional to the cluster straddling the cut and not to the title. That bound is
+// the fix for two defects that shipped in this file: capTitleRunes' doc above has the measurements.
+//
+// Regional indicators are resolved by parity rather than by the per-rune predicate, because their
+// binding depends on POSITION — only the second of a pair binds. riBindsAtCut counts the preceding
+// run, so an even run means r[i] opens a fresh pair and i is already a boundary.
+func clusterStart(r []rune, cut int) int {
+	for i := cut; i > 0; i-- {
+		if r[i] >= 0x1F1E6 && r[i] <= 0x1F1FF {
+			if !riBindsAtCut(r, i) {
+				return i
+			}
+		} else if !bindsToPrevious(r[i]) {
+			return i
+		}
+	}
+	return 0
 }
 
 // riBindsAtCut reports whether the regional indicator at r[cut] is the SECOND half of a flag, so
