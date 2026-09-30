@@ -207,6 +207,7 @@ Flags:
 	}
 
 	_, ownUnits := snap.SeriesCurrencies[*agent]
+	windowUnits := snap.Currencies
 	if *agent != "" {
 		// KeepBuckets, not NarrowBuckets: on this path the command prints window totals, so it
 		// needs no per-bucket narrowing and pays for none. (Under --by it does read buckets —
@@ -224,7 +225,7 @@ Flags:
 	if *asJSON {
 		return writeCostJSON(snap, stdout, stderr, *agent, *by)
 	}
-	writeCostSummary(snap, stdout, *agent, ownUnits)
+	writeCostSummary(snap, stdout, *agent, ownUnits, windowUnits)
 	if *by != "" {
 		writeCostBreakdown(snap, stdout, requested, *by)
 	}
@@ -555,7 +556,7 @@ func writeCostJSON(snap *usage.Snapshot, stdout, stderr io.Writer, agent, by str
 // reader that can act on a fact with nothing on screen to attach it to, and
 // TestRunCost_AsksForAnAxisThatCannotCarryAResidual is what fails if this command ever takes an
 // axis and owes a rendering.
-func writeCostSummary(snap *usage.Snapshot, stdout io.Writer, agent string, ownUnits bool) {
+func writeCostSummary(snap *usage.Snapshot, stdout io.Writer, agent string, ownUnits bool, windowUnits []string) {
 	t := snap.Totals
 	if agent != "" {
 		fmt.Fprintf(stdout, "COST — %s · %s\n", costWindowLabel(snap.Window), agent)
@@ -651,10 +652,11 @@ func writeCostSummary(snap *usage.Snapshot, stdout io.Writer, agent string, ownU
 	// SILENT WHEN THE WINDOW IS MIXED, like every other figure here: the residual is a sum over the
 	// same rows the headline was withheld for, so it is the same un-addable quantity and printing
 	// it in any unit would be the mislabel this surface just refused one line above.
-	if agent != "" && labelled && snap.UngroupedCostMicros != nil && *snap.UngroupedCostMicros != 0 {
+	residualUnit, residualLabelled := money.WindowUnit(windowUnits)
+	if agent != "" && residualLabelled && snap.UngroupedCostMicros != nil && *snap.UngroupedCostMicros != 0 {
 		fmt.Fprintf(stdout,
 			"  note  %s of this window is attributed to no agent, so per-agent figures do not sum to the window total\n",
-			costIn(float64(*snap.UngroupedCostMicros)/1e6, unit))
+			costIn(float64(*snap.UngroupedCostMicros)/1e6, residualUnit))
 	}
 
 	if split := tokenSplit(t); split != "" {

@@ -298,12 +298,11 @@ func TestUsagePane_CostIsInTheWindowsUnit(t *testing.T) {
 func TestCostUngroupedRow_OnlyDollarsCarryAnAmount(t *testing.T) {
 	residual := int64(250_000)
 	snap := &usage.Snapshot{UngroupedCostMicros: &residual}
-	want := costUngroupedRow(snap, "claude-code/2.1.284")
+	want := costUngroupedRow(snap, "claude-code/2.1.284", nil)
 	if !strings.Contains(want, "$0.25") {
 		t.Fatalf("dollar note = %q, want the amount", want)
 	}
-	snap.Currencies = []string{"Bobcoins"}
-	if got := costUngroupedRow(snap, "bob-shell/2.0.5"); strings.Contains(got, "$") || got == "" {
+	if got := costUngroupedRow(snap, "bob-shell/2.0.5", []string{"Bobcoins"}); strings.Contains(got, "$") || got == "" {
 		t.Errorf("Bobcoins note = %q, want the note without a dollar amount", got)
 	}
 }
@@ -417,5 +416,26 @@ func TestBandValue_AUnitNothingPricedIsNotAFigure(t *testing.T) {
 	r := spanReading{USD: 0.0078, Priced: true, Units: snap.Currencies, ByUnit: unitCosts(snap)}
 	if got := bandValue(r); got != "0.01 Bobcoins" {
 		t.Errorf("band = %q, want 0.01 Bobcoins: USD carried no priced request", got)
+	}
+}
+
+// The band shows spend. A unit whose split entry has nothing priced adds no spend, so it is left
+// out — and the traffic behind it, unpriced, still marks the figure partial. A unit the split
+// does not cover at all is a split that cannot be trusted, so the cell says it is mixed.
+func TestBandValue_SkipsOnlyAUnitTheSplitShowsSpentNothing(t *testing.T) {
+	split := func(series map[string]usage.Counts) *usage.Snapshot {
+		return &usage.Snapshot{Group: usage.GroupCurrency, Currencies: []string{"Bobcoins", "USD"},
+			Buckets: []usage.Bucket{{Series: series}}}
+	}
+	usd := usage.Counts{Requests: 3, PricedRequests: 3, CostMicros: 6_200_000}
+	savedOnly := split(map[string]usage.Counts{"Bobcoins": {Requests: 1, AvoidedMicros: 500_000}, "USD": usd})
+	r := spanReading{USD: 6.2, Priced: true, Unpriced: 1, Priceable: 4, Units: savedOnly.Currencies, ByUnit: unitCosts(savedOnly)}
+	if got, want := bandValue(r), "$6.20"+partialMarker; got != want {
+		t.Errorf("saving-only Bobcoins: band = %q, want %q", got, want)
+	}
+	uncovered := split(map[string]usage.Counts{"USD": usd})
+	r.ByUnit = unitCosts(uncovered)
+	if got := bandValue(r); got != money.Mixed {
+		t.Errorf("a split that does not cover Bobcoins: band = %q, want %s", got, money.Mixed)
 	}
 }

@@ -2848,3 +2848,22 @@ func TestRunCost_AgentWithNoUnitsOfItsOwnIsNotRefusedAsMixed(t *testing.T) {
 		t.Errorf("an agent with nothing priced was refused as a unit mixture:\n%s", got)
 	}
 }
+
+// The residual belongs to no agent, so it is labelled by the WINDOW's units, not the scoped
+// agent's: in a mixed window it is the same un-addable sum the headline refuses.
+func TestRunCost_AgentResidualKeepsTheWindowsUnits(t *testing.T) {
+	srv := fakeUsageServer(t, `{"window":"today","group":"agent","priced":true,
+		"currencies":["USD","credits"],"seriesCurrencies":{"claude-code/2.1.270":["USD"]},
+		"ungroupedCostMicros":5000000,
+		"totals":{"requests":20,"costMicros":9000000,"pricedRequests":20,"priceableRequests":20},
+		"buckets":[{"at":"2026-09-27T10:00:00Z","series":{
+		   "claude-code/2.1.270":{"requests":14,"costMicros":4000000,"pricedRequests":14,"priceableRequests":14}}}]}`)
+	defer srv.Close()
+	var out, errOut strings.Builder
+	if code := runCost([]string{"--endpoint", srv.URL, "--agent", "claude-code/2.1.270"}, &out, &errOut); code != 0 {
+		t.Fatalf("exit = %d, stderr = %s", code, errOut.String())
+	}
+	if got := out.String(); strings.Contains(got, "$5.00") {
+		t.Errorf("a whole-window residual in a mixed window was stated in the agent's dollars:\n%s", got)
+	}
+}
