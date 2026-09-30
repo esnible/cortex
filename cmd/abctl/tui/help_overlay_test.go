@@ -698,12 +698,8 @@ func TestHelpOverlayDoesNotStealFilterInput(t *testing.T) {
 	}
 }
 
-// The AGENTS note must EXCLUDE the spend band, not merely mention it.
-//
-// A substring pin on the negation, so it goes red on a reword that keeps the meaning. Asserting the
-// mention alone passed "scopes the usage pane AND the spend band" — the claim app.go's agentScope
-// doc forbids.
-func TestPaneKeys_TheAgentsNoteSaysWhatTheScopeDoesNotReach(t *testing.T) {
+// The AGENTS note names every surface the scope reaches.
+func TestPaneKeys_TheAgentsNoteSaysWhatTheScopeReaches(t *testing.T) {
 	g, ok := paneKeys[paneAgents]
 	if !ok {
 		t.Fatal("paneKeys has no entry for paneAgents")
@@ -712,7 +708,9 @@ func TestPaneKeys_TheAgentsNoteSaysWhatTheScopeDoesNotReach(t *testing.T) {
 	if joined == "" {
 		t.Fatal("the AGENTS group carries no notes; the disclosure has nowhere to live")
 	}
-	if !strings.Contains(joined, "not the spend band") {
-		t.Errorf("the AGENTS note does not EXCLUDE the spend band:\n  %s", joined)
+	for _, surface := range []string{"sessions", "usage pane", "spend band"} {
+		if !strings.Contains(joined, surface) || strings.Contains(joined, "not the "+surface) {
+			t.Errorf("the AGENTS note does not say the scope reaches the %s:\n  %s", surface, joined)
+		}
 	}
 }

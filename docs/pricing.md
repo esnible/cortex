@@ -184,12 +184,15 @@ install) is the aggregate behind `abctl cost`. Query parameters:
 | `group` | `none`, `model`, `endpoint`, `session`, `agent`, `currency`, `status`, `plugin`, `host` (`method` aliases `model`) | See the caveat below. |
 | `resolution` | a duration | Bucket size on a ring-served window. A ledger-backed window is answered as one bucket spanning the whole window and does not read this at all; `bucketSeconds` reports the span actually served. |
 | `session` | a session id | Combining it with a symbolic window (`today`, `month`, `7d`) is rejected with 400. |
+| `agent` | an agent label, as `group=agent` reports it (`claude-code/2.1.284`, `unknown`) | Narrows the window to that agent's traffic. Longer than 96 bytes is rejected with 400. |
 
 Response envelope: `window`, `bucketSeconds`, `group`, `buckets[]`, `totals` and `priced` are
 always present. Every other field is `omitempty` and appears only when it applies, so a clean
 response is shorter than the struct — among them `degraded`, `ungroupedCostMicros` and
 `daysOutsideRetention`, which is where dropped ledger rows, unattributable spend and a window
-reaching past retention are disclosed. Do not code against a closed field list.
+reaching past retention are disclosed. `agent` is present only when an `agent=` filter was
+applied, which is how a client tells a server that ignored the parameter. Do not code against a
+closed field list.
 
 `pricedBy`, `unpricedBy` and `incompleteBy` are absent on a ledger-backed window even when
 pricing gaps exist — a per-minute row cannot say which requests could not be priced, and
@@ -203,8 +206,9 @@ order. `unpricedBy` is keyed by `<endpoint> <model>`.
 **The response reports the `group` it SERVED, not the one you asked for — and the
 difference is silent.** On a ledger-backed window (`today`, `month`, `7d`) only
 `endpoint`, `agent`, `model` and `currency` are actually grouped; `host`, `session`, `status`
-and `plugin` fall back to `group: "none"` with no error and HTTP 200. Always read the `group` field
-back:
+and `plugin` fall back to `group: "none"` with no error and HTTP 200. With `agent=`, a window
+served from the ring — a duration, or any window without a ledger — falls back to `none` for every
+grouping. Always read the `group` field back:
 
 ```sh
 curl -s 'localhost:47601/v1/usage?window=today&group=endpoint' | jq .group

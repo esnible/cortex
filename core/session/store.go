@@ -6,6 +6,7 @@ package session
 import (
 	"log/slog"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -125,6 +126,10 @@ type entry struct {
 	// read path a field read — see ListSessions, and stripReminders for the quadratic part.
 	Title     string
 	titleRank int
+
+	// agents is the first label each known coding agent sent into this session, one entry per
+	// agent; see SessionSummary.Agent. First-wins and not shed on trim, like Title.
+	agents []sessionAgent
 
 	// context is the CONTEXT gauge's answer for this session: the main-agent turn that RANKS
 	// HIGHEST under the rule's total order, in prompt tokens — the LATEST such turn where the
@@ -348,6 +353,7 @@ func (s *Store) Append(sessionID string, event pipeline.SessionEvent) {
 	// Only the candidate's EXTRACTION is hoisted, which is the expensive half; the rank comparison
 	// and sanitizeTitle both stay under the lock, for the reason given at the fold site below.
 	titleRank, titleText := titleCandidate(&event)
+	agentName := event.Client.AffinityName()
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -461,6 +467,9 @@ func (s *Store) Append(sessionID string, event pipeline.SessionEvent) {
 		if t := sanitizeTitle(titleText); t != "" {
 			sess.Title, sess.titleRank = t, titleRank
 		}
+	}
+	if agentName != "" && sessionID != DefaultSessionID && !strings.HasPrefix(sessionID, PendingPrefix) && sess.agentLabel(agentName) == "" {
+		sess.agents = append(sess.agents, sessionAgent{name: agentName, label: usage.AgentLabel(event.Client)})
 	}
 	sess.UpdatedAt = now
 	s.activeID = sessionID
@@ -765,8 +774,16 @@ type SessionSummary struct {
 	// field decides what an operator sees are exactly those with no transcript on the machine
 	// running abctl — an agent that routes through the proxy without writing Claude Code
 	// transcripts is the case that motivated it. Do not assume a change here is invisible.
-	Title       string `json:"title,omitempty"`
-	TotalTokens int    `json:"totalTokens,omitempty"` // sum of Inference.TotalTokens across response events
+	Title string `json:"title,omitempty"`
+	// Agent is the coding agent this session belongs to, as usage.AgentLabel names it, which is
+	// the label agent= matches: the affinity owner's when one claimed the session, else the first
+	// known agent's. Absent for the default and pending buckets, which are no one agent's, and for
+	// a claimed session its owner has sent nothing into.
+	Agent string `json:"agent,omitempty"`
+	// Adopted names the pending buckets this session took in (see Store.Claim), so a client still
+	// holding one of those buckets' events can tell they now head this session.
+	Adopted     []string `json:"adopted,omitempty"`
+	TotalTokens int      `json:"totalTokens,omitempty"` // sum of Inference.TotalTokens across response events
 	// CostMicros is what this session's events cost, in millionths of a dollar, summed from
 	// the records the session itself holds.
 	//
@@ -858,6 +875,49 @@ type SessionSummary struct {
 	PromptContext *pipeline.PromptContext `json:"promptContext,omitempty"`
 }
 
+// sessionAgent is one known coding agent's first label in a session.
+type sessionAgent struct{ name, label string }
+
+// agentLabel is the first label the agent named name sent into this session, or "".
+func (e *entry) agentLabel(name string) string {
+	for _, a := range e.agents {
+		if a.name == name {
+			return a.label
+		}
+	}
+	return ""
+}
+
+// agentOfLocked is SessionSummary.Agent: the label of the owner that claimed the session, else
+// of the first known agent in it.
+func (s *Store) agentOfLocked(id string, sess *entry) string {
+	if id == DefaultSessionID || strings.HasPrefix(id, PendingPrefix) {
+		return ""
+	}
+	if owner := s.owners[id]; owner != "" {
+		return sess.agentLabel(owner)
+	}
+	if len(sess.agents) == 0 {
+		return ""
+	}
+	return sess.agents[0].label
+}
+
+// adoptedByLocked maps each session to the pending buckets it adopted; see SessionSummary.Adopted.
+func (s *Store) adoptedByLocked() map[string][]string {
+	if len(s.adopted) == 0 {
+		return nil
+	}
+	out := make(map[string][]string, len(s.adopted))
+	for pending, id := range s.adopted {
+		out[id] = append(out[id], pending)
+	}
+	for _, ids := range out {
+		sort.Strings(ids)
+	}
+	return out
+}
+
 // ListSessions returns summaries for every non-expired session. Order is
 // UpdatedAt descending (most recent first). Safe for concurrent use.
 func (s *Store) ListSessions() []SessionSummary {
@@ -866,6 +926,7 @@ func (s *Store) ListSessions() []SessionSummary {
 
 	now := time.Now()
 	out := make([]SessionSummary, 0, len(s.sessions))
+	adoptedBy := s.adoptedByLocked()
 	for id, sess := range s.sessions {
 		if s.isExpired(sess, now) {
 			continue
@@ -885,7 +946,9 @@ func (s *Store) ListSessions() []SessionSummary {
 			// shapes that agree at ~165ns, which is the standing evidence against a walk
 			// reappearing here — they would diverge immediately if one did. This obeys the rule
 			// PromptContext states below, which rejects an O(events) walk under the read lock.
-			Title: sess.Title,
+			Title:   sess.Title,
+			Agent:   s.agentOfLocked(id, sess),
+			Adopted: adoptedBy[id],
 			// Still a walk, and deliberately left as one: it is a pointer deref per event
 			// with no allocation, where the money figures below needed a JSON unmarshal.
 			TotalTokens: sumTokens(sess.Events),

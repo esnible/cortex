@@ -35,6 +35,9 @@ import (
 //	            session label would be worse than refusing.
 //	group       none (default), model, endpoint, session, agent, status, plugin, host.
 //	            "method" is an alias for "model".
+//	agent       an agent label, as group=agent reports it; narrows the window to that
+//	            agent's traffic, and the response echoes it in "agent". A window served
+//	            from the ring is then served with group none. Refused past usage.MaxLabelLen.
 //
 // THREE THINGS A CLIENT MUST NOT GET WRONG:
 //
@@ -192,11 +195,17 @@ func (s *Server) handleUsage(w http.ResponseWriter, r *http.Request) {
 		writeUsageError(w, errSessionWithSymbolicWindow)
 		return
 	}
+	// agent= narrows to one agent's traffic, by the label group=agent reports.
+	agent := r.URL.Query().Get("agent")
+	if len(agent) > maxAgentLabelLen {
+		writeUsageError(w, errAgentLabelTooLong)
+		return
+	}
 
 	var snap usage.Snapshot
 	switch {
 	case !spec.Symbolic():
-		snap = s.usage.Snapshot(spec.Dur, resolution, sessionID, group)
+		snap = s.ringSnapshot(spec.Dur, resolution, sessionID, agent, group)
 	case s.ledger == nil:
 		// No ledger: Kubernetes by design, where files in a pod are the wrong sink
 		// and the central collector is the right one. Serve what the ring HAS rather
@@ -209,13 +218,13 @@ func (s *Server) handleUsage(w http.ResponseWriter, r *http.Request) {
 		// window=today returned five and a half hours of YESTERDAY plus thirty minutes of today.
 		// The label said 6h0m0s and was literally true, so nothing was mislabelled — it
 		// over-reported today instead, which is the opposite of the degrade this comment claims.
-		snap = s.usage.Snapshot(servedSpan(spec), resolution, sessionID, group)
+		snap = s.ringSnapshot(servedSpan(spec), resolution, sessionID, agent, group)
 	default:
 		// r.Context(), so a client that hangs up stops the read. The ledger walks one day
 		// file per day in the window — up to eight for window=7d, against a path an
 		// operator configured and possibly a slow mount — and without this every abandoned
 		// request kept reading to the end for nobody. See ledger.Query.
-		snap, err = s.ledgerSnapshot(r.Context(), spec, group)
+		snap, err = s.ledgerSnapshotFor(r.Context(), spec, group, agent)
 		if err != nil {
 			// A read failure is not a client error and must not look like one.
 			//
@@ -248,6 +257,20 @@ type usageError struct{ msg string }
 func (e usageError) Error() string { return e.msg }
 
 var errSessionIDTooLong = usageError{"session id too long"}
+
+// maxAgentLabelLen bounds agent=, which is caller-supplied; an agent label is at most a truncated
+// User-Agent.
+const maxAgentLabelLen = usage.MaxLabelLen
+
+var errAgentLabelTooLong = usageError{"agent label too long"}
+
+// ringSnapshot is the ring's answer, narrowed to one agent when agent is set.
+func (s *Server) ringSnapshot(window, resolution time.Duration, sessionID, agent string, group usage.Group) usage.Snapshot {
+	if agent == "" {
+		return s.usage.Snapshot(window, resolution, sessionID, group)
+	}
+	return s.usage.AgentSnapshot(window, resolution, sessionID, agent)
+}
 
 // errSessionWithSymbolicWindow refuses session= alongside window=today|7d|month. A fixed
 // string, like every other message this endpoint returns — see writeUsageError.
@@ -292,9 +315,17 @@ var errSessionWithSymbolicWindow = usageError{
 // which is a claim the rows do not support — the gap is still visible, in
 // Totals.PricedRequests against Totals.PriceableRequests.
 func (s *Server) ledgerSnapshot(ctx context.Context, spec usage.Spec, group usage.Group) (usage.Snapshot, error) {
+	return s.ledgerSnapshotFor(ctx, spec, group, "")
+}
+
+// ledgerSnapshotFor is ledgerSnapshot narrowed to one agent's rows when agent is set.
+func (s *Server) ledgerSnapshotFor(ctx context.Context, spec usage.Spec, group usage.Group, agent string) (usage.Snapshot, error) {
 	rows, caveats, err := s.ledger.Window(ctx, spec.From, spec.To)
 	if err != nil {
 		return usage.Snapshot{}, err
+	}
+	if agent != "" {
+		rows = ledger.FilterAgent(rows, agent)
 	}
 	// HOW MUCH OF THE WINDOW THE CONFIGURATION CANNOT REACH, computed here rather than in the
 	// ledger because it is a fact about the REQUEST measured against the ledger's horizon, and
@@ -425,6 +456,7 @@ func (s *Server) ledgerSnapshot(ctx context.Context, spec usage.Spec, group usag
 	snap.Currencies = currencies
 	// Per series too, for the drawer's axes, keyed by the grouping in effect.
 	snap.SeriesCurrencies = ledger.SeriesCurrenciesIn(rows, applied, series)
+	snap.Agent = agent
 	// And the same for the saving, which is MORE likely to be unattributable than the cost:
 	// Writer.Record admits a row whose only figure is an applied saving even when the
 	// response carried no inference extension, so under group=model that row has no label at

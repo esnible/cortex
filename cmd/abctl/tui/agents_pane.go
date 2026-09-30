@@ -16,11 +16,6 @@ import (
 // The label is pipeline.EventClient.Label — "claude-code/2.1.270", or the raw User-Agent for
 // an agent the parser did not recognise. CLIENT-ASSERTED AND SPOOFABLE, like every other use
 // of that field: a display and scoping key, never an authorization subject.
-//
-// NO SESSIONS COUNT, and that absence is deliberate rather than pending. session.SessionSummary
-// carries no agent, and the cost ledger's key is (endpoint, model, agent, provenance) with no
-// session dimension BY DESIGN — so "how many sessions did this agent have" is not a question
-// anything on the wire can answer, and a column here would have to invent it.
 type agentRow struct {
 	label string
 	usage.Counts
@@ -180,10 +175,8 @@ type agentRowsLoadedMsg struct {
 
 // fetchAgentRowsCmd requests the per-agent breakdown off the render loop.
 //
-// group=agent AND NO AGENT FILTER, because /v1/usage has none: it reads window, resolution,
-// group and session, and session is its only scoping parameter. The per-agent split therefore
-// arrives as Bucket.Series and is folded here, and the scope the pane sets is applied to the
-// fetched snapshot rather than requested — see usage.ScopeToAgent.
+// group=agent and no agent filter: the pane lists every agent, so the per-agent split arrives
+// as Bucket.Series and is folded here.
 func (m *model) fetchAgentRowsCmd(open agentsOpen, from paneID) tea.Cmd {
 	if m.client == nil {
 		return nil
@@ -207,9 +200,8 @@ func (m *model) fetchAgentRowsCmd(open agentsOpen, from paneID) tea.Cmd {
 // THESE definitions rather than from the live table's columns — refitting the live ones
 // compounds each narrowing, so widening the terminal back up never restores what it took away.
 //
-// NO SESSIONS COLUMN — see agentRow. COST is widest because it is the column the pane exists
-// for, and it holds "—" for an agent nothing could price, which is every Bob row until the
-// billing-unit work lands.
+// COST is widest because it is the column the pane exists for, and it holds "—" for an agent
+// nothing could price, which is every Bob row until the billing-unit work lands.
 func agentsColumns() []table.Column {
 	return []table.Column{
 		{Title: "AGENT", Width: 34},
@@ -260,6 +252,18 @@ func newAgentsTable() table.Model {
 
 // rebuildAgentsTable rebuilds rows from m.agents.
 func (m *model) rebuildAgentsTable() {
+	// Columns and rows change together, as in rebuildSessionsTable: SESSIONS appears only once a
+	// session names its agent, so a server that names none shows the table unchanged.
+	withSessions := m.sessionsNameAgents()
+	cursor := m.agentsTbl.Cursor()
+	cols := agentsColumns()
+	if withSessions {
+		cols = append(cols[:1:1], append([]table.Column{{Title: "SESSIONS", Width: 8}}, cols[1:]...)...)
+	}
+	if want := fitTableColumns(cols, m.width); !sameColumns(m.agentsTbl.Columns(), want) {
+		m.agentsTbl.SetRows(nil)
+		m.agentsTbl.SetColumns(want)
+	}
 	rows := make([]table.Row, 0, len(m.agents))
 	for _, a := range m.agents {
 		rows = append(rows, table.Row{
@@ -271,8 +275,13 @@ func (m *model) rebuildAgentsTable() {
 			humanizeCount(a.Tokens),
 			agentCostCellIn(a.Counts, a.units, agentsCostWidth),
 		})
+		if withSessions {
+			r := rows[len(rows)-1]
+			rows[len(rows)-1] = append(r[:1:1], append(table.Row{m.agentSessionsCell(a.label)}, r[1:]...)...)
+		}
 	}
 	m.agentsTbl.SetRows(rows)
+	setCursorVisible(&m.agentsTbl, cursor)
 }
 
 // agentCostCell renders one agent's cost, or "—" when nothing priced it.
@@ -381,4 +390,29 @@ func (m *model) leaveAgentsPane() tea.Cmd {
 		return m.resumeUsagePolling()
 	}
 	return nil
+}
+
+// agentSessionsCell counts the listed sessions that belong to the agent a row names, or a dash
+// where none does.
+func (m *model) agentSessionsCell(label string) string {
+	n := 0
+	for _, s := range m.sessions {
+		if s.Agent == label {
+			n++
+		}
+	}
+	if n == 0 {
+		return emptyCell
+	}
+	return formatCount(n)
+}
+
+// sessionsNameAgents reports whether any listed session names its agent.
+func (m *model) sessionsNameAgents() bool {
+	for _, s := range m.sessions {
+		if s.Agent != "" {
+			return true
+		}
+	}
+	return false
 }
