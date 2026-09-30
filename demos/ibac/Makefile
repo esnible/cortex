@@ -70,7 +70,7 @@ preflight:  ## Verify rossoctl is installed + tools are available
 
 	@kubectl get ns rossoctl-system >/dev/null 2>&1 || { \
 	  echo "ERROR: namespace 'rossoctl-system' not found — rossoctl doesn't appear to be installed."; \
-	  echo "       Install rossoctl first (see https://github.com/rossoctl/rossoctl/blob/main/docs/install.md)"; \
+	  echo "       Install rossoctl first (see https://github.com/rossoctl/rossoctl/blob/main/docs/operate/install-kubernetes.md)"; \
 	  exit 1; \
 	}
 	@kubectl get ns $(NAMESPACE) >/dev/null 2>&1 || { \

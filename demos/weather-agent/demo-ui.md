@@ -88,7 +88,7 @@ plugin pipeline in real time while chatting with the agent, see
 ## Prerequisites
 
 Ensure you have completed the Rossoctl platform setup as described in the
-[Installation Guide](https://www.rossoctl.dev/docs/getting-started/install),
+[Installation Guide](https://www.rossoctl.dev/docs/operate/install-kubernetes),
 including the Rossoctl UI.
 
 You should also have:

@@ -870,7 +870,7 @@ kind load docker-image authbridge-lite:latest  --name rossoctl
 
 ### Running the Full Demo
 
-1. Set up a Kind cluster with SPIRE + Keycloak (use [Rossoctl installer](https://www.rossoctl.dev/docs/overview/quickstart))
+1. Set up a Kind cluster with SPIRE + Keycloak (use [Rossoctl installer](https://www.rossoctl.dev/docs/get-started/kubernetes))
 2. Deploy the webhook via [operator](https://github.com/rossoctl/operator)
 3. See the [Cortex demos index](demos/README.md) for a recommended learning path:
    - **Getting started**: `demos/weather-agent/demo-ui.md` (inbound validation, UI deployment)

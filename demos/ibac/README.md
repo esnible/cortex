@@ -6,7 +6,7 @@ An email-summarization agent receives a prompt-injection inside one of its email
 
 ## Prerequisites
 
-- A [rossoctl install](https://github.com/rossoctl/rossoctl/blob/main/docs/getting-started/install.md) on a kind cluster (operator + Keycloak + UI).
+- A [rossoctl install](https://github.com/rossoctl/rossoctl/blob/main/docs/operate/install-kubernetes.md) on a kind cluster (operator + Keycloak + UI).
 - ollama on the host with `llama3.2:3b` pulled, reachable from cluster pods at `host.docker.internal:11434`.
 - `kubectl`, `kind`, `podman` (or `docker`), `python3` with `PyYAML` (`pip3 install --user pyyaml`).
 

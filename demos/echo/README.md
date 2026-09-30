@@ -30,7 +30,7 @@ leaves it un-injected — what it logs is exactly what left the agent's sidecar.
 ## Prerequisites
 
 - A running rossoctl **kind** cluster (`rossoctl-system` + `team1` namespaces).
-  See the [install guide](https://github.com/rossoctl/rossoctl/blob/main/docs/getting-started/install.md).
+  See the [install guide](https://github.com/rossoctl/rossoctl/blob/main/docs/operate/install-kubernetes.md).
 - `kubectl`, `kind`, `podman` or `docker`.
 - `python3` + PyYAML (config merge) and `python-keycloak` (Keycloak setup):
   `pip install pyyaml python-keycloak`.
