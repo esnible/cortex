@@ -113,6 +113,17 @@ type Event struct {
 	// than how much to trust the rates.
 	Provenance string `json:"provenance,omitempty"`
 
+	// Currency is the unit CostUSD and every other figure on this record is denominated in,
+	// EMPTY FOR THE DEFAULT (USD) — the ledger's rule for Row.Currency, and the same spelling.
+	//
+	// THE FIELD NAMES ARE HISTORICAL. CostUSD predates billing units and cannot be renamed on a
+	// wire other consumers decode; under a credits gateway it holds credits, and this is what
+	// says so. Stamped by settle through pricing.UnitOf, the rule the ledger writer also uses.
+	//
+	// ADDITIVE and omitempty: an older producer's record decodes with Currency "", which was
+	// the only unit there was, so every existing reading stays correct.
+	Currency string `json:"currency,omitempty"`
+
 	// HeaderOmittedCache says the gateway reported a figure that priced only the uncached
 	// tiers, so the rate table was charged instead of it. See settle.Settled.
 	//

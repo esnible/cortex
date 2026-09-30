@@ -3,7 +3,6 @@ package ledger
 import (
 	"errors"
 	"log/slog"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -502,14 +501,15 @@ func (w *Writer) Record(_ string, e *pipeline.SessionEvent) {
 	// third-party one answering "usd" would put a currency field on every row of a dollars-only
 	// deployment and break the byte-identical promise above. One comparison is cheaper than
 	// relying on an interface's implementers to agree about case.
-	if w.rates != nil {
-		var model string
-		if e.Inference != nil {
-			model = e.Inference.Model
-		}
-		if c := w.rates.CurrencyFor(e.Host, model); c != "" && !strings.EqualFold(c, pricing.CurrencyUSD) {
-			r.Currency = rowLabel(c)
-		}
+	//
+	// pricing.UnitOf is where both of those rules live, shared with settle so a request's record
+	// and its row cannot name different units (TestSettleAndWriter_AgreeOnTheUnit).
+	var model string
+	if e.Inference != nil {
+		model = e.Inference.Model
+	}
+	if c := pricing.UnitOf(w.rates, e.Host, model); c != "" {
+		r.Currency = rowLabel(c)
 	}
 	if e.StatusCode >= 400 || e.Phase == pipeline.SessionDenied {
 		r.Errors = 1

@@ -126,6 +126,7 @@ func TestEventJSONTagsArePinned_EveryField(t *testing.T) {
 		DailyTotalUSD:    3.5,
 		DailyMaxUSD:      10,
 		Provenance:       "authoritative",
+		Currency:         "credits",
 		Settled:          true,
 		Incomplete:       true,
 		IncompleteReason: "output-uncounted",
@@ -151,7 +152,7 @@ func TestEventJSONTagsArePinned_EveryField(t *testing.T) {
 		t.Fatalf("marshal: %v", err)
 	}
 	const want = `{"cost_usd":0.25,"source":"gateway-header","daily_total_usd":3.5,` +
-		`"daily_max_usd":10,"provenance":"authoritative","header_omitted_cache":true,` +
+		`"daily_max_usd":10,"provenance":"authoritative","currency":"credits","header_omitted_cache":true,` +
 		`"gateway_usd":0.000205,"settled":true,"incomplete":true,` +
 		`"incomplete_reason":"output-uncounted","prompt_usd":0.2,"output_usd":0.05,` +
 		`"tiers":{"input":0.007,"cache_write":0.022,"cache_read":0.3,"output":0.46},` +
@@ -208,7 +209,7 @@ func TestTotalAvoidedMicros_ReadsWhatTheProducerActuallyWrites(t *testing.T) {
 // process.
 func TestEventWireCoversEveryField(t *testing.T) {
 	// Keep in step with the marshal in TestEventJSONTagsArePinned_EveryField.
-	const pinned = 16
+	const pinned = 17
 	if got := reflect.TypeOf(Event{}).NumField(); got != pinned {
 		t.Fatalf("Event has %d fields, %d are pinned on the wire.\n"+
 			"Add the new field to TestEventJSONTagsArePinned_EveryField's marshal AND its "+
