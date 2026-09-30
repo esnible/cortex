@@ -666,6 +666,9 @@ var unitAxes = [...]Group{GroupModel, GroupEndpoint, GroupAgent}
 
 // noteUnit records that a request filed under label on axis g was in unit.
 func (b *bucket) noteUnit(g Group, label, unit string) {
+	if unit == "" {
+		return
+	}
 	if b.labelUnits == nil {
 		b.labelUnits = make(map[Group]map[string]map[string]struct{}, len(unitAxes))
 	}
@@ -738,6 +741,8 @@ type eventCost struct {
 	unpricedKey string
 	// unit is the billing unit the figure is in, "" for USD. See Aggregator.Record.
 	unit string
+	// money: the ledger's admission rule (ledger.Writer.Record).
+	money bool
 }
 
 // costOf settles one event's cost, preferring a published figure and falling back
@@ -1077,6 +1082,7 @@ func (a *Aggregator) Record(sessionID string, e *pipeline.SessionEvent) {
 		if haveRec {
 			avoided = rec.TotalAvoidedMicros()
 		}
+		ec.money = e.Inference != nil || (haveRec && (rec.Priced() || rec.RejectedReason != "" || avoided > 0))
 	}
 
 	a.mu.Lock()
@@ -1317,6 +1323,9 @@ func (a *Aggregator) foldInto(ring []bucket, t time.Time, sessionID string, e *p
 		unit = ringLabel(ec.unit)
 	}
 	addLabel(&b.byCurrency, unit, one)
+	if !ec.money {
+		unit = ""
+	}
 	if model != "" {
 		b.noteUnit(GroupModel, addLabel(&b.byMethod, ringLabel(model), one), unit)
 	}

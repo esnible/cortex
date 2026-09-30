@@ -424,7 +424,7 @@ func (s *Server) ledgerSnapshot(ctx context.Context, spec usage.Spec, group usag
 	// and both are what let a client refuse to present a figure it cannot justify.
 	snap.Currencies = currencies
 	// Per series too, for the drawer's axes, keyed by the grouping in effect.
-	snap.SeriesCurrencies = ledger.SeriesCurrenciesIn(rows, applied)
+	snap.SeriesCurrencies = ledger.SeriesCurrenciesIn(rows, applied, series)
 	// And the same for the saving, which is MORE likely to be unattributable than the cost:
 	// Writer.Record admits a row whose only figure is an applied saving even when the
 	// response carried no inference extension, so under group=model that row has no label at

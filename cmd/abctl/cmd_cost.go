@@ -206,6 +206,7 @@ Flags:
 		return 1
 	}
 
+	_, ownUnits := snap.SeriesCurrencies[*agent]
 	if *agent != "" {
 		// KeepBuckets, not NarrowBuckets: on this path the command prints window totals, so it
 		// needs no per-bucket narrowing and pays for none. (Under --by it does read buckets —
@@ -223,7 +224,7 @@ Flags:
 	if *asJSON {
 		return writeCostJSON(snap, stdout, stderr, *agent, *by)
 	}
-	writeCostSummary(snap, stdout, *agent)
+	writeCostSummary(snap, stdout, *agent, ownUnits)
 	if *by != "" {
 		writeCostBreakdown(snap, stdout, requested, *by)
 	}
@@ -290,18 +291,7 @@ type costJSON struct {
 	//
 	// VERBATIM, INCLUDING THE SINGLE-UNIT CASE, rather than only when there is a conflict. One
 	// entry is not a caveat but the answer to "what unit IS this total in", which a script billing
-	// in credits needs and could not otherwise get from this document. omitempty, so the ring —
-	// which does not compute the field — serialises no key, and a USD-only ledger window names USD
-	// exactly as it names any other unit.
-	//
-	// EXCEPT UNDER --agent, WHERE IT DESCRIBES THE WINDOW AND Totals DESCRIBES ONE AGENT. The
-	// sentence above is the whole truth on every other path; on that one the two fields have
-	// different subjects and no third field says so. usage.ScopeToAgent explains why it cannot be
-	// narrowed — deciding one agent's units needs a cross-tabulation a folded Counts has already
-	// summed away — and the human surface prints a line saying whose mixture it is. This one does
-	// not, deliberately: the discrepancy is in the OVER-refusing direction, so a script that
-	// honours the field withholds a figure it could technically have shown and never computes a
-	// wrong one. A field that narrowed by guessing would be the opposite trade.
+	// in credits needs and could not otherwise get from this document.
 	Currencies []string `json:"currencies,omitempty"`
 	// PricedBy counts the priced requests by the provenance of their figure —
 	// "authoritative" when the gateway reported it, otherwise the rate table's level. It
@@ -565,7 +555,7 @@ func writeCostJSON(snap *usage.Snapshot, stdout, stderr io.Writer, agent, by str
 // reader that can act on a fact with nothing on screen to attach it to, and
 // TestRunCost_AsksForAnAxisThatCannotCarryAResidual is what fails if this command ever takes an
 // axis and owes a rendering.
-func writeCostSummary(snap *usage.Snapshot, stdout io.Writer, agent string) {
+func writeCostSummary(snap *usage.Snapshot, stdout io.Writer, agent string, ownUnits bool) {
 	t := snap.Totals
 	if agent != "" {
 		fmt.Fprintf(stdout, "COST — %s · %s\n", costWindowLabel(snap.Window), agent)
@@ -593,8 +583,7 @@ func writeCostSummary(snap *usage.Snapshot, stdout io.Writer, agent string) {
 	// figure on screen. Same posture as the negative case beside it, and for a stronger reason:
 	// that one is a producer contradicting itself, this one is arithmetic that was never legal.
 	//
-	// TWO OR MORE, never one and never zero: an absent list is the in-memory ring, which does not
-	// compute it, and one unit is every deployment today. Turning either into a refusal would
+	// TWO OR MORE, never one and never zero: turning either into a refusal would
 	// break summable traffic — see usage.Snapshot.Currencies.
 	// A SINGLE NON-USD UNIT IS NOT MIXED, and was the other half of the same defect: one unit
 	// passes the test above, so a deployment billing only in credits printed its total behind a
@@ -637,11 +626,10 @@ func writeCostSummary(snap *usage.Snapshot, stdout io.Writer, agent string) {
 			"  ! this window holds %s, which cannot be added — no combined figure is shown\n",
 			strings.Join(snap.Currencies, " and "))
 		// WHOSE MIXTURE IT IS, on the --agent path. The list describes the WINDOW; Totals here
-		// describes one agent, and no client-side arithmetic can narrow the first to the second —
-		// see usage.ScopeToAgent for why the field is carried over anyway. Without this line a reader who
+		// describes one agent. Without this line a reader who
 		// asked about one agent reads the refusal as a statement about that agent's own traffic and
 		// goes looking for a second gateway it may never have called.
-		if agent != "" {
+		if agent != "" && !ownUnits {
 			fmt.Fprintln(stdout,
 				"    this is the window's mixture, not necessarily this agent's; a per-agent figure cannot be separated from it")
 		}

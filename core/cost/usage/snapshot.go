@@ -1385,8 +1385,10 @@ func (a *Aggregator) Snapshot(window, resolution time.Duration, sessionID string
 					}
 					addCoverageInto(out.IncompleteBy, k, v.Requests, &coverageSaturated)
 				}
-				for u := range src.byCurrency {
-					units[u] = struct{}{}
+				for _, us := range src.labelUnits[GroupAgent] {
+					for u := range us {
+						units[u] = struct{}{}
+					}
 				}
 				labelUnits = unionUnits(labelUnits, src.labelUnits[unitAxis])
 			}

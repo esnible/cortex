@@ -482,7 +482,7 @@ func TestSeriesCurrenciesIn_NamesEachAgentsUnits(t *testing.T) {
 		{Endpoint: "anthropic", Agent: "claude-code/2.1.284", Counts: usage.Counts{Requests: 6}},
 		{Endpoint: "litellm", Agent: "claude-code/2.1.284", Currency: "usd", Counts: usage.Counts{Requests: 1}},
 	}
-	got := SeriesCurrenciesIn(rows, usage.GroupAgent)
+	got := SeriesCurrenciesIn(rows, usage.GroupAgent, foldSeries(rows, usage.GroupAgent))
 	if want := []string{"credits"}; !slices.Equal(got["bob-shell/2.0.5"], want) {
 		t.Errorf("bob-shell = %v, want %v", got["bob-shell/2.0.5"], want)
 	}
@@ -490,10 +490,42 @@ func TestSeriesCurrenciesIn_NamesEachAgentsUnits(t *testing.T) {
 		t.Errorf("claude-code = %v, want %v; a legacy row and an explicit usd one are one unit",
 			got["claude-code/2.1.284"], want)
 	}
-	if got := SeriesCurrenciesIn(rows, usage.GroupEndpoint)["bob"]; !slices.Equal(got, []string{"credits"}) {
+	if got := SeriesCurrenciesIn(rows, usage.GroupEndpoint, foldSeries(rows, usage.GroupEndpoint))["bob"]; !slices.Equal(got, []string{"credits"}) {
 		t.Errorf("endpoint bob = %v, want [credits]; the drawer's endpoint axis labels by this", got)
 	}
-	if other := SeriesCurrenciesIn(rows, usage.GroupStatus); other != nil {
+	if other := SeriesCurrenciesIn(rows, usage.GroupStatus, foldSeries(rows, usage.GroupStatus)); other != nil {
 		t.Errorf("group=status got %v, want nothing: it is defined for the drawer's axes only", other)
 	}
+}
+
+// Model names come from requests, so SeriesCurrencies must be bounded by the same cap as the series
+// it labels: a key per series on the wire, with a capped-away label's units on the overflow band.
+func TestSeriesCurrenciesIn_IsBoundedLikeTheSeries(t *testing.T) {
+	var rows []Row
+	for i := range usage.MaxSeriesInResponse + 4 {
+		rows = append(rows, Row{Endpoint: "gw", Model: fmt.Sprintf("m%02d", i),
+			Counts: usage.Counts{Requests: 1, CostMicros: int64(1000 - i)}})
+	}
+	rows = append(rows, Row{Endpoint: "bob", Model: "tiny", Currency: "credits", Counts: usage.Counts{Requests: 1, CostMicros: 1}})
+	_, series, _, _ := Fold(rows, usage.GroupModel)
+	got := SeriesCurrenciesIn(rows, usage.GroupModel, series)
+	var overflow string
+	for label := range got {
+		if _, ok := series[label]; !ok {
+			t.Errorf("SeriesCurrencies names %q, which is not a series on the wire", label)
+		}
+	}
+	for label := range series {
+		if !slices.ContainsFunc(rows, func(r Row) bool { return r.Model == label }) {
+			overflow = label
+		}
+	}
+	if !slices.Contains(got[overflow], "credits") {
+		t.Errorf("overflow %q units = %v, want credits among them: the capped-away row is in it", overflow, got[overflow])
+	}
+}
+
+func foldSeries(rows []Row, g usage.Group) map[string]usage.Counts {
+	_, series, _, _ := Fold(rows, g)
+	return series
 }

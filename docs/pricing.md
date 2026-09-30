@@ -385,10 +385,6 @@ way.
 Nothing converts between units. There are no exchange rates here: a unit partitions figures, it is
 never an operand.
 
-The in-memory ring does not track units. A window it serves — a duration such as `--window 1h`, or
-any window where no ledger is configured — totals every unit's figures together, and answers
-`--by currency` with no breakdown.
-
 ### Per-tier rate forms
 
 Both forms are accepted per tier: `*_cost_per_million` or `*_cost_per_token`. Setting

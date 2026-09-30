@@ -23,7 +23,15 @@ func twoUnitRing(t *testing.T, now time.Time) *Aggregator {
 	claude.Client = &pipeline.EventClient{Name: "claude-code", Version: "2.1.284"}
 	a.Record("bob-task", bob)
 	a.Record("claude-session", claude)
+	a.Record("bob-task", plainResponse(now, bob.Client))
 	return a
+}
+
+// plainResponse is traffic that carries no money — bridged HTTPS to a host that is not an
+// inference endpoint — which the ledger does not admit and so names no unit for.
+func plainResponse(now time.Time, c *pipeline.EventClient) *pipeline.SessionEvent {
+	return &pipeline.SessionEvent{At: now, Direction: pipeline.Outbound, Phase: pipeline.SessionResponse,
+		Host: "github.com", StatusCode: 200, Client: c}
 }
 
 // The ring answers group=currency with a real per-unit breakdown, and names both units.
@@ -76,6 +84,14 @@ func TestSnapshot_TheRingReportsDollarsLikeTheLedger(t *testing.T) {
 	snap := a.Snapshot(10*BucketWidth, BucketWidth, "", GroupNone)
 	if want := []string{pricing.CurrencyUSD}; !slices.Equal(snap.Currencies, want) {
 		t.Errorf("Currencies = %v, want %v", snap.Currencies, want)
+	}
+
+	bob := New(WithClock(func() time.Time { return now }))
+	bob.Record("s1", withCostRecord(t, pricedRespEvent("api.us-east.bob.ibm.com", "premium-ide", 3852, 47),
+		event.Event{CostUSD: 0.0078, Settled: true, Currency: "Bobcoins"}))
+	bob.Record("s1", plainResponse(now, nil))
+	if got := bob.Snapshot(10*BucketWidth, BucketWidth, "", GroupNone).Currencies; !slices.Equal(got, []string{"Bobcoins"}) {
+		t.Errorf("Bobcoins-only window Currencies = %v, want [Bobcoins]: the plain response carries no money", got)
 	}
 }
 

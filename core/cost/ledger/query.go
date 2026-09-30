@@ -586,8 +586,10 @@ func unitSpellings(rows []Row) map[string]string {
 
 // SeriesCurrenciesIn is usage.Snapshot.SeriesCurrencies for these rows: for group=model, endpoint
 // and agent, each series' units as CurrenciesIn reports them, keyed by the label Fold gives that
-// series. Nil for every other grouping, where the field is not defined.
-func SeriesCurrenciesIn(rows []Row, group usage.Group) map[string][]string {
+// series in the capped series Fold returned. A label the cap folded away lends its rows to the
+// overflow band, the one series no row's label names. Nil for every other grouping, where the
+// field is not defined.
+func SeriesCurrenciesIn(rows []Row, group usage.Group, series map[string]usage.Counts) map[string][]string {
 	switch group {
 	case usage.GroupModel, usage.GroupMethod, usage.GroupEndpoint, usage.GroupAgent:
 	default:
@@ -602,8 +604,23 @@ func SeriesCurrenciesIn(rows []Row, group usage.Group) map[string][]string {
 			byLabel[label] = append(byLabel[label], r)
 		}
 	}
-	out := make(map[string][]string, len(byLabel))
+	var overflow string
+	for label := range series {
+		if _, ok := byLabel[label]; !ok {
+			overflow = label
+		}
+	}
+	merged := map[string][]Row{}
 	for label, rs := range byLabel {
+		if _, ok := series[label]; !ok {
+			label = overflow
+		}
+		if label != "" {
+			merged[label] = append(merged[label], rs...)
+		}
+	}
+	out := make(map[string][]string, len(merged))
+	for label, rs := range merged {
 		out[label] = CurrenciesIn(rs)
 	}
 	return out
