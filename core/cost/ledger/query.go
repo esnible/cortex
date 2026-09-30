@@ -584,21 +584,26 @@ func unitSpellings(rows []Row) map[string]string {
 	return seen
 }
 
-// SeriesCurrenciesIn is usage.Snapshot.SeriesCurrencies for these rows: for group=agent, each
-// agent's units as CurrenciesIn reports them, keyed by the label Fold gives that agent's series.
-// Nil for every other grouping, where the field is not defined.
+// SeriesCurrenciesIn is usage.Snapshot.SeriesCurrencies for these rows: for group=model, endpoint
+// and agent, each series' units as CurrenciesIn reports them, keyed by the label Fold gives that
+// series. Nil for every other grouping, where the field is not defined.
 func SeriesCurrenciesIn(rows []Row, group usage.Group) map[string][]string {
-	if group != usage.GroupAgent || len(rows) == 0 {
+	switch group {
+	case usage.GroupModel, usage.GroupMethod, usage.GroupEndpoint, usage.GroupAgent:
+	default:
 		return nil
 	}
-	byAgent := map[string][]Row{}
+	if len(rows) == 0 {
+		return nil
+	}
+	byLabel := map[string][]Row{}
 	for _, r := range rows {
-		if label, ok := labelFor(r, usage.GroupAgent); ok {
-			byAgent[label] = append(byAgent[label], r)
+		if label, ok := labelFor(r, group); ok {
+			byLabel[label] = append(byLabel[label], r)
 		}
 	}
-	out := make(map[string][]string, len(byAgent))
-	for label, rs := range byAgent {
+	out := make(map[string][]string, len(byLabel))
+	for label, rs := range byLabel {
 		out[label] = CurrenciesIn(rs)
 	}
 	return out

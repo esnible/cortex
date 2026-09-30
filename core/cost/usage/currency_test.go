@@ -108,7 +108,7 @@ func TestSnapshot_TheRingsOwnPricingCarriesTheEndpointsUnit(t *testing.T) {
 	}
 }
 
-// group=agent carries each agent's own units, so one agent's figure can be labelled without
+// group=agent, model and endpoint carry each series' own units, so one row can be labelled without
 // borrowing the window's mixture.
 func TestSnapshot_SeriesCurrenciesNamesEachAgentsUnits(t *testing.T) {
 	now := time.Now().Truncate(BucketWidth)
@@ -120,9 +120,18 @@ func TestSnapshot_SeriesCurrenciesNamesEachAgentsUnits(t *testing.T) {
 	if got := snap.SeriesCurrencies["claude-code/2.1.284"]; !slices.Equal(got, []string{pricing.CurrencyUSD}) {
 		t.Errorf("claude-code units = %v, want [USD]", got)
 	}
-	// Only group=agent carries it; every other grouping's response is unchanged.
-	if other := twoUnitRing(t, now).Snapshot(10*BucketWidth, BucketWidth, "", GroupModel); other.SeriesCurrencies != nil {
-		t.Errorf("group=model carries SeriesCurrencies %v; it is an agent-only field", other.SeriesCurrencies)
+	// The drawer's other two axes carry it too, keyed like their own series.
+	byModel := twoUnitRing(t, now).Snapshot(10*BucketWidth, BucketWidth, "", GroupModel).SeriesCurrencies
+	if got := byModel["premium-ide"]; !slices.Equal(got, []string{"Bobcoins"}) {
+		t.Errorf("model premium-ide units = %v, want [Bobcoins]", got)
+	}
+	byEndpoint := twoUnitRing(t, now).Snapshot(10*BucketWidth, BucketWidth, "", GroupEndpoint).SeriesCurrencies
+	if got := byEndpoint["gw.internal"]; !slices.Equal(got, []string{pricing.CurrencyUSD}) {
+		t.Errorf("endpoint gw.internal units = %v, want [USD]", got)
+	}
+	// Every other grouping's response is unchanged.
+	if other := twoUnitRing(t, now).Snapshot(10*BucketWidth, BucketWidth, "", GroupStatus); other.SeriesCurrencies != nil {
+		t.Errorf("group=status carries SeriesCurrencies %v; it is defined for the drawer's axes only", other.SeriesCurrencies)
 	}
 }
 

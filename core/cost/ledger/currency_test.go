@@ -490,7 +490,10 @@ func TestSeriesCurrenciesIn_NamesEachAgentsUnits(t *testing.T) {
 		t.Errorf("claude-code = %v, want %v; a legacy row and an explicit usd one are one unit",
 			got["claude-code/2.1.284"], want)
 	}
-	if other := SeriesCurrenciesIn(rows, usage.GroupModel); other != nil {
-		t.Errorf("group=model got %v, want nothing: the field is agent-only", other)
+	if got := SeriesCurrenciesIn(rows, usage.GroupEndpoint)["bob"]; !slices.Equal(got, []string{"credits"}) {
+		t.Errorf("endpoint bob = %v, want [credits]; the drawer's endpoint axis labels by this", got)
+	}
+	if other := SeriesCurrenciesIn(rows, usage.GroupStatus); other != nil {
+		t.Errorf("group=status got %v, want nothing: it is defined for the drawer's axes only", other)
 	}
 }

@@ -156,11 +156,11 @@ type Snapshot struct {
 	// it for ring windows. Both the ledger and the ring fill it now. One entry is fine. Only two or
 	// more is a claim.
 	Currencies []string `json:"currencies,omitempty"`
-	// SeriesCurrencies names, for group=agent, the units EACH agent's series is in — the
-	// cross-tabulation Currencies cannot carry, so one agent's figure can be labelled and summed
-	// without borrowing another agent's units. Keyed like the series; absent for every other
-	// grouping and from older producers, which a client reads as "unknown" and falls back to
-	// Currencies for.
+	// SeriesCurrencies names, for group=model, endpoint and agent, the units EACH series is in —
+	// the cross-tabulation Currencies cannot carry, so one agent's (or model's, or endpoint's)
+	// figure can be labelled and summed without borrowing another's units. Keyed like the series;
+	// absent for every other grouping and from older producers, which a client reads as "unknown"
+	// and falls back to Currencies for.
 	SeriesCurrencies map[string][]string `json:"seriesCurrencies,omitempty"`
 	// Buckets runs oldest to newest. For a ring-backed window it always has
 	// Window/BucketWidth entries, including zeroed ones for idle minutes, so a client
@@ -1315,7 +1315,11 @@ func (a *Aggregator) Snapshot(window, resolution time.Duration, sessionID string
 	var coverageSaturated bool
 	reconcilable := group.Reconcilable()
 	units := map[string]struct{}{}
-	var agentUnits map[string]map[string]struct{}
+	var labelUnits map[string]map[string]struct{}
+	unitAxis := group
+	if unitAxis == GroupMethod {
+		unitAxis = GroupModel
+	}
 
 	for i := n - 1; i >= 0; i-- {
 		t := newest.Add(-time.Duration(i) * BucketWidth)
@@ -1384,9 +1388,7 @@ func (a *Aggregator) Snapshot(window, resolution time.Duration, sessionID string
 				for u := range src.byCurrency {
 					units[u] = struct{}{}
 				}
-				if group == GroupAgent {
-					agentUnits = unionUnits(agentUnits, src.agentUnits)
-				}
+				labelUnits = unionUnits(labelUnits, src.labelUnits[unitAxis])
 			}
 		}
 		out.Buckets = append(out.Buckets, b)
@@ -1420,7 +1422,7 @@ func (a *Aggregator) Snapshot(window, resolution time.Duration, sessionID string
 	// make the cut. See MaxSeriesInResponse for the 4.7 MB this bounds.
 	capSeriesAcrossWindow(out.Buckets, MaxSeriesInResponse)
 	out.Currencies = sortedUnits(units)
-	out.SeriesCurrencies = seriesUnits(agentUnits, out.Buckets)
+	out.SeriesCurrencies = seriesUnits(labelUnits, out.Buckets)
 
 	// Absent unless there is something to disclose, which is the whole convention: see
 	// SetUngroupedCost.
@@ -1524,11 +1526,11 @@ func sortedUnits(set map[string]struct{}) []string {
 
 // seriesUnits is Snapshot.SeriesCurrencies for the series the response actually carries.
 //
-// AN AGENT THE CAP FOLDED AWAY lends its units to overflowLabel, the series its figures went
+// A LABEL THE CAP FOLDED AWAY lends its units to overflowLabel, the series its figures went
 // into, rather than keeping an entry of its own: SeriesCurrencies describes the series on the
 // wire, and a key naming a series that is not there would label nothing.
-func seriesUnits(agentUnits map[string]map[string]struct{}, buckets []Bucket) map[string][]string {
-	if len(agentUnits) == 0 {
+func seriesUnits(labelUnits map[string]map[string]struct{}, buckets []Bucket) map[string][]string {
+	if len(labelUnits) == 0 {
 		return nil
 	}
 	present := map[string]bool{}
@@ -1538,9 +1540,9 @@ func seriesUnits(agentUnits map[string]map[string]struct{}, buckets []Bucket) ma
 		}
 	}
 	merged := map[string]map[string]struct{}{}
-	for agent, us := range agentUnits {
-		key := agent
-		if !present[agent] {
+	for label, us := range labelUnits {
+		key := label
+		if !present[label] {
 			key = overflowLabel
 		}
 		if merged[key] == nil {

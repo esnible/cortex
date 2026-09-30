@@ -423,7 +423,7 @@ func (s *Server) ledgerSnapshot(ctx context.Context, spec usage.Spec, group usag
 	// Set beside the residual because both are claims ABOUT the totals rather than parts of them,
 	// and both are what let a client refuse to present a figure it cannot justify.
 	snap.Currencies = currencies
-	// Per agent too, keyed by the grouping in effect, so a downgraded request carries none.
+	// Per series too, for the drawer's axes, keyed by the grouping in effect.
 	snap.SeriesCurrencies = ledger.SeriesCurrenciesIn(rows, applied)
 	// And the same for the saving, which is MORE likely to be unattributable than the cost:
 	// Writer.Record admits a row whose only figure is an applied saving even when the
