@@ -133,6 +133,11 @@ func (s *Server) HandleTransparentConn(clientConn net.Conn, dst string) {
 		return
 	}
 
+	// See handleConnect's pin: same rule, with no headers to read.
+	if s.ClientAffinity && s.Sessions != nil {
+		pctx.OutboundSessionID = s.recordingSessionID(sessionID, nil)
+	}
+
 	// Always dial the original IP (dst), never the sniffed name — the agent
 	// already chose the IP, and re-resolving the name could diverge from it.
 	upstream, err := net.DialTimeout("tcp", dst, connectDialTimeout)
@@ -191,7 +196,16 @@ func (s *Server) recordTunnelOpened(pctx *pipeline.Context, reason pipeline.Tunn
 	if s.Sessions == nil {
 		return
 	}
-	sid := s.Sessions.ActiveSession()
+	// Without client affinity this reads ActiveSession() at recording time, as it always
+	// has, ignoring the identity the tunnel was gated under (#1187). With it, the pin set
+	// after gating wins; see handleConnect.
+	var sid string
+	if s.ClientAffinity {
+		sid = pctx.OutboundSessionID
+	}
+	if sid == "" {
+		sid = s.Sessions.ActiveSession()
+	}
 	if sid == "" {
 		sid = session.DefaultSessionID
 	}

@@ -861,8 +861,24 @@ func (s *Server) recordingSessionID(resolved string, clientHeaders http.Header) 
 // Stated in full under "Decision recorded: client-asserted ids as plugin input"
 // in #984, which is where to argue with it.
 func (s *Server) resolvePluginSessionID(clientHeaders http.Header) string {
+	affinity := s.affinityOn()
 	if sid := session.IDFromHeaders(clientHeaders, s.SessionIDHeaders); sid != "" {
+		if affinity {
+			s.Sessions.Claim(sid, affinityClient(clientHeaders))
+		}
 		return sid
+	}
+	if affinity {
+		// See session.Store.SessionForClient for the order. The default bucket is its
+		// "ambiguous" answer, and plugins hear that as "" — the no-identity answer this
+		// function exists to give them — while recording files it under default.
+		switch sid := s.Sessions.SessionForClient(affinityClient(clientHeaders)); sid {
+		case "":
+		case session.DefaultSessionID:
+			return ""
+		default:
+			return sid
+		}
 	}
 	if s.Sessions != nil {
 		if sid := s.Sessions.ActiveSession(); sid != "" {
@@ -870,6 +886,24 @@ func (s *Server) resolvePluginSessionID(clientHeaders http.Header) string {
 		}
 	}
 	return ""
+}
+
+// affinityOn reports whether header-less requests are filed by coding agent. It needs
+// header bucketing: a client's session is the one its header named, so with id_headers
+// empty no session is ever any client's and every known agent would collect in its
+// pending bucket forever.
+func (s *Server) affinityOn() bool {
+	return s.ClientAffinity && s.Sessions != nil && len(s.SessionIDHeaders) > 0
+}
+
+// affinityClient names the coding agent behind a request for session attribution. Read
+// from the headers as RECEIVED, like the session header beside it, so it is the same
+// User-Agent pctx.ResolveClient pins. Nil headers — the transparent path — name nobody.
+func affinityClient(clientHeaders http.Header) string {
+	if clientHeaders == nil {
+		return ""
+	}
+	return pipeline.ParseUserAgent(clientHeaders.Get("User-Agent")).AffinityName()
 }
 
 // sessionViewFor returns the recorded view for sid, or an empty view carrying
@@ -1371,6 +1405,13 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 			httpx.WriteRejectionForRequest(w, action, pctx)
 			return
 		}
+	}
+
+	// Under client affinity the tunnel row joins the session this CONNECT was gated
+	// under, not ActiveSession() at recording time. Pinned only now, after the
+	// pipeline, for the reason sessionID is a local. See recordTunnelOpened.
+	if s.ClientAffinity && !skipped && s.Sessions != nil {
+		pctx.OutboundSessionID = s.recordingSessionID(sessionID, r.Header)
 	}
 
 	// Verify hijack capability BEFORE dialing upstream. If hijacking

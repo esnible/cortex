@@ -146,7 +146,7 @@ func TestAdopt_LeavesPendingWhenTheTargetHoldsEvents(t *testing.T) {
 type rekeyRecorder struct{ rekeyed [][2]string }
 
 func (r *rekeyRecorder) Record(string, *pipeline.SessionEvent) {}
-func (r *rekeyRecorder) Rekeyed(o, n string)                    { r.rekeyed = append(r.rekeyed, [2]string{o, n}) }
+func (r *rekeyRecorder) Rekeyed(o, n string)                   { r.rekeyed = append(r.rekeyed, [2]string{o, n}) }
 
 func TestAdopt_NotifiesRekeyersAndRekeyStillDoesNot(t *testing.T) {
 	s := New(0, 0, 0)

@@ -947,3 +947,19 @@ listener:
 		t.Errorf("MTLS = %+v, want nil (absent block)", cfg.MTLS)
 	}
 }
+
+// TestSessionConfig_ClientAffinity pins the default (off — today's attribution) and the
+// YAML key an operator writes to turn it on.
+func TestSessionConfig_ClientAffinity(t *testing.T) {
+	var off, on Config
+	if err := yaml.Unmarshal([]byte("session: {}\n"), &off); err != nil {
+		t.Fatal(err)
+	}
+	if err := yaml.Unmarshal([]byte("session:\n  client_affinity: true\n"), &on); err != nil {
+		t.Fatal(err)
+	}
+	if off.Session.ClientAffinity || !on.Session.ClientAffinity {
+		t.Fatalf("client_affinity: unset = %v, true = %v; want false, true",
+			off.Session.ClientAffinity, on.Session.ClientAffinity)
+	}
+}

@@ -3,6 +3,7 @@ package forwardproxy
 import (
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -122,4 +123,105 @@ func newAffinityProxy(t *testing.T, store *session.Store) (*identityProbePlugin,
 	proxy := httptest.NewServer(srv.Handler())
 	t.Cleanup(proxy.Close)
 	return probe, &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(mustParseURL(proxy.URL))}}, backend.URL
+}
+
+// TestClientAffinity_SeparatesBobFromClaudeCode replays the order observed on a laptop
+// running both agents: Bob's startup probes and task classifier before its first
+// X-Task-Id, Claude Code's WebFetch with no header, and a library call from neither.
+// With ActiveSession() alone, Bob's pre-header calls landed in Claude's session and the
+// WebFetch in Bob's.
+func TestClientAffinity_SeparatesBobFromClaudeCode(t *testing.T) {
+	const (
+		claudeUA   = "claude-cli/2.1.284 (external, cli)"
+		webFetchUA = "Claude-User (claude-code/2.1.284; +https://support.anthropic.com/)"
+		bobBareUA  = "bob-shell/2.0.5"
+		bobSDKUA   = "ai-sdk/5.0.1 openai-compatible/3.0.36 bob-shell/2.0.5"
+	)
+	store := session.New(5*time.Minute, 100, 0)
+	defer store.Close()
+	_, client, backendURL := newAffinityProxy(t, store)
+
+	send := func(path, ua, header, sid string) {
+		t.Helper()
+		req, _ := http.NewRequest("POST", backendURL+path, nil)
+		req.Header.Set("User-Agent", ua)
+		if header != "" {
+			req.Header.Set(header, sid)
+		}
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("%s: %v", path, err)
+		}
+		_ = resp.Body.Close()
+	}
+	send("/v1/messages", claudeUA, session.ClaudeCodeSessionHeader, "claude-1")
+	send("/admin/v1/profile", bobBareUA, "", "")
+	send("/inference/v1/chat/completions?classifier", bobSDKUA, "", "")
+	send("/inference/v1/chat/completions", bobSDKUA, session.BobSessionHeader, "task-1")
+	send("/web/fetch", webFetchUA, "", "")
+	send("/api/web/domain_info", "axios/1.15.2", "", "")
+
+	paths := func(id string) []string {
+		v := store.View(id)
+		if v == nil {
+			return nil
+		}
+		var out []string
+		for _, e := range v.Events {
+			if e.Phase == pipeline.SessionRequest {
+				out = append(out, e.HTTPPath)
+			}
+		}
+		return out
+	}
+	want := map[string][]string{
+		"claude-1":               {"/v1/messages", "/web/fetch"},
+		"task-1":                 {"/admin/v1/profile", "/inference/v1/chat/completions", "/inference/v1/chat/completions"},
+		session.DefaultSessionID: {"/api/web/domain_info"},
+	}
+	for id, w := range want {
+		if got := paths(id); strings.Join(got, ",") != strings.Join(w, ",") {
+			t.Errorf("session %s request paths = %v, want %v", id, got, w)
+		}
+	}
+	if v := store.View(session.PendingSessionID("bob-shell")); v != nil {
+		t.Errorf("pending:bob-shell still holds %d events after Bob's first header", len(v.Events))
+	}
+	// Every response followed its request, including the classifier's, which was
+	// pinned to the pending id before the adoption.
+	for id := range want {
+		v := store.View(id)
+		var req, resp int
+		for _, e := range v.Events {
+			if e.Phase == pipeline.SessionRequest {
+				req++
+			} else {
+				resp++
+			}
+		}
+		if req != resp {
+			t.Errorf("session %s holds %d requests and %d responses", id, req, resp)
+		}
+	}
+}
+
+// TestRecordTunnelOpened_UsesTheGatedSessionOnlyUnderAffinity pins #1187's half of this
+// change: with the knob on the tunnel row joins the session its CONNECT was gated under;
+// with it off, recording still reads ActiveSession() as it always has.
+func TestRecordTunnelOpened_UsesTheGatedSessionOnlyUnderAffinity(t *testing.T) {
+	for _, affinity := range []bool{false, true} {
+		store := session.New(5*time.Minute, 100, 0)
+		store.Append("active", pipeline.SessionEvent{At: time.Now(), Direction: pipeline.Inbound, Phase: pipeline.SessionRequest})
+		s := &Server{Sessions: store, ClientAffinity: affinity}
+		pctx := &pipeline.Context{Direction: pipeline.Outbound, Method: "CONNECT", Host: "api.example:443", OutboundSessionID: "gated"}
+		s.recordTunnelOpened(pctx, "")
+		want := "active"
+		if affinity {
+			want = "gated"
+		}
+		if v := store.View(want); v == nil || v.Events[len(v.Events)-1].HTTPMethod != "CONNECT" {
+			t.Errorf("affinity=%v: tunnel row not recorded under %q", affinity, want)
+		}
+		store.Close()
+	}
 }
