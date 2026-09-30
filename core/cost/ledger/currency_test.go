@@ -506,22 +506,18 @@ func TestSeriesCurrenciesIn_IsBoundedLikeTheSeries(t *testing.T) {
 		rows = append(rows, Row{Endpoint: "gw", Model: fmt.Sprintf("m%02d", i),
 			Counts: usage.Counts{Requests: 1, CostMicros: int64(1000 - i)}})
 	}
-	rows = append(rows, Row{Endpoint: "bob", Model: "tiny", Currency: "credits", Counts: usage.Counts{Requests: 1, CostMicros: 1}})
+	rows = append(rows, Row{Endpoint: "bob", Model: "tiny", Currency: "credits", Counts: usage.Counts{Requests: 1, CostMicros: 1}},
+		// A client can spell the overflow label itself; it must not hide the band's real contents.
+		Row{Endpoint: "gw", Model: overflowLabel, Counts: usage.Counts{Requests: 1, CostMicros: 5000}})
 	_, series, _, _ := Fold(rows, usage.GroupModel)
 	got := SeriesCurrenciesIn(rows, usage.GroupModel, series)
-	var overflow string
 	for label := range got {
 		if _, ok := series[label]; !ok {
 			t.Errorf("SeriesCurrencies names %q, which is not a series on the wire", label)
 		}
 	}
-	for label := range series {
-		if !slices.ContainsFunc(rows, func(r Row) bool { return r.Model == label }) {
-			overflow = label
-		}
-	}
-	if !slices.Contains(got[overflow], "credits") {
-		t.Errorf("overflow %q units = %v, want credits among them: the capped-away row is in it", overflow, got[overflow])
+	if !slices.Contains(got[overflowLabel], "credits") {
+		t.Errorf("overflow units = %v, want credits among them: the capped-away row is in it", got[overflowLabel])
 	}
 }
 

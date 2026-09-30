@@ -862,7 +862,9 @@ func unitCosts(snap *usage.Snapshot) map[string]int64 {
 	series := usage.FoldSeriesAcrossWindow(snap.Buckets)
 	out := make(map[string]int64, len(snap.Currencies))
 	for _, u := range snap.Currencies {
-		out[u] = series[u].CostMicros
+		if series[u].PricedRequests > 0 {
+			out[u] = series[u].CostMicros
+		}
 	}
 	return out
 }

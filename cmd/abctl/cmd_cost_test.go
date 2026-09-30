@@ -2831,3 +2831,20 @@ func TestRunCost_AgentWithSeriesCurrenciesIsJudgedOnItsOwnUnits(t *testing.T) {
 		srv.Close()
 	}
 }
+
+// An agent the server sent no units for had nothing priced; it gets "cost unavailable", not the
+// window's mixture — which, by then, describes other agents' traffic.
+func TestRunCost_AgentWithNoUnitsOfItsOwnIsNotRefusedAsMixed(t *testing.T) {
+	srv := fakeUsageServer(t, `{"window":"10m","group":"agent","priced":true,
+		"currencies":["Bobcoins","USD"],"seriesCurrencies":{"bob-shell/2.0.5":["Bobcoins"],"claude-code/2.1.284":["USD"]},
+		"totals":{"requests":3,"costMicros":257800,"pricedRequests":2,"priceableRequests":2},
+		"buckets":[{"at":"2026-09-27T10:00:00Z","series":{"curl/8.0":{"requests":1}}}]}`)
+	defer srv.Close()
+	var out, errOut strings.Builder
+	if code := runCost([]string{"--endpoint", srv.URL, "--agent", "curl/8.0"}, &out, &errOut); code != 0 {
+		t.Fatalf("exit = %d, stderr = %s", code, errOut.String())
+	}
+	if got := out.String(); strings.Contains(got, "cannot be added") || strings.Contains(got, "units") {
+		t.Errorf("an agent with nothing priced was refused as a unit mixture:\n%s", got)
+	}
+}

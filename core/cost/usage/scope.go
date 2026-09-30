@@ -128,8 +128,8 @@ func ScopeToAgent(snap *Snapshot, agent string, buckets BucketScope) (*Snapshot,
 	// `abctl cost`'s writeCostSummary says which of the two a refusal is, because "no figure for
 	// this agent" and "no figure for this window" have different fixes. SeriesCurrencies itself is
 	// dropped with the series it described.
-	if units, ok := snap.SeriesCurrencies[agent]; ok {
-		scoped.Currencies = append([]string(nil), units...)
+	if snap.SeriesCurrencies != nil {
+		scoped.Currencies = append([]string(nil), snap.SeriesCurrencies[agent]...)
 	}
 	scoped.SeriesCurrencies = nil
 

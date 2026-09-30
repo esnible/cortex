@@ -24,11 +24,18 @@ func twoUnitRing(t *testing.T, now time.Time) *Aggregator {
 	a.Record("bob-task", bob)
 	a.Record("claude-session", claude)
 	a.Record("bob-task", plainResponse(now, bob.Client))
+	a.Record("bob-task", unpricedInference(bob.Client))
 	return a
 }
 
 // plainResponse is traffic that carries no money — bridged HTTPS to a host that is not an
 // inference endpoint — which the ledger does not admit and so names no unit for.
+func unpricedInference(c *pipeline.EventClient) *pipeline.SessionEvent {
+	e := pricedRespEvent("localhost:11434", "llama3", 10, 10)
+	e.Client = c
+	return e
+}
+
 func plainResponse(now time.Time, c *pipeline.EventClient) *pipeline.SessionEvent {
 	return &pipeline.SessionEvent{At: now, Direction: pipeline.Outbound, Phase: pipeline.SessionResponse,
 		Host: "github.com", StatusCode: 200, Client: c}
@@ -90,8 +97,9 @@ func TestSnapshot_TheRingReportsDollarsLikeTheLedger(t *testing.T) {
 	bob.Record("s1", withCostRecord(t, pricedRespEvent("api.us-east.bob.ibm.com", "premium-ide", 3852, 47),
 		event.Event{CostUSD: 0.0078, Settled: true, Currency: "Bobcoins"}))
 	bob.Record("s1", plainResponse(now, nil))
+	bob.Record("s1", unpricedInference(nil))
 	if got := bob.Snapshot(10*BucketWidth, BucketWidth, "", GroupNone).Currencies; !slices.Equal(got, []string{"Bobcoins"}) {
-		t.Errorf("Bobcoins-only window Currencies = %v, want [Bobcoins]: the plain response carries no money", got)
+		t.Errorf("Bobcoins-only window Currencies = %v, want [Bobcoins]: nothing else was priced", got)
 	}
 }
 
@@ -176,5 +184,19 @@ func TestScopeToAgent_NarrowsCurrenciesToTheAgent(t *testing.T) {
 	}
 	if !slices.Equal(legacy.Currencies, []string{"Bobcoins", pricing.CurrencyUSD}) {
 		t.Errorf("legacy scoped Currencies = %v, want the window's list carried over", legacy.Currencies)
+	}
+}
+
+// A gateway-priced response carries its figure on the record alone, with no parsed inference; it
+// is priced traffic and names its unit, or its Bobcoins would be summed into the dollar total.
+func TestSnapshot_ARecordPricedWithoutInferenceNamesItsUnit(t *testing.T) {
+	now := time.Now().Truncate(BucketWidth)
+	a := New(WithClock(func() time.Time { return now }))
+	gw := plainResponse(now, nil)
+	gw.Host = "api.us-east.bob.ibm.com"
+	a.Record("s1", withCostRecord(t, gw, event.Event{CostUSD: 3, Settled: true, Currency: "Bobcoins"}))
+	a.Record("s1", withCost(t, respEvent(now, 200, time.Second, "claude-opus-5", 1000), 0.25))
+	if got := a.Snapshot(10*BucketWidth, BucketWidth, "", GroupNone).Currencies; !slices.Equal(got, []string{"Bobcoins", pricing.CurrencyUSD}) {
+		t.Errorf("Currencies = %v, want [Bobcoins USD]", got)
 	}
 }

@@ -168,7 +168,7 @@ func TestFetchSpendSpan_AsksForAUnitSplitOnlyForAMixedWindow(t *testing.T) {
 		{"older server", `{"window":"today","buckets":[],"totals":{}}`, "", 0, nil},
 		{"mixed", `{"window":"today","currencies":["Bobcoins","USD"],"buckets":[],"totals":{}}`,
 			`{"window":"today","group":"currency","currencies":["Bobcoins","USD"],"buckets":[{"series":{` +
-				`"Bobcoins":{"costMicros":7800},"USD":{"costMicros":6200000}}}],"totals":{}}`,
+				`"Bobcoins":{"costMicros":7800,"pricedRequests":1},"USD":{"costMicros":6200000,"pricedRequests":1}}}],"totals":{}}`,
 			1, map[string]int64{"Bobcoins": 7_800, "USD": 6_200_000}},
 		{"downgraded split", `{"window":"today","currencies":["Bobcoins","USD"],"buckets":[],"totals":{}}`,
 			// Currencies present and the grouping downgraded: read as a split, this would print a
@@ -404,5 +404,18 @@ func TestFetchAgentRows_CarriesEachAgentsUnits(t *testing.T) {
 	}
 	if seen != 2 {
 		t.Fatalf("saw %d of the 2 agents in %+v", seen, msg.rows)
+	}
+}
+
+// A unit whose requests were all unpriced has no figure, so the split must not print it as $0.00.
+func TestBandValue_AUnitNothingPricedIsNotAFigure(t *testing.T) {
+	snap := &usage.Snapshot{Group: usage.GroupCurrency, Currencies: []string{"Bobcoins", "USD"},
+		Buckets: []usage.Bucket{{Series: map[string]usage.Counts{
+			"Bobcoins": {Requests: 1, PricedRequests: 1, CostMicros: 7_800},
+			"USD":      {Requests: 3},
+		}}}}
+	r := spanReading{USD: 0.0078, Priced: true, Units: snap.Currencies, ByUnit: unitCosts(snap)}
+	if got := bandValue(r); got != "0.01 Bobcoins" {
+		t.Errorf("band = %q, want 0.01 Bobcoins: USD carried no priced request", got)
 	}
 }

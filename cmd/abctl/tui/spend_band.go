@@ -352,6 +352,9 @@ func bandAmount(r spanReading) (string, bool) {
 	}
 	order := make([]string, 0, len(r.Units))
 	for _, u := range r.Units {
+		if _, ok := r.ByUnit[u]; !ok {
+			continue
+		}
 		if money.IsDefault(u) {
 			order = append([]string{u}, order...)
 		} else {
@@ -361,6 +364,9 @@ func bandAmount(r spanReading) (string, bool) {
 	parts := make([]string, 0, len(order))
 	for _, u := range order {
 		parts = append(parts, money.Relabel(formatUSDTotalMicros(r.ByUnit[u]), u, 0))
+	}
+	if len(parts) == 0 {
+		return "", false
 	}
 	return strings.Join(parts, " + "), true
 }

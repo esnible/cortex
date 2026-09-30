@@ -741,8 +741,6 @@ type eventCost struct {
 	unpricedKey string
 	// unit is the billing unit the figure is in, "" for USD. See Aggregator.Record.
 	unit string
-	// money: the ledger's admission rule (ledger.Writer.Record).
-	money bool
 }
 
 // costOf settles one event's cost, preferring a published figure and falling back
@@ -1082,7 +1080,6 @@ func (a *Aggregator) Record(sessionID string, e *pipeline.SessionEvent) {
 		if haveRec {
 			avoided = rec.TotalAvoidedMicros()
 		}
-		ec.money = e.Inference != nil || (haveRec && (rec.Priced() || rec.RejectedReason != "" || avoided > 0))
 	}
 
 	a.mu.Lock()
@@ -1323,7 +1320,7 @@ func (a *Aggregator) foldInto(ring []bucket, t time.Time, sessionID string, e *p
 		unit = ringLabel(ec.unit)
 	}
 	addLabel(&b.byCurrency, unit, one)
-	if !ec.money {
+	if ec.priced == 0 {
 		unit = ""
 	}
 	if model != "" {
