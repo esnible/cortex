@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/rossoctl/cortex/core/cost/event"
+	"github.com/rossoctl/cortex/core/cost/pricing"
 	"github.com/rossoctl/cortex/core/cost/usage"
 	"github.com/rossoctl/cortex/core/pipeline"
 )
@@ -72,6 +73,10 @@ type entry struct {
 	// SessionSummary.CostMicros makes.
 	cost    usage.CostSum
 	avoided usage.CostSum
+	// units counts the priced events behind cost by the unit they were priced in, "" for USD.
+	// Maintained with cost, on append and on trim, and read by SessionSummary.Currencies — a
+	// count rather than a set because a trim has to know when the LAST event in a unit leaves.
+	units map[string]int
 
 	// money is each event's decoded contribution, PARALLEL TO Events: same length, same
 	// order, same trim.
@@ -380,6 +385,12 @@ func (s *Store) Append(sessionID string, event pipeline.SessionEvent) {
 	sess.money = append(sess.money, money)
 	sess.cost.Add(money.cost)
 	sess.avoided.Add(money.avoided)
+	if money.priced {
+		if sess.units == nil {
+			sess.units = make(map[string]int, 1)
+		}
+		sess.units[money.unit]++
+	}
 	// AND THE PROMPT-CONTEXT FIGURE, which unlike the two above sheds nothing on trim.
 	//
 	// THE PROPERTY IS THAT AN EVENT APPENDED AND IMMEDIATELY EVICTED STILL CONTRIBUTES, because
@@ -471,6 +482,11 @@ func (s *Store) Append(sessionID string, event pipeline.SessionEvent) {
 			}
 			sess.cost.Sub(m.cost)
 			sess.avoided.Sub(m.avoided)
+			if m.priced {
+				if sess.units[m.unit]--; sess.units[m.unit] <= 0 {
+					delete(sess.units, m.unit)
+				}
+			}
 		}
 		// One plan, both slices. They must come out the same length in the same order, and
 		// applyTrim is what makes that structural rather than a convention.
@@ -770,6 +786,16 @@ type SessionSummary struct {
 	// invariant on event.Event.Avoided. Reported beside it because the two answer
 	// different questions about the same session.
 	AvoidedMicros int64 `json:"avoidedMicros,omitempty"`
+	// Currencies names the units CostMicros and AvoidedMicros are in, sorted, dollars spelled
+	// "USD" — and is ABSENT when every priced event was in dollars, which is every deployment
+	// with no pricing unit configured, so those serve the bytes they always have.
+	//
+	// MORE THAN ONE ENTRY MEANS THE FIGURES ARE A CROSS-UNIT SUM and must not be rendered as a
+	// single amount. They are still summed here rather than split, because the running totals
+	// predate units and a client that ignores this field must keep reading what it always read;
+	// splitting is the job of a surface that can show two figures. Follows the events through a
+	// trim, like the totals themselves; see entry.units.
+	Currencies []string `json:"currencies,omitempty"`
 	// Saturated says the two figures above are FLOORS: an addition into one of them reached
 	// the int64 ceiling and was clamped rather than allowed to wrap.
 	//
@@ -860,6 +886,7 @@ func (s *Store) ListSessions() []SessionSummary {
 			// Read, not computed. Append maintains these; see entry.cost.
 			CostMicros:    sess.cost.Micros,
 			AvoidedMicros: sess.avoided.Micros,
+			Currencies:    currenciesOf(sess.units),
 			// Either total having clamped makes BOTH figures on this row bounds rather than
 			// sums, which is why one flag covers them — the same reasoning
 			// usage.Counts.Saturated gives for covering every money field in a Counts.
@@ -903,6 +930,10 @@ func sumTokens(events []pipeline.SessionEvent) int {
 type eventMoney struct {
 	cost    int64
 	avoided int64
+	// priced says cost is a figure, including a settled zero, and unit is what it is in ("" for
+	// USD). Carried so a trim can shed the unit with the figure; see entry.units.
+	priced bool
+	unit   string
 }
 
 // moneyOf reads one event's settled cost and its avoided cost, in micros.
@@ -940,6 +971,7 @@ func moneyOf(e *pipeline.SessionEvent) eventMoney {
 	var m eventMoney
 	if ev.Priced() {
 		m.cost = ev.Micros()
+		m.priced, m.unit = true, ev.Currency
 	}
 	m.avoided = ev.TotalAvoidedMicros()
 	return m
@@ -1151,4 +1183,28 @@ func logAppended(sessionID string, e *pipeline.SessionEvent) {
 		attrs = append(attrs, "errorKind", e.Error.Kind)
 	}
 	slog.Debug("session: event appended", attrs...)
+}
+
+// currenciesOf is SessionSummary.Currencies for one session's unit counts: nil when every priced
+// event was in dollars, else every unit sorted, with dollars spelled out.
+//
+// NIL FOR DOLLARS-ONLY so a deployment with no unit configured serves the bytes it always has; a
+// client finding the field absent may print "$" exactly as before. Once a second unit is present
+// dollars must be NAMED, or a reader would take the one unit it did see for the whole figure.
+func currenciesOf(units map[string]int) []string {
+	if len(units) == 0 {
+		return nil
+	}
+	if _, onlyUSD := units[""]; onlyUSD && len(units) == 1 {
+		return nil
+	}
+	out := make([]string, 0, len(units))
+	for u := range units {
+		if u == "" {
+			u = pricing.CurrencyUSD
+		}
+		out = append(out, u)
+	}
+	sort.Strings(out)
+	return out
 }
