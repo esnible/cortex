@@ -6,6 +6,7 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -2515,20 +2516,92 @@ func TestSessionsPane_ServedTitleIsCappedBeforeTruncation(t *testing.T) {
 // sessionHasTitle. Capping at the accessor rather than at load is what makes that one line cover
 // all of them.
 //
-// AND THE BACKOFF VERDICT MUST NOT MOVE. sessionHasTitle reads the same accessor, so this also
-// asserts that an over-long title still counts as NAMED: truncation cannot turn a non-blank title
-// blank, and a cap that accidentally did would silently restart the re-harvest on these rows.
+// AND THE BACKOFF VERDICT MUST NOT MOVE, which is where the first version of this cap went wrong.
+// sessionHasTitle reads the same accessor, so a clip that blanks a title flips a row from named to
+// unnamed and restarts the ~3-minute ~/.claude re-harvest permanently — the cost this package
+// documents as the price of an UNNAMABLE session, charged to one that has a name.
+//
+// THE WHITESPACE-PREFIX CASE IS THE WHOLE POINT. This test first asserted "truncation cannot turn a
+// non-blank title blank" using a leading-"/" path fixture, where no prefix is whitespace — so it
+// could not exercise the claim it made, and passed for the wrong reason. A title whose first
+// MaxTitleLen runes are spaces clips to pure whitespace, and only the TrimSpace in sessionTitle
+// (mirroring clipTitle upstream) keeps that from reading as unnamed.
 func TestSessionsPane_HarvestedTitleIsCappedAtLoad(t *testing.T) {
-	long := "/a/" + strings.Repeat("é", 5000)
-	m := newTitleModel(t, map[string]SessionMetadata{"s1": {Title: long}}, "s1")
+	for _, tc := range []struct {
+		name      string
+		title     string
+		wantNamed bool
+	}{
+		{
+			// The performance case: over-long, with a combining mark so the truncation fast path
+			// is off.
+			name:      "over-long path with combining marks",
+			title:     "/a/" + strings.Repeat("é", 5000),
+			wantNamed: true,
+		},
+		{
+			// The correctness case: real text begins AFTER the cut point, so the clip window holds
+			// nothing but spaces.
+			name:      "whitespace fills the whole clip window",
+			title:     strings.Repeat(" ", claude.MaxTitleLen) + "real name",
+			wantNamed: false,
+		},
+		{
+			// And the one that must STILL read as named: whitespace prefix, text inside the window.
+			name:      "whitespace prefix but text within the window",
+			title:     strings.Repeat(" ", claude.MaxTitleLen-4) + "real name",
+			wantNamed: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newTitleModel(t, map[string]SessionMetadata{"s1": {Title: tc.title}}, "s1")
 
-	got := m.sessionTitle("s1")
-	if n := len([]rune(got)); n > claude.MaxTitleLen {
-		t.Errorf("sessionTitle returned %d runes, want at most %d — an uncapped harvested title "+
-			"reaches the quadratic truncation path on the UI goroutine", n, claude.MaxTitleLen)
+			got := m.sessionTitle("s1")
+			if n := len([]rune(got)); n > claude.MaxTitleLen {
+				t.Errorf("sessionTitle returned %d runes, want at most %d — an uncapped harvested "+
+					"title reaches the quadratic truncation path on the UI goroutine",
+					n, claude.MaxTitleLen)
+			}
+			// NO LEADING OR TRAILING WHITESPACE SURVIVES THE CLIP, which is what makes the verdict
+			// below deliberate rather than incidental.
+			if got != strings.TrimSpace(got) {
+				t.Errorf("sessionTitle = %q, want it trimmed after the cut — untrimmed whitespace "+
+					"is what flips a named row to unnamed", got)
+			}
+			if named := m.sessionHasTitle("s1"); named != tc.wantNamed {
+				t.Errorf("sessionHasTitle = %v, want %v — a wrong verdict here either restarts "+
+					"the ~3-minute re-harvest forever or stops it on a session with no name",
+					named, tc.wantNamed)
+			}
+		})
 	}
-	if !m.sessionHasTitle("s1") {
-		t.Error("sessionHasTitle is false for an over-long title: the cap must not change a " +
-			"named/unnamed verdict, or the harvest backoff restarts on these rows")
+}
+
+// A WHITESPACE-ONLY SERVED TITLE MUST NOT PAINT SPACES INTO THE CELL.
+//
+// titleIsBlank guarded the harvested title and not the served one, so sessionTitleFor returned
+// "   " verbatim: the cell rendered blanks while sessionLabel — which blank-checks what
+// sessionTitleFor returns — rendered the bare id. One accessor, two callers, two different names
+// for the same session. Asserted on both ends so they cannot drift apart again.
+//
+// SPACES ONLY, deliberately. A tab or a newline is NOT blank by this package's definition:
+// titleIsBlank sanitises before it trims, so "\t" becomes a visible U+FFFD glyph and is a real —
+// if ugly — title. Writing this test with "\t" in the fixture failed, and the test was wrong
+// rather than the code; TestSessionsPane_ServedTitleOnlyFillsWhatRendersBlank already pins that
+// sanitise-before-trim order from the harvested side, and the two must not contradict each other.
+func TestSessionsPane_BlankServedTitleRendersAsUnnamed(t *testing.T) {
+	for _, served := range []string{" ", "   ", " ", " 　 "} {
+		t.Run(strconv.Quote(served), func(t *testing.T) {
+			m := newServedTitleModel(t, map[string]SessionMetadata{},
+				map[string]string{"s1": served}, "s1")
+
+			if got := m.sessionTitleFor("s1", m.servedTitle("s1")); got != "" {
+				t.Errorf("sessionTitleFor = %q, want an empty string — a blank served title must "+
+					"not paint whitespace into the cell", got)
+			}
+			if got := m.sessionLabel("s1"); got != "s1" {
+				t.Errorf("sessionLabel = %q, want the bare id", got)
+			}
+		})
 	}
 }

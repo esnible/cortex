@@ -418,11 +418,21 @@ func (m *model) sessionTitle(id string) string {
 	// the two sources asymmetric for no reason, and the fix is the same constant. Re-capping an
 	// already-capped harvested title costs a length check.
 	//
-	// SAFE FOR THE BACKOFF, which reads this through sessionHasTitle: truncation cannot turn a
-	// non-blank title blank, so no row's named/unnamed verdict changes.
+	// TRIMMED AFTER THE CUT, and that is a CORRECTNESS requirement rather than tidiness. The cap
+	// was first written with the claim that "truncation cannot turn a non-blank title blank" — false,
+	// and the reasoning inverted the risk. A title whose first MaxTitleLen runes are all whitespace
+	// with real text after them clips to pure spaces, which titleIsBlank calls blank, so
+	// sessionHasTitle flips true→false and the row re-harvests ~/.claude every 3 minutes for the life
+	// of the process. That is the permanent-rescan cost this file documents as the price of an
+	// UNNAMABLE session, silently charged to a session that has a perfectly good name.
+	//
+	// MIRRORING clipTitle (core/observe/claude/harvest.go), which trims after its own cut for the
+	// same reason. Trimming cannot introduce the failure it prevents: it only ever removes
+	// whitespace, so a clip that still holds real text is untouched, and one that holds nothing else
+	// collapses to "" — which is the honest answer, and the one sessionHasTitle already handles.
 	title := sanitizeLabel(m.sessionsData[id].Title)
 	if r := []rune(title); len(r) > claude.MaxTitleLen {
-		title = string(r[:claude.MaxTitleLen])
+		title = strings.TrimSpace(string(r[:claude.MaxTitleLen]))
 	}
 	return title
 }
@@ -507,8 +517,16 @@ func (m *model) sessionTitleFor(id, served string) string {
 	if title := m.sessionTitle(id); !titleIsBlank(title) {
 		return title
 	}
+	// BLANK-CHECKED ON THIS SIDE TOO, because titleIsBlank was applied to the harvested title and
+	// not to this one — so a whitespace-only served title painted spaces into the cell while
+	// sessionLabel, which blank-checks what this returns, showed the bare id. The same session named
+	// two different ways by two callers of one accessor. Returning "" makes the cell agree with the
+	// header, and "" is what both already do when nothing names a session.
+	if titleIsBlank(served) {
+		return ""
+	}
 	if r := []rune(served); len(r) > claude.MaxTitleLen {
-		served = string(r[:claude.MaxTitleLen])
+		served = strings.TrimSpace(string(r[:claude.MaxTitleLen]))
 	}
 	return sanitizeLabel(served)
 }
