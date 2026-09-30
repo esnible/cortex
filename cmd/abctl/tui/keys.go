@@ -588,7 +588,7 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 	case "enter", "right", "l":
 		switch m.pane {
 		case paneAgents:
-			// Pick the agent the usage pane is narrowed to, then LEAVE: the pane is a picker.
+			// Pick the agent the views are narrowed to, then LEAVE: the pane is a picker.
 			//
 			// A TOGGLE: Enter on the agent already scoped clears the scope instead of re-applying
 			// it. There is no "all agents" row to select, and the alternative was a second binding
@@ -605,8 +605,10 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 			}
 			// Same exit as the esc arm above, including the paneNone → Sessions fallback and the
 			// usage-polling resume. Shared through leaveAgentsPane so the two cannot drift on
-			// where the pane returns to — the scope is the only thing this arm does differently.
-			return m.leaveAgentsPane()
+			// where the pane returns to. The spend band and drawer restart under the new scope, so
+			// no figure from the old one stays on screen beneath it.
+			m.rebuildSessionsTable()
+			return tea.Batch(m.leaveAgentsPane(), m.startSpendPolling())
 		case paneSessions:
 			id := m.selectedSessionID()
 			if id == "" {
@@ -1351,7 +1353,7 @@ func (m *model) layout() {
 	// heights are set.
 	m.pipelineTbl.SetColumns(fitTableColumns(pipelineColumns(), m.width))
 	m.catalogTbl.SetColumns(fitTableColumns(catalogColumns(), m.width))
-	m.agentsTbl.SetColumns(fitTableColumns(agentsColumns(), m.width))
+	m.rebuildAgentsTable()
 
 	// Through setTableHeight, not SetHeight: a height change re-windows the rows
 	// while the viewport keeps the offset it had for the old height, and these

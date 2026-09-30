@@ -1181,7 +1181,7 @@ Layered on top of all of them:
 | `r` | catalog | refresh the catalog from `/v1/plugins` |
 | `A` | any session-view pane (not the picker) | open the per-agent cost breakdown — what each coding agent has spent today. Capital `A` because lowercase `a` cycles the spend drawer's axis. Refetches on every press, then **refuses below two agents** and says which one it found: a one-row breakdown restates a total already on screen. Not in the footer for that reason; the `?` overlay names it |
 | `↑↓` / `jk` | agents | move the cursor |
-| `↵` | agents | scope the usage pane to the agent under the cursor, and leave. Pressing it again **on the agent already scoped clears the scope** — there is no "all agents" row, so one key goes both ways and the footer's label flips to say which. The usage pane is the only surface that honours it: sessions and events carry no agent, the spend band and its drawer fetch separately and keep showing every agent, and `abctl cost --agent` is a separate process |
+| `↵` | agents | scope to the agent under the cursor, and leave. Pressing it again **on the agent already scoped clears the scope** — there is no "all agents" row, so one key goes both ways and the footer's label flips to say which. It reaches the sessions list, the usage pane, and the spend band and its drawer; `abctl cost --agent` is a separate process |
 | `Esc` | agents | back to the pane `A` was pressed on, leaving the scope as it is |
 | `e` | pipeline | edit pipeline subtree in `$EDITOR` |
 | `y` | edit/diff | apply the edit |
@@ -1203,6 +1203,15 @@ wire and there is no second axis left to break down by; and the latency metric
 reports that it is unavailable per agent rather than plotting zeroes. Response
 times are recorded per bucket across every agent that shared it, so
 `/v1/usage` carries nothing that could attribute them to one.
+
+Elsewhere, the sessions pane lists only that agent's sessions — the `default` and
+`pending:` buckets belong to no one agent and are hidden — and every pane's title
+says `agent=`. The spend band and its drawer show that agent's figures, asked of the
+server with `/v1/usage?agent=`; against a server too old to answer that, abctl narrows
+the `group=agent` series itself, as the usage pane does. The drawer drops its agent
+axis, and a window the server cannot break down for one agent reads `BY NONE`. Unscoped,
+the sessions pane gains an `AGENT` column when two agents are listed, and the agents
+pane a `SESSIONS` count once sessions name their agent.
 
 ## Settings
 

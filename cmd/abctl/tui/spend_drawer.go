@@ -388,6 +388,9 @@ func (m *model) toggleSpendDrawer() tea.Cmd {
 // does not blink through an empty frame — it is a breakdown of the same traffic either way.
 func (m *model) cycleSpendAxis() tea.Cmd {
 	m.spend.groupIdx = (m.spend.groupIdx + 1) % len(spendDrawerAxes)
+	if m.agentScope != "" && m.spend.axis() == usage.GroupAgent {
+		m.spend.groupIdx = (m.spend.groupIdx + 1) % len(spendDrawerAxes)
+	}
 	// THE PREVIOUS SPAN'S ERROR IS DROPPED HERE, and it has to be dropped rather than left to
 	// the reply that will overwrite it. applySpendLoaded stores both fields together, so a
 	// failed poll leaves err set and snap nil — and the diagnostic is captioned with the
@@ -498,7 +501,7 @@ func (s *spendState) drawerAge(now time.Time) (time.Duration, bool) {
 }
 
 func (m *model) drawerLabels() (usage.Group, string) {
-	axis, window := m.spend.axis(), spanLabelFor(m.spend.window())
+	axis, window := m.spendAxis(), spanLabelFor(m.spend.window())
 	snap := m.spend.drawer.snap
 	if snap == nil {
 		return axis, window
@@ -740,6 +743,11 @@ func drawerHeaders(axis usage.Group, twoCol bool, width int) string {
 // exactly the silence applySpendLoaded's doc forbids for the band — the chain clears snap on
 // failure, so without this a broken endpoint rendered as headers over blank rows forever.
 func renderSpendDrawer(snap *usage.Snapshot, err error, axis usage.Group, windowLabel string, width int) []string {
+	return renderSpendDrawerAxes(snap, err, axis, spendDrawerAxes, windowLabel, width)
+}
+
+// renderSpendDrawerAxes is renderSpendDrawer with the axis cycle its hint line spells.
+func renderSpendDrawerAxes(snap *usage.Snapshot, err error, axis usage.Group, axes []usage.Group, windowLabel string, width int) []string {
 	if err != nil {
 		// The reservation still has to be filled, so this is spendDrawerLinesFor(width) rows with the
 		// diagnostic on the first and the hint line last — the hints stay because `w` and `esc`
@@ -751,7 +759,7 @@ func renderSpendDrawer(snap *usage.Snapshot, err error, axis usage.Group, window
 			out = append(out, "")
 		}
 		return append(out, fitStripFigures(" ", plainFigures(
-			"[a] "+axisHint(axis),
+			"[a] "+axisHintOf(axis, axes),
 			"[w] "+windowLabel,
 			"esc closes",
 		), width))
@@ -839,7 +847,7 @@ func renderSpendDrawer(snap *usage.Snapshot, err error, axis usage.Group, window
 	// current axis are written down, and a drawer whose controls are undiscoverable is a
 	// drawer nobody changes the axis of.
 	out = append(out, fitStripFigures(" ", plainFigures(
-		"[a] "+axisHint(axis),
+		"[a] "+axisHintOf(axis, axes),
 		"[w] "+windowLabel,
 		"esc closes",
 	), width))
@@ -1051,11 +1059,11 @@ func gapOf(c usage.Counts) int64 {
 	return 0
 }
 
-// axisHint spells the axis cycle with the current one bracketed, so the line says both what
+// axisHintOf spells the axis cycle with the current one bracketed, so the line says both what
 // `a` will do and where it currently is.
-func axisHint(axis usage.Group) string {
+func axisHintOf(axis usage.Group, axes []usage.Group) string {
 	out := ""
-	for i, a := range spendDrawerAxes {
+	for i, a := range axes {
 		if i > 0 {
 			out += " · "
 		}

@@ -951,10 +951,11 @@ func (m *model) fetchSpendSpan(span spendSpan) tea.Cmd {
 	// Read on the update goroutine and captured, not read inside the closure: the closure
 	// runs on bubbletea's command goroutine, where touching m is a data race.
 	def := spendSpanDefs[span]
+	agent := m.agentScope
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), spendFetchTimeout)
 		defer cancel()
-		snap, err := client.GetUsageWindow(ctx, def.window, def.resolution, "", usage.GroupNone)
+		snap, err := fetchUsageScoped(ctx, client, def.window, def.resolution, agent, usage.GroupNone)
 		// A SECOND REQUEST ONLY FOR A MIXED WINDOW. The band needs one number per span, and a
 		// window in one unit — every dollars-only deployment, and any server too old to report
 		// units — is answered by the poll above exactly as before. Two or more units have no
@@ -962,7 +963,7 @@ func (m *model) fetchSpendSpan(span spendSpan) tea.Cmd {
 		// grouping, or a split that fails, leaves byUnit nil and the cell says money.Mixed.
 		var byUnit map[string]int64
 		if err == nil && snap != nil && len(snap.Currencies) > 1 {
-			if split, serr := client.GetUsageWindow(ctx, def.window, def.resolution, "", usage.GroupCurrency); serr == nil {
+			if split, serr := fetchUsageScoped(ctx, client, def.window, def.resolution, agent, usage.GroupCurrency); serr == nil {
 				byUnit = unitCosts(split)
 			}
 		}
@@ -1011,11 +1012,11 @@ func (m *model) fetchSpendDrawer() tea.Cmd {
 	// GetUsageWindow, not GetUsage: the drawer's span can now be a symbolic boundary, which a
 	// time.Duration cannot express. One request-building path for every span it can be pointed
 	// at, so the hour cannot drift from the other three.
-	window, resolution, axis := m.spend.window(), m.spend.windowResolution(), m.spend.axis()
+	window, resolution, axis, agent := m.spend.window(), m.spend.windowResolution(), m.spendAxis(), m.agentScope
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), spendFetchTimeout)
 		defer cancel()
-		snap, err := client.GetUsageWindow(ctx, window, resolution, "", axis)
+		snap, err := fetchUsageScoped(ctx, client, window, resolution, agent, axis)
 		return spendDrawerLoadedMsg{snap: snap, req: req, err: err}
 	}
 }

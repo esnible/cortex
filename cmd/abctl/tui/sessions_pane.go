@@ -15,6 +15,7 @@ import (
 	"github.com/rossoctl/cortex/cmd/abctl/money"
 	"github.com/rossoctl/cortex/core/observe/claude"
 	"github.com/rossoctl/cortex/core/pipeline"
+	"github.com/rossoctl/cortex/core/session"
 )
 
 // sessionsColumns is the table's full-width column set, before any terminal-fitting.
@@ -235,7 +236,12 @@ func (m *model) rebuildSessionsTable() {
 	// Fitted, THEN aligned, and in that order: the alignment pads each heading to the width the
 	// fitter settled on, so padding first would pad to a width the column no longer has. Every
 	// lookup below still finds its column, because they go through headerTitle.
-	want := alignSessionsHeaders(fitTableColumns(sessionsColumnsFor(m.width), m.width))
+	scope := ""
+	if m.agentScope != "" {
+		scope = agentScopeName(m.agentScope)
+	}
+	want := alignSessionsHeaders(fitTableColumns(sessionsColumnsWithAgent(m.width, m.sessionsListTwoAgents(scope)), m.width))
+	agentW := sessionsColumnWidth(want, "AGENT")
 	costW := sessionsColumnWidth(want, "COST")
 	savedW := sessionsColumnWidth(want, "SAVED")
 	// The other cells are fitted too: padLeft right-aligns into the FITTED width, so digits
@@ -253,7 +259,7 @@ func (m *model) rebuildSessionsTable() {
 	rows := make([]table.Row, 0, len(m.sessions))
 	ids := make([]string, 0, len(m.sessions))
 	for _, s := range m.sessions {
-		if m.filter != "" && !strings.Contains(s.ID, m.filter) {
+		if !m.sessionListed(s, scope) {
 			continue
 		}
 		row := table.Row{
@@ -266,6 +272,9 @@ func (m *model) rebuildSessionsTable() {
 			// one into the other: this loop has the summary in hand and should not pay a
 			// lookup, and the header path has only an id and cannot avoid one.
 			row = append(row, m.sessionTitleCell(s.ID, s.Title, titleW))
+		}
+		if agentW > 0 {
+			row = append(row, trunc(s.Agent, agentW))
 		}
 		row = append(row,
 			relTime(now, s.UpdatedAt),
@@ -297,7 +306,9 @@ func (m *model) rebuildSessionsTable() {
 	// select them from: after a proxy restart the server lists nothing, so
 	// without this the picker is empty and the retained history is unreachable.
 	for _, id := range m.cachedOnlySessionIDs() {
-		if m.filter != "" && !strings.Contains(id, m.filter) {
+		// A scope lists only sessions the server names an agent for, and an adopted pending bucket
+		// lives on under the session that adopted it.
+		if (m.filter != "" && !strings.Contains(id, m.filter)) || scope != "" || strings.HasPrefix(id, session.PendingPrefix) {
 			continue
 		}
 		cached := m.events[id]
@@ -310,6 +321,9 @@ func (m *model) rebuildSessionsTable() {
 			// listing, so the cell can still fill from that. Named constant rather than a bare
 			// "" so the absence reads as a fact about this row, not a forgotten argument.
 			row = append(row, m.sessionTitleCell(id, noServedTitle, titleW))
+		}
+		if agentW > 0 {
+			row = append(row, emptyCell)
 		}
 		row = append(row,
 			// "cached" sits in UPDATED now, where an em dash used to, because ACTIVE is gone
@@ -371,6 +385,32 @@ func (m *model) rebuildSessionsTable() {
 // current list omits, sorted so the picker does not reshuffle under the cursor
 // on each refresh. Empty caches are skipped: a row advertising zero events
 // helps nobody, and snapshotLoadedMsg can create the key with an empty slice.
+// sessionListed reports whether the sessions table shows s: the filter, and under an agent scope
+// only the sessions of that agent.
+func (m *model) sessionListed(s session.SessionSummary, scope string) bool {
+	if m.filter != "" && !strings.Contains(s.ID, m.filter) {
+		return false
+	}
+	return scope == "" || s.Agent == scope
+}
+
+// sessionsListTwoAgents reports whether the listed sessions name two or more agents, which is when
+// the AGENT column says something.
+func (m *model) sessionsListTwoAgents(scope string) bool {
+	var first string
+	for _, s := range m.sessions {
+		if s.Agent == "" || !m.sessionListed(s, scope) {
+			continue
+		}
+		if first == "" {
+			first = s.Agent
+		} else if s.Agent != first {
+			return true
+		}
+	}
+	return false
+}
+
 func (m *model) cachedOnlySessionIDs() []string {
 	live := make(map[string]bool, len(m.sessions))
 	for _, s := range m.sessions {
@@ -1420,6 +1460,36 @@ func sessionsShowMoney(termWidth int) bool {
 // sessionsColumnsFor is the column set this terminal actually gets. Paired with
 // sessionsShowMoney in rebuildSessionsTable so the row arity always matches the header.
 func sessionsColumnsFor(termWidth int) []table.Column {
+	return sessionsColumnsWithAgent(termWidth, false)
+}
+
+// sessionsAgentWidth fits "claude-code", the longest agent name abctl knows.
+const sessionsAgentWidth = 11
+
+// sessionsColumnsWithAgent is sessionsColumnsFor plus an AGENT column after TITLE when agent is set
+// and the column fits without narrowing any other; see rebuildSessionsTable for when it is asked.
+func sessionsColumnsWithAgent(termWidth int, agent bool) []table.Column {
+	cols := sessionsBaseColumns(termWidth)
+	if agent {
+		with := make([]table.Column, 0, len(cols)+1)
+		for _, c := range cols {
+			with = append(with, c)
+			if t := headerTitle(c); t == "TITLE" || (t == "SESSION" && !sessionsShowTitle(termWidth)) {
+				with = append(with, table.Column{Title: "AGENT", Width: sessionsAgentWidth})
+			}
+		}
+		fitted, fits := fitTableColumns(with, termWidth), true
+		for i := range with {
+			fits = fits && fitted[i].Width >= with[i].Width
+		}
+		if fits {
+			cols = with
+		}
+	}
+	return growSessionsTitle(cols, termWidth)
+}
+
+func sessionsBaseColumns(termWidth int) []table.Column {
 	cols := sessionsColumns()
 	// TITLE YIELDS FIRST, before the money columns do. It is the widest optional column and
 	// the only one whose absence costs nothing a `/` filter cannot recover — the id is still
@@ -1446,7 +1516,7 @@ func sessionsColumnsFor(termWidth int) []table.Column {
 		}
 		cols = out
 	}
-	return growSessionsTitle(cols, termWidth)
+	return cols
 }
 
 // sessionsShowTitle reports whether this terminal is wide enough to afford TITLE.

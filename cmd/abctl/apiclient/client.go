@@ -485,7 +485,16 @@ func (c *Client) GetUsage(ctx context.Context, window, resolution time.Duration,
 // all, so there is no meaningful value for a caller to invent — and "0s" would be
 // rejected as finer than the storage bucket.
 func (c *Client) GetUsageWindow(ctx context.Context, window string, resolution time.Duration, sessionID string, group usage.Group) (*usage.Snapshot, error) {
+	return c.GetUsageWindowForAgent(ctx, window, resolution, sessionID, "", group)
+}
+
+// GetUsageWindowForAgent is GetUsageWindow narrowed to one agent's traffic by the server. A server
+// that predates agent= ignores it; Snapshot.Agent is empty then, and the caller must narrow itself.
+func (c *Client) GetUsageWindowForAgent(ctx context.Context, window string, resolution time.Duration, sessionID, agent string, group usage.Group) (*usage.Snapshot, error) {
 	q := url.Values{}
+	if agent != "" {
+		q.Set("agent", agent)
+	}
 	q.Set("window", window)
 	if resolution > 0 {
 		q.Set("resolution", resolution.String())

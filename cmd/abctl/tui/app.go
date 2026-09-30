@@ -42,11 +42,8 @@ const (
 	panePluginDetail
 	paneCatalog
 	paneUsage
-	// paneAgents shows what each CODING AGENT has spent, and picks which one the usage pane is
-	// scoped to. The scope is applied CLIENT-SIDE — /v1/usage takes no agent filter, so
-	// the pane fetches group=agent and narrows with usage.ScopeToAgent, which is how
-	// `abctl cost --agent` has always worked. Sessions and events are not scopable at all:
-	// neither carries an agent. Not to be confused with paneNamespaces,
+	// paneAgents shows what each CODING AGENT has spent, and picks which one the views are
+	// scoped to; see agentScope. Not to be confused with paneNamespaces,
 	// which lists Kubernetes workloads and whose own purpose line used to call them "agents"
 	// too — see paneKeys for how the two are told apart.
 	paneAgents
@@ -733,12 +730,8 @@ type model struct {
 	// same thing would be the confusion this feature already had to untangle once. The
 	// Kubernetes sense lives one field up as `namespaces []cluster.AgentNamespace`.
 	agents []agentRow
-	// agentScope is the agent the usage pane is narrowed to, or "" for all of them.
-	//
-	// THE USAGE PANE AND NOTHING ELSE. The spend band and its drawer fetch on their own chains
-	// with their own axes and do not read this field, and `abctl cost --agent` is a separate
-	// process. Scoping those is a separate change; until then this must not be described as
-	// scoping "cost", which reads as covering the most prominent money figure on screen.
+	// agentScope is the agent the sessions list, the usage pane and the spend band are narrowed
+	// to, or "" for all of them. `abctl cost --agent` is a separate process.
 	//
 	// A LABEL, not an index into m.agents: the rows are refetched on every `A` press and on the
 	// startup gate, and their order is by cost, so an index would silently come to mean a
@@ -1238,6 +1231,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.sessions = []session.SessionSummary(msg)
 		m.connState.phase = connOpen
 		m.rebuildSessionsTable()
+		if len(m.agents) > 0 {
+			m.rebuildAgentsTable()
+		}
 		if m.pane == paneEvents {
 			m.rebuildEventsTable()
 		}
@@ -2206,6 +2202,9 @@ func (m *model) paneView() string {
 		// for a reader who wants it spelled out.
 		title = fmt.Sprintf("abctl · %s", m.endpoint)
 		body = m.sessionsTbl.View()
+		if m.agentScope != "" && len(m.sessionRowIDs) == 0 {
+			body = styleHint.Render("(no session belongs to " + sanitizeLabel(m.agentScope) + ")")
+		}
 	case paneEvents:
 		// Fitted to the terminal rather than to a fixed 36: a bare UUID is 36 characters, so
 		// the old constant truncated a titled session ALWAYS and an untitled one never —
@@ -2282,6 +2281,11 @@ func (m *model) paneView() string {
 		}
 	}
 
+	// The band above every pane is scoped too, so every pane says so; usage and agents word it
+	// themselves above.
+	if m.agentScope != "" && m.pane != paneUsage && m.pane != paneAgents {
+		title += " · agent=" + sanitizeLabel(m.agentScope)
+	}
 	header := styleTitle.Render(title)
 	if m.filtering {
 		body = m.filterInput.View() + "\n" + body
@@ -2349,7 +2353,7 @@ func (m *model) paneView() string {
 				// The axis and span come off the SNAPSHOT, not off what was last requested: see
 				// drawerLabels.
 				axis, window := m.drawerLabels()
-				lines = renderSpendDrawer(m.spend.drawer.snap, m.spend.drawer.err, axis, window, m.width)
+				lines = renderSpendDrawerAxes(m.spend.drawer.snap, m.spend.drawer.err, axis, m.spendAxes(), window, m.width)
 			}
 			for len(lines) < spendDrawerLinesFor(m.width) {
 				lines = append(lines, "")
