@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/rossoctl/cortex/core/cost/pricing"
+	"github.com/rossoctl/cortex/cmd/abctl/money"
 )
 
 // runPricing renders the rates the running proxy is actually using.
@@ -367,9 +367,7 @@ func perMtokLabel(anyNonUSD bool) string {
 // FOLDED ON THIS SIDE TOO, though core now canonicalises before it serialises. abctl is a client of
 // whatever server it is pointed at, including one older than itself, and a rate label is exactly
 // the kind of cosmetic disagreement nobody would think to look for after a partial upgrade.
-func isDefaultUnit(unit string) bool {
-	return unit == "" || strings.EqualFold(unit, pricing.CurrencyUSD)
-}
+func isDefaultUnit(unit string) bool { return money.IsDefault(unit) }
 
 // provenanceCell is a row's provenance, with its unit appended when that unit is not the default.
 //

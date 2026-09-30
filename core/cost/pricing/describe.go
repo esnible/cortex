@@ -287,3 +287,19 @@ func nonDefaultCurrency(c string) string {
 	}
 	return c
 }
+
+// UnitOf is the unit a figure for (endpoint, model) is denominated in, or "" when that unit is
+// the default — including when rates is nil, which is the Kubernetes deployment.
+//
+// THE ONE RULE EVERY PRODUCER OF A UNIT GOES THROUGH. The ledger writer labels a row with it and
+// settle labels a request's record with it, and those two are read by different surfaces — the
+// ledger by windowed totals, the record by per-request and per-session figures. Were each to
+// spell the rule itself, the same charge could reach the spend band as credits and the sessions
+// pane as dollars, with neither visibly wrong on its own. Empty for the default for the reason
+// nonDefaultCurrency gives.
+func UnitOf(rates Resolver, endpoint, model string) string {
+	if rates == nil {
+		return ""
+	}
+	return nonDefaultCurrency(rates.CurrencyFor(endpoint, model))
+}

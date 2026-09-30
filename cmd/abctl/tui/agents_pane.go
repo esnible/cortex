@@ -7,6 +7,7 @@ import (
 	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/rossoctl/cortex/cmd/abctl/money"
 	"github.com/rossoctl/cortex/core/cost/usage"
 )
 
@@ -23,6 +24,9 @@ import (
 type agentRow struct {
 	label string
 	usage.Counts
+	// units is what this agent's figures are in, as Snapshot.SeriesCurrencies (or, from an older
+	// server, the window's Currencies) reports it; nil is dollars. See agentCostCellIn.
+	units []string
 }
 
 // agentRowsFromBuckets folds a snapshot's per-agent series into one row per agent.
@@ -44,6 +48,21 @@ type agentRow struct {
 // call it — the tie-break on the label matters more than it sounds, because every unpriced agent
 // has CostMicros 0 and until billing units land the label is the entire order for all of them.
 // That function's godoc carries why it takes a slice rather than the map.
+// agentRowsFromSnapshot is agentRowsFromBuckets with each row's units attached: the agent's own
+// SeriesCurrencies entry when the server sent one, else the window's list, so an older server's
+// mixed window withholds every row rather than labelling one agent with another's units.
+func agentRowsFromSnapshot(snap *usage.Snapshot) []agentRow {
+	rows := agentRowsFromBuckets(snap.Buckets)
+	for i := range rows {
+		units, ok := snap.SeriesCurrencies[rows[i].label]
+		if !ok {
+			units = snap.Currencies
+		}
+		rows[i].units = units
+	}
+	return rows
+}
+
 func agentRowsFromBuckets(buckets []usage.Bucket) []agentRow {
 	totals := usage.FoldSeriesAcrossWindow(buckets)
 	labels := make([]string, 0, len(totals))
@@ -177,7 +196,7 @@ func (m *model) fetchAgentRowsCmd(open agentsOpen, from paneID) tea.Cmd {
 		if err != nil {
 			return agentRowsLoadedMsg{err: err, open: open, from: from}
 		}
-		return agentRowsLoadedMsg{rows: agentRowsFromBuckets(snap.Buckets), open: open, from: from}
+		return agentRowsLoadedMsg{rows: agentRowsFromSnapshot(snap), open: open, from: from}
 	}
 }
 
@@ -196,7 +215,7 @@ func agentsColumns() []table.Column {
 		{Title: "AGENT", Width: 34},
 		{Title: "REQUESTS", Width: 10},
 		{Title: "TOKENS", Width: 10},
-		{Title: "COST", Width: 12},
+		{Title: "COST", Width: agentsCostWidth},
 	}
 }
 
@@ -250,7 +269,7 @@ func (m *model) rebuildAgentsTable() {
 			sanitizeLabel(a.label),
 			formatCount(int(a.Requests)),
 			humanizeCount(a.Tokens),
-			agentCostCell(a.Counts),
+			agentCostCellIn(a.Counts, a.units, agentsCostWidth),
 		})
 	}
 	m.agentsTbl.SetRows(rows)
@@ -275,6 +294,27 @@ func agentCostCell(c usage.Counts) string {
 	// 1_005_000 micros renders $1.01 rather than the $1.00 a float64 %.2f produces. It also
 	// carries the floor that keeps a known sub-cent charge from printing as free.
 	return formatUSDTotalMicros(c.CostMicros)
+}
+
+// agentsCostWidth is the COST column's declared width, the budget a relabelled figure fits.
+const agentsCostWidth = 12
+
+// agentCostCellIn is agentCostCell in the agent's own units: dollars (nil, or USD) exactly as
+// before, one foreign unit relabelled to fit the column, and more than one withheld as
+// money.Mixed — an agent's figure summed across units is not an amount.
+func agentCostCellIn(c usage.Counts, units []string, budget int) string {
+	cell := agentCostCell(c)
+	if cell == emptyCell {
+		return cell
+	}
+	unit, ok := money.WindowUnit(units)
+	if !ok {
+		return money.Mixed
+	}
+	if out := money.Relabel(cell, unit, budget); out != "" {
+		return out
+	}
+	return emptyCell
 }
 
 // enterAgentsOrRefuse opens the pane, or returns the reason it will not.

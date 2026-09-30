@@ -276,6 +276,8 @@ type Settled struct {
 	Source string
 	// Provenance is ProvAuthoritative for a gateway figure, else the rate table's level.
 	Provenance pricing.Provenance
+	// Currency is the unit every figure here is in, "" for the default. See event.Event.Currency.
+	Currency string
 	// Priced reports that a figure exists — INCLUDING a settled zero, which is the
 	// gateway saying the call was free. Not the same as CostUSD > 0.
 	//
@@ -519,6 +521,9 @@ func Settle(pctx *pipeline.Context, rates pricing.Resolver) Settled {
 	// halves a partition of the total instead of three unrelated lookups: a long-context
 	// threshold flattens the same way for all three, so no premium can land on one and
 	// miss another.
+	// The endpoint's unit covers a figure the gateway reported as much as a modelled one, so it
+	// is stamped whichever of the two wins below.
+	out.Currency = pricing.UnitOf(rates, pctx.Host, model)
 	promptTotal := usage.PromptTotal()
 	micros, tiers, prov, ok, refusal := modelledCost(rates, pctx.Host, model, usage, promptTotal)
 	if ok {
@@ -859,6 +864,7 @@ func NewRecord(s Settled, avoided []event.Saving) event.Event {
 		CostUSD:    s.CostUSD,
 		Source:     s.Source,
 		Provenance: s.Provenance.String(),
+		Currency:   s.Currency,
 		Settled:    s.Priced,
 		// Carried for the reason the whole list below is: a refusal recorded nowhere is
 		// indistinguishable from a response that never had a figure. The gateway's number rides

@@ -4,6 +4,8 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/lipgloss"
+
+	"github.com/rossoctl/cortex/cmd/abctl/money"
 )
 
 // spendBandLines is the band's height: ONE row, labels inline with their figures.
@@ -321,7 +323,50 @@ func bandSpanCell(label string, r spanReading) bandCell {
 		label: label,
 		// A SPAN TOTAL, so it reads in cents — every cell here answers "how much has this span
 		// cost", which is the side of main's precision rule that compares rows to each other.
-		value: markMoneyTotal(r.USD, r.Unpriced, r.Priceable, r.Incomplete, r.Degraded, r.Clamped,
-			r.DaysOutsideRetention > 0),
+		value: bandValue(r),
 	}
+}
+
+// bandValue is a span's figure with its caveat markers, in the units the span holds.
+//
+// DOLLARS ARE markMoneyTotal EXACTLY, which is what the band printed before units existed. One
+// foreign unit relabels that same figure; several are printed side by side, dollars first, and
+// never added — "$6.20 + 0.03 Bobcoins". A mixed span with no per-unit split to show (an older
+// server, or a split that did not add up) says money.Mixed, with no markers: there is no amount
+// for them to qualify.
+func bandValue(r spanReading) string {
+	amount, ok := bandAmount(r)
+	if !ok {
+		return money.Mixed
+	}
+	return markMoney(amount, r.Unpriced, r.Priceable, r.Incomplete, r.Degraded, r.Clamped,
+		r.DaysOutsideRetention > 0)
+}
+
+func bandAmount(r spanReading) (string, bool) {
+	if unit, ok := money.WindowUnit(r.Units); ok {
+		return money.Relabel(formatUSDTotal(r.USD), unit, 0), true
+	}
+	if r.ByUnit == nil {
+		return "", false
+	}
+	order := make([]string, 0, len(r.Units))
+	for _, u := range r.Units {
+		if _, ok := r.ByUnit[u]; !ok {
+			continue
+		}
+		if money.IsDefault(u) {
+			order = append([]string{u}, order...)
+		} else {
+			order = append(order, u)
+		}
+	}
+	parts := make([]string, 0, len(order))
+	for _, u := range order {
+		parts = append(parts, money.Relabel(formatUSDTotalMicros(r.ByUnit[u]), u, 0))
+	}
+	if len(parts) == 0 {
+		return "", false
+	}
+	return strings.Join(parts, " + "), true
 }

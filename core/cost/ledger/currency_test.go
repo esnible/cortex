@@ -3,6 +3,7 @@ package ledger
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -124,10 +125,10 @@ func TestOverflow_KeepsTheUnit(t *testing.T) {
 // are one unit spelled twice.
 func TestCurrenciesIn_ReportsDistinctUnitsSorted(t *testing.T) {
 	rows := []Row{
-		{Endpoint: "bob", Currency: "credits"},
-		{Endpoint: "anthropic"},                 // absent: USD
-		{Endpoint: "litellm", Currency: "USD"},  // explicit: the same USD
-		{Endpoint: "bob2", Currency: "Credits"}, // a second spelling of one unit
+		{Endpoint: "bob", Currency: "credits", Counts: usage.Counts{PricedRequests: 1}},
+		{Endpoint: "anthropic", Counts: usage.Counts{PricedRequests: 1}},                 // absent: USD
+		{Endpoint: "litellm", Currency: "USD", Counts: usage.Counts{PricedRequests: 1}},  // explicit: the same USD
+		{Endpoint: "bob2", Currency: "Credits", Counts: usage.Counts{PricedRequests: 1}}, // a second spelling of one unit
 	}
 
 	got := CurrenciesIn(rows)
@@ -152,7 +153,7 @@ func TestCurrenciesIn_SingleUnitAndEmpty(t *testing.T) {
 	if got := CurrenciesIn(nil); len(got) != 0 {
 		t.Errorf("an empty window reported %v, want nothing", got)
 	}
-	rows := []Row{{Endpoint: "a"}, {Endpoint: "b", Currency: "USD"}}
+	rows := []Row{{Endpoint: "a", Counts: usage.Counts{PricedRequests: 1}}, {Endpoint: "b", Currency: "USD", Counts: usage.Counts{PricedRequests: 1}}}
 	if got := CurrenciesIn(rows); len(got) != 1 || got[0] != "USD" {
 		t.Errorf("a USD-only window reported %v, want [USD]", got)
 	}
@@ -200,8 +201,8 @@ func TestFold_GroupCurrencySeparatesUnitsAndKeepsLegacyRowsInUSD(t *testing.T) {
 func TestCurrenciesIn_TheOverflowLabelIsNotABillingUnit(t *testing.T) {
 	// The shape a capped minute actually produces: real rows, plus the one folded accumulator.
 	rows := []Row{
-		{Endpoint: "anthropic", Currency: "USD", Counts: usage.Counts{Requests: 1}},
-		overflow(Row{Endpoint: "gw", Model: "m", Currency: "USD", Counts: usage.Counts{Requests: 9}}),
+		{Endpoint: "anthropic", Currency: "USD", Counts: usage.Counts{Requests: 1, PricedRequests: 1}},
+		overflow(Row{Endpoint: "gw", Model: "m", Currency: "USD", Counts: usage.Counts{Requests: 9, PricedRequests: 9}}),
 	}
 
 	got := CurrenciesIn(rows)
@@ -469,5 +470,74 @@ func TestRecord_AModellessChargeOnACreditsGatewayIsNotWrittenAsUSD(t *testing.T)
 	// And the refusal downstream can see it, which is what the field is for.
 	if got := CurrenciesIn(rows); len(got) != 1 || got[0] != "credits" {
 		t.Errorf("CurrenciesIn = %v, want [credits]", got)
+	}
+}
+
+// group=agent names each agent's own units, spelled as CurrenciesIn spells them, so a scoped figure
+// can be labelled without the window's mixture. Every other grouping gets nothing.
+func TestSeriesCurrenciesIn_NamesEachAgentsUnits(t *testing.T) {
+	rows := []Row{
+		{Endpoint: "bob", Agent: "bob-shell/2.0.5", Currency: "credits", Counts: usage.Counts{Requests: 4, PricedRequests: 4}},
+		{Endpoint: "bob", Agent: "bob-shell/2.0.5", Currency: "Credits", Counts: usage.Counts{Requests: 2, PricedRequests: 2}},
+		{Endpoint: "anthropic", Agent: "claude-code/2.1.284", Counts: usage.Counts{Requests: 6, PricedRequests: 6}},
+		{Endpoint: "litellm", Agent: "claude-code/2.1.284", Currency: "usd", Counts: usage.Counts{Requests: 1, PricedRequests: 1}},
+	}
+	got := SeriesCurrenciesIn(rows, usage.GroupAgent, foldSeries(rows, usage.GroupAgent))
+	if want := []string{"credits"}; !slices.Equal(got["bob-shell/2.0.5"], want) {
+		t.Errorf("bob-shell = %v, want %v", got["bob-shell/2.0.5"], want)
+	}
+	if want := []string{pricing.CurrencyUSD}; !slices.Equal(got["claude-code/2.1.284"], want) {
+		t.Errorf("claude-code = %v, want %v; a legacy row and an explicit usd one are one unit",
+			got["claude-code/2.1.284"], want)
+	}
+	if got := SeriesCurrenciesIn(rows, usage.GroupEndpoint, foldSeries(rows, usage.GroupEndpoint))["bob"]; !slices.Equal(got, []string{"credits"}) {
+		t.Errorf("endpoint bob = %v, want [credits]; the drawer's endpoint axis labels by this", got)
+	}
+	if other := SeriesCurrenciesIn(rows, usage.GroupStatus, foldSeries(rows, usage.GroupStatus)); other != nil {
+		t.Errorf("group=status got %v, want nothing: it is defined for the drawer's axes only", other)
+	}
+}
+
+// Model names come from requests, so SeriesCurrencies must be bounded by the same cap as the series
+// it labels: a key per series on the wire, with a capped-away label's units on the overflow band.
+func TestSeriesCurrenciesIn_IsBoundedLikeTheSeries(t *testing.T) {
+	var rows []Row
+	for i := range usage.MaxSeriesInResponse + 4 {
+		rows = append(rows, Row{Endpoint: "gw", Model: fmt.Sprintf("m%02d", i),
+			Counts: usage.Counts{Requests: 1, PricedRequests: 1, CostMicros: int64(1000 - i)}})
+	}
+	rows = append(rows, Row{Endpoint: "bob", Model: "tiny", Currency: "credits", Counts: usage.Counts{Requests: 1, PricedRequests: 1, CostMicros: 1}},
+		// A client can spell the overflow label itself; it must not hide the band's real contents.
+		Row{Endpoint: "gw", Model: overflowLabel, Counts: usage.Counts{Requests: 1, PricedRequests: 1, CostMicros: 5000}})
+	_, series, _, _ := Fold(rows, usage.GroupModel)
+	got := SeriesCurrenciesIn(rows, usage.GroupModel, series)
+	for label := range got {
+		if _, ok := series[label]; !ok {
+			t.Errorf("SeriesCurrencies names %q, which is not a series on the wire", label)
+		}
+	}
+	if !slices.Contains(got[overflowLabel], "credits") {
+		t.Errorf("overflow units = %v, want credits among them: the capped-away row is in it", got[overflowLabel])
+	}
+}
+
+func foldSeries(rows []Row, g usage.Group) map[string]usage.Counts {
+	_, series, _, _ := Fold(rows, g)
+	return series
+}
+
+// A unit is named only where a row shows a figure: priced, or carrying a saving. An unpriced
+// row beside another unit's spend is no mixture — there is nothing of it to add.
+func TestCurrenciesIn_NamesOnlyUnitsWithAFigure(t *testing.T) {
+	rows := []Row{
+		{Endpoint: "bob", Currency: "credits", Counts: usage.Counts{Requests: 2, PricedRequests: 2, CostMicros: 30}},
+		{Endpoint: "ollama", Counts: usage.Counts{Requests: 5}},
+	}
+	if got := CurrenciesIn(rows); !slices.Equal(got, []string{"credits"}) {
+		t.Errorf("CurrenciesIn = %v, want [credits]: the USD row priced nothing", got)
+	}
+	rows[1].AvoidedMicros = 400
+	if got := CurrenciesIn(rows); !slices.Equal(got, []string{pricing.CurrencyUSD, "credits"}) {
+		t.Errorf("CurrenciesIn = %v, want [USD credits]: a saving is a figure", got)
 	}
 }

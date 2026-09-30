@@ -798,6 +798,18 @@ abctl is for, and the other three are surfaces you visit and leave.
   `<$0.01` and four decimals to `<$0.0001`. "Free" is a claim about the traffic,
   never a rounding artefact.
 
+  **Money is shown in the unit it was billed in.** An endpoint configured with a
+  `unit:` (see [Billing units](../../docs/pricing.md#billing-units)) reads in that
+  unit everywhere — `0.03 Bobcoins`, never `$0.03` — with the same precision rules
+  as dollars. Figures in different units are never added: a band span holding
+  both prints them side by side (`$6.20 + 0.03 Bobcoins`), and the drawer, the
+  agents pane and the sessions table label each row with its own unit. A row that
+  itself spans units reads `(mixed)`, the drawer's tier column is withheld for a
+  mixed window, and so is the Usage pane's cost chart — scope to one agent (`A`)
+  to chart it. Where a column is too narrow for the name it is shortened
+  (`0.03 Bobc…`), down to `¤`. A deployment with no `unit:` configured sees
+  exactly the dollar figures it always did.
+
   `$` expands the band into two columns — where the money went, by rate tier,
   and who spent it, by model, endpoint or agent:
 
@@ -961,7 +973,8 @@ abctl is for, and the other three are surfaces you visit and leave.
   as bars; latency renders as mean-with-whiskers (`┼` mean, `┬`/`┴` ±1σ),
   because a bar encodes magnitude from a zero baseline and mean latency
   has no meaningful zero. On a terminal with room to spare the bar chart
-  captions its y-axis with the metric's unit (`tok`, `req`, `err`, `USD`);
+  captions its y-axis with the metric's unit (`tok`, `req`, `err`, `USD`, or a
+  cost chart's billing unit, such as `Bobc…`);
   latency has no caption, because its own labels carry the unit per
   magnitude (`820ms`, `4.1s`). `b` cycles the breakdown, which stacks each
   bar by status, model, plugin or host — each series marked with a letter

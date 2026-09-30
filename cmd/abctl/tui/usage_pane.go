@@ -9,6 +9,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/rossoctl/cortex/cmd/abctl/money"
 	"github.com/rossoctl/cortex/core/cost/usage"
 )
 
@@ -261,10 +262,19 @@ func renderUsageChart(snap *usage.Snapshot, m usageMetric, group usage.Group, wi
 		// the renderer would only move the discard somewhere less visible.
 		return renderWhiskers(snap.Buckets, width)
 	}
-	if group != "" && group != usage.GroupNone {
-		return renderStackedBars(snap.Buckets, m, group, width, height)
+	unit := ""
+	if m.isCost() {
+		// A COST CHART OVER SEVERAL UNITS IS NOT DRAWN: every bar would stack credits on dollars.
+		// Scoping to one agent narrows the window to that agent's units, which is the way out.
+		var ok bool
+		if unit, ok = money.WindowUnit(snap.Currencies); !ok {
+			return []string{"  cost chart withheld: this window mixes billing units — [A] scope to one agent, or view tokens"}
+		}
 	}
-	return renderBars(snap.Buckets, m, width, height)
+	if group != "" && group != usage.GroupNone {
+		return renderStackedBarsIn(snap.Buckets, m, group, width, height, unit)
+	}
+	return renderBarsIn(snap.Buckets, m, width, height, unit)
 }
 
 // usageScopeMax is the room the header line can give the scope label at this width.
@@ -436,6 +446,11 @@ func costUngroupedRow(snap *usage.Snapshot, scope string) string {
 	micros := *snap.UngroupedCostMicros
 	if micros == 0 || negativeCost(micros) {
 		return ""
+	}
+	// DOLLARS ONLY carry an amount. The residual belongs to no agent, so a scoped snapshot's units
+	// — the agent's — do not say what it is in, and a foreign or mixed list drops the amount.
+	if unit, ok := money.WindowUnit(snap.Currencies); !ok || !money.IsDefault(unit) {
+		return "  note  part of this window's cost is attributed to no agent\n"
 	}
 	return fmt.Sprintf("  note  %s of this window is attributed to no agent\n",
 		formatUSDTotalMicros(micros))

@@ -223,6 +223,7 @@ var spendSpanDefs = [numSpendSpans]spendSpanDef{
 // are what make this a per-chain struct rather than a shared one.
 type spendChain struct {
 	snap      *usage.Snapshot
+	byUnit    map[string]int64 // see spendLoadedMsg.byUnit
 	err       error
 	lastFetch time.Time
 	// reqSeq is the id of the most recently ISSUED request on this chain; a reply carrying a
@@ -296,6 +297,9 @@ type spendLoadedMsg struct {
 	snap *usage.Snapshot
 	req  uint64
 	err  error
+	// byUnit is the span's cost per billing unit, fetched only when snap names two or more
+	// units; nil otherwise. See fetchSpendSpan.
+	byUnit map[string]int64
 }
 
 // spendTickMsg fires one span's periodic refetch. gen ties it to the chain that scheduled it,
@@ -842,6 +846,27 @@ func (m *model) applySpendLoaded(msg spendLoadedMsg) {
 		return
 	}
 	c.snap, c.err, c.lastFetch = msg.snap, msg.err, time.Now()
+	c.byUnit = msg.byUnit
+}
+
+// unitCosts is a group=currency snapshot's cost per unit, or nil when it cannot be trusted as
+// one: a server that downgraded the grouping, or a breakdown that leaves part of the total
+// unattributed, would otherwise print a per-unit split that does not add up to the traffic.
+func unitCosts(snap *usage.Snapshot) map[string]int64 {
+	if snap == nil || snap.Group != usage.GroupCurrency {
+		return nil
+	}
+	if snap.UngroupedCostMicros != nil && *snap.UngroupedCostMicros != 0 {
+		return nil
+	}
+	series := usage.FoldSeriesAcrossWindow(snap.Buckets)
+	out := make(map[string]int64, len(snap.Currencies))
+	for _, u := range snap.Currencies {
+		if series[u].PricedRequests > 0 {
+			out[u] = series[u].CostMicros
+		}
+	}
+	return out
 }
 
 // startSpendPolling begins (or restarts) every span's chain on a clean slate. Fetching
@@ -930,7 +955,18 @@ func (m *model) fetchSpendSpan(span spendSpan) tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), spendFetchTimeout)
 		defer cancel()
 		snap, err := client.GetUsageWindow(ctx, def.window, def.resolution, "", usage.GroupNone)
-		return spendLoadedMsg{span: span, snap: snap, req: req, err: err}
+		// A SECOND REQUEST ONLY FOR A MIXED WINDOW. The band needs one number per span, and a
+		// window in one unit — every dollars-only deployment, and any server too old to report
+		// units — is answered by the poll above exactly as before. Two or more units have no
+		// single number, so the per-unit figures are asked for; a server that downgrades the
+		// grouping, or a split that fails, leaves byUnit nil and the cell says money.Mixed.
+		var byUnit map[string]int64
+		if err == nil && snap != nil && len(snap.Currencies) > 1 {
+			if split, serr := client.GetUsageWindow(ctx, def.window, def.resolution, "", usage.GroupCurrency); serr == nil {
+				byUnit = unitCosts(split)
+			}
+		}
+		return spendLoadedMsg{span: span, snap: snap, req: req, err: err, byUnit: byUnit}
 	}
 }
 
@@ -1086,7 +1122,12 @@ type spanReading struct {
 	// but spanReadings carried an EMPTY label, so the band rendered four nameless columns. The
 	// label is a property of the SPAN, not of one poll's answer, so spendSpanDefs is the only
 	// place it lives and the renderer indexes it by the span it is drawing.
-	USD float64
+	// Units is the snapshot's Currencies and ByUnit its per-unit split (see
+	// spendLoadedMsg.byUnit); both nil for dollars. USD is only an amount when Units names at
+	// most one unit — see bandAmount.
+	Units  []string
+	ByUnit map[string]int64
+	USD    float64
 	// Priced says a figure exists to show. False means "nothing to say", which the band
 	// renders as an em dash — never $0.00, which would assert the traffic was free.
 	//
@@ -1223,6 +1264,7 @@ func (m *model) spanReadings() [numSpendSpans]spanReading {
 				r.USD = float64(snap.Totals.CostMicros) / 1e6
 				r.Priced = true
 			}
+			r.Units, r.ByUnit = snap.Currencies, c.byUnit
 		}
 		out[span] = r
 	}
