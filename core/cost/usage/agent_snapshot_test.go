@@ -14,7 +14,7 @@ import (
 func TestAgentSnapshot_NarrowsTheRingToOneAgent(t *testing.T) {
 	now := time.Now().Truncate(BucketWidth)
 	a := twoUnitRing(t, now)
-	const bob = "bob-shell/2.0.5"
+	const bob = "bob-shell"
 
 	snap := a.AgentSnapshot(10*BucketWidth, BucketWidth, "", bob)
 	if snap.Agent != bob {
@@ -46,7 +46,7 @@ func TestAgentSnapshot_FindsAnAgentPastTheSeriesCap(t *testing.T) {
 		e.Client = &pipeline.EventClient{Name: fmt.Sprintf("agent%02d", i), Version: "1"}
 		a.Record("s", e)
 	}
-	const last = "agent19/1"
+	const last = "agent19"
 	if got := a.AgentSnapshot(10*BucketWidth, BucketWidth, "", last); got.Totals.Requests != 1 {
 		t.Errorf("%s past the cap: requests = %d, want its 1", last, got.Totals.Requests)
 	}

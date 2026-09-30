@@ -1,6 +1,7 @@
 package pipeline
 
 import (
+	"regexp"
 	"strings"
 	"unicode/utf8"
 )
@@ -447,6 +448,26 @@ func (c *EventClient) Label() string {
 		return c.Name
 	}
 	return c.Name + "/" + c.Version
+}
+
+// versionedAgent matches a label that is exactly one name/version token.
+var versionedAgent = regexp.MustCompile(`^([^\s/]+)/[^\s/]+$`)
+
+// AgentName is the agent a Label names, with its version dropped: "claude-code/2.1.285" is
+// "claude-code". It is the key every per-agent figure is filed under — the usage ring's agent
+// axis, the ledger's on read, a session's agent, and /v1/usage?agent= — so an agent's releases
+// are one row rather than one row each. The ledger stores the full Label; only reads fold.
+//
+// ONLY A WHOLE-LABEL name/version TOKEN FOLDS. An unrecognised agent's label is its raw
+// User-Agent, and cutting "Claude-User (claude-code/2.1.284; …)" at its first slash would name a
+// row after half a comment, so anything with a space or a second slash is returned unchanged.
+// A single-token one does fold — "curl/8.4.0" is "curl" — which is the same rule, not an
+// exception to it.
+func AgentName(label string) string {
+	if m := versionedAgent.FindStringSubmatch(label); m != nil {
+		return m[1]
+	}
+	return label
 }
 
 // AffinityName is the coding agent a request belongs to for SESSION ATTRIBUTION: Name when

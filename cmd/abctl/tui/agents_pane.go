@@ -13,8 +13,8 @@ import (
 
 // agentRow is one coding agent's totals for the whole window, as the AGENTS pane shows them.
 //
-// The label is pipeline.EventClient.Label — "claude-code/2.1.270", or the raw User-Agent for
-// an agent the parser did not recognise. CLIENT-ASSERTED AND SPOOFABLE, like every other use
+// The label is pipeline.AgentName of pipeline.EventClient.Label — "claude-code", every release
+// together — or the raw User-Agent for an agent the parser did not recognise. CLIENT-ASSERTED AND SPOOFABLE, like every other use
 // of that field: a display and scoping key, never an authorization subject.
 type agentRow struct {
 	label string

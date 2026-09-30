@@ -45,12 +45,44 @@ func TestHandleUsage_AgentNarrowsLedgerAndRingWindows(t *testing.T) {
 		if err := json.Unmarshal([]byte(body), &snap); err != nil {
 			t.Fatalf("%s: decode: %v (%s)", window, err, body)
 		}
-		if snap.Agent != bob.Label() || snap.Totals.CostMicros != 10_000 {
+		if snap.Agent != "bob-shell" || snap.Totals.CostMicros != 10_000 {
 			t.Errorf("window=%s agent=bob: Agent=%q CostMicros=%d, want the echo and Bob's 10000 alone",
 				window, snap.Agent, snap.Totals.CostMicros)
 		}
 		if _, plain := fetchUsage(t, ts.URL, "?window="+window); strings.Contains(plain, `"agent"`) {
 			t.Errorf("window=%s without agent= carries an agent key: %s", window, plain)
+		}
+	}
+}
+
+// agent= names an agent, not a release: it finds every version's traffic, and a versioned label
+// — what group=agent reported before versions were folded — is read as its agent. The echo is
+// the agent the figures describe.
+func TestHandleUsage_AgentCoversEveryVersion(t *testing.T) {
+	now := time.Now()
+	led := newTestLedger(t, now)
+	agg := usage.New()
+	for _, e := range []*pipeline.SessionEvent{
+		agentResponse(t, now, &pipeline.EventClient{Name: "claude-code", Version: "2.1.284"}, 0.25),
+		agentResponse(t, now, &pipeline.EventClient{Name: "claude-code", Version: "2.1.285"}, 0.50),
+		agentResponse(t, now, &pipeline.EventClient{Name: "bob-shell", Version: "2.0.5"}, 0.01),
+	} {
+		led.Record("s1", e)
+		agg.Record("s1", e)
+	}
+	ts, _ := newTestServer(t, WithUsage(agg), WithCostLedger(led))
+
+	for _, window := range []string{"today", "1h"} {
+		for _, agent := range []string{"claude-code", "claude-code/2.1.284"} {
+			_, body := fetchUsage(t, ts.URL, "?window="+window+"&agent="+url.QueryEscape(agent))
+			var snap usage.Snapshot
+			if err := json.Unmarshal([]byte(body), &snap); err != nil {
+				t.Fatalf("%s: decode: %v (%s)", window, err, body)
+			}
+			if snap.Agent != "claude-code" || snap.Totals.CostMicros != 750_000 {
+				t.Errorf("window=%s agent=%s: Agent=%q CostMicros=%d, want claude-code's 750000 across both releases",
+					window, agent, snap.Agent, snap.Totals.CostMicros)
+			}
 		}
 	}
 }

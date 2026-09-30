@@ -594,8 +594,8 @@ type bucket struct {
 	// redundant. That is deliberate: a uniform call site in foldInto cannot fall out
 	// of step with itself, and one key costs nothing.
 	bySession map[string]Counts
-	// byAgent tallies by the coding agent that made the request, as
-	// pipeline.EventClient.Label reports it ("claude-code/2.1.14").
+	// byAgent tallies by the coding agent that made the request, as AgentLabel
+	// names it ("claude-code", every version together).
 	//
 	// NO INFERENCE GUARD, unlike byMethod. It is folded for every event, so MCP, A2A
 	// and tool traffic are attributed here too — which means this axis has a
@@ -1526,9 +1526,9 @@ func truncateLabel(s string) string {
 }
 
 // AgentLabel is the label byAgent keys traffic from c by, before addLabel's overflow; agent=
-// matches it.
+// matches it. Versionless — see pipeline.AgentName.
 func AgentLabel(c *pipeline.EventClient) string {
-	return ringLabel(c.Label())
+	return ringLabel(pipeline.AgentName(c.Label()))
 }
 
 // ringLabel prepares one string for a bucket's label map: sanitised, then capped.

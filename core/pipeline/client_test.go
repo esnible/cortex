@@ -623,3 +623,29 @@ func TestAffinityName_LeavesTheLabelAlone(t *testing.T) {
 			ua, c.Name, c.Label())
 	}
 }
+
+// An agent's releases are one agent: the version is dropped wherever the label is a single
+// name/version token, and nothing else is touched — a multi-token User-Agent is not a name and
+// a version, so cutting it at its first slash would name a row after half of a comment.
+func TestAgentName(t *testing.T) {
+	cases := []struct{ label, want string }{
+		{"claude-code/2.1.285", "claude-code"},
+		{"bob-shell/2.0.5", "bob-shell"},
+		{"claude-code", "claude-code"},
+		{"curl/8.4.0", "curl"},
+		{UnknownClientLabel, UnknownClientLabel},
+		{"Claude-User (claude-code/2.1.284; +https://support.anthropic.com/)",
+			"Claude-User (claude-code/2.1.284; +https://support.anthropic.com/)"},
+		{"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"},
+		{"ai-sdk/5.0.1 openai-compatible/3.0.36", "ai-sdk/5.0.1 openai-compatible/3.0.36"},
+		{"a/b/c", "a/b/c"},
+		{"/2.1", "/2.1"},
+		{"claude-code/", "claude-code/"},
+		{"", ""},
+	}
+	for _, tc := range cases {
+		if got := AgentName(tc.label); got != tc.want {
+			t.Errorf("AgentName(%q) = %q, want %q", tc.label, got, tc.want)
+		}
+	}
+}

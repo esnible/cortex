@@ -19,10 +19,10 @@ func TestSnapshot_GroupAgentBreaksDownByClient(t *testing.T) {
 
 	series := mergeSeries(a.Snapshot(10*time.Minute, BucketWidth, "s1", GroupAgent).Buckets)
 
-	if got := series["claude-code/2.1.14"].InputTokens; got != 10 {
+	if got := series["claude-code"].InputTokens; got != 10 {
 		t.Errorf("claude-code InputTokens = %d, want 10", got)
 	}
-	if got := series["opencode/0.4.2"].InputTokens; got != 20 {
+	if got := series["opencode"].InputTokens; got != 20 {
 		t.Errorf("opencode InputTokens = %d, want 20", got)
 	}
 }
@@ -63,7 +63,7 @@ func TestSnapshot_GroupAgentDoesNotInventANameForAnUnrecognisedAgent(t *testing.
 	if _, pooled := series["unknown"]; pooled {
 		t.Error(`an unrecognised agent folded under "unknown"; it must keep its raw name`)
 	}
-	if got := series["SomeNewAgent/9.9"].InputTokens; got != 10 {
+	if got := series["SomeNewAgent"].InputTokens; got != 10 {
 		t.Errorf("SomeNewAgent InputTokens = %d, want 10 (series: %v)", got, keys(series))
 	}
 }
@@ -81,7 +81,7 @@ func TestSnapshot_GroupAgentCoversNonInferenceTrafficToo(t *testing.T) {
 
 	series := mergeSeries(a.Snapshot(10*time.Minute, BucketWidth, "s1", GroupAgent).Buckets)
 
-	if got := series["claude-code/2.1.14"].Requests; got != 1 {
+	if got := series["claude-code"].Requests; got != 1 {
 		t.Errorf("Requests = %d, want 1 — non-inference traffic is attributed too", got)
 	}
 }
@@ -113,7 +113,7 @@ func TestSnapshot_GroupAgentBoundsCardinality(t *testing.T) {
 	a := New()
 	for i := 0; i < maxLabelsPerBucket*3; i++ {
 		e := inferenceEvent("m", 1, 0, 0, 0, 0, 0b1001)
-		e.Client = pipeline.ParseUserAgent("agent-" + strings.Repeat("x", i%7) + "/" + string(rune('a'+i%26)) + string(rune('a'+i/26)))
+		e.Client = pipeline.ParseUserAgent("agent-" + strings.Repeat("x", i%7) + "-" + string(rune('a'+i%26)) + string(rune('a'+i/26)))
 		a.Record("s1", e)
 	}
 
@@ -147,5 +147,25 @@ func TestParseGroup_ErrorNamesAgent(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "agent") {
 		t.Errorf("error %q does not name agent", err)
+	}
+}
+
+func TestSnapshot_GroupAgentFoldsAnAgentsVersionsIntoOneSeries(t *testing.T) {
+	// Claude Code ships often enough that a day holds several releases, and each was its own
+	// row — splitting one agent's spend across rows a reader has to add up by hand.
+	a := New()
+	for _, v := range []string{"2.1.284", "2.1.285"} {
+		e := inferenceEvent("m", 10, 0, 0, 5, 0, 0b1001)
+		e.Client = &pipeline.EventClient{Name: "claude-code", Version: v}
+		a.Record("s1", e)
+	}
+
+	series := mergeSeries(a.Snapshot(10*time.Minute, BucketWidth, "s1", GroupAgent).Buckets)
+
+	if got := series["claude-code"].InputTokens; got != 20 {
+		t.Errorf("claude-code InputTokens = %d, want 20 (series: %v)", got, keys(series))
+	}
+	if len(series) != 1 {
+		t.Errorf("series = %v, want one claude-code row", keys(series))
 	}
 }

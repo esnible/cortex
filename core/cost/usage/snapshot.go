@@ -47,8 +47,8 @@ const (
 	// and this axis reports per-id rather than per-agent cost. That is a property of
 	// the current session bucketing, not of this grouping.
 	GroupSession Group = "session"
-	// GroupAgent breaks totals down by the coding agent that made the request, as
-	// "name/version" — the axis #952 asks for, since "what did today cost" is only
+	// GroupAgent breaks totals down by the coding agent that made the request, by
+	// name with its version dropped (pipeline.AgentName) — the axis #952 asks for, since "what did today cost" is only
 	// actionable once it says which agent spent it. It is also what GroupSession
 	// cannot answer while several concurrent agents share one session id (#949).
 	//

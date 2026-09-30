@@ -11,6 +11,7 @@ import (
 
 	"github.com/rossoctl/cortex/core/cost/ledger"
 	"github.com/rossoctl/cortex/core/cost/usage"
+	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/session"
 )
 
@@ -35,9 +36,10 @@ import (
 //	            session label would be worse than refusing.
 //	group       none (default), model, endpoint, session, agent, status, plugin, host.
 //	            "method" is an alias for "model".
-//	agent       an agent label, as group=agent reports it; narrows the window to that
-//	            agent's traffic, and the response echoes it in "agent". A window served
-//	            from the ring is then served with group none. Refused past usage.MaxLabelLen.
+//	agent       an agent, as group=agent reports it (versionless: a versioned label is
+//	            read as its agent); narrows the window to that agent's traffic, and the
+//	            response echoes it in "agent". A window served from the ring is then
+//	            served with group none. Refused past usage.MaxLabelLen.
 //
 // THREE THINGS A CLIENT MUST NOT GET WRONG:
 //
@@ -195,12 +197,14 @@ func (s *Server) handleUsage(w http.ResponseWriter, r *http.Request) {
 		writeUsageError(w, errSessionWithSymbolicWindow)
 		return
 	}
-	// agent= narrows to one agent's traffic, by the label group=agent reports.
+	// agent= narrows to one agent's traffic, by the label group=agent reports. A versioned label
+	// is read as its agent, since group=agent reported those until versions were folded.
 	agent := r.URL.Query().Get("agent")
 	if len(agent) > maxAgentLabelLen {
 		writeUsageError(w, errAgentLabelTooLong)
 		return
 	}
+	agent = pipeline.AgentName(agent)
 
 	var snap usage.Snapshot
 	switch {

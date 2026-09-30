@@ -138,10 +138,10 @@ func TestSnapshot_SeriesCurrenciesNamesEachAgentsUnits(t *testing.T) {
 	now := time.Now().Truncate(BucketWidth)
 	snap := twoUnitRing(t, now).Snapshot(10*BucketWidth, BucketWidth, "", GroupAgent)
 
-	if got := snap.SeriesCurrencies["bob-shell/2.0.5"]; !slices.Equal(got, []string{"Bobcoins"}) {
+	if got := snap.SeriesCurrencies["bob-shell"]; !slices.Equal(got, []string{"Bobcoins"}) {
 		t.Errorf("bob-shell units = %v, want [Bobcoins]", got)
 	}
-	if got := snap.SeriesCurrencies["claude-code/2.1.284"]; !slices.Equal(got, []string{pricing.CurrencyUSD}) {
+	if got := snap.SeriesCurrencies["claude-code"]; !slices.Equal(got, []string{pricing.CurrencyUSD}) {
 		t.Errorf("claude-code units = %v, want [USD]", got)
 	}
 	// The drawer's other two axes carry it too, keyed like their own series.
@@ -164,7 +164,7 @@ func TestSnapshot_SeriesCurrenciesNamesEachAgentsUnits(t *testing.T) {
 func TestScopeToAgent_NarrowsCurrenciesToTheAgent(t *testing.T) {
 	now := time.Now().Truncate(BucketWidth)
 	snap := twoUnitRing(t, now).Snapshot(10*BucketWidth, BucketWidth, "", GroupAgent)
-	scoped, err := ScopeToAgent(&snap, "claude-code/2.1.284", KeepBuckets)
+	scoped, err := ScopeToAgent(&snap, "claude-code", KeepBuckets)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -178,7 +178,7 @@ func TestScopeToAgent_NarrowsCurrenciesToTheAgent(t *testing.T) {
 
 	// Without the field — an older producer — the window's list is kept, today's behaviour.
 	snap.SeriesCurrencies = nil
-	legacy, err := ScopeToAgent(&snap, "claude-code/2.1.284", KeepBuckets)
+	legacy, err := ScopeToAgent(&snap, "claude-code", KeepBuckets)
 	if err != nil {
 		t.Fatal(err)
 	}
