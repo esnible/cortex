@@ -157,6 +157,10 @@ type Snapshot struct {
 	// it for ring windows. Both the ledger and the ring fill it now. One entry is fine. Only two or
 	// more is a claim.
 	Currencies []string `json:"currencies,omitempty"`
+
+	// Agent is the agent= filter this snapshot was narrowed to, set only when the producer applied it,
+	// so a client can tell a narrowed answer from a server that ignored the parameter.
+	Agent string `json:"agent,omitempty"`
 	// SeriesCurrencies names, for group=model, endpoint and agent, the units EACH series is in —
 	// the cross-tabulation Currencies cannot carry, so one agent's (or model's, or endpoint's)
 	// figure can be labelled and summed without borrowing another's units. Keyed like the series;
@@ -1250,6 +1254,10 @@ func addCoverageInto(m map[string]int64, k string, v int64, saturated *bool) {
 // a session that has produced no priceable traffic yet is a normal state, and
 // the caller already knows whether the session exists from /v1/sessions.
 func (a *Aggregator) Snapshot(window, resolution time.Duration, sessionID string, group Group) Snapshot {
+	return a.snapshot(window, resolution, sessionID, group, MaxSeriesInResponse)
+}
+
+func (a *Aggregator) snapshot(window, resolution time.Duration, sessionID string, group Group, maxSeries int) Snapshot {
 	if resolution < BucketWidth {
 		resolution = BucketWidth
 	}
@@ -1423,7 +1431,7 @@ func (a *Aggregator) Snapshot(window, resolution time.Duration, sessionID string
 	// nothing about what it sums to. Doing it earlier would move UngroupedCostMicros, which is
 	// a statement about labels this axis could not carry rather than about labels that did not
 	// make the cut. See MaxSeriesInResponse for the 4.7 MB this bounds.
-	capSeriesAcrossWindow(out.Buckets, MaxSeriesInResponse)
+	capSeriesAcrossWindow(out.Buckets, maxSeries)
 	out.Currencies = sortedUnits(units)
 	out.SeriesCurrencies = seriesUnits(labelUnits, out.Buckets)
 

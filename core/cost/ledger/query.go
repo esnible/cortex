@@ -623,3 +623,14 @@ func SeriesCurrenciesIn(rows []Row, group usage.Group, series map[string]usage.C
 	}
 	return out
 }
+
+// FilterAgent keeps the rows whose group=agent label is agent, for /v1/usage?agent=.
+func FilterAgent(rows []Row, agent string) []Row {
+	var out []Row
+	for _, r := range rows {
+		if label, ok := labelFor(r, usage.GroupAgent); ok && label == agent {
+			out = append(out, r)
+		}
+	}
+	return out
+}
