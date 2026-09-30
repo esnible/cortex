@@ -233,16 +233,31 @@ tls_bridge:
 # Gateways matching a shipped rule already have their discount applied and need
 # nothing here. If yours is not one of them and it bills a fraction of list, say
 # so once: one scalar tracks upstream repricing, where a copied rate card freezes
-# today's numbers and goes stale with nothing to say it has.
+# today's numbers and goes stale with nothing to say it has. Add it under
+# endpoints below:
 #
-# pricing:
-#   endpoints:
 #     - hosts: ["my-gateway.example.com"]
 #       multiplier: 0.80          # a FRACTION of list, so 0.80 is a 20% discount
 #
 # For a gateway whose prices are genuinely negotiated per model rather than
 # derived from list, give rates instead of a multiplier -- see
 # docs/pricing.md.
+#
+# IBM Bob bills in Bobcoins, not dollars, at a flat rate no vendor list carries:
+# its models (premium-ide, router, openai/gpt-oss-20b) are in no bundled table,
+# so without this entry every Bob request is unpriced. "unit" keeps its figures
+# out of the dollar totals -- abctl shows them in Bobcoins and never adds the
+# two. Edit the rate here if IBM changes it; nothing else will.
+pricing:
+  endpoints:
+    - hosts: ["api.us-east.bob.ibm.com"]
+      unit: Bobcoins
+      models:
+        "*":                               # every Bob model, every tier: 2 per million tokens
+          input_cost_per_million:       2.00
+          output_cost_per_million:      2.00
+          cache_read_cost_per_million:  2.00   # no cache discount on this gateway
+          cache_write_cost_per_million: 2.00
 #
 # Cost history on disk. Per-minute totals only -- no prompts, no completions,
 # no tool arguments -- under ~/.cortex/cost/YYYY-MM-DD.jsonl, kept 31 days

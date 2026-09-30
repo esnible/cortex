@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"math"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -21,6 +22,7 @@ import (
 	"time"
 
 	"github.com/rossoctl/cortex/core/config"
+	"github.com/rossoctl/cortex/core/cost/pricing"
 	"github.com/rossoctl/cortex/core/cost/usage"
 	"github.com/rossoctl/cortex/core/session"
 )
@@ -633,5 +635,54 @@ func TestBuiltinConfig_SeparatesCodingAgentSessions(t *testing.T) {
 	}
 	if !slices.Contains(cfg.Session.SessionIDHeaders(), session.BobSessionHeader) {
 		t.Errorf("built-in config: id_headers = %v, want it to include %s", cfg.Session.SessionIDHeaders(), session.BobSessionHeader)
+	}
+}
+
+// TestBuiltinConfig_PricesBobInBobcoins: the built-in config prices IBM Bob's gateway at its
+// flat 2 Bobcoins per million tokens on every tier. Without the entry, every Bob request is
+// unpriced (its models — premium-ide, router, openai/gpt-oss-20b — are in no bundled table), and
+// a new install shows "—" for Bob until its user finds docs/pricing.md. The rate is resolved
+// through pricing.Build rather than read off the struct, so a unit or model key the table would
+// not match fails here and not only on a laptop.
+func TestBuiltinConfig_PricesBobInBobcoins(t *testing.T) {
+	cortexDir := t.TempDir()
+	p, err := writeBuiltinConfig(cortexDir, filepath.Join(cortexDir, "ca"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tab, err := pricing.Build(cfg.Pricing)
+	if err != nil {
+		t.Fatalf("pricing.Build: %v", err)
+	}
+
+	const bob = "api.us-east.bob.ibm.com"
+	for _, model := range []string{"premium-ide", "router", "openai/gpt-oss-20b"} {
+		rates, prov := tab.Resolve(bob, model, 0)
+		if prov != pricing.ProvConfigured {
+			t.Errorf("%s on %s: provenance %v, want configured", model, bob, prov)
+		}
+		// Rates are stored per token; the config states them per million.
+		for tier := pricing.TierInput; tier <= pricing.TierOutput; tier++ {
+			if perMillion := rates.Base[tier] * 1e6; !rates.Set[tier] || math.Abs(perMillion-2) > 1e-9 {
+				t.Errorf("%s on %s: tier %d = %v per Mtok (set %v), want 2", model, bob, tier, perMillion, rates.Set[tier])
+			}
+		}
+		if got := tab.CurrencyFor(bob, model); got != "Bobcoins" {
+			t.Errorf("%s on %s: unit %q, want Bobcoins", model, bob, got)
+		}
+	}
+
+	// The entry is scoped to Bob's host: its "*" model must not reprice anyone else's traffic
+	// in Bobcoins.
+	const other = "api.anthropic.com"
+	if _, prov := tab.Resolve(other, "claude-opus-5-5", 0); prov != pricing.ProvBundled {
+		t.Errorf("claude-opus-5-5 on %s: provenance %v, want bundled", other, prov)
+	}
+	if got := tab.CurrencyFor(other, "claude-opus-5-5"); got != pricing.CurrencyUSD {
+		t.Errorf("claude-opus-5-5 on %s: unit %q, want %s", other, got, pricing.CurrencyUSD)
 	}
 }
