@@ -2202,7 +2202,7 @@ func (m *model) paneView() string {
 		// for a reader who wants it spelled out.
 		title = fmt.Sprintf("abctl · %s", m.endpoint)
 		body = m.sessionsTbl.View()
-		if m.agentScope != "" && len(m.sessionRowIDs) == 0 {
+		if m.sessionsScope() != "" && len(m.sessionRowIDs) == 0 {
 			body = styleHint.Render("(no session belongs to " + sanitizeLabel(m.agentScope) + ")")
 		}
 	case paneEvents:
@@ -2282,8 +2282,8 @@ func (m *model) paneView() string {
 	}
 
 	// The band above every pane is scoped too, so every pane says so; usage and agents word it
-	// themselves above.
-	if m.agentScope != "" && m.pane != paneUsage && m.pane != paneAgents {
+	// themselves above, and sessionHeader carries it for the events and detail panes.
+	if m.agentScope != "" && m.pane != paneUsage && m.pane != paneAgents && m.pane != paneEvents && m.pane != paneDetail {
 		title += " · agent=" + sanitizeLabel(m.agentScope)
 	}
 	header := styleTitle.Render(title)
@@ -2353,7 +2353,7 @@ func (m *model) paneView() string {
 				// The axis and span come off the SNAPSHOT, not off what was last requested: see
 				// drawerLabels.
 				axis, window := m.drawerLabels()
-				lines = renderSpendDrawerAxes(m.spend.drawer.snap, m.spend.drawer.err, axis, m.spendAxes(), window, m.width)
+				lines = renderSpendDrawerAxes(m.spend.drawer.snap, m.spend.drawer.err, axis, m.spend.drawerAxis, m.spendAxes(), window, m.width)
 			}
 			for len(lines) < spendDrawerLinesFor(m.width) {
 				lines = append(lines, "")
@@ -2389,6 +2389,9 @@ func (m *model) sessionHeader(id, suffix string) string {
 	tail := ""
 	if suffix != "" {
 		tail = " · " + suffix
+	}
+	if m.agentScope != "" {
+		tail += " · agent=" + sanitizeLabel(m.agentScope)
 	}
 	// A floor of 12, so a very narrow terminal shows a stub of the label rather than dropping
 	// it: the header is the only thing on screen naming which session these events belong to.

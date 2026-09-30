@@ -125,6 +125,8 @@ type spendState struct {
 	// the drawer's poll asks for and this is where that poll's state lives.
 	groupIdx   int
 	windowStep int
+	// drawerAxis is the grouping drawer.snap was asked for, which a scoped reply may not carry.
+	drawerAxis usage.Group
 }
 
 // spendSpan identifies one of the four budget spans the band reports.
@@ -320,6 +322,8 @@ type spendDrawerLoadedMsg struct {
 	snap *usage.Snapshot
 	req  uint64
 	err  error
+	// axis is the grouping the request asked for; see spendState.drawerAxis.
+	axis usage.Group
 }
 
 type spendDrawerTickMsg struct{ gen uint64 }
@@ -980,6 +984,7 @@ func (m *model) applySpendDrawerLoaded(msg spendDrawerLoadedMsg) {
 		return
 	}
 	m.spend.drawer.snap, m.spend.drawer.err, m.spend.drawer.lastFetch = msg.snap, msg.err, time.Now()
+	m.spend.drawerAxis = msg.axis
 }
 
 // spendDrawerTick schedules the next drawer refresh, AT THE CADENCE OF THE SPAN IT IS SHOWING.
@@ -1017,7 +1022,7 @@ func (m *model) fetchSpendDrawer() tea.Cmd {
 		ctx, cancel := context.WithTimeout(context.Background(), spendFetchTimeout)
 		defer cancel()
 		snap, err := fetchUsageScoped(ctx, client, window, resolution, agent, axis)
-		return spendDrawerLoadedMsg{snap: snap, req: req, err: err}
+		return spendDrawerLoadedMsg{snap: snap, req: req, err: err, axis: axis}
 	}
 }
 

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/rossoctl/cortex/cmd/abctl/apiclient"
 	"github.com/rossoctl/cortex/core/cost/usage"
@@ -66,8 +67,8 @@ func TestFetchSpendSpan_SendsTheScopeAndNothingWithoutOne(t *testing.T) {
 func sessionsFixture() []session.SessionSummary {
 	now := time.Now()
 	return []session.SessionSummary{
-		{ID: "claude-1", UpdatedAt: now, Agent: "claude-code"},
-		{ID: "task-1", UpdatedAt: now, Agent: "bob-shell"},
+		{ID: "claude-1", UpdatedAt: now, Agent: "claude-code/2.1.284"},
+		{ID: "task-1", UpdatedAt: now, Agent: "bob-shell/2.0.5"},
 		{ID: session.DefaultSessionID, UpdatedAt: now},
 	}
 }
@@ -112,6 +113,11 @@ func TestCycleSpendAxis_SkipsTheAgentAxisUnderAScope(t *testing.T) {
 	if m.spendAxis() == usage.GroupAgent {
 		t.Error("a scope set while the drawer was on the agent axis still asks for it")
 	}
+	shown := m.spendAxis()
+	m.cycleSpendAxis()
+	if m.spendAxis() == shown {
+		t.Errorf("`a` from the agent index left the drawer on %q, the axis it already showed", shown)
+	}
 	for range 2 * len(spendDrawerAxes) {
 		m.cycleSpendAxis()
 		if m.spend.axis() == usage.GroupAgent {
@@ -145,7 +151,7 @@ func TestAgentsPane_SessionsColumnOnlyOnceSessionsNameAgents(t *testing.T) {
 	}
 	m.sessions = sessionsFixture()
 	m.rebuildAgentsTable()
-	if rows := m.agentsTbl.Rows(); len(rows) != 2 || rows[0][1] != "1" || rows[1][1] != "–" {
+	if rows := m.agentsTbl.Rows(); len(rows) != 2 || rows[0][1] != "1" || rows[1][1] != emptyCell {
 		t.Errorf("SESSIONS cells = %v, want bob's 1 and node's dash", rows)
 	}
 }
@@ -194,10 +200,150 @@ func runBatchNoWait(cmd tea.Cmd) {
 	}
 }
 
-// A pending bucket the server no longer lists was adopted; its cached events live on under the
-// session that adopted it, so it is not drawn as a session of its own.
-func TestSessionsPane_HidesAnAdoptedPendingBucket(t *testing.T) {
+// Two versions of one agent are two AGENTS rows, and each scopes to its own sessions: the
+// sessions list and the SESSIONS column match on the label the band sends as agent=.
+func TestAgentScope_TwoVersionsOfOneAgentAreTwoScopes(t *testing.T) {
+	now := time.Now()
+	m := &model{width: 200, agentsTbl: newAgentsTable(), sessions: []session.SessionSummary{
+		{ID: "claude-a", UpdatedAt: now, Agent: "claude-code/2.1.284"},
+		{ID: "claude-b", UpdatedAt: now, Agent: "claude-code/2.1.285"},
+		{ID: "task-1", UpdatedAt: now, Agent: "bob-shell/2.0.5"},
+	}, agents: []agentRow{{label: "claude-code/2.1.284"}, {label: "claude-code/2.1.285"},
+		{label: "bob-shell/2.0.5"}, {label: "claude-code/2.1.283"}}}
+	m.rebuildAgentsTable()
+	var cells []string
+	for _, r := range m.agentsTbl.Rows() {
+		cells = append(cells, r[1])
+	}
+	if want := []string{"1", "1", "1", emptyCell}; !slices.Equal(cells, want) {
+		t.Errorf("SESSIONS cells = %v, want %v: one session per version, none for 2.1.283", cells, want)
+	}
+	m.agentScope = "claude-code/2.1.284"
+	m.rebuildSessionsTable()
+	if got := strings.Join(m.sessionRowIDs, ","); got != "claude-a" {
+		t.Errorf("scoped to claude-code/2.1.284: rows %q, want claude-a alone", got)
+	}
+}
+
+// Enter scopes to the row under the cursor after the column set changes, whichever order the
+// sessions and the agent rows arrive in, and after a resize.
+func TestAgentsPane_EnterScopesAfterTheColumnsChange(t *testing.T) {
+	rows := []agentRow{{label: "bob-shell/2.0.5"}, {label: "claude-code/2.1.284"}}
+	for name, arrive := range map[string]func(m *model){
+		"sessions after rows": func(m *model) {
+			m.agents = rows
+			m.rebuildAgentsTable()
+			m.Update(sessionsLoadedMsg(sessionsFixture()))
+		},
+		"rows after sessions": func(m *model) {
+			m.sessions = sessionsFixture()
+			m.Update(agentRowsLoadedMsg{rows: rows, open: agentsOpenNever})
+		},
+		"resize": func(m *model) {
+			m.sessions = sessionsFixture()
+			m.agents = rows
+			m.rebuildAgentsTable()
+			m.Update(tea.WindowSizeMsg{Width: 90, Height: 40})
+		},
+	} {
+		m := fitModel(t, paneAgents, 120, 40, nil)
+		arrive(m)
+		if m.pane != paneAgents {
+			t.Fatalf("%s: left the agents pane", name)
+		}
+		m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+		if m.agentScope != "bob-shell/2.0.5" {
+			t.Errorf("%s: Enter scoped to %q, want the row under the cursor", name, m.agentScope)
+		}
+	}
+}
+
+// A server that names no session's agent — one that predates the field — still lists every
+// session under a scope, and says the list is not narrowed rather than that it is empty.
+func TestSessionsPane_AnOlderServerListsEverySessionUnderAScope(t *testing.T) {
+	now := time.Now()
+	old := []session.SessionSummary{{ID: "claude-1", UpdatedAt: now}, {ID: "task-1", UpdatedAt: now}}
+	m := &model{width: 200, sessions: old, agentScope: "bob-shell/2.0.5"}
+	m.rebuildSessionsTable()
+	if got := strings.Join(m.sessionRowIDs, ","); got != "claude-1,task-1" {
+		t.Errorf("rows %q, want every session", got)
+	}
+	v := fitModel(t, paneSessions, 160, 40, nil)
+	v.sessions, v.agentScope = old, "bob-shell/2.0.5"
+	v.rebuildSessionsTable()
+	if view := v.paneView(); strings.Contains(view, "no session belongs to") {
+		t.Errorf("an older server's sessions read as belonging to no agent:\n%s", view)
+	}
+	if footer := v.footerView(); !strings.Contains(footer, "list not scoped") {
+		t.Errorf("footer %q does not say the list is not narrowed", footer)
+	}
+}
+
+// A scoped drawer the server answered without the breakdown asked for says which one, in the
+// span it covers, instead of heading an empty column.
+func TestSpendDrawer_SaysWhenOneAgentHasNoBreakdown(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"window":"1h0m0s","group":"none","agent":"` + r.URL.Query().Get("agent") + `","totals":{}}`))
+	}))
+	defer ts.Close()
+	m := fitModel(t, paneSessions, 120, 50, nil)
+	m.client = apiclient.New(ts.URL)
+	m.agentScope = "bob-shell/2.0.5"
+	m.spend.expanded = true
+	m.Update(m.fetchSpendDrawer()())
+	if view := m.paneView(); !strings.Contains(view, "no model breakdown for one agent") {
+		t.Errorf("the drawer does not say the model breakdown is unavailable:\n%s", view)
+	}
+}
+
+// A cached pending bucket the server no longer lists is still retained history when nothing
+// adopted it — after an eviction, an expiry or a proxy restart — so it is listed.
+func TestSessionsPane_ListsACachedPendingBucketNothingAdopted(t *testing.T) {
 	m := &model{width: 200, sessions: sessionsFixture()[:1], events: map[string][]pipeline.SessionEvent{
+		session.PendingSessionID("bob-shell"): {{}},
+	}}
+	m.rebuildSessionsTable()
+	if got := strings.Join(m.sessionRowIDs, ","); got != "claude-1,pending:bob-shell" {
+		t.Errorf("rows %q, want the cached pending history listed", got)
+	}
+}
+
+// The scope marker survives the events and detail titles being fitted to the terminal.
+func TestSessionHeader_KeepsTheScopeOnALongTitle(t *testing.T) {
+	for _, p := range []paneID{paneEvents, paneDetail} {
+		m := fitModel(t, p, 80, 40, nil)
+		m.sessions = []session.SessionSummary{{ID: "sess-1", Title: strings.Repeat("a long title ", 20)}}
+		m.agentScope = "bob-shell/2.0.5"
+		title := strings.SplitN(m.paneView(), "\n", 2)[0]
+		if !strings.Contains(title, "agent=bob-shell/2.0.5") || lipgloss.Width(title) > 80 {
+			t.Errorf("pane %d title %q (%d wide): want the scope within 80 columns", p, title, lipgloss.Width(title))
+		}
+	}
+}
+
+// The AGENT cell is a server string and is sanitised like every other one on the pane.
+func TestSessionsPane_SanitisesTheAgentCell(t *testing.T) {
+	now := time.Now()
+	m := &model{width: 200, sessions: []session.SessionSummary{
+		{ID: "claude-1", UpdatedAt: now, Agent: "claude-code/2.1.284"},
+		{ID: "x-1", UpdatedAt: now, Agent: "evil\x1b[2J/1"},
+	}}
+	m.rebuildSessionsTable()
+	for _, r := range m.sessionsTbl.Rows() {
+		for _, c := range r {
+			if strings.ContainsRune(c, 0x1b) {
+				t.Errorf("a cell carries an escape: %q", c)
+			}
+		}
+	}
+}
+
+// A pending bucket a listed session adopted now heads that session, so its cached events are not
+// drawn as a session of their own; an evicted session's cached events still are.
+func TestSessionsPane_HidesAnAdoptedPendingBucket(t *testing.T) {
+	sessions := sessionsFixture()[:1]
+	sessions[0].Adopted = []string{session.PendingSessionID("bob-shell")}
+	m := &model{width: 200, sessions: sessions, events: map[string][]pipeline.SessionEvent{
 		session.PendingSessionID("bob-shell"): {{}},
 		"evicted-1":                           {{}},
 	}}

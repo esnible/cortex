@@ -169,16 +169,15 @@ func narrowBucketsToAgent(buckets []Bucket, agent string) []Bucket {
 
 // AgentSnapshot is Snapshot narrowed to one agent's traffic, for /v1/usage?agent=. The agent axis
 // is read uncapped, so an agent past MaxSeriesInResponse is still found.
-func (a *Aggregator) AgentSnapshot(window, resolution time.Duration, sessionID, agent string, group Group) Snapshot {
-	return NarrowToAgent(a.snapshot(window, resolution, sessionID, GroupAgent, math.MaxInt), agent, group)
+func (a *Aggregator) AgentSnapshot(window, resolution time.Duration, sessionID, agent string) Snapshot {
+	return NarrowToAgent(a.snapshot(window, resolution, sessionID, GroupAgent, math.MaxInt), agent)
 }
 
 // NarrowToAgent is ScopeToAgent for a producer answering agent=: a group=agent snapshot becomes
 // one agent's, with the echo set. An agent with no traffic in the window gets zeroed buckets
-// rather than an error. The narrowed buckets carry no series, so the only grouping kept is
-// group=currency where the agent billed in one unit; any other is served as none, and Group
-// says so.
-func NarrowToAgent(snap Snapshot, agent string, group Group) Snapshot {
+// rather than an error. The narrowed buckets carry no series, so any grouping is served as none,
+// and Group says so.
+func NarrowToAgent(snap Snapshot, agent string) Snapshot {
 	scoped, err := ScopeToAgent(&snap, agent, NarrowBuckets)
 	if err != nil {
 		idle := snap
@@ -190,15 +189,6 @@ func NarrowToAgent(snap Snapshot, agent string, group Group) Snapshot {
 	}
 	scoped.UngroupedCostMicros, scoped.UngroupedAvoidedMicros = nil, nil
 	scoped.Group = GroupNone
-	if group == GroupCurrency && len(scoped.Currencies) == 1 {
-		unit := scoped.Currencies[0]
-		for i := range scoped.Buckets {
-			if scoped.Buckets[i].Requests > 0 {
-				scoped.Buckets[i].Series = map[string]Counts{unit: scoped.Buckets[i].Counts}
-			}
-		}
-		scoped.Group = GroupCurrency
-	}
 	scoped.Agent = agent
 	return *scoped
 }

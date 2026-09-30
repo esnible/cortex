@@ -35,6 +35,9 @@ import (
 //	            session label would be worse than refusing.
 //	group       none (default), model, endpoint, session, agent, status, plugin, host.
 //	            "method" is an alias for "model".
+//	agent       an agent label, as group=agent reports it; narrows the window to that
+//	            agent's traffic, and the response echoes it in "agent". A window served
+//	            from the ring is then served with group none. Refused past usage.MaxLabelLen.
 //
 // THREE THINGS A CLIENT MUST NOT GET WRONG:
 //
@@ -257,7 +260,7 @@ var errSessionIDTooLong = usageError{"session id too long"}
 
 // maxAgentLabelLen bounds agent=, which is caller-supplied; an agent label is at most a truncated
 // User-Agent.
-const maxAgentLabelLen = 512
+const maxAgentLabelLen = usage.MaxLabelLen
 
 var errAgentLabelTooLong = usageError{"agent label too long"}
 
@@ -266,7 +269,7 @@ func (s *Server) ringSnapshot(window, resolution time.Duration, sessionID, agent
 	if agent == "" {
 		return s.usage.Snapshot(window, resolution, sessionID, group)
 	}
-	return s.usage.AgentSnapshot(window, resolution, sessionID, agent, group)
+	return s.usage.AgentSnapshot(window, resolution, sessionID, agent)
 }
 
 // errSessionWithSymbolicWindow refuses session= alongside window=today|7d|month. A fixed

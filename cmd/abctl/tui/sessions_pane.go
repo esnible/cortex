@@ -236,10 +236,7 @@ func (m *model) rebuildSessionsTable() {
 	// Fitted, THEN aligned, and in that order: the alignment pads each heading to the width the
 	// fitter settled on, so padding first would pad to a width the column no longer has. Every
 	// lookup below still finds its column, because they go through headerTitle.
-	scope := ""
-	if m.agentScope != "" {
-		scope = agentScopeName(m.agentScope)
-	}
+	scope := m.sessionsScope()
 	want := alignSessionsHeaders(fitTableColumns(sessionsColumnsWithAgent(m.width, m.sessionsListTwoAgents(scope)), m.width))
 	agentW := sessionsColumnWidth(want, "AGENT")
 	costW := sessionsColumnWidth(want, "COST")
@@ -274,7 +271,7 @@ func (m *model) rebuildSessionsTable() {
 			row = append(row, m.sessionTitleCell(s.ID, s.Title, titleW))
 		}
 		if agentW > 0 {
-			row = append(row, trunc(s.Agent, agentW))
+			row = append(row, trunc(sanitizeLabel(s.Agent), agentW))
 		}
 		row = append(row,
 			relTime(now, s.UpdatedAt),
@@ -305,10 +302,11 @@ func (m *model) rebuildSessionsTable() {
 	// Retaining the events (#870) is only half a fix if there is no row to
 	// select them from: after a proxy restart the server lists nothing, so
 	// without this the picker is empty and the retained history is unreachable.
+	adopted := m.adoptedSessionIDs()
 	for _, id := range m.cachedOnlySessionIDs() {
 		// A scope lists only sessions the server names an agent for, and an adopted pending bucket
 		// lives on under the session that adopted it.
-		if (m.filter != "" && !strings.Contains(id, m.filter)) || scope != "" || strings.HasPrefix(id, session.PendingPrefix) {
+		if (m.filter != "" && !strings.Contains(id, m.filter)) || scope != "" || adopted[id] {
 			continue
 		}
 		cached := m.events[id]
@@ -385,6 +383,22 @@ func (m *model) rebuildSessionsTable() {
 // current list omits, sorted so the picker does not reshuffle under the cursor
 // on each refresh. Empty caches are skipped: a row advertising zero events
 // helps nobody, and snapshotLoadedMsg can create the key with an empty slice.
+func (m *model) cachedOnlySessionIDs() []string {
+	live := make(map[string]bool, len(m.sessions))
+	for _, s := range m.sessions {
+		live[s.ID] = true
+	}
+	out := make([]string, 0, len(m.events))
+	for id, evs := range m.events {
+		if live[id] || len(evs) == 0 {
+			continue
+		}
+		out = append(out, id)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // sessionListed reports whether the sessions table shows s: the filter, and under an agent scope
 // only the sessions of that agent.
 func (m *model) sessionListed(s session.SessionSummary, scope string) bool {
@@ -411,19 +425,17 @@ func (m *model) sessionsListTwoAgents(scope string) bool {
 	return false
 }
 
-func (m *model) cachedOnlySessionIDs() []string {
-	live := make(map[string]bool, len(m.sessions))
+// adoptedSessionIDs is the set of pending buckets a listed session says it adopted.
+func (m *model) adoptedSessionIDs() map[string]bool {
+	var out map[string]bool
 	for _, s := range m.sessions {
-		live[s.ID] = true
-	}
-	out := make([]string, 0, len(m.events))
-	for id, evs := range m.events {
-		if live[id] || len(evs) == 0 {
-			continue
+		for _, id := range s.Adopted {
+			if out == nil {
+				out = make(map[string]bool)
+			}
+			out[id] = true
 		}
-		out = append(out, id)
 	}
-	sort.Strings(out)
 	return out
 }
 
@@ -1463,8 +1475,8 @@ func sessionsColumnsFor(termWidth int) []table.Column {
 	return sessionsColumnsWithAgent(termWidth, false)
 }
 
-// sessionsAgentWidth fits "claude-code", the longest agent name abctl knows.
-const sessionsAgentWidth = 11
+// sessionsAgentWidth fits "claude-code/2.1.284", an agent label with its version.
+const sessionsAgentWidth = 19
 
 // sessionsColumnsWithAgent is sessionsColumnsFor plus an AGENT column after TITLE when agent is set
 // and the column fits without narrowing any other; see rebuildSessionsTable for when it is asked.

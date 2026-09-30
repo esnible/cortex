@@ -1368,7 +1368,7 @@ func (a *Aggregator) foldInto(ring []bucket, t time.Time, sessionID string, e *p
 	// so there is no empty key to guard against — and folding unconditionally is what
 	// makes this axis's series sum to the bucket total. That is also what gives it a
 	// different denominator from group=model's; see byAgent.
-	b.noteUnit(GroupAgent, addLabel(&b.byAgent, ringLabel(e.Client.Label()), one), unit)
+	b.noteUnit(GroupAgent, addLabel(&b.byAgent, AgentLabel(e.Client), one), unit)
 	if e.StatusCode > 0 {
 		addLabel(&b.byStatus, strconv.Itoa(e.StatusCode), one)
 	} else if e.Phase == pipeline.SessionDenied {
@@ -1514,6 +1514,12 @@ func truncateLabel(s string) string {
 		cut--
 	}
 	return s[:cut]
+}
+
+// AgentLabel is the label byAgent keys traffic from c by, before addLabel's overflow; agent=
+// matches it.
+func AgentLabel(c *pipeline.EventClient) string {
+	return ringLabel(c.Label())
 }
 
 // ringLabel prepares one string for a bucket's label map: sanitised, then capped.

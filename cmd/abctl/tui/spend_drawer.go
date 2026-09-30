@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -387,10 +388,9 @@ func (m *model) toggleSpendDrawer() tea.Cmd {
 // figures above it. The old snapshot stays on screen until the new one lands, so the drawer
 // does not blink through an empty frame — it is a breakdown of the same traffic either way.
 func (m *model) cycleSpendAxis() tea.Cmd {
-	m.spend.groupIdx = (m.spend.groupIdx + 1) % len(spendDrawerAxes)
-	if m.agentScope != "" && m.spend.axis() == usage.GroupAgent {
-		m.spend.groupIdx = (m.spend.groupIdx + 1) % len(spendDrawerAxes)
-	}
+	axes := m.spendAxes()
+	next := axes[(slices.Index(axes, m.spendAxis())+1)%len(axes)]
+	m.spend.groupIdx = slices.Index(spendDrawerAxes, next)
 	// THE PREVIOUS SPAN'S ERROR IS DROPPED HERE, and it has to be dropped rather than left to
 	// the reply that will overwrite it. applySpendLoaded stores both fields together, so a
 	// failed poll leaves err set and snap nil — and the diagnostic is captioned with the
@@ -743,11 +743,12 @@ func drawerHeaders(axis usage.Group, twoCol bool, width int) string {
 // exactly the silence applySpendLoaded's doc forbids for the band — the chain clears snap on
 // failure, so without this a broken endpoint rendered as headers over blank rows forever.
 func renderSpendDrawer(snap *usage.Snapshot, err error, axis usage.Group, windowLabel string, width int) []string {
-	return renderSpendDrawerAxes(snap, err, axis, spendDrawerAxes, windowLabel, width)
+	return renderSpendDrawerAxes(snap, err, axis, axis, spendDrawerAxes, windowLabel, width)
 }
 
-// renderSpendDrawerAxes is renderSpendDrawer with the axis cycle its hint line spells.
-func renderSpendDrawerAxes(snap *usage.Snapshot, err error, axis usage.Group, axes []usage.Group, windowLabel string, width int) []string {
+// renderSpendDrawerAxes is renderSpendDrawer with the axis cycle its hint line spells, and the axis
+// snap was asked for.
+func renderSpendDrawerAxes(snap *usage.Snapshot, err error, axis, asked usage.Group, axes []usage.Group, windowLabel string, width int) []string {
 	if err != nil {
 		// The reservation still has to be filled, so this is spendDrawerLinesFor(width) rows with the
 		// diagnostic on the first and the hint line last — the hints stay because `w` and `esc`
@@ -767,6 +768,11 @@ func renderSpendDrawerAxes(snap *usage.Snapshot, err error, axis usage.Group, ax
 	rows := spendDrawerRows(snap, spendDrawerSeries)
 	if snap != nil {
 		drawerRowUnits(snap, rows)
+	}
+	note := drawerScopeNote(snap, asked, windowLabel)
+	hintAxis := axis
+	if note != "" {
+		hintAxis = asked
 	}
 	// TWO COLUMNS: what the money was spent ON, and who spent it. They answer different
 	// questions, and with a single model in the window the series column alone restated the
@@ -812,6 +818,8 @@ func renderSpendDrawerAxes(snap *usage.Snapshot, err error, axis usage.Group, ax
 		series := ""
 		if i < len(rows) {
 			series = fitStripFigures(" ", drawerFigures(rows[i]), seriesWidth)
+		} else if i == 0 && note != "" {
+			series = clipRow("   "+note, seriesWidth)
 		}
 		if !twoCol {
 			out = append(out, series)
@@ -847,7 +855,7 @@ func renderSpendDrawerAxes(snap *usage.Snapshot, err error, axis usage.Group, ax
 	// current axis are written down, and a drawer whose controls are undiscoverable is a
 	// drawer nobody changes the axis of.
 	out = append(out, fitStripFigures(" ", plainFigures(
-		"[a] "+axisHintOf(axis, axes),
+		"[a] "+axisHintOf(hintAxis, axes),
 		"[w] "+windowLabel,
 		"esc closes",
 	), width))
@@ -1057,6 +1065,15 @@ func gapOf(c usage.Counts) int64 {
 		return gap
 	}
 	return 0
+}
+
+// drawerScopeNote is the series column's line when a scoped reply came back without the breakdown
+// it was asked for, or "".
+func drawerScopeNote(snap *usage.Snapshot, asked usage.Group, windowLabel string) string {
+	if snap == nil || snap.Agent == "" || snap.Group != usage.GroupNone || asked == "" || asked == usage.GroupNone {
+		return ""
+	}
+	return "no " + string(asked) + " breakdown for one agent in " + windowLabel
 }
 
 // axisHintOf spells the axis cycle with the current one bracketed, so the line says both what

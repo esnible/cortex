@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/rossoctl/cortex/core/cost/event"
+	"github.com/rossoctl/cortex/core/cost/ledger"
+	"github.com/rossoctl/cortex/core/cost/pricing"
 	"github.com/rossoctl/cortex/core/cost/usage"
 	"github.com/rossoctl/cortex/core/pipeline"
 )
@@ -50,5 +52,100 @@ func TestHandleUsage_AgentNarrowsLedgerAndRingWindows(t *testing.T) {
 		if _, plain := fetchUsage(t, ts.URL, "?window="+window); strings.Contains(plain, `"agent"`) {
 			t.Errorf("window=%s without agent= carries an agent key: %s", window, plain)
 		}
+	}
+}
+
+// agent= matches the label group=agent reports, so traffic that carried no User-Agent — stored
+// by the ledger as no agent at all — is found under "unknown", as the AGENTS pane lists it.
+func TestHandleUsage_AgentMatchesTheUnknownBucket(t *testing.T) {
+	now := time.Now()
+	led := newTestLedger(t, now)
+	agg := usage.New()
+	for _, e := range []*pipeline.SessionEvent{agentResponse(t, now, nil, 0.02), agentResponse(t, now, &pipeline.EventClient{Name: "bob-shell"}, 0.01)} {
+		led.Record("s1", e)
+		agg.Record("s1", e)
+	}
+	ts, _ := newTestServer(t, WithUsage(agg), WithCostLedger(led))
+	for _, window := range []string{"today", "1h"} {
+		_, body := fetchUsage(t, ts.URL, "?window="+window+"&agent="+pipeline.UnknownClientLabel)
+		var snap usage.Snapshot
+		if err := json.Unmarshal([]byte(body), &snap); err != nil {
+			t.Fatalf("%s: decode: %v (%s)", window, err, body)
+		}
+		if snap.Totals.CostMicros != 20_000 {
+			t.Errorf("window=%s agent=unknown: CostMicros=%d, want the untagged 20000", window, snap.Totals.CostMicros)
+		}
+	}
+}
+
+// agent= is bounded by the longest label either producer stores; one byte past it can match
+// nothing and is refused.
+func TestHandleUsage_AgentLabelBound(t *testing.T) {
+	ts, _ := newTestServer(t, WithUsage(usage.New()))
+	if code, body := fetchUsage(t, ts.URL, "?window=1h&agent="+strings.Repeat("a", usage.MaxLabelLen)); code != 200 {
+		t.Errorf("a %d-byte agent: %d %s, want 200", usage.MaxLabelLen, code, body)
+	}
+	if code, _ := fetchUsage(t, ts.URL, "?window=1h&agent="+strings.Repeat("a", usage.MaxLabelLen+1)); code != 400 {
+		t.Errorf("a %d-byte agent: %d, want 400", usage.MaxLabelLen+1, code)
+	}
+}
+
+// The ring keeps no per-agent tally by unit, so for one agent it serves group=currency as none:
+// for an agent in one unit, whose plain traffic the unscoped ring files under USD, and for one in
+// two. The ledger keeps a unit on every row and splits the agent by it.
+func TestHandleUsage_AgentAndGroupCurrency(t *testing.T) {
+	tbl, err := pricing.Build(&pricing.Config{Endpoints: []pricing.EndpointConfig{{
+		Hosts: []string{"gw.bob"}, Unit: "Bobcoins",
+		Models: map[string]pricing.ModelConfig{"opus": {TierRates: pricing.TierRates{InputCostPerMillion: 2}}},
+	}}})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	bob := &pipeline.EventClient{Name: "bob-shell", Version: "2.0.5"}
+	events := func(at time.Time, twoUnits bool) []*pipeline.SessionEvent {
+		inBobcoins := agentResponse(t, at, bob, 0.01)
+		inBobcoins.Host = "gw.bob"
+		second := &pipeline.SessionEvent{At: at, Phase: pipeline.SessionResponse, StatusCode: 200, Host: "github.com", Client: bob}
+		if twoUnits {
+			second = agentResponse(t, at, bob, 0.02)
+		}
+		return []*pipeline.SessionEvent{inBobcoins, second}
+	}
+	query := "&agent=" + url.QueryEscape(bob.Label()) + "&group=currency"
+	decode := func(body string) usage.Snapshot {
+		var snap usage.Snapshot
+		if err := json.Unmarshal([]byte(body), &snap); err != nil {
+			t.Fatalf("decode: %v (%s)", err, body)
+		}
+		return snap
+	}
+
+	for _, twoUnits := range []bool{false, true} {
+		agg := usage.New(usage.WithPricing(tbl))
+		for _, e := range events(time.Now(), twoUnits) {
+			agg.Record("s1", e)
+		}
+		ts, _ := newTestServer(t, WithUsage(agg))
+		_, body := fetchUsage(t, ts.URL, "?window=1h"+query)
+		if snap := decode(body); snap.Group != usage.GroupNone || len(usage.FoldSeriesAcrossWindow(snap.Buckets)) != 0 {
+			t.Errorf("ring, two units %v: group=%q series %v, want none", twoUnits, snap.Group, usage.FoldSeriesAcrossWindow(snap.Buckets))
+		}
+	}
+
+	at := insideToday(t, 2*time.Minute)
+	led, err := ledger.New(t.TempDir(), ledger.WithClock(func() time.Time { return at }), ledger.WithPricing(tbl))
+	if err != nil {
+		t.Fatalf("ledger.New: %v", err)
+	}
+	t.Cleanup(func() { _ = led.Close() })
+	for _, e := range events(at, true) {
+		led.Record("s1", e)
+	}
+	ts, _ := newTestServer(t, WithUsage(usage.New()), WithCostLedger(led))
+	_, body := fetchUsage(t, ts.URL, "?window=today"+query)
+	snap := decode(body)
+	series := usage.FoldSeriesAcrossWindow(snap.Buckets)
+	if snap.Group != usage.GroupCurrency || series["Bobcoins"].CostMicros != 10_000 || series[pricing.CurrencyUSD].CostMicros != 20_000 {
+		t.Errorf("ledger: group=%q series %v, want Bobcoins 10000 and USD 20000", snap.Group, series)
 	}
 }

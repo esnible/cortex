@@ -2,7 +2,6 @@ package tui
 
 import (
 	"context"
-	"strings"
 	"time"
 
 	"github.com/rossoctl/cortex/cmd/abctl/apiclient"
@@ -25,15 +24,17 @@ func fetchUsageScoped(ctx context.Context, client *apiclient.Client, window stri
 	if err != nil {
 		return nil, err
 	}
-	scoped := usage.NarrowToAgent(*all, agent, group)
+	scoped := usage.NarrowToAgent(*all, agent)
 	return &scoped, nil
 }
 
-// agentScopeName is the name sessions carry for an agent scope label: the product before its
-// version. A label that is a raw User-Agent names no session.
-func agentScopeName(label string) string {
-	name, _, _ := strings.Cut(label, "/")
-	return name
+// sessionsScope is the agent the sessions list is narrowed to: the scope, when some session names
+// its agent, else "" — a server that names none cannot say which sessions are whose.
+func (m *model) sessionsScope() string {
+	if m.agentScope == "" || !m.sessionsNameAgents() {
+		return ""
+	}
+	return m.agentScope
 }
 
 // spendAxes are the drawer's axes: every one, less the agent axis under a scope, where it would

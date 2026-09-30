@@ -200,9 +200,8 @@ func (m *model) fetchAgentRowsCmd(open agentsOpen, from paneID) tea.Cmd {
 // THESE definitions rather than from the live table's columns — refitting the live ones
 // compounds each narrowing, so widening the terminal back up never restores what it took away.
 //
-// NO SESSIONS COLUMN — see agentRow. COST is widest because it is the column the pane exists
-// for, and it holds "—" for an agent nothing could price, which is every Bob row until the
-// billing-unit work lands.
+// COST is widest because it is the column the pane exists for, and it holds "—" for an agent
+// nothing could price, which is every Bob row until the billing-unit work lands.
 func agentsColumns() []table.Column {
 	return []table.Column{
 		{Title: "AGENT", Width: 34},
@@ -256,6 +255,7 @@ func (m *model) rebuildAgentsTable() {
 	// Columns and rows change together, as in rebuildSessionsTable: SESSIONS appears only once a
 	// session names its agent, so a server that names none shows the table unchanged.
 	withSessions := m.sessionsNameAgents()
+	cursor := m.agentsTbl.Cursor()
 	cols := agentsColumns()
 	if withSessions {
 		cols = append(cols[:1:1], append([]table.Column{{Title: "SESSIONS", Width: 8}}, cols[1:]...)...)
@@ -281,6 +281,7 @@ func (m *model) rebuildAgentsTable() {
 		}
 	}
 	m.agentsTbl.SetRows(rows)
+	setCursorVisible(&m.agentsTbl, cursor)
 }
 
 // agentCostCell renders one agent's cost, or "—" when nothing priced it.
@@ -392,16 +393,16 @@ func (m *model) leaveAgentsPane() tea.Cmd {
 }
 
 // agentSessionsCell counts the listed sessions that belong to the agent a row names, or a dash
-// where none does — which includes every row whose label is a raw User-Agent.
+// where none does.
 func (m *model) agentSessionsCell(label string) string {
-	name, n := agentScopeName(label), 0
+	n := 0
 	for _, s := range m.sessions {
-		if s.Agent == name {
+		if s.Agent == label {
 			n++
 		}
 	}
 	if n == 0 {
-		return "–"
+		return emptyCell
 	}
 	return formatCount(n)
 }

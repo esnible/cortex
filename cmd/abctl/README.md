@@ -1206,12 +1206,14 @@ times are recorded per bucket across every agent that shared it, so
 
 Elsewhere, the sessions pane lists only that agent's sessions — the `default` and
 `pending:` buckets belong to no one agent and are hidden — and every pane's title
-says `agent=`. The spend band and its drawer show that agent's figures, asked of the
-server with `/v1/usage?agent=`; against a server too old to answer that, abctl narrows
-the `group=agent` series itself, as the usage pane does. The drawer drops its agent
-axis, and a window the server cannot break down for one agent reads `BY NONE`. Unscoped,
-the sessions pane gains an `AGENT` column when two agents are listed, and the agents
-pane a `SESSIONS` count once sessions name their agent.
+says `agent=`. Against a server that names no session's agent, the list stays whole
+and its footer says `list not scoped`. The spend band and its drawer show that
+agent's figures, asked of the server with `/v1/usage?agent=`; against a server too
+old to answer that, abctl narrows the `group=agent` series itself, as the usage pane
+does. The drawer drops its agent axis, and a window the server cannot break down for
+one agent reads `BY NONE`. Unscoped, the sessions pane gains an `AGENT` column when
+two agents are listed, and the agents pane a `SESSIONS` count once sessions name
+their agent.
 
 ## Settings
 
