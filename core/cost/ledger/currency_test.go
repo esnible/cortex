@@ -3,6 +3,7 @@ package ledger
 import (
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -469,5 +470,27 @@ func TestRecord_AModellessChargeOnACreditsGatewayIsNotWrittenAsUSD(t *testing.T)
 	// And the refusal downstream can see it, which is what the field is for.
 	if got := CurrenciesIn(rows); len(got) != 1 || got[0] != "credits" {
 		t.Errorf("CurrenciesIn = %v, want [credits]", got)
+	}
+}
+
+// group=agent names each agent's own units, spelled as CurrenciesIn spells them, so a scoped figure
+// can be labelled without the window's mixture. Every other grouping gets nothing.
+func TestSeriesCurrenciesIn_NamesEachAgentsUnits(t *testing.T) {
+	rows := []Row{
+		{Endpoint: "bob", Agent: "bob-shell/2.0.5", Currency: "credits", Counts: usage.Counts{Requests: 4}},
+		{Endpoint: "bob", Agent: "bob-shell/2.0.5", Currency: "Credits", Counts: usage.Counts{Requests: 2}},
+		{Endpoint: "anthropic", Agent: "claude-code/2.1.284", Counts: usage.Counts{Requests: 6}},
+		{Endpoint: "litellm", Agent: "claude-code/2.1.284", Currency: "usd", Counts: usage.Counts{Requests: 1}},
+	}
+	got := SeriesCurrenciesIn(rows, usage.GroupAgent)
+	if want := []string{"credits"}; !slices.Equal(got["bob-shell/2.0.5"], want) {
+		t.Errorf("bob-shell = %v, want %v", got["bob-shell/2.0.5"], want)
+	}
+	if want := []string{pricing.CurrencyUSD}; !slices.Equal(got["claude-code/2.1.284"], want) {
+		t.Errorf("claude-code = %v, want %v; a legacy row and an explicit usd one are one unit",
+			got["claude-code/2.1.284"], want)
+	}
+	if other := SeriesCurrenciesIn(rows, usage.GroupModel); other != nil {
+		t.Errorf("group=model got %v, want nothing: the field is agent-only", other)
 	}
 }

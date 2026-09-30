@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"sort"
 	"time"
 )
 
@@ -68,9 +69,9 @@ const (
 	//
 	// It exists so a deployment whose gateways bill in different units has somewhere to get a
 	// figure per unit, once a combined total has been refused as meaningless. Unlike every other
-	// axis here it is not a property of the traffic but of the RATE that priced it, which is why
-	// the ledger can serve it — Row.Currency is part of the row key — while the in-memory ring
-	// cannot.
+	// axis here it is not a property of the traffic but of the RATE that priced it: the ledger
+	// serves it from Row.Currency, part of its row key, and the in-memory ring from a per-bucket
+	// tally of the same rule (pricing.UnitOf), so both kinds of window break down alike.
 	GroupCurrency Group = "currency"
 	GroupStatus   Group = "status"
 	GroupPlugin   Group = "plugin"
@@ -150,9 +151,17 @@ type Snapshot struct {
 	// obviously wrong. A consumer seeing two entries must refuse to present a single total;
 	// `abctl cost` does, and says which units it found.
 	//
-	// ABSENT MEANS NOT COMPUTED, and a client must not turn that into a refusal. The in-memory ring
-	// omits it, and a ring total can span units. One entry is fine. Only two or more is a claim.
+	// ABSENT MEANS NOT COMPUTED OR NOTHING TO LABEL, and a client must not turn that into a
+	// refusal: an idle window names no unit, and a producer older than the ring's unit tally omits
+	// it for ring windows. Both the ledger and the ring fill it now. One entry is fine. Only two or
+	// more is a claim.
 	Currencies []string `json:"currencies,omitempty"`
+	// SeriesCurrencies names, for group=agent, the units EACH agent's series is in — the
+	// cross-tabulation Currencies cannot carry, so one agent's figure can be labelled and summed
+	// without borrowing another agent's units. Keyed like the series; absent for every other
+	// grouping and from older producers, which a client reads as "unknown" and falls back to
+	// Currencies for.
+	SeriesCurrencies map[string][]string `json:"seriesCurrencies,omitempty"`
 	// Buckets runs oldest to newest. For a ring-backed window it always has
 	// Window/BucketWidth entries, including zeroed ones for idle minutes, so a client
 	// can distinguish an idle minute from one that fell off the end of the ring.
@@ -1240,12 +1249,6 @@ func addCoverageInto(m map[string]int64, k string, v int64, saturated *bool) {
 // a session that has produced no priceable traffic yet is a normal state, and
 // the caller already knows whether the session exists from /v1/sessions.
 func (a *Aggregator) Snapshot(window, resolution time.Duration, sessionID string, group Group) Snapshot {
-	// The ring keeps no unit series, so group=currency is served as no grouping and the response
-	// says so — the rule the ledger applies to an axis it has no column for. Echoing it would claim
-	// a breakdown over an empty series, with the whole total published as the part it left out.
-	if group == GroupCurrency {
-		group = GroupNone
-	}
 	if resolution < BucketWidth {
 		resolution = BucketWidth
 	}
@@ -1311,6 +1314,8 @@ func (a *Aggregator) Snapshot(window, resolution time.Duration, sessionID string
 	// post-loop, so setting the flag inside the loop would be overwritten.
 	var coverageSaturated bool
 	reconcilable := group.Reconcilable()
+	units := map[string]struct{}{}
+	var agentUnits map[string]map[string]struct{}
 
 	for i := n - 1; i >= 0; i-- {
 		t := newest.Add(-time.Duration(i) * BucketWidth)
@@ -1376,6 +1381,12 @@ func (a *Aggregator) Snapshot(window, resolution time.Duration, sessionID string
 					}
 					addCoverageInto(out.IncompleteBy, k, v.Requests, &coverageSaturated)
 				}
+				for u := range src.byCurrency {
+					units[u] = struct{}{}
+				}
+				if group == GroupAgent {
+					agentUnits = unionUnits(agentUnits, src.agentUnits)
+				}
 			}
 		}
 		out.Buckets = append(out.Buckets, b)
@@ -1408,6 +1419,8 @@ func (a *Aggregator) Snapshot(window, resolution time.Duration, sessionID string
 	// a statement about labels this axis could not carry rather than about labels that did not
 	// make the cut. See MaxSeriesInResponse for the 4.7 MB this bounds.
 	capSeriesAcrossWindow(out.Buckets, MaxSeriesInResponse)
+	out.Currencies = sortedUnits(units)
+	out.SeriesCurrencies = seriesUnits(agentUnits, out.Buckets)
 
 	// Absent unless there is something to disclose, which is the whole convention: see
 	// SetUngroupedCost.
@@ -1456,6 +1469,8 @@ func (b *bucket) series(g Group) map[string]Counts {
 		src = b.bySession
 	case GroupAgent:
 		src = b.byAgent
+	case GroupCurrency:
+		src = b.byCurrency
 	case GroupStatus:
 		src = b.byStatus
 	case GroupPlugin:
@@ -1471,6 +1486,81 @@ func (b *bucket) series(g Group) map[string]Counts {
 	out := make(map[string]Counts, len(src))
 	for k, v := range src {
 		out[k] = v
+	}
+	return out
+}
+
+// unionUnits folds one bucket's per-agent units into dst, allocating on first use.
+func unionUnits(dst, src map[string]map[string]struct{}) map[string]map[string]struct{} {
+	for agent, us := range src {
+		if dst == nil {
+			dst = make(map[string]map[string]struct{}, len(src))
+		}
+		if dst[agent] == nil {
+			dst[agent] = make(map[string]struct{}, len(us))
+		}
+		for u := range us {
+			dst[agent][u] = struct{}{}
+		}
+	}
+	return dst
+}
+
+// sortedUnits is a unit set as Snapshot.Currencies spells it: sorted, nil when empty, and without
+// overflowLabel, which is a cap marker and not a billing unit (see ledger.CurrenciesIn).
+func sortedUnits(set map[string]struct{}) []string {
+	out := make([]string, 0, len(set))
+	for u := range set {
+		if u != overflowLabel {
+			out = append(out, u)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	sort.Strings(out)
+	return out
+}
+
+// seriesUnits is Snapshot.SeriesCurrencies for the series the response actually carries.
+//
+// AN AGENT THE CAP FOLDED AWAY lends its units to overflowLabel, the series its figures went
+// into, rather than keeping an entry of its own: SeriesCurrencies describes the series on the
+// wire, and a key naming a series that is not there would label nothing.
+func seriesUnits(agentUnits map[string]map[string]struct{}, buckets []Bucket) map[string][]string {
+	if len(agentUnits) == 0 {
+		return nil
+	}
+	present := map[string]bool{}
+	for _, b := range buckets {
+		for label := range b.Series {
+			present[label] = true
+		}
+	}
+	merged := map[string]map[string]struct{}{}
+	for agent, us := range agentUnits {
+		key := agent
+		if !present[agent] {
+			key = overflowLabel
+		}
+		if merged[key] == nil {
+			merged[key] = map[string]struct{}{}
+		}
+		for u := range us {
+			merged[key][u] = struct{}{}
+		}
+	}
+	out := make(map[string][]string, len(merged))
+	for label, us := range merged {
+		if !present[label] {
+			continue
+		}
+		if list := sortedUnits(us); list != nil {
+			out[label] = list
+		}
+	}
+	if len(out) == 0 {
+		return nil
 	}
 	return out
 }

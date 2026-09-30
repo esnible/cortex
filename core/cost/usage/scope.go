@@ -119,22 +119,19 @@ func ScopeToAgent(snap *Snapshot, agent string, buckets BucketScope) (*Snapshot,
 	// UngroupedAvoidedMicros failed nothing at all — measured, both ways. See
 	// TestScopeToAgent_KeepsTheWindowResidualsForTheCallerToDisclose.
 
-	// Currencies IS CARRIED OVER, AND IT NO LONGER DESCRIBES Totals. Said out loud because it is
-	// the one field on this struct that the narrowing above invalidates, and the honest options are
-	// worse than keeping it.
-	//
-	// The field means "every unit the rows behind Totals were denominated in", and after this copy
-	// Totals is one agent while the list is the whole window. Narrowing it is not available:
-	// deciding which units THIS agent's traffic carries needs a cross-tabulation of agent against
-	// currency, and a folded per-agent Counts has already summed that axis away. Dropping it is
-	// worse than leaving it — this agent's own traffic may well be the mixed part, and an absent
-	// list reads as "single unit", so the surface would print a confident figure that is exactly
-	// the credits-plus-dollars sum this whole change exists to refuse.
-	//
-	// SO THE OVER-REFUSAL IS DELIBERATE, and it is the safe direction: a per-agent figure is
-	// withheld in a mixed window even when that agent billed in one unit. `abctl cost`'s
-	// writeCostSummary says which of the two it is rather than letting the reader assume, because
-	// "no figure for this agent" and "no figure for this window" have different fixes.
+	// Currencies IS NARROWED TO THIS AGENT'S UNITS when the producer sent SeriesCurrencies, the
+	// agent-by-unit cross-tabulation a folded Counts cannot carry. Without it the window's list is
+	// carried over, as it always was: it then no longer describes Totals, but narrowing needs the
+	// cross-tabulation and dropping the list is worse — an absent list reads as "single unit", and
+	// this agent's own traffic may be the mixed part. THAT FALLBACK OVER-REFUSES, deliberately: a
+	// per-agent figure is withheld in a mixed window even when the agent billed in one unit.
+	// `abctl cost`'s writeCostSummary says which of the two a refusal is, because "no figure for
+	// this agent" and "no figure for this window" have different fixes. SeriesCurrencies itself is
+	// dropped with the series it described.
+	if units, ok := snap.SeriesCurrencies[agent]; ok {
+		scoped.Currencies = append([]string(nil), units...)
+	}
+	scoped.SeriesCurrencies = nil
 
 	if buckets == NarrowBuckets {
 		scoped.Buckets = narrowBucketsToAgent(snap.Buckets, agent)
