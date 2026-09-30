@@ -419,18 +419,31 @@ func (m *model) sessionTitle(id string) string {
 	// the two sources asymmetric for no reason, and the fix is the same constant. Re-capping an
 	// already-capped harvested title costs a length check.
 	//
-	// TRIMMED AFTER THE CUT, and that is a CORRECTNESS requirement rather than tidiness. The cap
-	// was first written with the claim that "truncation cannot turn a non-blank title blank" — false,
-	// and the reasoning inverted the risk. A title whose first MaxTitleLen runes are all whitespace
-	// with real text after them clips to pure spaces, which titleIsBlank calls blank, so
-	// sessionHasTitle flips true→false and the row re-harvests ~/.claude every 3 minutes for the life
-	// of the process. That is the permanent-rescan cost this file documents as the price of an
-	// UNNAMABLE session, silently charged to a session that has a perfectly good name.
+	// TRIMMED BEFORE THE CUT, and that is a CORRECTNESS requirement rather than tidiness — but note
+	// the history, because this comment asserted the OPPOSITE order for the same reason and was
+	// wrong twice over.
 	//
-	// MIRRORING clipTitle (core/observe/claude/harvest.go), which trims after its own cut for the
-	// same reason. Trimming cannot introduce the failure it prevents: it only ever removes
-	// whitespace, so a clip that still holds real text is untouched, and one that holds nothing else
-	// collapses to "" — which is the honest answer, and the one sessionHasTitle already handles.
+	// The cap was first written claiming "truncation cannot turn a non-blank title blank". False. It
+	// was then rewritten to trim AFTER the cut, with a comment claiming that trimming cannot
+	// introduce the failure it prevents "because it only ever removes whitespace". Also false, and
+	// the measurements are the refutation: a title whose first MaxTitleLen runes are whitespace with
+	// real text after them loses the text to the CUT, and is then emptied by the TRIM. Measured at
+	// MaxTitleLen = 80: 40 leading spaces keeps 50 runes, 79 keeps just "m", and 80 or more returns
+	// "" — for U+0020, U+00A0 and U+3000 alike. sessionHasTitle reads sessionTitle, so that flips a
+	// named row to unnamed and re-harvests ~/.claude every ~3 minutes for the life of the process:
+	// the permanent-rescan cost this file documents as the price of an UNNAMABLE session, charged
+	// instead to a session with a perfectly good name.
+	//
+	// Trimming first dissolves the problem rather than guarding against it. Leading whitespace is not
+	// part of the name, so it should never have consumed the rune budget; once it does not, no amount
+	// of it can push real text past the cut. capTitleRunes trims both ends of its input before
+	// measuring, and trims again after cutting to drop whitespace the cut newly exposed.
+	//
+	// clipTitle (core/observe/claude/harvest.go) trims after its own cut and is safe doing so for a
+	// reason that does not transfer: normalizeTitle has already collapsed every whitespace run ahead
+	// of it, so it never sees a leading run long enough to matter. Neither string here has been
+	// through that — which is the same precondition the cluster walk below exists because this side
+	// lacks.
 	return capTitleRunes(sanitizeLabel(m.sessionsData[id].Title))
 }
 
@@ -467,6 +480,15 @@ func (m *model) sessionTitle(id string) string {
 // It is deliberately narrower than normalising: the goal is only that the cut not land mid-cluster,
 // not that clusters be removed.
 func capTitleRunes(s string) string {
+	// TRIMMED FIRST, so surrounding whitespace never consumes the rune budget. See sessionTitle's
+	// note: trimming after the cut let 80 leading spaces empty a genuinely-named title, because the
+	// cut kept only the spaces and the trim then removed them. Whitespace is not part of a name, so
+	// the fix is for it not to count rather than to detect the damage afterwards.
+	//
+	// This also makes the early return below exact. Trimming after it would mean a string of 80
+	// real runes plus one trailing space took the cut path to produce a result the early return
+	// could have returned untouched.
+	s = strings.TrimSpace(s)
 	if utf8.RuneCountInString(s) <= claude.MaxTitleLen {
 		return s
 	}
@@ -495,10 +517,17 @@ func capTitleRunes(s string) string {
 	// this walk now has a floor that cannot reach 0 while any non-binder precedes the cut.
 	//
 	// So: find the start of the cluster the cut lands inside, then take all of it or none of it.
-	// clusterStart is bounded by one cluster, and the ONLY way to lose the whole title is a string
-	// that is a single degenerate cluster from index 0 — a title with no base character at all,
-	// which no longer costs anything, because the fallback below keeps MaxTitleLen runes of it
-	// rather than returning "".
+	// clusterStart stops at the first non-binder, so it reads at most the ONE cluster straddling the
+	// cut — and the ONLY way to lose the whole title is a string that is a single degenerate cluster
+	// from index 0, a title with no base character at all, which no longer costs anything because
+	// the fallback below keeps MaxTitleLen runes of it rather than returning "".
+	//
+	// "One cluster" is the right bound but NOT a small number, and it is worth being exact because a
+	// reviewer read the earlier wording as promising one step. A degenerate cluster can be as long as
+	// the cut, so the scan is min(cluster length, MaxTitleLen) — 80 steps for "a" + 100 marks, and
+	// still 80 for "a" + 2000, which is the part that matters: it does not grow with the title. On
+	// every shape where ordinary text precedes the cut it is 1 step, because r[cut] is a base
+	// character and the loop returns immediately.
 	// A LEADING DEGENERATE CLUSTER IS THE ONE SHAPE WITH NO BOUNDARY TO CUT ON, and it is decided
 	// STRUCTURALLY — by clusterStart reporting 0 — rather than by noticing afterwards that the
 	// result came out blank. That distinction is the whole reason this reads the way it does. A
@@ -521,14 +550,31 @@ func capTitleRunes(s string) string {
 // clusterStart returns the index of the first rune of the grapheme cluster that r[cut] belongs to,
 // or cut itself when r[cut] starts its own cluster and the cut is already on a boundary.
 //
-// BOUNDED BY ONE CLUSTER. The scan stops at the first rune that does not bind to what precedes it,
-// so the work is proportional to the cluster straddling the cut and not to the title. That bound is
-// the fix for two defects that shipped in this file: capTitleRunes' doc above has the measurements.
+// BOUNDED BY THE ONE CLUSTER STRADDLING THE CUT, not by the title. The scan stops at the first rune
+// that does not bind to what precedes it. That bound is the fix for two defects that shipped in this
+// file: capTitleRunes' doc above has the measurements.
+//
+// NOT bounded by a constant, and the difference has been misread: a degenerate cluster can run the
+// whole way back, so the worst case is min(cluster length, cut) steps — 80 for "a" + 100 combining
+// marks, and still 80 for "a" + 2000, which is the property that matters. Where ordinary text
+// precedes the cut it returns on the first iteration.
+//
+// cut MAY EQUAL len(r), meaning "the cut is past the last rune". r[cut] does not exist there, so
+// there is nothing to orphan and the answer is cut itself. Handled explicitly rather than left to
+// the caller: capTitleRunes only ever passes a cut strictly inside r (its early return guarantees
+// len(r) > MaxTitleLen), so this arm is unreachable from the one live caller today — but the
+// alternative was an index-out-of-range panic on a plausible direct call, load-bearing on a coupling
+// two functions apart that nothing stated and no test pinned. bindsToPrevious' doc invites other
+// callers in this package; this makes the invitation safe. A cut ABOVE len(r) is a caller bug and
+// still panics, deliberately: clamping it would invent an answer for a question the caller got wrong.
 //
 // Regional indicators are resolved by parity rather than by the per-rune predicate, because their
 // binding depends on POSITION — only the second of a pair binds. riBindsAtCut counts the preceding
 // run, so an even run means r[i] opens a fresh pair and i is already a boundary.
 func clusterStart(r []rune, cut int) int {
+	if cut >= len(r) {
+		return cut
+	}
 	for i := cut; i > 0; i-- {
 		if r[i] >= 0x1F1E6 && r[i] <= 0x1F1FF {
 			if !riBindsAtCut(r, i) {
@@ -710,8 +756,25 @@ const noServedTitle = ""
 // because resolving inside would put a scan of m.sessions in the per-row render path — see
 // noServedTitle — so this is a documented contract rather than an enforced one.
 func (m *model) sessionTitleFor(id, served string) string {
-	if title := m.sessionTitle(id); !titleIsBlank(title) {
-		return title
+	// PRECEDENCE IS DECIDED ON THE RAW HARVESTED TITLE, not on what the cap left of it, and that
+	// separation is the fix for a real inversion. This read m.sessionTitle(id) — sanitised AND capped
+	// — and asked whether THAT was blank. So any route by which the cap could blank a non-blank
+	// harvested title also silently handed the row to the served one: sessionTitleFor(85 spaces +
+	// "real", "served-name") returned "served-name", showing the proxy's name to an operator who has
+	// been told in two docs and a core/session comment that HARVEST WINS. Worse than the missing
+	// title it replaced, because a wrong name is acted on and a blank one is not.
+	//
+	// The whitespace defect behind that specific case is fixed in capTitleRunes, so the two
+	// formulations now agree on every input known to differ. This one is still the right question to
+	// ask: "did the harvest name this session?" is about the harvest, and routing it through a
+	// length cap makes a display bound into a precedence rule. Whatever the cap does to a long
+	// title, it cannot move the row to the other source.
+	//
+	// sanitizeLabel is still applied — blankness must be judged on what RENDERS, which is
+	// titleIsBlank's whole reason for sanitising before trimming ("\t" paints a visible glyph, so it
+	// is not blank). Only the cap is out of the decision.
+	if raw := m.sessionsData[id].Title; !titleIsBlank(sanitizeLabel(raw)) {
+		return m.sessionTitle(id)
 	}
 	// SANITISE ONCE, INTO A LOCAL, then use it for both the blank check and the cap.
 	//

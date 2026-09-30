@@ -2278,11 +2278,32 @@ func TestSessionsPane_ServedTitleCellIsPerRow(t *testing.T) {
 // Both were found by review rather than by a test, which is the argument for asserting the INVARIANT
 // over a table of shapes instead of the arithmetic of any one of them. A new binder class added to
 // bindsToPrevious gets this check for free; an expected-length assertion would not.
+//
+// A THIRD ROUTE WAS FOUND WITH THIS TEST ALREADY GREEN, and it is why the table now carries
+// whitespace shapes. Every fixture here was binder-class, so none of them exercised the cap's TRIM \u2014
+// and the trim ran AFTER the cut, so a title whose first MaxTitleLen runes were whitespace lost its
+// real text to the cut and was then emptied by the trim. 80 leading spaces plus "my-project"
+// returned "". The property was right and the table could not reach the defect: the lesson is that
+// an invariant test is only as broad as its shapes, so a fixture belongs here for every code path
+// inside the function, not just for every bug that has been found in one of them.
 func TestSessionsPane_CapNeverEmptiesANonBlankTitle(t *testing.T) {
 	const acute = "\u0301" // Mn, stacks without limit
 	flag := "\U0001F1FA\U0001F1F8"
+	// Over the cap on their own, so the cut fires before any trim can.
+	const pad = claude.MaxTitleLen + 5
 
 	for _, tc := range []struct{ name, in string }{
+		// THE TRIM ROUTE. Whitespace is not binder-class, so none of the cluster fixtures below
+		// reach it: these cover the cut-then-trim interaction instead. Three whitespace classes,
+		// because TrimSpace is Unicode-aware and a fix that only counted U+0020 would pass on one.
+		{"long space prefix then text", strings.Repeat(" ", pad) + "my-project"},
+		{"long NBSP prefix then text", strings.Repeat("\u00a0", pad) + "my-project"},
+		{"long ideographic-space prefix then text", strings.Repeat("\u3000", pad) + "my-project"},
+		// Exactly at the boundary, where the old code first returned "" rather than one rune.
+		{"space prefix exactly at the cap", strings.Repeat(" ", claude.MaxTitleLen) + "my-project"},
+		// Interior whitespace must not be mistaken for the same thing: this one has real text
+		// inside the first MaxTitleLen runes and must keep some of it either way.
+		{"text then long space run then text", "a" + strings.Repeat(" ", pad) + "b"},
 		// The two shipped defects, at the sizes they were measured at.
 		{"base plus a long mark run", "a" + strings.Repeat(acute, 100)},
 		{"consecutive flags", strings.Repeat(flag, 41)},
@@ -2305,6 +2326,44 @@ func TestSessionsPane_CapNeverEmptiesANonBlankTitle(t *testing.T) {
 		}
 		if n := utf8.RuneCountInString(got); n > claude.MaxTitleLen {
 			t.Errorf("%s: capTitleRunes returned %d runes, over the %d cap", tc.name, n, claude.MaxTitleLen)
+		}
+	}
+}
+
+// A WHITESPACE-PREFIXED HARVESTED TITLE MUST STILL READ AS NAMED, end to end.
+//
+// This is the reported symptom rather than the mechanism, and it is asserted through
+// sessionHasTitle on purpose: the cap tests above check the string, and this one checks the
+// CONSEQUENCE. sessionHasTitle gates all four backoff predicates (untitledSettled, untitledFresh,
+// countUntitled, harvestNamedSomething), so a title emptied by the cap does not merely render blank
+// — it zeroes untitledMisses and re-harvests ~/.claude every ~3 minutes for the life of the process,
+// on a session the harvest has ALREADY successfully named. That is the cost this file documents as
+// the price of an unnamable session, billed to a named one.
+//
+// The lengths bracket the old failure curve: at 40 leading spaces the old code kept 50 runes, at 79
+// it kept exactly "m", and at 80 and beyond it returned "". All of them must now read as named.
+func TestSessionsPane_WhitespacePrefixedHarvestStillReadsAsNamed(t *testing.T) {
+	for _, ws := range []struct{ name, r string }{
+		{"space", " "},
+		{"no-break space", " "},
+		{"ideographic space", "　"},
+	} {
+		for _, n := range []int{40, claude.MaxTitleLen - 1, claude.MaxTitleLen, claude.MaxTitleLen + 5, 500} {
+			m := newTitleModel(t, map[string]SessionMetadata{
+				"s1": {Title: strings.Repeat(ws.r, n) + "my-project"},
+			}, "s1")
+
+			if got := m.sessionTitle("s1"); titleIsBlank(got) {
+				t.Errorf("%s x%d: sessionTitle = %q, blank — the harvest named this session", ws.name, n, got)
+			}
+			if !m.sessionHasTitle("s1") {
+				t.Errorf("%s x%d: sessionHasTitle = false for a named session; this restarts the permanent re-harvest", ws.name, n)
+			}
+			// The name itself must survive, not just some non-blank remnant. The old code's
+			// 79-space case kept "m", which is non-blank and useless.
+			if got := m.sessionTitle("s1"); got != "my-project" {
+				t.Errorf("%s x%d: sessionTitle = %q, want the name with its padding trimmed", ws.name, n, got)
+			}
 		}
 	}
 }
@@ -2342,6 +2401,47 @@ func TestSessionsPane_CapWalkIsBoundedByOneCluster(t *testing.T) {
 				marks, got, claude.MaxTitleLen)
 		}
 	}
+	// THE WORST CASE IS THE CUT, NOT THE TITLE, and this is the case a reviewer read the doc as
+	// denying. A cluster degenerate from index 0 has no boundary anywhere, so the scan runs the whole
+	// way back — but that is MaxTitleLen steps and not len(title) steps, so growing the title 20x
+	// past the cut must not cost anything. Asserted through clusterStart directly, because
+	// capTitleRunes' blunt-cut fallback returns the same answer either way and would hide it.
+	for _, marks := range []int{100, 2000} {
+		r := []rune("a" + strings.Repeat(acute, marks))
+		if got := clusterStart(r, claude.MaxTitleLen); got != 0 {
+			t.Errorf("degenerate cluster with %d marks: clusterStart = %d, want 0 — every rune binds", marks, got)
+		}
+	}
+}
+
+// clusterStart MUST NOT PANIC WHEN THE CUT IS PAST THE LAST RUNE.
+//
+// clusterStart([]rune("abc"), 3) indexed r[3] and panicked with "index out of range [3] with length
+// 3". It was safe in production only because capTitleRunes' early return guarantees len(r) >
+// MaxTitleLen before it ever calls — a coupling two functions apart that no comment stated and no
+// test pinned, while bindsToPrevious' own doc invites other callers in this package. The smallest
+// fixture anywhere in this file is 89 runes, so nothing came close to it.
+//
+// cut == len(r) means "the cut is past the last rune": r[cut] does not exist, nothing can be
+// orphaned, and the answer is cut itself. Short strings are checked at their own length rather than
+// at MaxTitleLen so the boundary is the SUBJECT of the test and not incidental to it.
+func TestSessionsPane_ClusterStartHandlesACutAtTheEnd(t *testing.T) {
+	const acute = "́"
+	for _, in := range []string{"abc", "", "a", strings.Repeat("a", claude.MaxTitleLen), "e" + acute} {
+		r := []rune(in)
+		got := clusterStart(r, len(r))
+		if got != len(r) {
+			t.Errorf("clusterStart(%q, %d) = %d, want %d — a cut past the last rune orphans nothing",
+				in, len(r), got, len(r))
+		}
+	}
+	// The one length that used to be load-bearing: exactly MaxTitleLen + 1 runes is the shortest
+	// string capTitleRunes will cut, so it is the shortest slice clusterStart has ever been handed.
+	// A test at 89 runes cannot tell whether the bound is len(r) or something larger.
+	r := []rune(strings.Repeat("a", claude.MaxTitleLen+1))
+	if got := clusterStart(r, claude.MaxTitleLen); got != claude.MaxTitleLen {
+		t.Errorf("clusterStart at the shortest cuttable length = %d, want %d", got, claude.MaxTitleLen)
+	}
 }
 
 // Harvest wins when both sources name the session.
@@ -2363,6 +2463,67 @@ func TestSessionsPane_HarvestBeatsServedTitle(t *testing.T) {
 	}
 	if got := m.sessionLabel("s1"); got != "harvested name (s1)" {
 		t.Errorf("sessionLabel = %q, want the harvested title to win", got)
+	}
+}
+
+// HARVEST WINS EVEN WHEN THE CAP MANGLES THE HARVESTED TITLE, because precedence is a question about
+// the harvest and not about the display bound.
+//
+// sessionTitleFor used to ask whether m.sessionTitle(id) — sanitised AND CAPPED — was blank. So every
+// route by which the cap could blank a non-blank harvested title ALSO silently inverted the
+// documented precedence: with the cap trimming after its cut, sessionTitleFor(85 spaces + "real",
+// "served-name") returned "served-name". That is worse than the blank cell it replaced. An operator
+// picks a row by its name before acting on it, and CLAUDE.md, cmd/abctl/README.md and
+// core/session/store.go all tell them the harvest is what they are looking at.
+//
+// NOT A MUTATION GATE, and saying so is the honest version of this test. Reverting the guard to
+// !titleIsBlank(m.sessionTitle(id)) leaves the whole suite green — verified by running it. It has to:
+// the guard only behaves differently when the cap can blank a non-blank title, and that is exactly
+// what the whitespace fix and the blunt-cut fallback between them removed. A search over the
+// degenerate shapes this file knows — combining marks, ZWJ, BOM, word joiner, NBSP, ideographic
+// space, lone regional indicators, Thai vowel signs, at five lengths around the cap, with and
+// without a real suffix — found ZERO inputs that sanitise non-blank and cap to blank. With no such
+// input there is no observable difference, so no black-box test can pin the structure.
+//
+// It is kept anyway, for the two things it does do: it pins the OUTCOME (the measured inversion
+// string now resolves to the harvested title, at the cell and the header), and it is where the next
+// person who reintroduces a cap-blanking route will find out what else breaks. The structural form
+// of the guard is defence for when that search stops being exhaustive — a display bound should not
+// be able to reach into a precedence decision at all — and its justification is the argument in
+// sessionTitleFor's doc, not a failing assertion here.
+func TestSessionsPane_HarvestWinsEvenWhenTheCapShortensIt(t *testing.T) {
+	const acute = "́"
+	for _, tc := range []struct {
+		name      string
+		harvested string
+	}{
+		// The measured inversion: leading whitespace long enough to consume the whole budget.
+		{"long space prefix", strings.Repeat(" ", claude.MaxTitleLen+5) + "real"},
+		// A degenerate cluster from index 0, where the cap has no boundary to cut on and falls
+		// back to a blunt cut. If that fallback is ever removed, the served title takes over a
+		// named row rather than the cell merely going blank — this pins both consequences at once.
+		{"nothing but combining marks", strings.Repeat(acute, claude.MaxTitleLen+20)},
+	} {
+		m := newServedTitleModel(t,
+			map[string]SessionMetadata{"s1": {Title: tc.harvested}},
+			map[string]string{"s1": "served-name"},
+			"s1")
+		m.rebuildSessionsTable()
+
+		// Asserted at the accessor AND both display paths, because the served title reaches them by
+		// different routes — the row loop carries the summary, sessionLabel looks it up — and the
+		// inversion showed the proxy's name in all three.
+		if got := m.sessionTitleFor("s1", "served-name"); got == "served-name" {
+			t.Errorf("%s: sessionTitleFor returned the SERVED title, inverting the documented harvest-wins precedence", tc.name)
+		} else if titleIsBlank(got) {
+			t.Errorf("%s: sessionTitleFor = %q, blank — the harvested title named this session", tc.name, got)
+		}
+		if got := sessionsCell(t, m, titleRow(t, m, "s1"), "TITLE"); strings.Contains(got, "served-name") {
+			t.Errorf("%s: TITLE cell = %q, want the harvested name", tc.name, got)
+		}
+		if got := m.sessionLabel("s1"); strings.Contains(got, "served-name") {
+			t.Errorf("%s: sessionLabel = %q, want the harvested name", tc.name, got)
+		}
 	}
 }
 
@@ -2714,11 +2875,19 @@ func TestSessionsPane_ServedTitleIsCappedBeforeTruncation(t *testing.T) {
 // unnamed and restarts the ~3-minute ~/.claude re-harvest permanently — the cost this package
 // documents as the price of an UNNAMABLE session, charged to one that has a name.
 //
-// THE WHITESPACE-PREFIX CASE IS THE WHOLE POINT. This test first asserted "truncation cannot turn a
-// non-blank title blank" using a leading-"/" path fixture, where no prefix is whitespace — so it
-// could not exercise the claim it made, and passed for the wrong reason. A title whose first
-// MaxTitleLen runes are spaces clips to pure whitespace, and only the TrimSpace in sessionTitle
-// (mirroring clipTitle upstream) keeps that from reading as unnamed.
+// THE WHITESPACE-PREFIX CASE IS THE WHOLE POINT, AND THIS TEST GOT IT BACKWARDS TWICE.
+//
+// It first asserted "truncation cannot turn a non-blank title blank" using a leading-"/" path
+// fixture, where no prefix is whitespace — so it could not exercise the claim it made and passed for
+// the wrong reason. The whitespace fixture was then added, and the expectation written down as
+// wantNamed: FALSE for a title reading 80 spaces + "real name" — labelled "the correctness case"
+// while the assertion five lines below it called an unnamed verdict the thing that "restarts the
+// ~3-minute re-harvest forever". The test encoded the defect and then explained why the defect was
+// bad.
+//
+// It is wantNamed: true now, because "real name" is a name and nothing about padding changes that.
+// capTitleRunes trims BEFORE measuring, so leading whitespace no longer spends the rune budget and
+// there is no window for it to fill. See sessionTitle's doc for the measured curve this replaces.
 func TestSessionsPane_HarvestedTitleIsCappedAtLoad(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
@@ -2739,11 +2908,17 @@ func TestSessionsPane_HarvestedTitleIsCappedAtLoad(t *testing.T) {
 			slowPath:  true,
 		},
 		{
-			// The correctness case: real text begins AFTER the cut point, so the clip window holds
-			// nothing but spaces.
+			// The correctness case: real text begins after where a naive cut would land, so a cap
+			// that measured before trimming kept only spaces and then trimmed them to "".
 			name:      "whitespace fills the whole clip window",
 			title:     strings.Repeat(" ", claude.MaxTitleLen) + "real name",
-			wantNamed: false,
+			wantNamed: true,
+		},
+		{
+			// Far past it, so no "off by a few runes" fix can pass this by accident.
+			name:      "whitespace far past the clip window",
+			title:     strings.Repeat(" ", 500) + "real name",
+			wantNamed: true,
 		},
 		{
 			// And the one that must STILL read as named: whitespace prefix, text inside the window.
@@ -2764,10 +2939,12 @@ func TestSessionsPane_HarvestedTitleIsCappedAtLoad(t *testing.T) {
 					"title reaches the quadratic truncation path on the UI goroutine",
 					n, claude.MaxTitleLen)
 			}
-			// NO LEADING OR TRAILING WHITESPACE SURVIVES THE CLIP, which is what makes the verdict
-			// below deliberate rather than incidental.
+			// NO LEADING OR TRAILING WHITESPACE SURVIVES THE CAP, which is what makes the verdict
+			// below deliberate rather than incidental. The cap trims on both sides of the cut —
+			// before, so padding does not spend the budget, and after, to drop whitespace the cut
+			// newly exposed.
 			if got != strings.TrimSpace(got) {
-				t.Errorf("sessionTitle = %q, want it trimmed after the cut — untrimmed whitespace "+
+				t.Errorf("sessionTitle = %q, want it trimmed — untrimmed whitespace "+
 					"is what flips a named row to unnamed", got)
 			}
 			if named := m.sessionHasTitle("s1"); named != tc.wantNamed {
