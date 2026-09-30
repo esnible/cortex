@@ -16,6 +16,7 @@ only the repo-level pieces.
 | Understand the pipeline internals and hot-reload | [`docs/framework-architecture.md`](../docs/framework-architecture.md) |
 | Run a demo | [`demos/README.md`](../demos/README.md) |
 | Use the `abctl` TUI | [`cmd/abctl/README.md`](../cmd/abctl/README.md) |
+| Write the in-memory session store to files | [`session-dump.md`](session-dump.md) |
 
 ## Configuration reference
 
