@@ -162,8 +162,11 @@ title the proxy serves, if it derived one, rather than a bare id. There is no fl
 hides titles already on disk — delete the file for that, and note that it does not suppress
 the served title either, which arrives over the API and not from any file.
 
-A harvest that cannot run is never fatal — the worst a missing or unreadable file
-costs is the `TITLE` column, and the viewer still opens. A file that does not parse is
+A harvest that cannot run is never fatal, and it costs less than it used to: the viewer
+still opens, and a session the proxy has named still shows that name, because the served
+title arrives over the API and not from this file. What a missing or unreadable file costs
+is therefore the `TITLE` column only for sessions the proxy has not named — which, on a
+machine whose agents all route through the proxy, may be none of them. A file that does not parse is
 rebuilt from the transcripts rather than costing anything; the entries a rebuild cannot
 recover are sessions whose transcripts Claude Code has already pruned. The failures that
 need a human, such as an unreadable metadata file, print one line to stderr with the

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/bubbles/table"
 	"github.com/charmbracelet/lipgloss"
@@ -430,11 +431,81 @@ func (m *model) sessionTitle(id string) string {
 	// same reason. Trimming cannot introduce the failure it prevents: it only ever removes
 	// whitespace, so a clip that still holds real text is untouched, and one that holds nothing else
 	// collapses to "" — which is the honest answer, and the one sessionHasTitle already handles.
-	title := sanitizeLabel(m.sessionsData[id].Title)
-	if r := []rune(title); len(r) > claude.MaxTitleLen {
-		title = strings.TrimSpace(string(r[:claude.MaxTitleLen]))
+	return capTitleRunes(sanitizeLabel(m.sessionsData[id].Title))
+}
+
+// capTitleRunes cuts s to at most claude.MaxTitleLen runes, on a grapheme-cluster boundary, and
+// trims the result.
+//
+// ONE HELPER BECAUSE THERE ARE TWO SOURCES. sessionTitle caps the harvested title and
+// sessionTitleFor caps the served one; both need the same bound, and the two open-coded copies that
+// preceded this differed only in which string they read. The cost of the cap is documented at both
+// call sites — briefly, truncLeft/truncRight bound their OUTPUT but search quadratically over their
+// INPUT whenever a zero-width rune disables the fast path, so an uncapped title is seconds per row
+// per rebuild on the UI goroutine.
+//
+// utf8.RuneCountInString RATHER THAN len([]rune(s)), because the common case is a title already
+// under the cap and that case must allocate nothing. The rune slice was 160 B/op and 232ns for a
+// 40-rune title against 0 B/op and 155ns here, on a path reached ~3-4x per row per 2s tick. The
+// slice is still built when a cut is actually needed, where its cost is the point rather than
+// overhead. Note the trade: counting first walks the string twice, so on the over-long path this is
+// ~45% slower than slicing immediately (780µs vs 1.13ms at 200k runes). That is the right way round
+// — the short path is the one that runs constantly, and the long path is a cut this is preventing
+// the expensive consequences of, not an operation to optimise.
+//
+// THE CUT LANDS ON A CLUSTER BOUNDARY, and that is not a nicety. clipTitle upstream says a plain
+// rune cut is safe for it ONLY BECAUSE normalizeTitle has already removed every character that
+// binds to its neighbour — combining marks, modifiers, joiners, regional indicators. NEITHER string
+// here has been through that: the harvested title is re-read from a file that may have been
+// rewritten, and the served title comes from core/session's sanitizeTitle, whose own doc says it
+// KEEPS combining marks "so café survives". So a blind cut at MaxTitleLen can sever a cluster,
+// leaving a dangling accent bound to whatever precedes it, half an emoji ZWJ sequence, or one
+// regional indicator of a flag — a title that renders as something nobody wrote. Walking back off
+// the binders costs a few rune tests on the only path that ever cuts.
+//
+// normalizeTitle is unexported and staying that way, so this is a boundary walk rather than a reuse.
+// It is deliberately narrower than normalising: the goal is only that the cut not land mid-cluster,
+// not that clusters be removed.
+func capTitleRunes(s string) string {
+	if utf8.RuneCountInString(s) <= claude.MaxTitleLen {
+		return s
 	}
-	return title
+	r := []rune(s)
+	cut := claude.MaxTitleLen
+	// Walk back while the rune AT the cut would be orphaned from what precedes it. Bounded by
+	// construction: index 0 stops the loop, and a title of nothing but combining marks collapses to
+	// "" — which is the honest answer and one sessionHasTitle already handles.
+	for cut > 0 && bindsToPrevious(r[cut]) {
+		cut--
+	}
+	return strings.TrimSpace(string(r[:cut]))
+}
+
+// bindsToPrevious reports that r renders as part of the cluster started by the rune before it, so a
+// cut immediately before r would split that cluster.
+//
+// Mn/Me/Mc ARE THE MARK CATEGORIES, and together they approximate Unicode's Grapheme_Extend: Mn
+// non-spacing (a combining accent, a variation selector), Me enclosing, Mc spacing-combining (a
+// Devanagari vowel sign, which occupies a column but still belongs to the letter before it). Two
+// more bind without any category saying so: U+200D ZWJ is what joins the codepoints of a
+// multi-part emoji, and Regional_Indicator runes pair up into flags, so a cut between two leaves a
+// bare letter where a flag was.
+//
+// DELIBERATELY NOT Lm. Modifier LETTERS (U+02B0 ʰ and the like) read as though they belong here and
+// Grapheme_Extend excludes them — and the category also holds runes that legitimately START a
+// cluster, U+02BB ʻokina being a letter in Hawaiian orthography. Including Lm would walk the cut
+// back off an ordinary word character. Sk (modifier SYMBOLS, U+02C7 ˇ) is out for the same reason.
+// A test fixture built on U+02B0 is what surfaced this; it was the fixture that was wrong.
+//
+// A SMALL EXPLICIT SET rather than a grapheme-segmentation library: abctl has no such dependency,
+// this is one cut on one display path, and being slightly conservative only moves the cut earlier by
+// a rune or two. The failure it prevents is a severed cluster; the cost of over-walking is a shorter
+// title.
+func bindsToPrevious(r rune) bool {
+	if unicode.In(r, unicode.Mn, unicode.Me, unicode.Mc) {
+		return true
+	}
+	return r == '‍' || (r >= 0x1F1E6 && r <= 0x1F1FF)
 }
 
 // noServedTitle is the served-title argument for a row that cannot have one. Only the cached-only
@@ -491,6 +562,14 @@ const noServedTitle = ""
 // content — sessionTitle's CWE-150 reasoning applies to this string at least as much as to the
 // harvested one.
 //
+// THAT INDEPENDENCE IS NOW ACTUALLY TRUE, and it was not when the fallback first landed.
+// sanitizeLabel then replaced the BIDI overrides and isolates but not the BIDI MARKS (U+200E/200F,
+// U+061C) or the zero-widths (U+200B/200C/200D/2060/FEFF), all of which pipeline.IsControlRune names
+// and core/session's sanitizeTitle does strip. So the only thing keeping a mark out of the cell was
+// the producer this comment claimed not to rely on — a claim the code contradicted, for exactly the
+// class of rune whose whole purpose is to make the rendered order differ from the byte order.
+// sanitizeLabel delegates to IsControlRune now; see its doc.
+//
 // AN EMPTY served DOES NOT ALWAYS MEAN "the proxy derived none". A session that arrives on the
 // event stream before it appears in a list refresh gets a stub SessionSummary with a zero Title
 // (app.go's streamed-event path), so its row shows no served title until the next poll fills the
@@ -507,12 +586,30 @@ const noServedTitle = ""
 // the SEARCH inside them. Their fast path is disabled by any zero-width rune, and a served title
 // keeps its combining marks, so a long one runs a quadratic scan: measured, 20003 runes takes 4.50s
 // on ONE call, and 200003 did not finish in two minutes. That is the UI goroutine, once per row per
-// rebuild. Capping the input is what makes the render cost flat.
+// rebuild. Capping the input is what REMOVES THE QUADRATIC TERM — not what makes the whole path
+// flat, which an earlier version of this comment claimed and the code does not do. Two passes still
+// run over the UNTRUNCATED string before the cap can apply: sanitizeLabel builds a new string with
+// b.Grow(len(s)), and the cap's own rune count walks it. Both are linear, so a 200k-rune title still
+// costs ~1.6MB of transient allocation and a couple of walks per row per rebuild. Linear is the
+// difference between a laggy column and an unusable one — the measured 4.50s at 20003 runes was the
+// quadratic search, not these — but "flat" was wrong, and the honest bound is what a future reader
+// needs when deciding whether to cap EARLIER, at the decode in apiclient, where it would be.
 //
 // AT THE HARVESTER'S CAP, reusing claude.MaxTitleLen rather than a new number: it is what the other
 // source is already capped to, so the two titles get the same budget and the column keeps one rule.
 // Runes, not columns, matching what that constant counts — the width re-measure downstream is what
 // turns either into a fitted cell.
+//
+// THE TWO ARGUMENTS ARE UNCHECKED AGAINST EACH OTHER, and nothing here can detect a mismatch. served
+// is meant to be THIS id's Title, but it is passed in rather than looked up, so pairing one session's
+// id with another's title compiles and renders a confident wrong name — the worst failure shape this
+// column has, because a title is what an operator uses to pick a row before acting on it. The two
+// live callers are safe by construction (the row loop reads both from one SessionSummary; sessionLabel
+// resolves served from the same id it passes), and that is the invariant a third caller must preserve:
+// RESOLVE served FROM id, never from an index, a neighbouring row, or a previous frame's summary.
+// servedTitle(id) exists for exactly that and is the right thing to reach for. The parameter stays
+// because resolving inside would put a scan of m.sessions in the per-row render path — see
+// noServedTitle — so this is a documented contract rather than an enforced one.
 func (m *model) sessionTitleFor(id, served string) string {
 	if title := m.sessionTitle(id); !titleIsBlank(title) {
 		return title
@@ -525,10 +622,12 @@ func (m *model) sessionTitleFor(id, served string) string {
 	if titleIsBlank(served) {
 		return ""
 	}
-	if r := []rune(served); len(r) > claude.MaxTitleLen {
-		served = strings.TrimSpace(string(r[:claude.MaxTitleLen]))
-	}
-	return sanitizeLabel(served)
+	// SANITISE BEFORE CAPPING, matching sessionTitle, so the cluster walk inside the cap sees the
+	// string that will actually render. sanitizeLabel is rune-for-rune, so the two orders agree on
+	// WHERE the cut lands — but only one of them agrees on WHAT is at the cut: sanitising afterwards
+	// would walk back off a combining mark that sanitizeLabel then replaces with U+FFFD, a standalone
+	// glyph that never needed the walk. Ordering it this way keeps one rule for both sources.
+	return capTitleRunes(sanitizeLabel(served))
 }
 
 // sessionTitleCell is sessionTitleFor fitted to the TITLE column, truncated from the LEFT.
