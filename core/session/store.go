@@ -176,6 +176,11 @@ type Store struct {
 	// recorders are notified of every appended event. Registered at setup via
 	// AddRecorder, before the store serves traffic.
 	recorders []Recorder
+
+	// owners and adopted serve client affinity; see affinity.go. Both nil until
+	// the first Claim, so a store nothing claims from carries neither.
+	owners  map[string]string
+	adopted map[string]string
 }
 
 // subscriberChanBuf caps each subscriber's channel depth. 64 absorbs short
@@ -343,6 +348,7 @@ func (s *Store) Append(sessionID string, event pipeline.SessionEvent) {
 	defer s.mu.Unlock()
 
 	now := time.Now()
+	sessionID = s.followAdoptedLocked(sessionID)
 
 	sess, ok := s.sessions[sessionID]
 	if !ok {
@@ -1004,13 +1010,17 @@ func (s *Store) Rekey(oldID, newID string) {
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	s.rekeyLocked(oldID, newID)
+}
 
+// rekeyLocked is Rekey's body, shared with Adopt. Reports whether it renamed anything.
+func (s *Store) rekeyLocked(oldID, newID string) bool {
 	sess, ok := s.sessions[oldID]
 	if !ok {
-		return
+		return false
 	}
 	if _, exists := s.sessions[newID]; exists {
-		return
+		return false
 	}
 
 	sess.ID = newID
@@ -1024,6 +1034,12 @@ func (s *Store) Rekey(oldID, newID string) {
 	for i := range sess.Events {
 		sess.Events[i].SessionID = newID
 	}
+	// A claim follows its session. Only client affinity makes one; see affinity.go.
+	if owner, ok := s.owners[oldID]; ok {
+		delete(s.owners, oldID)
+		s.owners[newID] = owner
+	}
+	return true
 }
 
 // Cleanup removes expired sessions. Safe for concurrent use.
@@ -1037,6 +1053,7 @@ func (s *Store) cleanupLocked(now time.Time) {
 	for id, sess := range s.sessions {
 		if s.isExpired(sess, now) {
 			delete(s.sessions, id)
+			delete(s.owners, id)
 			if s.activeID == id {
 				s.activeID = ""
 			}
@@ -1063,6 +1080,7 @@ func (s *Store) evictOldestLocked() {
 	}
 	if oldestID != "" {
 		delete(s.sessions, oldestID)
+		delete(s.owners, oldestID)
 	}
 }
 

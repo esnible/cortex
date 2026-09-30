@@ -279,12 +279,20 @@ cost_ledger:
 # non-empty value wins.
 #
 # X-Claude-Code-Session-Id is set by Claude Code on every inference request.
+# X-Task-Id is set by IBM Bob Shell.
 # X-Session-Id is set by OpenCode, Pi (Inflection AI), and similar frameworks.
 #
 # An explicit empty list (id_headers: []) disables header-based bucketing.
+#
+# client_affinity files a request with none of these headers under the newest
+# session of the same coding agent, so with Claude Code and Bob running side by
+# side neither one's header-less calls land in the other's session. Not
+# hot-reloadable: restart after changing it.
 session:
+  client_affinity: true
   id_headers:
     - "X-Claude-Code-Session-Id"
+    - "X-Task-Id"
     - "X-Session-Id"
 pipeline:
   outbound:

@@ -126,11 +126,15 @@ func (s *Server) HandleTransparentConn(clientConn net.Conn, dst string) {
 	action := s.OutboundPipeline.Run(ctx, pctx)
 	if action.Type == pipeline.Reject {
 		// Carry the identity this connection was gated under, so the denial lands
-		// in the session whose traffic it was. Empty only when nothing was active,
-		// where recording applies the default bucket as it always did.
-		s.recordOutboundReject(pctx, action, s.recordingSessionID(sessionID, nil))
+		// in the session whose traffic it was.
+		s.recordOutboundReject(pctx, action, s.tunnelSessionID(sessionID, nil))
 		slog.Warn("transparent-proxy: outbound rejected by policy", "host", host)
 		return
+	}
+
+	// See handleConnect's pin: same rule, with no headers to read.
+	if s.ClientAffinity && s.Sessions != nil && sessionID != "" {
+		pctx.OutboundSessionID = sessionID
 	}
 
 	// Always dial the original IP (dst), never the sniffed name — the agent
@@ -191,7 +195,16 @@ func (s *Server) recordTunnelOpened(pctx *pipeline.Context, reason pipeline.Tunn
 	if s.Sessions == nil {
 		return
 	}
-	sid := s.Sessions.ActiveSession()
+	// Without client affinity this reads ActiveSession() at recording time, as it always
+	// has, ignoring the identity the tunnel was gated under (#1187). With it, the pin set
+	// after gating wins; see handleConnect.
+	var sid string
+	if s.ClientAffinity {
+		sid = pctx.OutboundSessionID
+	}
+	if sid == "" {
+		sid = s.Sessions.ActiveSession()
+	}
 	if sid == "" {
 		sid = session.DefaultSessionID
 	}

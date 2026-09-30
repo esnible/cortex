@@ -101,6 +101,13 @@ type Server struct {
 	// SessionIDHeaders for the default and how to turn it off.
 	SessionIDHeaders []string
 
+	// ClientAffinity files a request that carries no session header under the newest
+	// session of the SAME coding agent, instead of under ActiveSession() — the one
+	// global "most recently updated" id, which with two agents running files each
+	// one's header-less calls into the other's session. See config.SessionConfig
+	// ClientAffinity; false keeps today's resolution byte for byte.
+	ClientAffinity bool
+
 	// bufferedFallbackOnce keeps the SSE-buffered-path notice to one line per
 	// process; the condition is a supported chain shape, not an error.
 	bufferedFallbackOnce sync.Once
@@ -816,6 +823,21 @@ func (s *Server) recordingSessionID(resolved string, clientHeaders http.Header) 
 	return s.resolveOutboundSessionID(clientHeaders)
 }
 
+// tunnelSessionID is recordingSessionID for a tunnel's own row. Under client affinity
+// resolved is "" only for affinity's ambiguous answer or for no identity at all, and
+// neither sends a tunnel row to default: a CONNECT rarely carries a User-Agent, so the
+// ambiguous answer would file nearly every tunnel away from the request it carries.
+// Those rows keep ActiveSession() at recording time, as without affinity.
+func (s *Server) tunnelSessionID(resolved string, clientHeaders http.Header) string {
+	if s.ClientAffinity && resolved == "" && s.Sessions != nil {
+		if sid := s.Sessions.ActiveSession(); sid != "" {
+			return sid
+		}
+		return session.DefaultSessionID
+	}
+	return s.recordingSessionID(resolved, clientHeaders)
+}
+
 // resolvePluginSessionID is resolveOutboundSessionID without the default-bucket
 // fallback: it returns "" when neither a client header nor an active session
 // names one, and is the identity handed to plugins.
@@ -854,8 +876,24 @@ func (s *Server) recordingSessionID(resolved string, clientHeaders http.Header) 
 // Stated in full under "Decision recorded: client-asserted ids as plugin input"
 // in #984, which is where to argue with it.
 func (s *Server) resolvePluginSessionID(clientHeaders http.Header) string {
+	affinity := s.affinityOn()
 	if sid := session.IDFromHeaders(clientHeaders, s.SessionIDHeaders); sid != "" {
+		if affinity {
+			s.Sessions.Claim(sid, affinityClient(clientHeaders))
+		}
 		return sid
+	}
+	if affinity {
+		// See session.Store.SessionForClient for the order. The default bucket is its
+		// "ambiguous" answer, and plugins hear that as "" — the no-identity answer this
+		// function exists to give them — while recording files it under default.
+		switch sid := s.Sessions.SessionForClient(affinityClient(clientHeaders)); sid {
+		case "":
+		case session.DefaultSessionID:
+			return ""
+		default:
+			return sid
+		}
 	}
 	if s.Sessions != nil {
 		if sid := s.Sessions.ActiveSession(); sid != "" {
@@ -863,6 +901,24 @@ func (s *Server) resolvePluginSessionID(clientHeaders http.Header) string {
 		}
 	}
 	return ""
+}
+
+// affinityOn reports whether header-less requests are filed by coding agent. It needs
+// header bucketing: a client's session is the one its header named, so with id_headers
+// empty no session is ever any client's and every known agent would collect in its
+// pending bucket forever.
+func (s *Server) affinityOn() bool {
+	return s.ClientAffinity && s.Sessions != nil && len(s.SessionIDHeaders) > 0
+}
+
+// affinityClient names the coding agent behind a request for session attribution. Read
+// from the headers as RECEIVED, like the session header beside it, so it is the same
+// User-Agent pctx.ResolveClient pins. Nil headers — the transparent path — name nobody.
+func affinityClient(clientHeaders http.Header) string {
+	if clientHeaders == nil {
+		return ""
+	}
+	return pipeline.ParseUserAgent(clientHeaders.Get("User-Agent")).AffinityName()
 }
 
 // sessionViewFor returns the recorded view for sid, or an empty view carrying
@@ -1355,7 +1411,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		// HTTP body (parsers) see no body, which they handle gracefully.
 		action := s.OutboundPipeline.Run(r.Context(), pctx)
 		if action.Type == pipeline.Reject {
-			s.recordOutboundReject(pctx, action, s.recordingSessionID(sessionID, r.Header))
+			s.recordOutboundReject(pctx, action, s.tunnelSessionID(sessionID, r.Header))
 			// Render as a JSON-RPC error frame when the rejected
 			// request was MCP JSON-RPC, so the agent's MCP client
 			// surfaces this as one failed tool call rather than a
@@ -1364,6 +1420,14 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 			httpx.WriteRejectionForRequest(w, action, pctx)
 			return
 		}
+	}
+
+	// Under client affinity the tunnel row joins the session this CONNECT was gated
+	// under, not ActiveSession() at recording time. Pinned only now, after the
+	// pipeline, for the reason sessionID is a local; left unpinned where affinity had no
+	// answer, for the reason in tunnelSessionID. See recordTunnelOpened.
+	if s.ClientAffinity && !skipped && s.Sessions != nil && sessionID != "" {
+		pctx.OutboundSessionID = sessionID
 	}
 
 	// Verify hijack capability BEFORE dialing upstream. If hijacking
