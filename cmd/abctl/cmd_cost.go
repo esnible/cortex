@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/rossoctl/cortex/cmd/abctl/apiclient"
+	"github.com/rossoctl/cortex/cmd/abctl/money"
 	"github.com/rossoctl/cortex/core/cost/pricing"
 	"github.com/rossoctl/cortex/core/cost/usage"
 )
@@ -1034,12 +1035,7 @@ func costWindowLabel(window string) string {
 // human reasons in. A real charge below half a cent renders as "<$0.01" rather than
 // "$0.00": the floor exists so a small non-zero figure is never printed as the one
 // string this command is forbidden to print for an unknown cost.
-func costUSD(v float64) string {
-	if v > 0 && v < 0.005 {
-		return "<$0.01"
-	}
-	return fmt.Sprintf("$%.2f", v)
-}
+func costUSD(v float64) string { return money.USD(v) }
 
 // costIn formats a money figure in the unit it is actually denominated in.
 //
@@ -1055,15 +1051,7 @@ func costUSD(v float64) string {
 // SAME SUB-CENT FLOOR, in the unit's own words. costUSD's "<$0.01" exists so a real charge is never
 // printed as the one string this command may not print for an unknown cost, and that reasoning is
 // about the figure being small, not about it being dollars.
-func costIn(v float64, unit string) string {
-	if isDefaultUnit(unit) {
-		return costUSD(v)
-	}
-	if v > 0 && v < 0.005 {
-		return "<0.01 " + unit
-	}
-	return fmt.Sprintf("%.2f %s", v, unit)
-}
+func costIn(v float64, unit string) string { return money.In(v, unit) }
 
 // windowUnit reports the unit every figure on this snapshot is denominated in, and whether any
 // figure may be labelled at all.
@@ -1077,9 +1065,10 @@ func costIn(v float64, unit string) string {
 //   - EXACTLY ONE: that unit, whatever it is. This is the case the headline got wrong in the other
 //     direction: a deployment billing only in credits is not mixed, so it printed a "$" figure with
 //     nothing anywhere to contradict it.
-//   - ABSENT: the default, i.e. dollars. An empty list is the in-memory ring, which does not
-//     compute the field — not a window with no units — so this preserves today's output for every
-//     ring-served surface.
+//   - ABSENT: the default, i.e. dollars — an idle window, or a server older than the field.
+//
+// The rules live in package money, shared with the TUI so the two cannot label one figure
+// differently; these names stay so this file reads as it did.
 //
 // isReportedUnit reports whether a series label is one of the billing units this window carries.
 //
@@ -1101,16 +1090,7 @@ func isReportedUnit(units []string, label string) bool {
 	return false
 }
 
-func windowUnit(snap *usage.Snapshot) (string, bool) {
-	switch len(snap.Currencies) {
-	case 0:
-		return pricing.CurrencyUSD, true
-	case 1:
-		return snap.Currencies[0], true
-	default:
-		return "", false
-	}
-}
+func windowUnit(snap *usage.Snapshot) (string, bool) { return money.WindowUnit(snap.Currencies) }
 
 // compactTokens renders a token count the way a headline has room for: 218.1M, not
 // 218100000.
