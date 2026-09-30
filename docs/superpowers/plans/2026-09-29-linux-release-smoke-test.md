@@ -87,6 +87,12 @@ invocation would skip.
       still exists, not that its contents are unchanged — existence survives
       truncation or a rewrite. Now compares a `cksum` taken immediately
       before uninstall against one taken after.
+- [x] Fix (review): each `mktemp` call had its own scattered `rm -f` after
+      use, which an early exit would skip. Matched the existing pattern in
+      `scripts/install_test.sh` and `scripts/dev/verify-moved-ca-diagnostics.sh`
+      instead: one `TMP_DIR`, one `trap 'rm -rf "${TMP_DIR}"' EXIT` set once,
+      cleaning up on every exit path rather than trusting each call site to
+      remember its own.
 
 ## Result
 
