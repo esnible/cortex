@@ -20,9 +20,10 @@ func resetSettingsForTest(t *testing.T) {
 }
 
 // TestColumnSelection_AbsentColumnsDefaultOn is the headline rule of the file
-// format: the config records deviations, so a column the file does not mention is
-// VISIBLE. Inverting this would mean a column added in a later abctl starts hidden
-// for everyone who already has a config file.
+// format: the config records deviations, so a column the file does not mention takes
+// its own default — VISIBLE for every default column. Inverting this would mean a
+// column added in a later abctl starts hidden for everyone who already has a config
+// file; ignoring the default would switch on the opt-in BYTES for all of them.
 func TestColumnSelection_AbsentColumnsDefaultOn(t *testing.T) {
 	s := UserSettings{Events: EventSettings{Columns: []ColumnSetting{
 		{Name: string(colCost), Visible: false},
@@ -32,14 +33,33 @@ func TestColumnSelection_AbsentColumnsDefaultOn(t *testing.T) {
 	if sel[colCost] {
 		t.Errorf("COST was named visible:false in the config but is on")
 	}
-	// Every other column — eleven of them — must be on without being mentioned.
+	// Every other column must take its own default without being mentioned.
 	for _, c := range eventColumns {
 		if c.id == colCost {
 			continue
 		}
-		if !sel[c.id] {
-			t.Errorf("column %q is absent from the config and should default ON, got off", c.id)
+		if sel[c.id] != c.defaultOn {
+			t.Errorf("column %q is absent from the config; want its default %v, got %v", c.id, c.defaultOn, sel[c.id])
 		}
+	}
+	if sel[colBytes] {
+		t.Error("BYTES is opt-in, but a config that never mentions it turned it on")
+	}
+}
+
+// TestColumnSettings_EnablingAnOptInColumnPersists: turning ON a defaultOn:false column
+// is a deviation too, so it must be written and read back. BYTES is the first such
+// column; before it this path had no real case to test.
+func TestColumnSettings_EnablingAnOptInColumnPersists(t *testing.T) {
+	sel := defaultColumnSelection()
+	sel[colBytes] = true
+	written := columnSettingsFrom(sel)
+	if len(written) != 1 || written[0].Name != string(colBytes) || !written[0].Visible {
+		t.Fatalf("enabling BYTES wrote %+v, want exactly [{BYTES true}]", written)
+	}
+	back := UserSettings{Events: EventSettings{Columns: written}}.columnSelection()
+	if !back[colBytes] {
+		t.Error("BYTES was enabled and saved, but reads back off")
 	}
 }
 

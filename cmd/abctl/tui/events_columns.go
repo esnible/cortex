@@ -31,6 +31,7 @@ const (
 	colTokens   eventColumnID = "TOKENS"
 	colCost     eventColumnID = "COST"
 	colHost     eventColumnID = "HOST"
+	colBytes    eventColumnID = "BYTES"
 )
 
 // cellContext is what a cell function needs beyond the event itself.
@@ -240,6 +241,14 @@ var eventColumns = []eventColumn{
 		desc:    "how long the exchange took",
 		cell:    func(c cellContext) string { return durationCell(*c.row.event) },
 		sortKey: func(c cellContext) sortValue { return numKey(c.row.event.Duration) }},
+	// Off by default: only an opaque tunnel's close row has a figure, so a column on for
+	// everyone would spend 15 columns of every terminal on a mostly blank one. 15 fits
+	// the widest cell, "↑999.9M ↓999.9M". The total is the sort key, so a descending
+	// sort finds the tunnel that carried the most.
+	{id: colBytes, width: 15, defaultOn: false, keep: keepLow, rightAlign: true,
+		desc:    "bytes an opaque tunnel carried: ↑ sent, ↓ received",
+		cell:    func(c cellContext) string { return bytesCell(*c.row.event) },
+		sortKey: func(c cellContext) sortValue { return numKey(c.row.event.BytesUp + c.row.event.BytesDown) }},
 	// 17, not 15: sized for a SEVEN-digit prompt, "1,048,576(−12.3k)". Million-token
 	// contexts are in service, and bubbles truncates a cell at the column width, so
 	// 15 rendered "1,048,576(−1…" — dropping the saving, which is the half of this

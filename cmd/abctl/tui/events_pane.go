@@ -441,8 +441,13 @@ func buildEventRows(events []pipeline.SessionEvent) []eventRow {
 // tunnel-open. It keys on the explicit Tunnel marker the producer
 // (recordTunnelOpened) sets — NOT on host/extension shape, which an ordinary
 // unparsed outbound request could mimic and get wrongly folded.
+//
+// The REQUEST phase as well as the marker: a tunnel's close row carries Tunnel too,
+// and it is an exchange's response, not a CONNECT waiting for its decrypted request.
+// Keyed on the marker alone, a close followed by a request to the same host folded
+// that request into itself and the close vanished from the timeline.
 func isTunnelOpen(e *pipeline.SessionEvent) bool {
-	return e.Tunnel
+	return e.Tunnel && e.Phase == pipeline.SessionRequest
 }
 
 // isBridgedInner reports whether inner is the decrypted request the TLS bridge
@@ -768,15 +773,40 @@ func generatedTokensCell(e *pipeline.SessionEvent) string {
 	return formatCount(n)
 }
 
+// bytesCell renders a tunnel close row's byte counts, up (client to destination) then
+// down. Blank on every other row: only an opaque tunnel's close has counts. They are
+// absent on the wire when zero, so a zero on one side is shown only once the other
+// side proves this row carries counts at all.
+func bytesCell(e pipeline.SessionEvent) string {
+	if e.BytesUp == 0 && e.BytesDown == 0 {
+		return ""
+	}
+	return "↑" + formatCompact(float64(e.BytesUp)) + " ↓" + formatCompact(float64(e.BytesDown))
+}
+
+// durationCell renders a duration at the precision a reader wants for its size:
+// milliseconds, then seconds to the hundredth, then minutes and seconds, then hours
+// and minutes. The last two are for tunnels, whose DURATION is how long they stayed
+// open — "252.00s" for a `kubectl logs -f` makes the reader do the division.
+//
+// Seconds hand over to minutes at 59.995s rather than 60s, because %.2f rounds
+// 59.999s up to "60.00s", a seconds figure that is already a minute.
 func durationCell(e pipeline.SessionEvent) string {
 	if e.Duration == 0 {
 		return ""
 	}
 	ms := e.Duration.Milliseconds()
-	if ms < 1000 {
+	switch {
+	case ms < 1000:
 		return fmt.Sprintf("%dms", ms)
+	case ms < 59_995:
+		return fmt.Sprintf("%.2fs", float64(ms)/1000)
 	}
-	return fmt.Sprintf("%.2fs", float64(ms)/1000)
+	secs := (ms + 500) / 1000
+	if secs < 3600 {
+		return fmt.Sprintf("%dm%02ds", secs/60, secs%60)
+	}
+	return fmt.Sprintf("%dh%02dm", secs/3600, secs%3600/60)
 }
 
 func truncStr(s string, n int) string {
