@@ -1,11 +1,14 @@
 package tui
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/rossoctl/cortex/cmd/abctl/apiclient"
 	"github.com/rossoctl/cortex/cmd/abctl/money"
 	"github.com/rossoctl/cortex/core/cost/usage"
 )
@@ -114,5 +117,84 @@ func TestAgentRowsFromSnapshot_LabelsEachAgentWithItsOwnUnits(t *testing.T) {
 		if cell := agentCostCellIn(r.Counts, r.units, agentsCostWidth); cell != money.Mixed {
 			t.Errorf("%s from an older server = %q, want (mixed)", r.label, cell)
 		}
+	}
+}
+
+// The band's dollars are what markMoneyTotal printed before units existed, caveats and all.
+func TestBandValue_DollarsAreMarkMoneyTotal(t *testing.T) {
+	for _, micros := range moneySweep {
+		r := spanReading{USD: float64(micros) / 1e6, Priced: true, Unpriced: 1, Priceable: 3, Incomplete: 1}
+		want := markMoneyTotal(r.USD, r.Unpriced, r.Priceable, r.Incomplete, r.Degraded, r.Clamped, false)
+		for _, units := range [][]string{nil, {"USD"}} {
+			r.Units = units
+			if got := bandValue(r); got != want {
+				t.Errorf("micros %d units %v: %q, want %q", micros, units, got, want)
+			}
+		}
+	}
+}
+
+// A mixed span prints each unit's figure, dollars first, and never their sum; without a split to
+// print it says it is mixed.
+func TestBandValue_AMixedSpanShowsEachUnitAndNoSum(t *testing.T) {
+	r := spanReading{USD: 6.2078, Priced: true, Units: []string{"Bobcoins", "USD"},
+		ByUnit: map[string]int64{"Bobcoins": 7_800, "USD": 6_200_000}}
+	if got := bandValue(r); got != "$6.20 + 0.01 Bobcoins" {
+		t.Errorf("mixed span = %q, want $6.20 + 0.01 Bobcoins", got)
+	}
+	r.ByUnit = nil
+	if got := bandValue(r); got != money.Mixed {
+		t.Errorf("mixed span without a split = %q, want %s", got, money.Mixed)
+	}
+	one := spanReading{USD: 0.0078, Priced: true, Units: []string{"Bobcoins"}}
+	if got := bandValue(one); got != "0.01 Bobcoins" {
+		t.Errorf("Bobcoins-only span = %q, want 0.01 Bobcoins", got)
+	}
+}
+
+// The split is asked for only when the poll names two or more units, and a downgraded or
+// incomplete split is not used.
+func TestFetchSpendSpan_AsksForAUnitSplitOnlyForAMixedWindow(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		poll       string
+		split      string
+		wantSplits int
+		wantByUnit map[string]int64
+	}{
+		{"dollars only", `{"window":"today","currencies":["USD"],"buckets":[],"totals":{}}`, "", 0, nil},
+		{"older server", `{"window":"today","buckets":[],"totals":{}}`, "", 0, nil},
+		{"mixed", `{"window":"today","currencies":["Bobcoins","USD"],"buckets":[],"totals":{}}`,
+			`{"window":"today","group":"currency","currencies":["Bobcoins","USD"],"buckets":[{"series":{` +
+				`"Bobcoins":{"costMicros":7800},"USD":{"costMicros":6200000}}}],"totals":{}}`,
+			1, map[string]int64{"Bobcoins": 7_800, "USD": 6_200_000}},
+		{"downgraded split", `{"window":"today","currencies":["Bobcoins","USD"],"buckets":[],"totals":{}}`,
+			`{"window":"today","group":"none","buckets":[],"totals":{}}`, 1, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			splits := 0
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Query().Get("group") == string(usage.GroupCurrency) {
+					splits++
+					_, _ = w.Write([]byte(tc.split))
+					return
+				}
+				_, _ = w.Write([]byte(tc.poll))
+			}))
+			defer ts.Close()
+			m := &model{client: apiclient.New(ts.URL)}
+			msg := m.fetchSpendSpan(spanToday)().(spendLoadedMsg)
+			if splits != tc.wantSplits {
+				t.Errorf("split requests = %d, want %d", splits, tc.wantSplits)
+			}
+			if len(msg.byUnit) != len(tc.wantByUnit) {
+				t.Fatalf("byUnit = %v, want %v", msg.byUnit, tc.wantByUnit)
+			}
+			for u, v := range tc.wantByUnit {
+				if msg.byUnit[u] != v {
+					t.Errorf("byUnit[%s] = %d, want %d", u, msg.byUnit[u], v)
+				}
+			}
+		})
 	}
 }
