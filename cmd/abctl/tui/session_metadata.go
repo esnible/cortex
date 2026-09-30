@@ -36,8 +36,14 @@ func SessionMetadataPath() (string, error) { return claude.SessionMetadataPath()
 // It never returns an error, for the reason loadUserConfig does not: this file is a
 // convenience cache another command produces, and a missing or corrupt one must not
 // keep the viewer from opening — the viewer being the tool you reach for when
-// everything else is broken. Every failure yields an empty map, which renders as an
-// empty TITLE column: the pane still works, it just cannot name anything.
+// everything else is broken. Every failure yields an empty map: the pane still works, it
+// just cannot name anything FROM HERE.
+//
+// AND THE COLUMN NO LONGER GOES BLANK WITH IT. This used to say a failure "renders as an
+// empty TITLE column", which stopped being true when sessionTitleFor gained the fallback
+// to the title /v1/sessions serves: a session the proxy has named still renders one
+// through a total load failure. Degrading to none is therefore less visible than it was,
+// which is the right direction and worth stating so the silence stays justified.
 //
 // Absent is not a failure at all. Nobody has this file until they run
 // `abctl experimental read-claude-sessions`, so a first run must be silent rather than
@@ -133,13 +139,37 @@ func loadSessionMetadataForModel() map[string]SessionMetadata {
 // unique — two sessions in the same directory get the same harvested title, so a title
 // alone would make them indistinguishable in a header.
 func (m *model) sessionLabel(id string) string {
-	// THROUGH titleIsBlank, like the other two consumers of "is this named". A raw != "" accepted
+	// THROUGH titleIsBlank, like every other consumer of "is this named". A raw != "" accepted
 	// a whitespace-only title and rendered "    (id)" — a header padded by a title that shows
 	// nothing, which is worse than the bare id it would otherwise print.
-	if title := m.sessionTitle(id); !titleIsBlank(title) {
+	//
+	// sessionTitleFor, not sessionTitle, so a header names a session on whichever source can — the
+	// same precedence the TITLE column applies. A row an operator selected BY its served title must
+	// not lose it on Enter; that inconsistency is exactly what this helper's doc above rules out.
+	// blankSanitized, not titleIsBlank: sessionTitleFor returns a sanitised string on every path, so
+	// re-sanitising it here would allocate a second copy of it to reach the same answer.
+	if title := m.sessionTitleFor(id, m.servedTitle(id)); !blankSanitized(title) {
 		return title + " (" + id + ")"
 	}
 	return id
+}
+
+// servedTitle returns the title /v1/sessions published for this session, or "" if it listed none.
+//
+// A LINEAR WALK, deliberately, as several others in this package already are: m.sessions is one
+// pod's live sessions — a handful in practice — and the three headers this feeds each render ONE
+// selected session per frame. An id-keyed map would be a second structure to keep in step with the
+// slice, and the slice is rebuilt wholesale on every poll, so the sync is the cost, not the lookup.
+//
+// "" for a session the server does not list is the honest answer and the one sessionTitleFor wants:
+// it means nothing served a title, which is indistinguishable here from serving an empty one.
+func (m *model) servedTitle(id string) string {
+	for _, s := range m.sessions {
+		if s.ID == id {
+			return s.Title
+		}
+	}
+	return ""
 }
 
 // HarvestFunc reads an agent's transcripts and returns what it learned, keyed by session id.
@@ -202,8 +232,18 @@ func harvestCmd(h HarvestFunc) tea.Cmd {
 // this cheap: without it every event on a still-unnamed session would trigger a scan, and
 // with it a busy session is harvested once, after it pauses.
 //
-// Only sessions the metadata does NOT name are considered, so the steady state — every row titled
-// — triggers nothing at all.
+// Only sessions the metadata does NOT name are considered, so a fully-harvested list triggers
+// nothing at all.
+//
+// "FULLY HARVESTED" IS NOT "EVERY ROW NAMED ON SCREEN", and this comment used to conflate the two.
+// sessionHasTitle asks about the HARVEST only — sessionTitleFor's served-title fallback is
+// deliberately invisible to it (see sessionTitle's doc for why) — so a row showing a proxy-derived
+// title still counts as untitled here and keeps triggering settled harvests. For an agent with no
+// Claude Code transcript tree on this disk those harvests can never succeed, so that is not a
+// transient state on the way to quiet: it is the permanent one, and the allocation noted below is
+// paid for as long as the pane is open. Bounded by untitledBackoffCap (~3m between attempts) rather
+// than by ever being satisfied. That periodic scan is the accepted price of not letting a served
+// title stop the search for the richer harvested one; it is not a leak, but it is not free either.
 //
 // THE QUIET TEST SPANS TWO CLOCKS and tolerates them disagreeing in the safe direction; the
 // reasoning is at the comparison itself.
@@ -239,9 +279,10 @@ func (m *model) untitledSettled(now time.Time) bool {
 		// way this gets large.
 		//
 		// A FUTURE UpdatedAt IS A BROKEN CLOCK, NOT A SETTLED SESSION. Pod ahead of client gives
-		// a negative delta, which can never reach untitledSettleDelay, so that row's title never
-		// arrives — no error, no log, just a permanently blank TITLE cell, and the skew has to
-		// exceed only 5s to do it. Treating it as settled instead is the safe direction: the
+		// a negative delta, which can never reach untitledSettleDelay, so the harvested title for
+		// that row never arrives — no error, no log, and the skew has to exceed only 5s to do it.
+		// The row is left on whatever the proxy served, or blank if it served nothing; either way
+		// it is stuck there. Treating it as settled instead is the safe direction: the
 		// cost of harvesting early is one wasted tree walk that the backoff then widens, against
 		// a title that otherwise never comes at all.
 		//
@@ -269,9 +310,12 @@ func (m *model) untitledSettled(now time.Time) bool {
 // it had no part in earning, and the reset only took effect afterwards — for the next new row.
 // Reading the set here means the arrival is priced on the tick it arrives.
 //
-// COSTS ONE MAP LOOKUP PER UNNAMED ROW PER TICK, and only while the sessions pane is open. The
-// steady state — every row titled — exits on sessionHasTitle without touching the set at all,
-// and the loop is over one pod's live sessions. It is the same walk untitledSettled does and the
+// COSTS ONE MAP LOOKUP PER UNNAMED ROW PER TICK, and only while the sessions pane is open. A
+// harvest-named row exits on sessionHasTitle without touching the set at all, and the loop is over
+// one pod's live sessions. Note that "unnamed" here means UNHARVESTED, not blank on screen: a row
+// wearing a served title from sessionTitleFor reaches the lookup, and on an agent whose transcripts
+// this machine does not have it reaches it on every tick indefinitely — see untitledSettled,
+// where the same asymmetry is spelled out. It is the same walk untitledSettled does and the
 // same walk the scoring does; see countUntitled, which the scoring shares with this.
 //
 // DOES NOT MUTATE THE SET. The gate asks a question; the harvest's scoring is what records the
@@ -313,12 +357,17 @@ func (m *model) countUntitled() (counted map[string]bool, fresh bool) {
 	return counted, fresh
 }
 
-// sessionHasTitle reports whether this session renders a title, as the TITLE cell would judge it.
+// sessionHasTitle reports whether the HARVEST has named this session.
 //
-// THROUGH sessionTitle, not the raw map, so this predicate and the cell can never disagree about
-// what "unnamed" means: the cell sanitises (sessionTitle does), and a predicate reading
-// m.sessionsData[id].Title directly would be asserting about a different string than the one on
-// screen. sanitizeLabel replaces rather than strips, so it cannot change emptiness today — the
+// NOT "does the row render a title" — it deliberately says less than that. A row the harvest has
+// not named can still display the title the proxy served (see sessionTitleFor), and this predicate
+// answers false for it on purpose, so the harvest keeps looking for the title it would prefer.
+// Every backoff predicate in this file is built on that distinction; do not widen this to mean
+// "something is on screen".
+//
+// THROUGH sessionTitle, not the raw map, so this asks about the same sanitised string the harvest
+// path renders: a predicate reading m.sessionsData[id].Title directly would judge a different
+// string. sanitizeLabel replaces rather than strips, so it cannot change emptiness today — the
 // point is that this does not depend on that remaining true.
 //
 // WHITESPACE COUNTS AS UNNAMED, which the raw comparison got wrong. A title of " " is non-empty
@@ -327,27 +376,28 @@ func (m *model) countUntitled() (counted map[string]bool, fresh bool) {
 // value, so this is defence at the consumer rather than a live upstream bug — but this file
 // renders whatever is in that map, including what an older harvester or a hand-edited file left.
 func (m *model) sessionHasTitle(id string) bool {
-	return !titleIsBlank(m.sessionTitle(id))
+	// blankSanitized: sessionTitle sanitises, so titleIsBlank would do it again on a string already
+	// through it — per row per tick on the render path.
+	return !blankSanitized(m.sessionTitle(id))
 }
 
 // titleIsBlank reports whether a title string would render as an empty TITLE cell.
 //
-// THE ONE DEFINITION OF "UNNAMED" AMONG THE PREDICATES, extracted because three callers ask that
-// question about different strings — sessionHasTitle about what the model already holds,
-// sessionLabel about the same for a header, and harvestNamedSomething about what a harvest just
-// returned, which is not in the model yet and so cannot be reached through sessionTitle. An
-// inline copy in any of them is the drift sessionHasTitle's comment exists to prevent.
+// THE ONE DEFINITION OF "UNNAMED", extracted because its callers ask that question about strings
+// reached different ways — what the model already holds, what a harvest just returned and is not in
+// the model yet, what the proxy served — and an inline copy in any of them is the drift
+// sessionHasTitle's comment exists to prevent. Deliberately not enumerated here: the list went
+// stale the first time a caller was added, and the callers are one grep away.
 //
-// THE CELL DOES NOT CALL THIS, and the claim that it does was overstated. sessionTitleCell tests
-// a raw title == "" as a fast path to skip truncating an empty string; it does not judge
-// blankness, and a " " title falls through it and is returned as " ". So the two AGREE in
-// behaviour on every input — verified across "", " ", "   ", "\t" and ordinary prose — but by
-// construction rather than by sharing this function. If that fast path ever becomes a real
-// blankness test, it should route through here.
+// THE CELL REACHES THIS NOW, through sessionTitleFor, which is where the fallback decides whether
+// the harvested title is worth keeping. So a harvested " " no longer survives to the screen: it
+// answers blank here and the cell shows the served title instead, or "" when there is none. What
+// remains NOT a blankness test is sessionTitleCell's own `title == ""` fast path, which only skips
+// truncating an empty string and is reached after this predicate has already had its say.
 //
-// SANITISES BEFORE TRIMMING, in that order, because that is the order the cell applies them: it
-// renders sessionTitle, which is sanitizeLabel'd, and nothing trims afterwards. sanitizeLabel
-// REPLACES control and BIDI runes with U+FFFD rather than stripping them, so a title of "\t" or
+// SANITISES BEFORE TRIMMING, in that order, because that is the order the display applies them: it
+// renders sessionTitleFor, which is sanitizeLabel'd on both paths, and nothing trims afterwards.
+// sanitizeLabel REPLACES control and BIDI runes with U+FFFD rather than stripping them, so a "\t" or
 // "\n" is NOT blank here — the cell shows "�", a visible glyph, and a predicate calling that row
 // unnamed would re-harvest forever for a row that is already displaying something.
 //
@@ -361,8 +411,30 @@ func (m *model) sessionHasTitle(id string) bool {
 // Sanitising a string sessionTitle already sanitised is a no-op, not a second pass with different
 // meaning: sanitizeLabel is idempotent — U+FFFD matches none of its cases and falls through — so
 // the caller does not have to know which of the two paths got there first.
+//
+// IDEMPOTENT IS NOT FREE, THOUGH, which is why blankSanitized exists beside this. sanitizeLabel
+// builds a new string with b.Grow(len(s)) on the UNTRUNCATED input, so a caller already holding one
+// and calling this anyway allocates a second full copy to reach the same answer. On the render path
+// that is per row per rebuild, at whatever length the producer sent. Callers holding a sanitised
+// string should say so rather than pay for the round trip.
 func titleIsBlank(title string) bool {
-	return strings.TrimSpace(sanitizeLabel(title)) == ""
+	return blankSanitized(sanitizeLabel(title))
+}
+
+// blankSanitized is titleIsBlank for a string that sanitizeLabel has ALREADY been applied to.
+//
+// The trim half of the predicate, split out so the sanitise half is not paid twice. Every caller of
+// titleIsBlank that passes the output of sessionTitle or sessionTitleFor is in that position, and
+// so is sessionTitleFor itself, once it holds the sanitised served string it is about to return.
+//
+// WHY THE SPLIT IS SAFE HERE AND NOT A GENERAL LICENCE: the two halves are not interchangeable.
+// titleIsBlank's doc above spends a paragraph on why the ORDER matters — sanitise before trim, so
+// a "\t" answers not-blank because the cell paints a glyph for it. This helper is the second half
+// only, so handing it a RAW title reintroduces the exact disagreement-with-the-screen that the
+// ordering prevents: a raw "\t" would trim to "" and read blank, and the row would re-harvest
+// forever while displaying a glyph. Call it only where the sanitising demonstrably already ran.
+func blankSanitized(sanitized string) bool {
+	return strings.TrimSpace(sanitized) == ""
 }
 
 // harvestNamedSomething reports whether a finished harvest named a session that is ON SCREEN and

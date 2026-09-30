@@ -199,7 +199,11 @@ func wantsInfoFlagOnly(args []string) bool {
 // which is why this exists at all.
 func observeHarvester(f observeFlags, warn io.Writer) tui.HarvestFunc {
 	// Nil under --skip-claude-metadata, which is what turns the harvest off: the viewer then
-	// shows whatever titles the metadata file already held, from the last run.
+	// shows whatever titles the metadata file already held, from the last run — AND the titles
+	// /v1/sessions serves, which this flag does not touch. It declines a filesystem scan, not
+	// naming: a session the proxy has named still shows that name with the harvest off entirely.
+	// The flag help one line below says the same; both are here because "harvest off" reads as
+	// "no titles" and has stopped meaning that.
 	if *f.skipClaudeMetadata {
 		return nil
 	}
@@ -405,7 +409,7 @@ func registerObserveFlags(fs *flag.FlagSet) observeFlags {
 		// flag to decline is narrower, and it is the reason to keep it: a machine where
 		// ~/.claude should simply not be touched.
 		skipClaudeMetadata: fs.Bool("skip-claude-metadata", false,
-			"do not harvest session titles from Claude Code's transcripts. By default abctl observe scans CLAUDE_CONFIG_DIR / ~/.claude in the background once the viewer is up and records titles in ~/.cortex/session-metadata.json, so sessions show a name instead of a bare UUID. This skips the scan; titles already recorded by earlier runs are still shown, so only sessions new or renamed since the last scan appear as bare ids."),
+			"do not harvest session titles from Claude Code's transcripts. By default abctl observe scans CLAUDE_CONFIG_DIR / ~/.claude in the background once the viewer is up and records titles in ~/.cortex/session-metadata.json, so sessions show a name instead of a bare UUID. This skips the scan; titles already recorded by earlier runs are still shown, and a session the harvest has not named falls back to the title the proxy serves, so a bare id usually means neither source named it — except for a session the proxy has stopped listing, whose served title is not retained and so goes away with the listing."),
 	}
 }
 

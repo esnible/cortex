@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/rossoctl/cortex/core/cost/usage"
+	"github.com/rossoctl/cortex/core/pipeline"
 )
 
 // Bar geometry. Four columns wide with a one-column gap, so ten bars occupy 49
@@ -628,6 +629,18 @@ func provenanceNote(by map[string]int64) string {
 //
 // Control characters and DEL become U+FFFD rather than being dropped, so tampering is
 // visible instead of silently producing a plausible-looking label.
+//
+// ALSO USED FOR SESSION TITLES, from two sources — the harvested transcript title and the one
+// /v1/sessions serves — which is what widened it past the inference-model labels it was written
+// for. Both of those are content this side did not produce and cannot bound: the harvested title is
+// re-read from a file on disk that anything may have rewritten, and the served one is folded from
+// caller-supplied event content and arrives over an unauthenticated API. Nothing here assumes
+// either producer sanitised anything.
+//
+// THE FULL CONTROL SET, not a subset of it: C0/C1/DEL, the BIDI overrides and isolates, AND the
+// BIDI marks and zero-widths that pipeline.IsControlRune names. The last group was missing while
+// this function only saw model labels, and the gap became visible the moment a served title could
+// reach a cell — see the switch arms for what each class does on a terminal.
 func sanitizeLabel(s string) string {
 	var b strings.Builder
 	b.Grow(len(s))
@@ -647,7 +660,26 @@ func sanitizeLabel(s string) string {
 		// display in an order that is not the order of its bytes — "report\u202Egnp.exe" reads as
 		// something else entirely — and these titles are LLM-generated transcript text from an
 		// unauthenticated-by-nature file, so their content is not ours to trust.
-		case r >= 0x202a && r <= 0x202e, r >= 0x2066 && r <= 0x2069:
+		// BIDI MARKS AND ZERO-WIDTHS: U+200E/200F/061C, and U+200B/200C/200D/2060/FEFF. Delegated to
+		// pipeline.IsControlRune rather than re-listed, because that predicate is the repo's single
+		// copy of this rule \u2014 its own doc records that three byte-identical duplicates once drifted
+		// under a comment asserting they moved together, and only one had coverage for the marks.
+		//
+		// THE MARKS ARE THE SAME CLASS AS THE OVERRIDES ABOVE, and strictly easier to abuse: an
+		// override needs a matching pop, while one LRM reorders the neutral characters after it on
+		// its own. Leaving them out while replacing U+202A-E was an inconsistency, not a judgement.
+		//
+		// THE ZERO-WIDTHS ARE A DIFFERENT ATTACK, and the reason to take them in the same pass: they
+		// make two distinct labels render identically, so a session can wear another's name on
+		// screen while nothing addresses it by that name. They also disable zeroWidthFree, which is
+		// the truncation fast path \u2014 replacing them with a visible glyph both shows the tampering
+		// and keeps the cheap path available.
+		//
+		// WHY THE C0/C1/DEL CASES STAY OPEN-CODED above rather than folding into the same call: they
+		// must remain readable as the CWE-150 answer this function was introduced for, and the
+		// switch documents each class where it applies. IsControlRune covers those ranges too, so
+		// this arm is reached only for what the earlier arms did not claim.
+		case r >= 0x202a && r <= 0x202e, r >= 0x2066 && r <= 0x2069, pipeline.IsControlRune(r):
 			b.WriteRune('\uFFFD')
 		default:
 			b.WriteRune(r)

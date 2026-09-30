@@ -6,9 +6,11 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
@@ -148,6 +150,21 @@ func newTitleModel(t *testing.T, meta map[string]SessionMetadata, ids ...string)
 	}
 }
 
+// newServedTitleModel is newTitleModel with titles on the SERVER summaries too.
+//
+// A sibling rather than a wider newTitleModel: the 50-odd existing callers are all about harvested
+// titles, and threading an empty map through every one of them would say nothing. served is keyed
+// by session id; an id absent from it lists with no title, which is what a proxy that derived none
+// sends.
+func newServedTitleModel(t *testing.T, meta map[string]SessionMetadata, served map[string]string, ids ...string) *model {
+	t.Helper()
+	m := newTitleModel(t, meta, ids...)
+	for i := range m.sessions {
+		m.sessions[i].Title = served[m.sessions[i].ID]
+	}
+	return m
+}
+
 // titleRow finds the row for one session id. Keyed on cell 0, which is the id by contract —
 // sessionsColumns' comment and selectedSessionID both depend on that.
 func titleRow(t *testing.T, m *model, id string) table.Row {
@@ -211,7 +228,7 @@ func TestSessionsPane_ProseTitleTruncatesFromTheRight(t *testing.T) {
 	// And at a width where it does NOT fit, the cut takes the tail and keeps the opening
 	// words, which is the side this test is named for.
 	titleW := sessionsColumnWidth(sessionsColumnsFor(90), "TITLE")
-	cut := m.sessionTitleCell("s1", titleW)
+	cut := m.sessionTitleCell("s1", noServedTitle, titleW)
 	if lipgloss.Width(cut) > titleW {
 		t.Errorf("TITLE is %d columns against a %d-column cell: %q", lipgloss.Width(cut), titleW, cut)
 	}
@@ -629,7 +646,7 @@ func TestSessionTitleCell_BoundsCJKProse(t *testing.T) {
 		id: {Title: "日本語のセッションタイトルです日本語のセッション"},
 	}, id)
 	for _, w := range []int{11, 14, 20} {
-		got := m.sessionTitleCell(id, w)
+		got := m.sessionTitleCell(id, noServedTitle, w)
 		if cw := lipgloss.Width(got); cw > w {
 			t.Errorf("sessionTitleCell(%d) is %d display columns: %q", w, cw, got)
 		}
@@ -769,7 +786,7 @@ func TestSessionTitleCell_NonPositiveWidthYieldsNothing(t *testing.T) {
 
 	for _, id := range []string{prose, path} {
 		for _, w := range []int{0, -1} {
-			if got := m.sessionTitleCell(id, w); got != "" {
+			if got := m.sessionTitleCell(id, noServedTitle, w); got != "" {
 				t.Errorf("sessionTitleCell(%q, %d) = %q, want \"\"", id, w, got)
 			}
 		}
@@ -838,7 +855,7 @@ func TestSessionTitleCell_CarriesNoANSI(t *testing.T) {
 		// The WIDTH half, on the helper. This one is real here: sessionTitleCell does the truncation,
 		// so a budget it fails to honour is its own bug.
 		for _, w := range []int{11, 20, 40} {
-			got := m.sessionTitleCell(id, w)
+			got := m.sessionTitleCell(id, noServedTitle, w)
 			if lipgloss.Width(got) > w {
 				t.Errorf("title cell is %d columns against a %d-column budget: %q",
 					lipgloss.Width(got), w, got)
@@ -925,7 +942,7 @@ func TestTitleCap_IsSafeOnlyBecauseTheRendererRemeasures(t *testing.T) {
 		const id = "s1"
 		m := newTitleModel(t, map[string]SessionMetadata{id: {Title: tc.title}}, id)
 		for _, w := range []int{11, 14, 20, 40} {
-			got := m.sessionTitleCell(id, w)
+			got := m.sessionTitleCell(id, noServedTitle, w)
 			if cw := lipgloss.Width(got); cw > w {
 				t.Errorf("%s: a %d-rune title rendered %d columns into a %d-column cell: %q — the "+
 					"harvester's cap is a RUNE count, so this package must re-truncate by width",
@@ -982,7 +999,7 @@ func TestSessionTitleCell_SlashCommandIsNotAPath(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			m := newTitleModel(t, map[string]SessionMetadata{id: {Title: tc.title}}, id)
 			const w = 20
-			got := m.sessionTitleCell(id, w)
+			got := m.sessionTitleCell(id, noServedTitle, w)
 			if lipgloss.Width(got) > w {
 				t.Fatalf("cell is %d columns against a %d-column budget: %q", lipgloss.Width(got), w, got)
 			}
@@ -2166,5 +2183,1135 @@ func TestLoadSessionMetadata_AtTheReadCap(t *testing.T) {
 	}
 	if got := LoadSessionMetadata(path); len(got) != 1 || got["a"].Title != "real" {
 		t.Errorf("loaded %d entries from a %d byte file, want the 1 real entry", len(got), len(under))
+	}
+}
+
+// A served title fills a cell the harvest could not name.
+//
+// The motivating case, and the reason the fallback exists at all: on the laptop this was found on,
+// every blank harvested entry belonged to an agent with no Claude Code transcript tree to read — but
+// one that routes through the proxy, so /v1/sessions had derived a title for exactly those sessions.
+// A blank TITLE was never "this session has no name", only "no name where abctl was looking".
+func TestSessionsPane_ServedTitleFillsAnUnharvestedCell(t *testing.T) {
+	m := newServedTitleModel(t,
+		map[string]SessionMetadata{},
+		map[string]string{"s1": "Investigate the flaky reloader test"},
+		"s1")
+	m.rebuildSessionsTable()
+
+	if got := sessionsCell(t, m, titleRow(t, m, "s1"), "TITLE"); got != "Investigate the flaky reloader test" {
+		t.Errorf("TITLE = %q, want the served title", got)
+	}
+	// And through the header, which an operator reaches by pressing Enter on that same row. A row
+	// selected BY its served title must not lose it one keystroke later.
+	if got := m.sessionLabel("s1"); got != "Investigate the flaky reloader test (s1)" {
+		t.Errorf("sessionLabel = %q, want the served title and the id", got)
+	}
+}
+
+// Each session gets ITS OWN served title, which needs two of them to say anything at all.
+//
+// servedTitle walks m.sessions comparing ids, and against a one-session fixture that walk is
+// indistinguishable from returning the first entry unconditionally — `if s.ID == id` mutated to
+// `if s.ID != ""` survived every other test in this package. The bug that hides there is not
+// exotic: on any pod listing two sessions, session B's header would show A's title. So the
+// fixture lists two, and the unlisted id pins the miss path that returns "".
+func TestSessionMetadata_ServedTitleIsPerSession(t *testing.T) {
+	m := newServedTitleModel(t, map[string]SessionMetadata{},
+		map[string]string{"s1": "first", "s2": "second"}, "s1", "s2")
+
+	for id, want := range map[string]string{
+		"s1": "first (s1)",
+		"s2": "second (s2)",
+		// Listed by nobody: servedTitle finds no match and the bare id is all a header can say.
+		"gone": "gone",
+	} {
+		if got := m.sessionLabel(id); got != want {
+			t.Errorf("sessionLabel(%q) = %q, want %q", id, got, want)
+		}
+	}
+}
+
+// The ROW LOOP pairs each session with ITS OWN served title, which only two rows can show.
+//
+// The sibling above pins the same property for the HEADER, and that is why this one is separate
+// rather than an extra assertion there: the two paths reach the served title differently. The header
+// calls servedTitle(id), a lookup by id. The row loop never looks anything up — it renders from the
+// summary it is already iterating and passes s.Title straight into sessionTitleCell. A lookup can be
+// wrong about WHICH id it matched; a loop can be wrong about WHICH ITERATION it read from, and no
+// test of the lookup can see that.
+//
+// Review found the gap by mutating the loop to pass m.sessions[0].Title instead of s.Title — every
+// row rendering the FIRST session's title — and the whole package stayed green, because every
+// fixture that put a served title in the table had exactly one row. On a pod listing two sessions
+// that mutant labels B's row with A's name, which is indistinguishable from the bug this feature
+// exists to fix except that it is confidently wrong rather than blank.
+//
+// Distinct titles in BOTH directions, so neither "always the first" nor "always the last" passes.
+func TestSessionsPane_ServedTitleCellIsPerRow(t *testing.T) {
+	m := newServedTitleModel(t, map[string]SessionMetadata{},
+		map[string]string{"s1": "first session", "s2": "second session"}, "s1", "s2")
+	m.rebuildSessionsTable()
+
+	for id, want := range map[string]string{
+		"s1": "first session",
+		"s2": "second session",
+	} {
+		if got := sessionsCell(t, m, titleRow(t, m, id), "TITLE"); got != want {
+			t.Errorf("TITLE for %s = %q, want %q", id, got, want)
+		}
+	}
+}
+
+// capTitleRunes MUST NOT EMPTY A TITLE THAT RENDERS SOMETHING, whatever the cluster structure.
+//
+// This is the property, stated once, over every degenerate shape found so far. It matters because
+// sessionHasTitle reads sessionTitle: a named row whose title caps to "" reads as UNNAMED, which
+// zeroes untitledMisses and restarts the permanent ~3-minute re-harvest. f5a0a615 fixed that for
+// whitespace; two more routes to the same failure have shipped since, both in the cap's walk:
+//
+//   - 41 consecutive flags capped to "", because regional indicators pair and a walk that treated
+//     every one as a binder ran to index 0.
+//   - "a" + 100 combining marks capped to "", because the walk's documented bound — "a mark cannot
+//     follow a mark" — is false. Marks stack, so the run walked to the base and past it.
+//
+// Both were found by review rather than by a test, which is the argument for asserting the INVARIANT
+// over a table of shapes instead of the arithmetic of any one of them. A new binder class added to
+// bindsToPrevious gets this check for free; an expected-length assertion would not.
+//
+// A THIRD ROUTE WAS FOUND WITH THIS TEST ALREADY GREEN, and it is why the table now carries
+// whitespace shapes. Every fixture here was binder-class, so none of them exercised the cap's TRIM \u2014
+// and the trim ran AFTER the cut, so a title whose first MaxTitleLen runes were whitespace lost its
+// real text to the cut and was then emptied by the trim. 80 leading spaces plus "my-project"
+// returned "". The property was right and the table could not reach the defect: the lesson is that
+// an invariant test is only as broad as its shapes, so a fixture belongs here for every code path
+// inside the function, not just for every bug that has been found in one of them.
+func TestSessionsPane_CapNeverEmptiesANonBlankTitle(t *testing.T) {
+	const acute = "\u0301" // Mn, stacks without limit
+	flag := "\U0001F1FA\U0001F1F8"
+	// Over the cap on their own, so the cut fires before any trim can.
+	const pad = claude.MaxTitleLen + 5
+
+	for _, tc := range []struct{ name, in string }{
+		// THE TRIM ROUTE. Whitespace is not binder-class, so none of the cluster fixtures below
+		// reach it: these cover the cut-then-trim interaction instead. Three whitespace classes,
+		// because TrimSpace is Unicode-aware and a fix that only counted U+0020 would pass on one.
+		{"long space prefix then text", strings.Repeat(" ", pad) + "my-project"},
+		{"long NBSP prefix then text", strings.Repeat("\u00a0", pad) + "my-project"},
+		{"long ideographic-space prefix then text", strings.Repeat("\u3000", pad) + "my-project"},
+		// Exactly at the boundary, where the old code first returned "" rather than one rune.
+		{"space prefix exactly at the cap", strings.Repeat(" ", claude.MaxTitleLen) + "my-project"},
+		// Interior whitespace must not be mistaken for the same thing: this one has real text
+		// inside the first MaxTitleLen runes and must keep some of it either way.
+		{"text then long space run then text", "a" + strings.Repeat(" ", pad) + "b"},
+		// The two shipped defects, at the sizes they were measured at.
+		{"base plus a long mark run", "a" + strings.Repeat(acute, 100)},
+		{"consecutive flags", strings.Repeat(flag, 41)},
+		{"text then flags", strings.Repeat("a", 70) + strings.Repeat(flag, 10)},
+		// No base character at all: every rune binds, so there is no boundary to cut on and the
+		// cluster-start walk correctly reports 0. The blunt cut is the deliberate fallback — a
+		// dangling mark renders oddly, "" restarts the re-harvest.
+		{"nothing but marks", strings.Repeat(acute, 100)},
+		{"nothing but one flag half", strings.Repeat("\U0001F1FA", 100)},
+		// Mixed, because a run of one binder class is not the only degenerate shape.
+		{"marks and flags interleaved", strings.Repeat(acute+flag, 40)},
+	} {
+		got := capTitleRunes(tc.in)
+		if titleIsBlank(tc.in) {
+			t.Fatalf("%s: fixture is blank before capping, so it proves nothing", tc.name)
+		}
+		if titleIsBlank(got) {
+			t.Errorf("%s: capTitleRunes(%d runes) = %q, which is blank — this flips sessionHasTitle and restarts the re-harvest",
+				tc.name, utf8.RuneCountInString(tc.in), got)
+		}
+		if n := utf8.RuneCountInString(got); n > claude.MaxTitleLen {
+			t.Errorf("%s: capTitleRunes returned %d runes, over the %d cap", tc.name, n, claude.MaxTitleLen)
+		}
+	}
+}
+
+// A WHITESPACE-PREFIXED HARVESTED TITLE MUST STILL READ AS NAMED, end to end.
+//
+// This is the reported symptom rather than the mechanism, and it is asserted through
+// sessionHasTitle on purpose: the cap tests above check the string, and this one checks the
+// CONSEQUENCE. sessionHasTitle gates all four backoff predicates (untitledSettled, untitledFresh,
+// countUntitled, harvestNamedSomething), so a title emptied by the cap does not merely render blank
+// — it zeroes untitledMisses and re-harvests ~/.claude every ~3 minutes for the life of the process,
+// on a session the harvest has ALREADY successfully named. That is the cost this file documents as
+// the price of an unnamable session, billed to a named one.
+//
+// The lengths bracket the old failure curve: at 40 leading spaces the old code kept 50 runes, at 79
+// it kept exactly "m", and at 80 and beyond it returned "". All of them must now read as named.
+func TestSessionsPane_WhitespacePrefixedHarvestStillReadsAsNamed(t *testing.T) {
+	for _, ws := range []struct{ name, r string }{
+		{"space", " "},
+		{"no-break space", " "},
+		{"ideographic space", "　"},
+	} {
+		for _, n := range []int{40, claude.MaxTitleLen - 1, claude.MaxTitleLen, claude.MaxTitleLen + 5, 500} {
+			m := newTitleModel(t, map[string]SessionMetadata{
+				"s1": {Title: strings.Repeat(ws.r, n) + "my-project"},
+			}, "s1")
+
+			if got := m.sessionTitle("s1"); titleIsBlank(got) {
+				t.Errorf("%s x%d: sessionTitle = %q, blank — the harvest named this session", ws.name, n, got)
+			}
+			if !m.sessionHasTitle("s1") {
+				t.Errorf("%s x%d: sessionHasTitle = false for a named session; this restarts the permanent re-harvest", ws.name, n)
+			}
+			// The name itself must survive, not just some non-blank remnant. The old code's
+			// 79-space case kept "m", which is non-blank and useless.
+			if got := m.sessionTitle("s1"); got != "my-project" {
+				t.Errorf("%s x%d: sessionTitle = %q, want the name with its padding trimmed", ws.name, n, got)
+			}
+		}
+	}
+}
+
+// THE WALK IS BOUNDED BY ONE CLUSTER, not by the title — the claim the old comment got wrong.
+//
+// The superseded bound was "at most one step for marks and ZWJ, because a mark cannot follow a
+// mark". Marks do follow marks, so the real bound has to come from somewhere else: clusterStart
+// stops at the first rune that does not bind, so the work and the loss are both proportional to the
+// ONE cluster straddling the cut.
+//
+// Growing that cluster from 5 marks to 2000 must not move the cut, and marks parked far past the cut
+// must not move it either. An expected-length assertion is the point here rather than an invariant:
+// the defect this replaces was measurable only as "how much did it lose", and 2000 marks losing the
+// same 1 rune as 5 is what says the walk terminates at the base instead of running through it.
+func TestSessionsPane_CapWalkIsBoundedByOneCluster(t *testing.T) {
+	const acute = "\u0301"
+
+	// A cluster straddling the cut: 79 plain runes, then a base at 79 carrying every mark. The only
+	// boundary at or before the cut is 79, so that is where it must land, for any run length.
+	for _, marks := range []int{5, 40, 200, 2000} {
+		in := strings.Repeat("a", 79) + "e" + strings.Repeat(acute, marks) + "tail"
+		got := capTitleRunes(in)
+		if want := strings.Repeat("a", 79); got != want {
+			t.Errorf("straddling cluster with %d marks: got %d runes, want the 79 before the base",
+				marks, utf8.RuneCountInString(got))
+		}
+	}
+	// Marks far PAST the cut are not the cut's business at all: index 80 sits inside a run of plain
+	// letters, which is already a boundary, so nothing should be walked back.
+	for _, marks := range []int{2, 200, 2000} {
+		in := strings.Repeat("a", 100) + strings.Repeat(acute, marks)
+		if got := utf8.RuneCountInString(capTitleRunes(in)); got != claude.MaxTitleLen {
+			t.Errorf("trailing %d marks: got %d runes, want the full %d — the cut is on a boundary already",
+				marks, got, claude.MaxTitleLen)
+		}
+	}
+	// THE WORST CASE IS THE CUT, NOT THE TITLE, and this is the case a reviewer read the doc as
+	// denying. A cluster degenerate from index 0 has no boundary anywhere, so the scan runs the whole
+	// way back — but that is MaxTitleLen steps and not len(title) steps, so growing the title 20x
+	// past the cut must not cost anything. Asserted through clusterStart directly, because
+	// capTitleRunes' blunt-cut fallback returns the same answer either way and would hide it.
+	for _, marks := range []int{100, 2000} {
+		r := []rune("a" + strings.Repeat(acute, marks))
+		if got := clusterStart(r, claude.MaxTitleLen); got != 0 {
+			t.Errorf("degenerate cluster with %d marks: clusterStart = %d, want 0 — every rune binds", marks, got)
+		}
+	}
+}
+
+// clusterStart MUST NOT PANIC WHEN THE CUT IS PAST THE LAST RUNE.
+//
+// clusterStart([]rune("abc"), 3) indexed r[3] and panicked with "index out of range [3] with length
+// 3". It was safe in production only because capTitleRunes' early return guarantees len(r) >
+// MaxTitleLen before it ever calls — a coupling two functions apart that no comment stated and no
+// test pinned, while bindsToPrevious' own doc invites other callers in this package. The smallest
+// fixture anywhere in this file is 89 runes, so nothing came close to it.
+//
+// cut == len(r) means "the cut is past the last rune": r[cut] does not exist, nothing can be
+// orphaned, and the answer is cut itself. Short strings are checked at their own length rather than
+// at MaxTitleLen so the boundary is the SUBJECT of the test and not incidental to it.
+func TestSessionsPane_ClusterStartHandlesACutAtTheEnd(t *testing.T) {
+	const acute = "́"
+	for _, in := range []string{"abc", "", "a", strings.Repeat("a", claude.MaxTitleLen), "e" + acute} {
+		r := []rune(in)
+		got := clusterStart(r, len(r))
+		if got != len(r) {
+			t.Errorf("clusterStart(%q, %d) = %d, want %d — a cut past the last rune orphans nothing",
+				in, len(r), got, len(r))
+		}
+	}
+	// The one length that used to be load-bearing: exactly MaxTitleLen + 1 runes is the shortest
+	// string capTitleRunes will cut, so it is the shortest slice clusterStart has ever been handed.
+	// A test at 89 runes cannot tell whether the bound is len(r) or something larger.
+	r := []rune(strings.Repeat("a", claude.MaxTitleLen+1))
+	if got := clusterStart(r, claude.MaxTitleLen); got != claude.MaxTitleLen {
+		t.Errorf("clusterStart at the shortest cuttable length = %d, want %d", got, claude.MaxTitleLen)
+	}
+}
+
+// Harvest wins when both sources name the session.
+//
+// A fixed precedence, not a judgement about which string is better — see sessionTitleFor. Neither
+// side is the "stable" one: the harvest is LAST-wins (core/observe/claude, every tier) and the
+// served title is FIRST-wins, so they disagree about which turn should name a session rather than
+// one of them being steadier. Asserted at the cell AND the header, because they reach the fallback
+// by different routes (the row loop carries the summary; the header looks it up).
+func TestSessionsPane_HarvestBeatsServedTitle(t *testing.T) {
+	m := newServedTitleModel(t,
+		map[string]SessionMetadata{"s1": {Title: "harvested name"}},
+		map[string]string{"s1": "served name"},
+		"s1")
+	m.rebuildSessionsTable()
+
+	if got := sessionsCell(t, m, titleRow(t, m, "s1"), "TITLE"); got != "harvested name" {
+		t.Errorf("TITLE = %q, want the harvested title to win", got)
+	}
+	if got := m.sessionLabel("s1"); got != "harvested name (s1)" {
+		t.Errorf("sessionLabel = %q, want the harvested title to win", got)
+	}
+}
+
+// HARVEST WINS EVEN WHEN THE CAP MANGLES THE HARVESTED TITLE, because precedence is a question about
+// the harvest and not about the display bound.
+//
+// sessionTitleFor used to ask whether m.sessionTitle(id) — sanitised AND CAPPED — was blank. So every
+// route by which the cap could blank a non-blank harvested title ALSO silently inverted the
+// documented precedence: with the cap trimming after its cut, sessionTitleFor(85 spaces + "real",
+// "served-name") returned "served-name". That is worse than the blank cell it replaced. An operator
+// picks a row by its name before acting on it, and CLAUDE.md, cmd/abctl/README.md and
+// core/session/store.go all tell them the harvest is what they are looking at.
+//
+// NOT A MUTATION GATE, and saying so is the honest version of this test. Reverting the guard to
+// !titleIsBlank(m.sessionTitle(id)) leaves the whole suite green — verified by running it. It has to:
+// the guard only behaves differently when the cap can blank a non-blank title, and that is exactly
+// what the whitespace fix and the blunt-cut fallback between them removed. A search over the
+// degenerate shapes this file knows — combining marks, ZWJ, BOM, word joiner, NBSP, ideographic
+// space, lone regional indicators, Thai vowel signs, at five lengths around the cap, with and
+// without a real suffix — found ZERO inputs that sanitise non-blank and cap to blank. With no such
+// input there is no observable difference, so no black-box test can pin the structure.
+//
+// It is kept anyway, for the two things it does do: it pins the OUTCOME (the measured inversion
+// string now resolves to the harvested title, at the cell and the header), and it is where the next
+// person who reintroduces a cap-blanking route will find out what else breaks. The structural form
+// of the guard is defence for when that search stops being exhaustive — a display bound should not
+// be able to reach into a precedence decision at all — and its justification is the argument in
+// sessionTitleFor's doc, not a failing assertion here.
+func TestSessionsPane_HarvestWinsEvenWhenTheCapShortensIt(t *testing.T) {
+	const acute = "́"
+	for _, tc := range []struct {
+		name      string
+		harvested string
+	}{
+		// The measured inversion: leading whitespace long enough to consume the whole budget.
+		{"long space prefix", strings.Repeat(" ", claude.MaxTitleLen+5) + "real"},
+		// A degenerate cluster from index 0, where the cap has no boundary to cut on and falls
+		// back to a blunt cut. If that fallback is ever removed, the served title takes over a
+		// named row rather than the cell merely going blank — this pins both consequences at once.
+		{"nothing but combining marks", strings.Repeat(acute, claude.MaxTitleLen+20)},
+	} {
+		m := newServedTitleModel(t,
+			map[string]SessionMetadata{"s1": {Title: tc.harvested}},
+			map[string]string{"s1": "served-name"},
+			"s1")
+		m.rebuildSessionsTable()
+
+		// Asserted at the accessor AND both display paths, because the served title reaches them by
+		// different routes — the row loop carries the summary, sessionLabel looks it up — and the
+		// inversion showed the proxy's name in all three.
+		if got := m.sessionTitleFor("s1", "served-name"); got == "served-name" {
+			t.Errorf("%s: sessionTitleFor returned the SERVED title, inverting the documented harvest-wins precedence", tc.name)
+		} else if titleIsBlank(got) {
+			t.Errorf("%s: sessionTitleFor = %q, blank — the harvested title named this session", tc.name, got)
+		}
+		if got := sessionsCell(t, m, titleRow(t, m, "s1"), "TITLE"); strings.Contains(got, "served-name") {
+			t.Errorf("%s: TITLE cell = %q, want the harvested name", tc.name, got)
+		}
+		if got := m.sessionLabel("s1"); strings.Contains(got, "served-name") {
+			t.Errorf("%s: sessionLabel = %q, want the harvested name", tc.name, got)
+		}
+	}
+}
+
+// A BLANK harvested title falls back; a title that RENDERS SOMETHING does not.
+//
+// The distinction is titleIsBlank's, not == "" — a harvested " " paints nothing, so falling back
+// fills nothing rather than overriding something. "\t" is the opposite case and the one a
+// simplification gets wrong: sanitizeLabel REPLACES it with U+FFFD rather than stripping it, so the
+// cell shows a visible glyph and the row is named. Falling back there would override a title that
+// is on screen.
+func TestSessionsPane_ServedTitleOnlyFillsWhatRendersBlank(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		harvested string
+		want      string
+	}{
+		{"empty", "", "served name"},
+		{"one space", " ", "served name"},
+		{"several spaces", "   ", "served name"},
+		{"tab renders a glyph", "\t", "�"},
+		{"newline renders a glyph", "\n", "�"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := newServedTitleModel(t,
+				map[string]SessionMetadata{"s1": {Title: tc.harvested}},
+				map[string]string{"s1": "served name"},
+				"s1")
+			// THROUGH THE FIXTURE, not a literal. Passing "served name" here instead read the
+			// same string the served map holds, so the assertion passed whether or not
+			// newServedTitleModel had wired Title onto the summary at all — leaving one test as
+			// the only gate on that wiring. sessionLabel resolves the served title by id, so
+			// going through it asserts the fixture and the accessor together.
+			if got := m.sessionTitleFor("s1", m.servedTitle("s1")); got != tc.want {
+				t.Errorf("sessionTitleFor(%q harvested) = %q, want %q", tc.harvested, got, tc.want)
+			}
+		})
+	}
+}
+
+// Neither source names it: the cell stays empty and the header stays a bare id.
+//
+// The pre-existing behaviour, pinned against the fallback having quietly introduced a placeholder.
+// "" is still the honest answer for a session nothing has named.
+func TestSessionsPane_NoTitleAnywhereRendersAsBefore(t *testing.T) {
+	m := newServedTitleModel(t,
+		map[string]SessionMetadata{"s1": {Title: " "}},
+		map[string]string{"s1": "  "},
+		"s1")
+	m.rebuildSessionsTable()
+
+	// ASSERTED EXACTLY, not through TrimSpace: trimming here would accept a cell of spaces, which is
+	// the precise defect titleIsBlank exists to prevent — a whitespace-only title reaching the screen
+	// while sessionLabel calls the same row unnamed.
+	if got := sessionsCell(t, m, titleRow(t, m, "s1"), "TITLE"); got != "" {
+		t.Errorf("TITLE = %q, want an empty cell when neither source names the session", got)
+	}
+	if got := m.sessionLabel("s1"); got != "s1" {
+		t.Errorf("sessionLabel = %q, want the bare id", got)
+	}
+}
+
+// A served title is SANITISED, exactly as a harvested one is.
+//
+// /v1/sessions is unauthenticated and the title is folded from caller-supplied event content, so the
+// CWE-150 reasoning behind sanitizeLabel applies to this string at least as much as to the file the
+// harvester wrote. An ESC recolours the pane; a newline splits the frame.
+func TestSessionsPane_ServedTitleIsSanitized(t *testing.T) {
+	// THROUGH servedTitle, not with the string handed in directly. Passing the hostile title as a
+	// literal tests sanitizeLabel and nothing else; resolving it from the summary the way the header
+	// does means this also fails if the lookup stops finding it.
+	const hostile = "before\x1b[31mafter\nnext"
+	m := newServedTitleModel(t, map[string]SessionMetadata{}, map[string]string{"s1": hostile}, "s1")
+
+	if served := m.servedTitle("s1"); served != hostile {
+		t.Fatalf("servedTitle = %q, want the fixture's title — the rest of this test is vacuous "+
+			"without it", served)
+	}
+	got := m.sessionTitleFor("s1", m.servedTitle("s1"))
+	for _, bad := range []string{"\x1b", "\n"} {
+		if strings.Contains(got, bad) {
+			t.Errorf("sessionTitleFor = %q, still carries %q", got, bad)
+		}
+	}
+	if !strings.Contains(got, "before") || !strings.Contains(got, "after") {
+		t.Errorf("sessionTitleFor = %q, want the text kept and only the control runes replaced", got)
+	}
+}
+
+// EVERY CONTROL CLASS IS REPLACED, including the ones abctl used to leave to the producer.
+//
+// THIS TEST REPLACES A CHARACTERIZATION. sanitizeLabel covered the BIDI overrides and isolates
+// (U+202A-202E, U+2066-2069) and stopped there, so the plain MARKS — U+200E LRM, U+200F RLM,
+// U+061C ALM — and the zero-widths passed through untouched. The test that used to sit here recorded
+// that as a deliberate reliance on core/session.sanitizeTitle stripping them upstream, and said in
+// its own doc that closing the gap should DELETE it rather than invert it. This is that deletion.
+//
+// WHY THE RELIANCE WAS WRONG. The comment it justified claimed the served path "does not rely on the
+// producer" — while the only thing keeping a mark out of the cell WAS the producer. /v1/sessions is
+// unauthenticated and operator-pointed, the proxy's normaliser is unexported in another module, and
+// this is the rune class whose entire function is to make the rendered order differ from the byte
+// order: "report\u202Egnp.exe" reads as something else on screen. A cross-module invariant is a poor
+// place to keep that, and pipeline.IsControlRune already named the full set.
+//
+// THE MARKS AND THE ZERO-WIDTHS ARE DIFFERENT ATTACKS, asserted together because one predicate now
+// covers both. A mark REORDERS what follows it and needs no matching pop, so one is enough. A
+// zero-width makes two distinct titles render identically, so a row can wear another session's name
+// while nothing addresses it by that name.
+//
+// U+FFFD RATHER THAN DROPPED, per sanitizeLabel's standing rule: tampering must be visible instead of
+// silently producing a plausible label.
+func TestSessionsPane_ServedTitleStripsEveryControlClass(t *testing.T) {
+	for _, tc := range []struct{ name, bad string }{
+		{"LRM U+200E", "\u200e"},
+		{"RLM U+200F", "\u200f"},
+		{"ALM U+061C", "\u061c"},
+		{"ZWSP U+200B", "\u200b"},
+		{"ZWNJ U+200C", "\u200c"},
+		{"ZWJ U+200D", "\u200d"},
+		{"WJ U+2060", "\u2060"},
+		{"BOM U+FEFF", "\ufeff"},
+		{"RLO U+202E", "\u202e"},
+		{"LRI U+2066", "\u2066"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// BUILT PER CASE AND RESOLVED THROUGH servedTitle, so this gates the lookup as well as
+			// the sanitiser. Handing sessionTitleFor a literal leaves it passing with servedTitle
+			// stubbed to "" — the header path would then be silently untested here.
+			title := "report" + tc.bad + "exe"
+			m := newServedTitleModel(t, map[string]SessionMetadata{}, map[string]string{"s1": title}, "s1")
+			if served := m.servedTitle("s1"); served != title {
+				t.Fatalf("servedTitle = %q, want the fixture's title", served)
+			}
+
+			got := m.sessionTitleFor("s1", m.servedTitle("s1"))
+			if strings.Contains(got, tc.bad) {
+				t.Errorf("sessionTitleFor = %q still carries %s — an unauthenticated API is not a "+
+					"place to rely on another module having stripped it", got, tc.name)
+			}
+			if !strings.Contains(got, "\ufffd") {
+				t.Errorf("sessionTitleFor = %q, want %s replaced by U+FFFD so tampering is visible, "+
+					"not dropped into a plausible-looking label", got, tc.name)
+			}
+			if !strings.Contains(got, "report") || !strings.Contains(got, "exe") {
+				t.Errorf("sessionTitleFor = %q, want the surrounding text kept", got)
+			}
+		})
+	}
+}
+
+// AND THE HARVESTED TITLE TOO, since both sources share one sanitiser.
+//
+// The widening was motivated by the served path, but sessionTitle reads a file on disk that anything
+// may have rewritten — LoadSessionMetadata applies no sanitisation of its own — so the same runes
+// arrive by that route. Asserting both is what keeps a future narrowing of sanitizeLabel from being
+// justified as "only the served path needed it".
+func TestSessionsPane_HarvestedTitleStripsBidiMarks(t *testing.T) {
+	m := newTitleModel(t, map[string]SessionMetadata{
+		"s1": {Title: "report\u200eexe"},
+	}, "s1")
+
+	if got := m.sessionTitle("s1"); strings.Contains(got, "\u200e") {
+		t.Errorf("sessionTitle = %q still carries U+200E LRM — the metadata file is not a trusted "+
+			"input either", got)
+	}
+}
+
+// A served title that looks like a path is truncated from the LEFT, like any other.
+//
+// The fallback feeds the existing cell, so it inherits looksLikePath and both truncation sides
+// rather than bypassing them. Cheap to assert and it pins that the fallback did not become a
+// second, unbounded rendering path.
+func TestSessionsPane_ServedPathTitleTruncatesFromTheLeft(t *testing.T) {
+	const long = "/Users/someone/src/cortex/.worktrees/servedtitle/authbridge"
+	m := newServedTitleModel(t, map[string]SessionMetadata{}, map[string]string{"s1": long}, "s1")
+	m.width = tableWidth(sessionsColumns())
+	m.rebuildSessionsTable()
+
+	got := sessionsCell(t, m, titleRow(t, m, "s1"), "TITLE")
+	if !strings.HasPrefix(got, "…") || !strings.HasSuffix(got, "authbridge") {
+		t.Errorf("TITLE = %q, want the cut front and the kept tail", got)
+	}
+	if n := lipgloss.Width(got); n > sessionsTitleWidth {
+		t.Errorf("TITLE is %d columns against a %d-column cell: %q", n, sessionsTitleWidth, got)
+	}
+}
+
+// A cached-only row shows no served title, and a live row beside it still shows its own.
+//
+// HONEST ABOUT ITS OWN REACH: this cannot fail on the "simplification" of having the cached-only
+// loop call m.servedTitle(id) itself — checked, the whole suite stays green. cachedOnlySessionIDs
+// skips every id in m.sessions, so servedTitle can only ever return "" there; the behavior is
+// guaranteed by that exclusion, not by this assertion. What the test does earn is the second
+// check — that a cached-only row in the table does not disturb the live row's title — plus a
+// worked example of the two row kinds side by side. Kept for that, not as a mutation gate.
+func TestSessionsPane_CachedOnlyRowTakesNoServedTitle(t *testing.T) {
+	m := newServedTitleModel(t,
+		map[string]SessionMetadata{},
+		map[string]string{"live": "a live session's name"},
+		"live")
+	m.events["gone"] = []pipeline.SessionEvent{{Host: "example.test"}}
+	m.rebuildSessionsTable()
+
+	if got := sessionsCell(t, m, titleRow(t, m, "gone"), "TITLE"); got != "" {
+		t.Errorf("cached-only TITLE = %q, want \"\" — the server lists no summary for it", got)
+	}
+	if got := sessionsCell(t, m, titleRow(t, m, "live"), "TITLE"); got != "a live session's name" {
+		t.Errorf("live TITLE = %q, want its own served title", got)
+	}
+}
+
+// THE REGRESSION GUARD: a served title must NOT satisfy the harvest-backoff predicates.
+//
+// Every predicate in session_metadata.go judges "unnamed" through sessionTitle, and that is
+// deliberate — a server-titled row has to keep reading as unnamed so the harvest keeps looking for
+// the harvested title. Fold the fallback into sessionTitle and the row reads as named,
+// untitledMisses zeroes, and the re-harvest stops for good.
+//
+// BOTH SIDES OF THE BACKOFF, because they fail differently and only one used to be asserted here.
+// The SCORING side (countUntitled, harvestNamedSomething) records what a harvest achieved; the GATE
+// side (untitledSettled, untitledFresh) decides whether one starts at all. Repointing either gate
+// predicate at sessionTitleFor survives every other test in this package — and untitledSettled is
+// the exact regression this test is named for, since a served-only row that never opens the gate
+// never gets re-harvested no matter what the scoring would have said.
+//
+// This is the only test that fails on any of those mutations: every display test above still
+// passes, because the cell is correct either way. That is exactly why it is here.
+func TestSessionMetadata_ServedTitleDoesNotSatisfyTheHarvestBackoff(t *testing.T) {
+	m := newServedTitleModel(t, map[string]SessionMetadata{}, map[string]string{"s1": "served name"}, "s1")
+
+	if m.sessionHasTitle("s1") {
+		t.Error("sessionHasTitle is true for a row only the SERVER named: the harvest will stop")
+	}
+	if n, _ := m.countUntitled(); len(n) != 1 {
+		t.Errorf("countUntitled counted %d untitled rows, want 1 — a served title is not a harvested one", len(n))
+	}
+	// And the harvest can still report progress on it, which is what keeps the backoff from
+	// capping out on a row it could in fact name.
+	if !m.harvestNamedSomething(map[string]SessionMetadata{"s1": {Title: "harvested at last"}}) {
+		t.Error("harvestNamedSomething is false for a served-only row the harvest just named")
+	}
+	// The gate, which is the half that decides whether a harvest runs. Aged past the settle delay
+	// so the only thing left that can hold the gate shut is the title question.
+	now := time.Now()
+	m.sessions[0].UpdatedAt = now.Add(-untitledSettleDelay)
+	if !m.untitledSettled(now) {
+		t.Error("untitledSettled is false for a settled served-only row: no harvest will ever start")
+	}
+	if !m.untitledFresh() {
+		t.Error("untitledFresh is false for an uncounted served-only row")
+	}
+	// The display, meanwhile, was never blank — which is the point of the whole change.
+	if got := m.sessionTitleFor("s1", "served name"); got != "served name" {
+		t.Errorf("sessionTitleFor = %q, want the served title on screen throughout", got)
+	}
+}
+
+// combiningMarkRune is "e" followed by U+0301 COMBINING ACUTE ACCENT — a DECOMPOSED "e-acute",
+// two runes that render as one glyph.
+//
+// A NAMED CONSTANT BECAUSE THE BYTES ARE THE POINT, and a literal in the test body does not survive
+// its own file being edited. Both cap tests need a rune that makes zeroWidthFree false, which is
+// what selects the quadratic truncation path an uncapped title would take; a precomposed U+00E9
+// "é" is a single Mn-free rune and takes the FAST path, so a fixture that gets normalised — by an
+// editor, a formatter, a copy through a tool that applies NFC — silently stops testing anything
+// while still passing. That is the failure mode assertFixtureIsSlowPath exists to catch.
+const combiningMarkRune = "e\u0301"
+
+// assertFixtureIsSlowPath fails when a fixture no longer exercises the cost a cap prevents.
+//
+// SHARED BY BOTH CAP TESTS, because the hazard is identical on both sides and only one of them used
+// to check: the served test guarded zeroWidthFree inline and the harvested one guarded nothing, so
+// an NFC normalisation of the harvested fixture would have gone unnoticed. Asserting the rune count
+// too catches the other half — a "é" that normalised to one rune also halves the fixture's length,
+// which could bring it under the cap and make the test vacuous rather than merely fast.
+func assertFixtureIsSlowPath(t *testing.T, s string) {
+	t.Helper()
+	if zeroWidthFree(s) {
+		t.Fatalf("fixture takes the truncation FAST path — it no longer exercises the cost a cap "+
+			"prevents. Most likely %q was normalised to a precomposed form; it must stay decomposed "+
+			"(a base letter plus a combining mark)", combiningMarkRune)
+	}
+	if n := len([]rune(s)); n <= claude.MaxTitleLen {
+		t.Fatalf("fixture is %d runes, at or under the %d-rune cap — it cannot show that a cap "+
+			"applies", n, claude.MaxTitleLen)
+	}
+}
+
+// THE SERVED TITLE IS CAPPED CLIENT-SIDE, and nothing upstream of abctl is what guarantees it.
+//
+// The pairing this closes: TestTitleCap_IsSafeOnlyBecauseTheRendererRemeasures covers the HARVESTED
+// title's cap against claude.MaxTitleLen, and the served title never touches that path. The proxy has
+// its own cap, but it is unexported in another module on purpose, /v1/sessions is unauthenticated, and
+// abctl is pointed at whatever host an operator names — so "the producer caps it" is not an assertion
+// this side can make.
+//
+// WHY A LENGTH AND NOT A DEADLINE. What an uncapped title costs is not a malformed cell — truncLeft
+// and truncRight bound their output regardless — but the quadratic search inside them, whose fast path
+// any combining mark disables and which a served title keeps its marks through. Measured on one call,
+// 20003 runes took 4.50s and 200003 did not finish in two minutes, on the UI goroutine, per row per
+// rebuild. A timing assertion would encode a machine's speed and flake in CI, so this pins the INPUT
+// bound that makes the cost flat instead.
+//
+// THE FIXTURE CARRIES COMBINING MARKS, which is what makes it the real shape rather than a long
+// string: an ASCII title of the same length takes the fast path and would pass a weaker cap.
+func TestSessionsPane_ServedTitleIsCappedBeforeTruncation(t *testing.T) {
+	// Every other rune is U+0301, so zeroWidthFree is false and the slow path is what a missing cap
+	// would hand this to.
+	served := strings.Repeat(combiningMarkRune, 5000)
+	assertFixtureIsSlowPath(t, served)
+
+	m := newServedTitleModel(t, map[string]SessionMetadata{}, map[string]string{"s1": served}, "s1")
+
+	got := m.sessionTitleFor("s1", served)
+	// EXACTLY THE CAP, NOT "AT MOST" IT. A `>` assertion passed for a BYTE-based cap too: this
+	// fixture is two bytes per rune, so cutting at 80 BYTES leaves 40 runes, which satisfies any
+	// at-most bound while silently halving the budget a multi-byte title gets. The cap is specified
+	// in runes and this is what pins that. combiningMarkRune cuts on a clean boundary at index 80 —
+	// every even index is the base letter — so the cluster walk does not move the cut here; the
+	// dedicated test below covers the case where it does.
+	if n := len([]rune(got)); n != claude.MaxTitleLen {
+		t.Errorf("sessionTitleFor returned %d runes, want exactly %d — a byte-based cap satisfies "+
+			"an at-most bound while halving a multi-byte title", n, claude.MaxTitleLen)
+	}
+
+	// AND THROUGH THE HEADER TOO, which reaches the same accessor by id alone. Without this, a cap
+	// applied only in the cell's own call path would pass.
+	// EXACTLY, not at-most, for the reason argued five lines above: an at-most bound is satisfied by a
+	// byte cap that halves a multi-byte title's rune budget.
+	if n, want := len([]rune(m.sessionLabel("s1"))), claude.MaxTitleLen+len(" (s1)"); n != want {
+		t.Errorf("sessionLabel is %d runes, want exactly %d — the served title capped before it is "+
+			"labelled", n, want)
+	}
+}
+
+// THE HARVESTED TITLE IS CAPPED AT LOAD TOO, not only by the harvester that wrote it.
+//
+// The asymmetry this closes: the served title is capped in sessionTitleFor, and the harvested one
+// was capped only upstream in core/observe/claude. LoadSessionMetadata re-reads that file and
+// applies no cap, so a rewritten or hand-edited ~/.cortex/session-metadata.json bypassed the
+// guarantee entirely and reached the same quadratic truncation the served cap exists to prevent.
+// Measured before the cap: one rebuildSessionsTable took 1.11s on a 10003-rune title.
+//
+// THROUGH sessionTitle, which is where every consumer reads it — the cell, the headers, and
+// sessionHasTitle. Capping at the accessor rather than at load is what makes that one line cover
+// all of them.
+//
+// AND THE BACKOFF VERDICT MUST NOT MOVE, which is where the first version of this cap went wrong.
+// sessionHasTitle reads the same accessor, so a clip that blanks a title flips a row from named to
+// unnamed and restarts the ~3-minute ~/.claude re-harvest permanently — the cost this package
+// documents as the price of an UNNAMABLE session, charged to one that has a name.
+//
+// THE WHITESPACE-PREFIX CASE IS THE WHOLE POINT, AND THIS TEST GOT IT BACKWARDS TWICE.
+//
+// It first asserted "truncation cannot turn a non-blank title blank" using a leading-"/" path
+// fixture, where no prefix is whitespace — so it could not exercise the claim it made and passed for
+// the wrong reason. The whitespace fixture was then added, and the expectation written down as
+// wantNamed: FALSE for a title reading 80 spaces + "real name" — labelled "the correctness case"
+// while the assertion five lines below it called an unnamed verdict the thing that "restarts the
+// ~3-minute re-harvest forever". The test encoded the defect and then explained why the defect was
+// bad.
+//
+// It is wantNamed: true now, because "real name" is a name and nothing about padding changes that.
+// capTitleRunes trims BEFORE measuring, so leading whitespace no longer spends the rune budget and
+// there is no window for it to fill. See sessionTitle's doc for the measured curve this replaces.
+func TestSessionsPane_HarvestedTitleIsCappedAtLoad(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		title     string
+		wantNamed bool
+		// slowPath marks the over-long fixture whose combining marks are what select the quadratic
+		// truncation path. Only that case can degrade silently under NFC normalisation, so only it
+		// is guarded — the whitespace cases are short by design and would fail the guard's own
+		// length check.
+		slowPath bool
+	}{
+		{
+			// The performance case: over-long, with a combining mark so the truncation fast path
+			// is off.
+			name:      "over-long path with combining marks",
+			title:     "/a/" + strings.Repeat(combiningMarkRune, 5000),
+			wantNamed: true,
+			slowPath:  true,
+		},
+		{
+			// The correctness case: real text begins after where a naive cut would land, so a cap
+			// that measured before trimming kept only spaces and then trimmed them to "".
+			name:      "whitespace fills the whole clip window",
+			title:     strings.Repeat(" ", claude.MaxTitleLen) + "real name",
+			wantNamed: true,
+		},
+		{
+			// Far past it, so no "off by a few runes" fix can pass this by accident.
+			name:      "whitespace far past the clip window",
+			title:     strings.Repeat(" ", 500) + "real name",
+			wantNamed: true,
+		},
+		{
+			// And the one that must STILL read as named: whitespace prefix, text inside the window.
+			name:      "whitespace prefix but text within the window",
+			title:     strings.Repeat(" ", claude.MaxTitleLen-4) + "real name",
+			wantNamed: true,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.slowPath {
+				assertFixtureIsSlowPath(t, tc.title)
+			}
+			m := newTitleModel(t, map[string]SessionMetadata{"s1": {Title: tc.title}}, "s1")
+
+			got := m.sessionTitle("s1")
+			if n := len([]rune(got)); n > claude.MaxTitleLen {
+				t.Errorf("sessionTitle returned %d runes, want at most %d — an uncapped harvested "+
+					"title reaches the quadratic truncation path on the UI goroutine",
+					n, claude.MaxTitleLen)
+			}
+			// NO LEADING OR TRAILING WHITESPACE SURVIVES THE CAP, which is what makes the verdict
+			// below deliberate rather than incidental. The cap trims on both sides of the cut —
+			// before, so padding does not spend the budget, and after, to drop whitespace the cut
+			// newly exposed.
+			if got != strings.TrimSpace(got) {
+				t.Errorf("sessionTitle = %q, want it trimmed — untrimmed whitespace "+
+					"is what flips a named row to unnamed", got)
+			}
+			if named := m.sessionHasTitle("s1"); named != tc.wantNamed {
+				t.Errorf("sessionHasTitle = %v, want %v — a wrong verdict here either restarts "+
+					"the ~3-minute re-harvest forever or stops it on a session with no name",
+					named, tc.wantNamed)
+			}
+		})
+	}
+}
+
+// THE CAP CUTS ON A GRAPHEME BOUNDARY, never inside a cluster.
+//
+// WHY THIS IS NOT PEDANTRY. clipTitle upstream (core/observe/claude) does a plain rune cut and says
+// in its own doc that this is safe ONLY BECAUSE normalizeTitle ran first and removed every character
+// that binds to its neighbour. Neither string capTitleRunes sees has been through that: the harvested
+// title is re-read from a file that may have been rewritten, and the served title comes from
+// core/session's sanitizeTitle, whose doc says it KEEPS combining marks "so café survives". The first
+// version of this cap mirrored clipTitle's TrimSpace while silently dropping its precondition.
+//
+// WHAT A BLIND CUT PRODUCES is a title nobody wrote: an accent rebound to whatever letter happens to
+// land last, half of a ZWJ emoji sequence, or one regional indicator of a two-letter flag — which
+// renders as a bare letter. On a column an operator reads to pick a row before acting on it.
+//
+// EACH CASE PUTS THE BINDER EXACTLY AT THE CUT, which is the only index where the walk-back matters;
+// a fixture with clusters merely present would pass with no walk at all.
+func TestSessionsPane_CapCutsOnAClusterBoundary(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// binder is placed AT index claude.MaxTitleLen, so a cut that does not walk back would
+		// orphan it from the base rune at MaxTitleLen-1.
+		binder string
+	}{
+		{"combining acute U+0301 (Mn)", "\u0301"},
+		{"variation selector U+FE0F (Mn)", "\ufe0f"},
+		{"enclosing circle U+20DD (Me)", "\u20dd"},
+		{"Devanagari vowel sign U+093E (Mc)", "\u093e"},
+		{"zero-width joiner U+200D", "\u200d"},
+		// NOT A LONE REGIONAL INDICATOR. One RI preceded by ordinary text STARTS a flag rather than
+		// completing one, so the cut before it is already on a boundary and must NOT walk back —
+		// asserting otherwise is what pinned the walk-to-zero defect in place. RI pairing gets its
+		// own test below, where the run length is what decides.
+		//
+		// NOT U+02B0 AND FRIENDS. Lm modifier LETTERS look like they belong in this list and do
+		// not: Unicode's Grapheme_Extend property excludes them, and Lm also contains runes that
+		// legitimately START a cluster (U+02BB ʻokina is a letter in Hawaiian orthography). Treating
+		// Lm as a binder would walk the cut back off an ordinary word character. The categories that
+		// extend a cluster are Mn/Me/Mc, and the two sequence-builders below are the special cases
+		// that carry no category marking them.
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			// "a" * (MaxTitleLen-1) + a base rune + the binder + filler past the cap.
+			title := strings.Repeat("a", claude.MaxTitleLen-1) + "e" + tc.binder +
+				strings.Repeat("z", 50)
+			r := []rune(title)
+			if len(r) <= claude.MaxTitleLen {
+				t.Fatalf("fixture is %d runes, must exceed the %d-rune cap", len(r), claude.MaxTitleLen)
+			}
+			if r[claude.MaxTitleLen] != []rune(tc.binder)[0] {
+				t.Fatalf("fixture misaligned: rune at the cut is %U, want the binder %U",
+					r[claude.MaxTitleLen], []rune(tc.binder)[0])
+			}
+
+			got := capTitleRunes(title)
+
+			// THE BINDER MUST NOT LEAD THE RESULT'S TAIL. Concretely: the cut must not have landed
+			// between the base rune and its binder, which is what leaves the binder as the first
+			// rune of nothing.
+			gr := []rune(got)
+			if len(gr) == 0 {
+				t.Fatalf("capTitleRunes returned empty for %q", title)
+			}
+			if last := gr[len(gr)-1]; last == []rune(tc.binder)[0] {
+				t.Errorf("capTitleRunes = ...%U, want the cut walked BACK off the binder so the "+
+					"cluster is dropped whole rather than severed", last)
+			}
+			// AND THE BASE RUNE GOES WITH IT. Keeping "e" while dropping its accent is the same
+			// defect from the other side: the glyph changes into one the title never contained.
+			if strings.HasSuffix(got, "e") {
+				t.Errorf("capTitleRunes = %q, want the base rune dropped alongside its binder — "+
+					"keeping it silently changes the final glyph", got)
+			}
+			if n := len(gr); n > claude.MaxTitleLen {
+				t.Errorf("capTitleRunes returned %d runes, want at most %d", n, claude.MaxTitleLen)
+			}
+		})
+	}
+}
+
+// REGIONAL INDICATORS PAIR, so the walk must count the run rather than treat each one as a binder.
+//
+// THE DEFECT THIS PINS: bindsToPrevious answers true for every RI, and the walk used to act on that
+// answer directly, so a run of them had no even-parity rune to stop at and the cut slid to index 0.
+// 41 consecutive flags capped to "" and "a"*70 + 10 flags lost 11 runes, against a doc promising the
+// over-walk costs "a rune or two".
+//
+// WHY AN EMPTIED TITLE IS NOT COSMETIC, and why this test sits with the backoff tests in spirit:
+// sessionHasTitle reads sessionTitle, which caps. A harvested flag title that caps to "" reads as
+// UNNAMED, zeroing untitledMisses and restarting the permanent ~3-minute re-harvest for a row the
+// harvest had already named. f5a0a615 fixed that exact failure for whitespace-only titles; this is
+// the same failure reached through the cap instead of through the trim.
+//
+// THE PARITY IS WHAT IS ASSERTED, not a single index: an even-length run before the cut means the
+// rune at the cut starts a fresh flag and the cut is already on a boundary, while an odd-length run
+// means it completes one and the cut must step back exactly once.
+func TestSessionsPane_CapWalksBackOverAtMostOneRegionalIndicator(t *testing.T) {
+	const flag = "\U0001F1FA\U0001F1F8" // two RIs
+
+	t.Run("a title of nothing but flags keeps its cap", func(t *testing.T) {
+		// 41 flags = 82 RIs, every one of them a binder by category. A walk that does not pair
+		// returns "" here.
+		title := strings.Repeat(flag, 41)
+		got := capTitleRunes(title)
+		n := utf8.RuneCountInString(got)
+		if n == 0 {
+			t.Fatalf("capTitleRunes emptied a %d-rune flag title — the walk ran to index 0 instead "+
+				"of stopping at a pair boundary, which flips the row to unnamed and restarts the "+
+				"re-harvest", utf8.RuneCountInString(title))
+		}
+		// The cap is even and flags are two runes wide, so the whole budget is usable here.
+		if n != claude.MaxTitleLen {
+			t.Errorf("capTitleRunes returned %d runes, want exactly %d", n, claude.MaxTitleLen)
+		}
+		// AND NO HALF FLAG AT THE TAIL: an odd count would mean a severed pair.
+		if n%2 != 0 {
+			t.Errorf("capTitleRunes returned an odd %d runes, so the tail is half a flag", n)
+		}
+	})
+
+	t.Run("text then flags loses at most one rune to the walk", func(t *testing.T) {
+		// The cut at index 80 lands on the FIRST RI of the sixth flag: the run before it is 10 runes
+		// (five whole flags), which is even, so it starts a pair and the cut needs no walk at all.
+		title := strings.Repeat("a", 70) + strings.Repeat(flag, 10)
+		got := capTitleRunes(title)
+		if n := utf8.RuneCountInString(got); n != claude.MaxTitleLen {
+			t.Errorf("capTitleRunes returned %d runes, want %d — the walk crossed a pair boundary "+
+				"it had no reason to cross", n, claude.MaxTitleLen)
+		}
+	})
+
+	t.Run("an odd run steps back exactly once", func(t *testing.T) {
+		// 71 letters shifts the parity: the cut now lands on the SECOND RI of a flag, so the walk
+		// must step back one rune and no further.
+		title := strings.Repeat("a", 71) + strings.Repeat(flag, 10)
+		got := capTitleRunes(title)
+		n := utf8.RuneCountInString(got)
+		if n != claude.MaxTitleLen-1 {
+			t.Errorf("capTitleRunes returned %d runes, want %d — exactly one step back off the "+
+				"second half of a flag", n, claude.MaxTitleLen-1)
+		}
+		// DELIBERATELY NO "the tail is not an RI" ASSERTION. It is the tempting one and it is wrong:
+		// after stepping back, the tail here IS a regional indicator — the FIRST of a pair, which is
+		// a legal boundary. A title may end where a flag was about to begin. Only an odd-parity RI
+		// at the cut is a severed pair, and the length assertion above is what pins that.
+		if n%2 == 0 {
+			t.Errorf("capTitleRunes returned %d runes; this fixture's cut has odd parity, so an even "+
+				"result means the walk moved further than the one step the pairing calls for", n)
+		}
+	})
+}
+
+// A HARVESTED FLAG TITLE STILL READS AS NAMED, which is the consequence the cap must not break.
+//
+// The display tests above assert what the cell shows; this asserts what the BACKOFF concludes, and
+// they are different questions with different failure modes. sessionHasTitle goes through
+// sessionTitle, which caps — so any cap bug that empties a title silently converts "named" into
+// "unnamed", zeroes untitledMisses and restarts a ~3-minute re-harvest that can never succeed. The
+// row keeps rendering whatever the fallback finds, so nothing on screen says anything is wrong.
+//
+// THIS IS THE SECOND ROUTE TO ONE FAILURE. f5a0a615 closed the first: a whitespace-prefixed title
+// that TrimSpace emptied. The cap is the other, and a test that only checks the rendered cell cannot
+// tell them apart.
+func TestSessionsPane_FlagOnlyHarvestedTitleStaysNamed(t *testing.T) {
+	flags := strings.Repeat("\U0001F1FA\U0001F1F8", 41)
+	m := newTitleModel(t, map[string]SessionMetadata{"s1": {Title: flags}}, "s1")
+
+	if got := m.sessionTitle("s1"); got == "" {
+		t.Fatalf("sessionTitle emptied a flag-only harvested title")
+	}
+	if !m.sessionHasTitle("s1") {
+		t.Errorf("sessionHasTitle = false for a session the harvest DID name, so the row will "+
+			"re-harvest forever; sessionTitle = %q", m.sessionTitle("s1"))
+	}
+	if counted, _ := m.countUntitled(); len(counted) != 0 {
+		t.Errorf("countUntitled counted %d rows, want 0 — a named row must not be a miss", len(counted))
+	}
+}
+
+// THE Lm/Sk EXCLUSION IS A GATE, not just a paragraph in bindsToPrevious's doc.
+//
+// Adding unicode.Lm and unicode.Sk to that predicate is the single most plausible "improvement" a
+// future reader can make to it — they are modifier categories, they look like the mark categories,
+// and until this test existed the whole suite stayed green while every title ending in one of them
+// silently lost a character. U+02BB ʻokina is a LETTER in Hawaiian orthography, so walking back off
+// it truncates an ordinary word.
+//
+// ASSERTED AT THE PREDICATE, deliberately, rather than only through capTitleRunes: a cap-level test
+// would need a fixture placing the rune exactly at index MaxTitleLen, and the point is the category
+// judgement itself.
+func TestSessionsPane_ModifierLettersDoNotBind(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		r    rune
+	}{
+		{"U+02BB okina (Lm) — starts a cluster in Hawaiian", '\u02bb'},
+		{"U+02B0 modifier small h (Lm)", '\u02b0'},
+		{"U+02C7 caron (Sk) — a standalone symbol", '\u02c7'},
+		{"U+02D0 triangular colon (Lm)", '\u02d0'},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if bindsToPrevious(tc.r) {
+				t.Errorf("bindsToPrevious(%U) = true, want false: Grapheme_Extend excludes modifier "+
+					"letters and symbols, and Lm holds runes that legitimately START a cluster",
+					tc.r)
+			}
+		})
+	}
+
+	// AND AT THE CAP, for the one that is a real word character: a title ending in ʻokina keeps it.
+	title := strings.Repeat("a", claude.MaxTitleLen-1) + "\u02bb" + strings.Repeat("z", 20)
+	got := capTitleRunes(title)
+	if n := utf8.RuneCountInString(got); n != claude.MaxTitleLen {
+		t.Errorf("capTitleRunes returned %d runes, want %d — the walk crossed a modifier letter",
+			n, claude.MaxTitleLen)
+	}
+	if !strings.HasSuffix(got, "\u02bb") {
+		t.Errorf("capTitleRunes = %q, want the trailing okina kept", got)
+	}
+}
+
+// SANITISING HAPPENS BEFORE CAPPING, and the order is observable rather than a matter of taste.
+//
+// sessionTitleFor's doc argues the ordering; this makes it fail if reversed. The two orders agree on
+// WHERE the cut falls — sanitizeLabel is rune-for-rune — but not on WHAT sits at it. A ZWJ exactly at
+// the cut is the discriminating case: sanitising first replaces it with U+FFFD, a standalone glyph
+// that binds to nothing, so the cut stands and 80 runes survive. Capping first sees the live ZWJ,
+// walks back off it, and returns 79 — one rune shorter for a title whose rendered form contains no
+// joiner at all, because the joiner was going to be replaced regardless.
+//
+// ASSERTED THROUGH sessionTitleFor, the real caller, so this pins the composition and not just two
+// helpers in isolation.
+func TestSessionsPane_ServedTitleIsSanitizedBeforeCapping(t *testing.T) {
+	// A base rune then a ZWJ exactly at index MaxTitleLen, then filler past the cap.
+	title := strings.Repeat("a", claude.MaxTitleLen-1) + "e\u200d" + strings.Repeat("z", 20)
+	if r := []rune(title); r[claude.MaxTitleLen] != '\u200d' {
+		t.Fatalf("fixture misaligned: rune at the cut is %U, want U+200D", r[claude.MaxTitleLen])
+	}
+
+	m := newServedTitleModel(t, map[string]SessionMetadata{}, map[string]string{"s1": title}, "s1")
+	got := m.sessionTitleFor("s1", m.servedTitle("s1"))
+
+	if n := utf8.RuneCountInString(got); n != claude.MaxTitleLen {
+		t.Errorf("sessionTitleFor returned %d runes, want %d — capping before sanitising walks back "+
+			"off a joiner that sanitizeLabel was about to replace with a standalone glyph", n,
+			claude.MaxTitleLen)
+	}
+	// THE TAIL IS THE BASE RUNE, NOT THE JOINER, and that is the point rather than an oversight: the
+	// cut is exclusive, so r[:MaxTitleLen] never contains the rune AT the cut. What the ordering
+	// decides is whether the walk moves that boundary, and the rune count above is the only thing
+	// that can see it. Asserting a U+FFFD tail here would be asserting the fixture, not the order.
+	if !strings.HasSuffix(got, "e") {
+		t.Errorf("sessionTitleFor = %q, want the base rune at the boundary kept", got)
+	}
+}
+
+// A title of nothing but combining marks KEEPS ITS CAP-LENGTH PREFIX rather than capping to "".
+//
+// THIS TEST ASSERTED THE OPPOSITE AND WAS WRONG, in the same way the lone-regional-indicator test
+// was wrong an earlier round: it characterised what the walk did instead of what the cap owes its
+// callers. Its old reasoning was that every rune binds, so the walk runs to index 0 and "there is no
+// cluster to keep" — and that "\"\" is what sessionHasTitle already handles". That last clause is
+// the defect, stated as the justification. sessionHasTitle does not "handle" "": it reads it as
+// UNNAMED, which zeroes untitledMisses and restarts the permanent ~3-minute re-harvest for a session
+// that had a perfectly good name. Returning "" is the expensive answer, not the honest one.
+//
+// The degenerate end of the walk is still worth pinning, so this keeps the fixture and inverts the
+// expectation. With no base character anywhere there IS no boundary to cut on, so the cap takes its
+// blunt prefix and accepts a split cluster. That trade is deliberate and one-directional: a dangling
+// mark renders as an odd glyph on one row, while "" silently costs a transcript scan every three
+// minutes for as long as the pane is open.
+func TestSessionsPane_CapOfOnlyCombiningMarksKeepsAPrefix(t *testing.T) {
+	title := strings.Repeat("\u0301", claude.MaxTitleLen+20)
+
+	got := capTitleRunes(title)
+	if titleIsBlank(got) {
+		t.Errorf("capTitleRunes = %q, which is blank — a named session would read as unnamed and re-harvest forever", got)
+	}
+	if n := utf8.RuneCountInString(got); n != claude.MaxTitleLen {
+		t.Errorf("capTitleRunes returned %d runes, want the blunt %d-rune prefix", n, claude.MaxTitleLen)
+	}
+}
+
+// A WHITESPACE-ONLY SERVED TITLE MUST NOT PAINT SPACES INTO THE CELL.
+//
+// titleIsBlank guarded the harvested title and not the served one, so sessionTitleFor returned
+// "   " verbatim: the cell rendered blanks while sessionLabel — which blank-checks what
+// sessionTitleFor returns — rendered the bare id. One accessor, two callers, two different names
+// for the same session. Asserted on both ends so they cannot drift apart again.
+//
+// SPACES ONLY, deliberately. A tab or a newline is NOT blank by this package's definition:
+// titleIsBlank sanitises before it trims, so "\t" becomes a visible U+FFFD glyph and is a real —
+// if ugly — title. Writing this test with "\t" in the fixture failed, and the test was wrong
+// rather than the code; TestSessionsPane_ServedTitleOnlyFillsWhatRendersBlank already pins that
+// sanitise-before-trim order from the harvested side, and the two must not contradict each other.
+func TestSessionsPane_BlankServedTitleRendersAsUnnamed(t *testing.T) {
+	for _, served := range []string{" ", "   ", " ", " 　 "} {
+		t.Run(strconv.Quote(served), func(t *testing.T) {
+			m := newServedTitleModel(t, map[string]SessionMetadata{},
+				map[string]string{"s1": served}, "s1")
+
+			if got := m.sessionTitleFor("s1", m.servedTitle("s1")); got != "" {
+				t.Errorf("sessionTitleFor = %q, want an empty string — a blank served title must "+
+					"not paint whitespace into the cell", got)
+			}
+			if got := m.sessionLabel("s1"); got != "s1" {
+				t.Errorf("sessionLabel = %q, want the bare id", got)
+			}
+		})
+	}
+}
+
+// TestSessionsPane_ZeroWidthFreeAndBindsToPreviousDisagreeOnPurpose pins the rune classes on which
+// the file's two Unicode-category predicates deliberately differ.
+//
+// They look like near-duplicates and are not. zeroWidthFree asks "could a rune count of this string
+// be wrong about its DISPLAY WIDTH?" and so covers Cf and Cc (invisible) and Sk (modifier symbols,
+// which combine in emoji sequences) alongside Mn/Me. bindsToPrevious asks "would cutting BEFORE this
+// rune orphan it from its cluster?" and so covers Mc — a spacing combining mark, which has width and
+// therefore does not concern zeroWidthFree at all — while excluding Cf and Cc because sanitizeLabel
+// has already replaced those with U+FFFD before either predicate sees a served title.
+//
+// WITHOUT THIS TEST the divergence is unpinned, and the tempting refactor — one shared category set,
+// or one predicate calling the other — passes the rest of the suite while being wrong in both
+// directions: it would make a Mc-terminated title take zeroWidthFree's slow path for no reason, and
+// make bindsToPrevious walk back off an Sk that starts nothing.
+func TestSessionsPane_ZeroWidthFreeAndBindsToPreviousDisagreeOnPurpose(t *testing.T) {
+	cases := []struct {
+		name          string
+		r             rune
+		zeroWidthFree bool // false == "this rune defeats the fast path"
+		binds         bool
+	}{
+		// Mc: spacing combining mark. Binds (cutting before it orphans it), but it HAS a column, so
+		// a rune count is not wrong about it and the width fast path may keep running.
+		{"Mc DEVANAGARI SIGN VISARGA U+0903", 'ः', true, true},
+		// Sk: modifier symbol. The emoji skin-tone modifiers are here, and they DO combine — so a
+		// rune count misjudges the width and zeroWidthFree must claim them. bindsToPrevious does
+		// not, because Grapheme_Extend excludes Sk: U+1F3FB is Emoji_Modifier, which the grapheme
+		// rules handle as part of an emoji sequence rather than as an extender. This is the
+		// sharpest of the four rows — the only one where a reader might think bindsToPrevious is
+		// the one with the bug. It is not: over-claiming here costs a rune off a title for
+		// nothing, and the cut is exclusive, so a cut BEFORE U+1F3FB leaves the base emoji whole.
+		{"Sk EMOJI MODIFIER FITZPATRICK U+1F3FB", 0x1F3FB, false, false},
+		// Cf: format. Invisible, so the width count is wrong — and sanitizeLabel has already turned
+		// it into U+FFFD by the time the cap runs, which is why bindsToPrevious need not claim it.
+		{"Cf ZWSP-adjacent U+2060 WORD JOINER", '⁠', false, false},
+		// Mn: the one class both claim, for their two different reasons.
+		{"Mn COMBINING ACUTE U+0301", '́', false, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := zeroWidthFree(string(tc.r)); got != tc.zeroWidthFree {
+				t.Errorf("zeroWidthFree(%U) = %v, want %v", tc.r, got, tc.zeroWidthFree)
+			}
+			if got := bindsToPrevious(tc.r); got != tc.binds {
+				t.Errorf("bindsToPrevious(%U) = %v, want %v", tc.r, got, tc.binds)
+			}
+		})
 	}
 }
