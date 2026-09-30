@@ -163,9 +163,12 @@ curl localhost:47601/v1/usage | jq .unpricedBy
 `pricing:` entry.
 
 The Bob endpoint above is the worked example for [Billing units](#billing-units): it bills in
-credits rather than dollars, so closing its gap means giving that endpoint a `unit:` as well as
-rates. Pricing it without one would record credits as dollars — the figure would look right and be
-neither.
+Bobcoins rather than dollars, so closing its gap means giving that endpoint a `unit:` as well as
+rates. Pricing it without one would record Bobcoins as dollars — the figure would look right and be
+neither. The built-in local config (`authbridge-proxy --local --write-config`, which both
+`install.sh` and `make dev-install` run) ships that entry, so a new install prices Bob already; a
+`~/.cortex/config.yaml` written before it is never rewritten, so an older install still shows this
+gap until the block below is added.
 
 The TUI annotates the same thing from the other direction: `abctl observe`'s cost total
 carries `[bundled]` or `[configured]` when a total is wholly one provenance, and names the
@@ -314,15 +317,16 @@ host invites the copies to drift. Each host becomes its own table row.
 
 ### Billing units
 
-Rates are in **US dollars unless an endpoint says otherwise**:
+Rates are in **US dollars unless an endpoint says otherwise**. This is the entry the built-in
+local config ships for IBM Bob, a flat rate on every model and tier:
 
 ```yaml
 pricing:
   endpoints:
     - hosts: ["api.us-east.bob.ibm.com"]
-      unit: credits          # absent means USD
+      unit: Bobcoins         # absent means USD
       models:
-        "premium-ide":
+        "*":
           input_cost_per_million:       2.00
           output_cost_per_million:      2.00
           cache_read_cost_per_million:  2.00   # deliberate: this gateway gives no cache discount
