@@ -428,10 +428,16 @@ type model struct {
 	// events stop carrying the evidence (view=summary strips it) while the answer stays true.
 	// Which turn wins is not a question of size — see pipeline.PromptContextFold.
 	contextRun map[string]pipeline.PromptContextFold
-	// sessionsData is what an agent knows about its own sessions that the proxy does
-	// not — a title, mostly. Read once at startup from ~/.cortex/session-metadata.json,
-	// which `abctl experimental read-claude-sessions` writes; empty when that has never
-	// run, which renders as an empty TITLE column rather than as a failure.
+	// sessionsData is what the HARVEST knows about an agent's sessions — a title, mostly.
+	// Read once at startup from ~/.cortex/session-metadata.json, which
+	// `abctl experimental read-claude-sessions` writes; empty when that has never run,
+	// which is not a failure.
+	//
+	// NO LONGER THE ONLY THING THAT NAMES A SESSION, and this doc claimed both halves of
+	// that. It is not "what the proxy does not know": /v1/sessions serves a title derived
+	// from the session's own events, and sessionTitleFor falls back to it. So an empty map
+	// renders an empty TITLE column only for sessions the proxy has not named either — the
+	// two sources overlap rather than partition. This map still WINS where both have one.
 	//
 	// Keyed by the same session id the proxy buckets on, so a lookup is direct. Nil-safe
 	// by construction: a read on a nil map yields the zero SessionMetadata, so an

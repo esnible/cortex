@@ -124,6 +124,13 @@ reads those transcripts and writes what it finds to
 `~/.cortex/session-metadata.json`, so the sessions table can show a `TITLE`
 column instead of a bare id.
 
+This is **one of two** routes to a name, and the one this section is about. The
+proxy also derives a title from a session's own events and serves it on
+`/v1/sessions`; `TITLE` prefers the harvested name and falls back to that one,
+so the column can be populated for a session with no transcript here at all.
+Everything below concerns the harvest only — including `--skip-claude-metadata`,
+which suppresses this route and not the served fallback.
+
 The scan runs in the **background**, while the viewer is already up: `abctl observe` paints
 immediately and the titles appear when the scan finishes — usually before you have
 picked a pod. The viewer opens with whatever titles the last run recorded, so a scan

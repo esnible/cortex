@@ -36,8 +36,14 @@ func SessionMetadataPath() (string, error) { return claude.SessionMetadataPath()
 // It never returns an error, for the reason loadUserConfig does not: this file is a
 // convenience cache another command produces, and a missing or corrupt one must not
 // keep the viewer from opening — the viewer being the tool you reach for when
-// everything else is broken. Every failure yields an empty map, which renders as an
-// empty TITLE column: the pane still works, it just cannot name anything.
+// everything else is broken. Every failure yields an empty map: the pane still works, it
+// just cannot name anything FROM HERE.
+//
+// AND THE COLUMN NO LONGER GOES BLANK WITH IT. This used to say a failure "renders as an
+// empty TITLE column", which stopped being true when sessionTitleFor gained the fallback
+// to the title /v1/sessions serves: a session the proxy has named still renders one
+// through a total load failure. Degrading to none is therefore less visible than it was,
+// which is the right direction and worth stating so the silence stays justified.
 //
 // Absent is not a failure at all. Nobody has this file until they run
 // `abctl experimental read-claude-sessions`, so a first run must be silent rather than

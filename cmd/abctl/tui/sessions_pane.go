@@ -406,7 +406,25 @@ func (m *model) sessionTitle(id string) string {
 	// sanitizeLabel is the package's existing answer for exactly this, introduced with a
 	// CWE-150 citation. Severity is bounded — the file lives under the operator's own home
 	// directory — which is why this is a one-line routing rather than a redesign.
-	return sanitizeLabel(m.sessionsData[id].Title)
+	//
+	// AND CAPPED HERE TOO, for the reason sessionTitleFor caps the served title: the harvester
+	// emits at most claude.MaxTitleLen runes, but NOTHING RE-CHECKS THAT ON LOAD.
+	// LoadSessionMetadata parses the JSON and applies no cap, so a hand-edited or rewritten
+	// ~/.cortex/session-metadata.json reaches the quadratic path in truncLeft/truncRight exactly
+	// as an uncapped served title would. Measured before this line existed: a 10003-rune
+	// path-shaped title with combining marks made ONE rebuildSessionsTable take 1.11s.
+	//
+	// Pre-existing rather than introduced by the fallback — but capping only the served side left
+	// the two sources asymmetric for no reason, and the fix is the same constant. Re-capping an
+	// already-capped harvested title costs a length check.
+	//
+	// SAFE FOR THE BACKOFF, which reads this through sessionHasTitle: truncation cannot turn a
+	// non-blank title blank, so no row's named/unnamed verdict changes.
+	title := sanitizeLabel(m.sessionsData[id].Title)
+	if r := []rune(title); len(r) > claude.MaxTitleLen {
+		title = string(r[:claude.MaxTitleLen])
+	}
+	return title
 }
 
 // noServedTitle is the served-title argument for a row that cannot have one. Only the cached-only

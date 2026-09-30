@@ -2502,3 +2502,33 @@ func TestSessionsPane_ServedTitleIsCappedBeforeTruncation(t *testing.T) {
 		t.Errorf("sessionLabel is %d runes, want the served title capped before it is labelled", n)
 	}
 }
+
+// THE HARVESTED TITLE IS CAPPED AT LOAD TOO, not only by the harvester that wrote it.
+//
+// The asymmetry this closes: the served title is capped in sessionTitleFor, and the harvested one
+// was capped only upstream in core/observe/claude. LoadSessionMetadata re-reads that file and
+// applies no cap, so a rewritten or hand-edited ~/.cortex/session-metadata.json bypassed the
+// guarantee entirely and reached the same quadratic truncation the served cap exists to prevent.
+// Measured before the cap: one rebuildSessionsTable took 1.11s on a 10003-rune title.
+//
+// THROUGH sessionTitle, which is where every consumer reads it — the cell, the headers, and
+// sessionHasTitle. Capping at the accessor rather than at load is what makes that one line cover
+// all of them.
+//
+// AND THE BACKOFF VERDICT MUST NOT MOVE. sessionHasTitle reads the same accessor, so this also
+// asserts that an over-long title still counts as NAMED: truncation cannot turn a non-blank title
+// blank, and a cap that accidentally did would silently restart the re-harvest on these rows.
+func TestSessionsPane_HarvestedTitleIsCappedAtLoad(t *testing.T) {
+	long := "/a/" + strings.Repeat("é", 5000)
+	m := newTitleModel(t, map[string]SessionMetadata{"s1": {Title: long}}, "s1")
+
+	got := m.sessionTitle("s1")
+	if n := len([]rune(got)); n > claude.MaxTitleLen {
+		t.Errorf("sessionTitle returned %d runes, want at most %d — an uncapped harvested title "+
+			"reaches the quadratic truncation path on the UI goroutine", n, claude.MaxTitleLen)
+	}
+	if !m.sessionHasTitle("s1") {
+		t.Error("sessionHasTitle is false for an over-long title: the cap must not change a " +
+			"named/unnamed verdict, or the harvest backoff restarts on these rows")
+	}
+}
