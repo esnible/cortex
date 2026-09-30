@@ -207,6 +207,7 @@ Flags:
 	}
 
 	_, ownUnits := snap.SeriesCurrencies[*agent]
+	windowUnits := snap.Currencies
 	if *agent != "" {
 		// KeepBuckets, not NarrowBuckets: on this path the command prints window totals, so it
 		// needs no per-bucket narrowing and pays for none. (Under --by it does read buckets —
@@ -222,9 +223,9 @@ Flags:
 	}
 
 	if *asJSON {
-		return writeCostJSON(snap, stdout, stderr, *agent, *by)
+		return writeCostJSON(snap, stdout, stderr, *agent, *by, windowUnits)
 	}
-	writeCostSummary(snap, stdout, *agent, ownUnits)
+	writeCostSummary(snap, stdout, *agent, ownUnits, windowUnits)
 	if *by != "" {
 		writeCostBreakdown(snap, stdout, requested, *by)
 	}
@@ -498,7 +499,7 @@ func tiersJSONOf(t usage.Counts) *costTiersJSON {
 	return out
 }
 
-func writeCostJSON(snap *usage.Snapshot, stdout, stderr io.Writer, agent, by string) int {
+func writeCostJSON(snap *usage.Snapshot, stdout, stderr io.Writer, agent, by string, windowUnits []string) int {
 	enc := json.NewEncoder(stdout)
 	enc.SetIndent("", "  ")
 	out := costJSON{
@@ -516,7 +517,7 @@ func writeCostJSON(snap *usage.Snapshot, stdout, stderr io.Writer, agent, by str
 		// ONLY UNDER --agent OR --by, so the default path serialises no key and its absence keeps
 		// meaning "no breakdown was asked for". See the field's own comment for the debt this
 		// pays.
-		UngroupedCostMicros: ungroupedForBreakdown(snap, agent, by),
+		UngroupedCostMicros: ungroupedForBreakdown(snap, agent, by, windowUnits),
 		By:                  by,
 		Series:              seriesForBreakdown(snap, by),
 		// usage.Counts.Saturated and usage.Counts.RefusedTokenRequests need no line here: Totals
@@ -555,7 +556,7 @@ func writeCostJSON(snap *usage.Snapshot, stdout, stderr io.Writer, agent, by str
 // reader that can act on a fact with nothing on screen to attach it to, and
 // TestRunCost_AsksForAnAxisThatCannotCarryAResidual is what fails if this command ever takes an
 // axis and owes a rendering.
-func writeCostSummary(snap *usage.Snapshot, stdout io.Writer, agent string, ownUnits bool) {
+func writeCostSummary(snap *usage.Snapshot, stdout io.Writer, agent string, ownUnits bool, windowUnits []string) {
 	t := snap.Totals
 	if agent != "" {
 		fmt.Fprintf(stdout, "COST — %s · %s\n", costWindowLabel(snap.Window), agent)
@@ -651,10 +652,11 @@ func writeCostSummary(snap *usage.Snapshot, stdout io.Writer, agent string, ownU
 	// SILENT WHEN THE WINDOW IS MIXED, like every other figure here: the residual is a sum over the
 	// same rows the headline was withheld for, so it is the same un-addable quantity and printing
 	// it in any unit would be the mislabel this surface just refused one line above.
-	if agent != "" && labelled && snap.UngroupedCostMicros != nil && *snap.UngroupedCostMicros != 0 {
+	residualUnit, residualLabelled := money.WindowUnit(windowUnits)
+	if agent != "" && residualLabelled && snap.UngroupedCostMicros != nil && *snap.UngroupedCostMicros != 0 {
 		fmt.Fprintf(stdout,
 			"  note  %s of this window is attributed to no agent, so per-agent figures do not sum to the window total\n",
-			costIn(float64(*snap.UngroupedCostMicros)/1e6, unit))
+			costIn(float64(*snap.UngroupedCostMicros)/1e6, residualUnit))
 	}
 
 	if split := tokenSplit(t); split != "" {
@@ -1282,9 +1284,16 @@ func reportDowngrade(snap *usage.Snapshot, stdout io.Writer, requested usage.Gro
 // value there would mean the producer changed — and serialising it would quietly retract what
 // the field's absence has always promised a script. Dropping it keeps that promise and the
 // mismatch surfaces where it belongs, in the producer.
-func ungroupedForBreakdown(snap *usage.Snapshot, agent, by string) *int64 {
+func ungroupedForBreakdown(snap *usage.Snapshot, agent, by string, windowUnits []string) *int64 {
 	if agent == "" && by == "" {
 		return nil
+	}
+	if agent != "" {
+		wu, wok := money.WindowUnit(windowUnits)
+		au, aok := money.WindowUnit(snap.Currencies)
+		if !wok || !aok || !strings.EqualFold(wu, au) {
+			return nil
+		}
 	}
 	return snap.UngroupedCostMicros
 }

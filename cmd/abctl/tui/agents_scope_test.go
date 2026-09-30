@@ -375,7 +375,7 @@ func TestCostUngroupedRow_SaysNothingWhereThereIsNothingToSay(t *testing.T) {
 					snap.UngroupedCostMicros = &micros
 				}
 			}
-			if got := costUngroupedRow(snap, tc.scope); got != "" {
+			if got := costUngroupedRow(snap, tc.scope, nil); got != "" {
 				t.Errorf("costUngroupedRow = %q, want the empty string", got)
 			}
 		})
@@ -411,5 +411,31 @@ func TestAgentsPane_FooterSaysWhichWayEnterWillGo(t *testing.T) {
 	}
 	if got := onOther.helpView(); strings.Contains(got, "all agents") {
 		t.Errorf("footer on an unscoped row = %q, but Enter there scopes rather than clears", got)
+	}
+}
+
+// The residual belongs to no agent, so its unit is the WINDOW's: scoped to a dollars-only agent
+// in a window that also bills credits, the note must not state it in dollars.
+func TestUsagePane_TheResidualKeepsTheWindowsUnits(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte(`{"window":"1h","group":"agent","priced":true,
+			"currencies":["USD","credits"],"seriesCurrencies":{"claude-code/2.1.270":["USD"]},
+			"ungroupedCostMicros":5000000,
+			"totals":{"requests":20,"costMicros":9000000,"pricedRequests":20,"priceableRequests":20},
+			"buckets":[{"at":"2026-09-27T10:00:00Z","series":{
+			   "claude-code/2.1.270":{"requests":14,"costMicros":4000000,"pricedRequests":14,"priceableRequests":14}}}]}`))
+	}))
+	defer ts.Close()
+	m := fitModel(t, paneUsage, 120, 40, nil)
+	m.client = apiclient.New(ts.URL)
+	m.agentScope = "claude-code/2.1.270"
+	msg := m.fetchUsage()().(usageLoadedMsg)
+	if msg.err != nil {
+		t.Fatalf("fetch errored: %v", msg.err)
+	}
+	next, _ := m.Update(msg)
+	m = next.(*model)
+	if body := m.renderUsage(m.width, m.bodyHeight); strings.Contains(body, "$5.00") {
+		t.Errorf("a whole-window residual in a mixed window was stated in the agent's dollars:\n%s", body)
 	}
 }

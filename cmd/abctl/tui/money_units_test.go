@@ -298,12 +298,11 @@ func TestUsagePane_CostIsInTheWindowsUnit(t *testing.T) {
 func TestCostUngroupedRow_OnlyDollarsCarryAnAmount(t *testing.T) {
 	residual := int64(250_000)
 	snap := &usage.Snapshot{UngroupedCostMicros: &residual}
-	want := costUngroupedRow(snap, "claude-code/2.1.284")
+	want := costUngroupedRow(snap, "claude-code/2.1.284", nil)
 	if !strings.Contains(want, "$0.25") {
 		t.Fatalf("dollar note = %q, want the amount", want)
 	}
-	snap.Currencies = []string{"Bobcoins"}
-	if got := costUngroupedRow(snap, "bob-shell/2.0.5"); strings.Contains(got, "$") || got == "" {
+	if got := costUngroupedRow(snap, "bob-shell/2.0.5", []string{"Bobcoins"}); strings.Contains(got, "$") || got == "" {
 		t.Errorf("Bobcoins note = %q, want the note without a dollar amount", got)
 	}
 }
@@ -415,7 +414,30 @@ func TestBandValue_AUnitNothingPricedIsNotAFigure(t *testing.T) {
 			"USD":      {Requests: 3},
 		}}}}
 	r := spanReading{USD: 0.0078, Priced: true, Units: snap.Currencies, ByUnit: unitCosts(snap)}
-	if got := bandValue(r); got != "0.01 Bobcoins" {
-		t.Errorf("band = %q, want 0.01 Bobcoins: USD carried no priced request", got)
+	if got := bandValue(r); strings.Contains(got, "$0.00") {
+		t.Errorf("band = %q: USD carried no priced request, so it is no $0.00 figure", got)
+	}
+}
+
+// A unit the window names but the split shows no spend for — a saving-only unit, whose traffic
+// is not priceable and so marks nothing partial — cannot be left out silently, or the band prints
+// one unit's figure for a window holding two. It says mixed, like the drawer and AGENTS pane.
+// A split that does not cover a unit at all is not used either.
+func TestBandValue_AUnitWithNoSpendInTheSplitIsMixed(t *testing.T) {
+	split := func(series map[string]usage.Counts) *usage.Snapshot {
+		return &usage.Snapshot{Group: usage.GroupCurrency, Currencies: []string{"Bobcoins", "USD"},
+			Buckets: []usage.Bucket{{Series: series}}}
+	}
+	usd := usage.Counts{Requests: 3, PricedRequests: 3, PriceableRequests: 3, CostMicros: 6_200_000}
+	totals := usage.Counts{Requests: 4, PricedRequests: 3, PriceableRequests: 3, CostMicros: 6_200_000, AvoidedMicros: 500_000}
+	unpriced, priceable := unpricedGap(totals)
+	for name, snap := range map[string]*usage.Snapshot{
+		"saving-only Bobcoins":   split(map[string]usage.Counts{"Bobcoins": {Requests: 1, AvoidedMicros: 500_000}, "USD": usd}),
+		"split missing Bobcoins": split(map[string]usage.Counts{"USD": usd}),
+	} {
+		r := spanReading{USD: 6.2, Priced: true, Unpriced: unpriced, Priceable: priceable, Units: snap.Currencies, ByUnit: unitCosts(snap)}
+		if got := bandValue(r); got != money.Mixed {
+			t.Errorf("%s: band = %q, want %s", name, got, money.Mixed)
+		}
 	}
 }
