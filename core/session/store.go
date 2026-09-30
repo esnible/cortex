@@ -385,7 +385,7 @@ func (s *Store) Append(sessionID string, event pipeline.SessionEvent) {
 	sess.money = append(sess.money, money)
 	sess.cost.Add(money.cost)
 	sess.avoided.Add(money.avoided)
-	if money.priced {
+	if money.priced || money.avoided > 0 {
 		if sess.units == nil {
 			sess.units = make(map[string]int, 1)
 		}
@@ -482,7 +482,7 @@ func (s *Store) Append(sessionID string, event pipeline.SessionEvent) {
 			}
 			sess.cost.Sub(m.cost)
 			sess.avoided.Sub(m.avoided)
-			if m.priced {
+			if m.priced || m.avoided > 0 {
 				if sess.units[m.unit]--; sess.units[m.unit] <= 0 {
 					delete(sess.units, m.unit)
 				}
@@ -971,8 +971,9 @@ func moneyOf(e *pipeline.SessionEvent) eventMoney {
 	var m eventMoney
 	if ev.Priced() {
 		m.cost = ev.Micros()
-		m.priced, m.unit = true, ev.Currency
+		m.priced = true
 	}
+	m.unit = ev.Currency
 	m.avoided = ev.TotalAvoidedMicros()
 	return m
 }

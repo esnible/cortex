@@ -28,14 +28,14 @@ func twoUnitRing(t *testing.T, now time.Time) *Aggregator {
 	return a
 }
 
-// plainResponse is traffic that carries no money — bridged HTTPS to a host that is not an
-// inference endpoint — which the ledger does not admit and so names no unit for.
 func unpricedInference(c *pipeline.EventClient) *pipeline.SessionEvent {
 	e := pricedRespEvent("localhost:11434", "llama3", 10, 10)
 	e.Client = c
 	return e
 }
 
+// plainResponse is traffic that carries no money: bridged HTTPS to a host that is not an
+// inference endpoint.
 func plainResponse(now time.Time, c *pipeline.EventClient) *pipeline.SessionEvent {
 	return &pipeline.SessionEvent{At: now, Direction: pipeline.Outbound, Phase: pipeline.SessionResponse,
 		Host: "github.com", StatusCode: 200, Client: c}
@@ -198,5 +198,17 @@ func TestSnapshot_ARecordPricedWithoutInferenceNamesItsUnit(t *testing.T) {
 	a.Record("s1", withCost(t, respEvent(now, 200, time.Second, "claude-opus-5", 1000), 0.25))
 	if got := a.Snapshot(10*BucketWidth, BucketWidth, "", GroupNone).Currencies; !slices.Equal(got, []string{"Bobcoins", pricing.CurrencyUSD}) {
 		t.Errorf("Currencies = %v, want [Bobcoins USD]", got)
+	}
+}
+
+// A saving on a request that could not be priced is still a figure — tool-prune's avoided cost
+// lands in Totals.AvoidedMicros — so it names its unit, or a Bobcoins saving prints as dollars.
+func TestSnapshot_ASavingOnAnUnpricedRequestNamesItsUnit(t *testing.T) {
+	now := time.Now().Truncate(BucketWidth)
+	a := New(WithClock(func() time.Time { return now }))
+	a.Record("s1", withCostRecord(t, plainResponse(now, nil), event.Event{Currency: "Bobcoins",
+		Avoided: []event.Saving{{Component: "tool-prune", USD: 0.5}}}))
+	if got := a.Snapshot(10*BucketWidth, BucketWidth, "", GroupNone).Currencies; !slices.Equal(got, []string{"Bobcoins"}) {
+		t.Errorf("Currencies = %v, want [Bobcoins]", got)
 	}
 }

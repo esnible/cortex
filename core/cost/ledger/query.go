@@ -530,7 +530,8 @@ func labelFor(r Row, group usage.Group) (string, bool) {
 	return v, v != ""
 }
 
-// CurrenciesIn reports every distinct unit the given rows carry, sorted.
+// CurrenciesIn reports every distinct unit among the given rows that were priced or carry a
+// saving, sorted: a row with neither shows no figure, so there is nothing of it to add.
 //
 // IT IS WHAT MAKES REFUSING A CROSS-UNIT TOTAL POSSIBLE. A total only means something when the
 // rows behind it share a unit, and nothing else on a snapshot can say whether they do: usage.Counts
@@ -547,10 +548,16 @@ func labelFor(r Row, group usage.Group) (string, bool) {
 // NOTHING FOR AN EMPTY WINDOW, rather than USD: there is no figure to label, and claiming a unit
 // for traffic that does not exist would make the refusal downstream fire on nothing.
 func CurrenciesIn(rows []Row) []string {
-	if len(rows) == 0 {
+	var figured []Row
+	for _, r := range rows {
+		if r.PricedRequests > 0 || r.AvoidedMicros > 0 {
+			figured = append(figured, r)
+		}
+	}
+	if len(figured) == 0 {
 		return nil
 	}
-	seen := unitSpellings(rows)
+	seen := unitSpellings(figured)
 	out := make([]string, 0, len(seen))
 	for _, c := range seen {
 		out = append(out, c)

@@ -139,7 +139,8 @@ type Snapshot struct {
 	Session string `json:"session,omitempty"`
 	Group   Group  `json:"group"`
 
-	// Currencies is every distinct unit the rows behind Totals were denominated in, sorted.
+	// Currencies is every distinct unit behind a figure in Totals — a priced request or a
+	// saving — sorted.
 	//
 	// IT TRAVELS BESIDE THE FIGURES BECAUSE IT CANNOT LIVE INSIDE THEM. Counts is a flat
 	// summable aggregate, and it has to stay one — a unit belongs to the grouping key, not to

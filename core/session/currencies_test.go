@@ -105,3 +105,20 @@ func TestSessionSummary_UnitsShedOnTrimLikeTheCost(t *testing.T) {
 		t.Errorf("every credits event was trimmed, but Currencies = %v; the unit outlived its figure", got)
 	}
 }
+
+// A saving on an unpriced request is still a figure on this session, so it names its unit, and
+// the unit goes when the saving is trimmed.
+func TestSessionSummary_ASavingNamesItsUnit(t *testing.T) {
+	st := New(5*time.Minute, 1, 0)
+	defer st.Close()
+	st.Append("bob", pipeline.SessionEvent{Phase: pipeline.SessionResponse, Plugins: costRecord(t,
+		event.Event{Currency: "Bobcoins", Avoided: []event.Saving{{Component: "tool-prune", USD: 0.5}}})})
+	if got := summaryOf(t, st, "bob").Currencies; !slices.Equal(got, []string{"Bobcoins"}) {
+		t.Errorf("Currencies = %v, want [Bobcoins]", got)
+	}
+	st.Append("bob", pipeline.SessionEvent{Phase: pipeline.SessionResponse,
+		Plugins: costRecord(t, event.Event{CostUSD: 0.25, Settled: true})})
+	if got := summaryOf(t, st, "bob").Currencies; got != nil {
+		t.Errorf("the saving was trimmed, but Currencies = %v; its unit outlived it", got)
+	}
+}

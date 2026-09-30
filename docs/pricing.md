@@ -203,8 +203,7 @@ order. `unpricedBy` is keyed by `<endpoint> <model>`.
 **The response reports the `group` it SERVED, not the one you asked for — and the
 difference is silent.** On a ledger-backed window (`today`, `month`, `7d`) only
 `endpoint`, `agent`, `model` and `currency` are actually grouped; `host`, `session`, `status`
-and `plugin` fall back to `group: "none"` with no error and HTTP 200. A ring-served window groups
-by every axis but `currency`, which falls back the same way. Always read the `group` field
+and `plugin` fall back to `group: "none"` with no error and HTTP 200. Always read the `group` field
 back:
 
 ```sh

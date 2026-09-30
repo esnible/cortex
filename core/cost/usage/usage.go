@@ -653,7 +653,7 @@ type bucket struct {
 	// leaves nothing ungrouped — the unit is a property of the endpoint, so every request has one.
 	byCurrency map[string]Counts
 	// labelUnits is, per unit-labelled axis (model, endpoint, agent) and per key of that axis's
-	// map, the units those requests were in: the
+	// map, the units of those requests that were priced or carried a saving: the
 	// cross-tabulation Snapshot.SeriesCurrencies reports. Keyed by the label byAgent actually
 	// used, overflow included, so the two can never name different agents.
 	labelUnits map[Group]map[string]map[string]struct{}
@@ -1320,7 +1320,7 @@ func (a *Aggregator) foldInto(ring []bucket, t time.Time, sessionID string, e *p
 		unit = ringLabel(ec.unit)
 	}
 	addLabel(&b.byCurrency, unit, one)
-	if ec.priced == 0 {
+	if ec.priced == 0 && avoided == 0 {
 		unit = ""
 	}
 	if model != "" {
