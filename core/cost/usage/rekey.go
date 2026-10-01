@@ -22,6 +22,9 @@ func (a *Aggregator) Rekeyed(oldID, newID string) {
 		}
 	}
 	relabelSession(a.all, oldID, newID)
+	for _, ring := range a.agents {
+		relabelSession(ring, oldID, newID)
+	}
 }
 
 func relabelSession(ring []bucket, oldID, newID string) {
