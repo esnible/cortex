@@ -39,7 +39,7 @@ The same strings name things this repo does not own, and those stay:
 
 ## Clean break
 
-Same policy as the abctl rename: no alias, and no old name recognised.
+Same policy as the abctl rename: no alias.
 
 - **Process identity matches the new basename exactly.** `agentop`'s `runningPID` and
   `install.sh`'s `proxy_running` compare the basename of `ps -o comm=` to `cortex`. Not a

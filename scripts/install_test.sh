@@ -680,6 +680,81 @@ check "proxy_running: alive, cortex-envoy -> stopped" "stopped" "$(with_proxy_ru
 check "proxy_running: alive, the pre-rename authbridge-proxy -> stopped (clean break)" "stopped" \
 	"$(with_proxy_running 12345 0 /Users/u/.local/bin/authbridge-proxy)"
 
+# --- a v0.7.0 install's background proxy, recorded in the pidfile ---
+#
+# v0.7.0 ran "${BIN_DIR}/authbridge-proxy --local --supervise" wherever no supervisor
+# was usable and wrote its pid to the same pidfile. start_unsupervised and stop_cortex
+# run against the real pidfile; kill, ps, pid_exe_path and nohup are mocked. Pid 4242
+# is the recorded process and reads as dead once it has been sent SIGTERM.
+with_pre_rename() { # start|stop  exe-of-4242(__NONE__)  bin_dir  ps-comm(fail)
+	_pf="${TMP}/prr_pidfile"
+	_log="${TMP}/prr_log"
+	: >"${_log}"
+	rm -f "${TMP}/prr_termed"
+	printf '4242\n' >"${_pf}"
+	{
+		printf 'PROXY_PIDFILE=%s\nBIN_DIR=%s\nCORTEX_DIR=%s\nSUPERVISOR_NAME=x\n' "${_pf}" "$3" "${TMP}"
+		printf 'DEMO_FORWARD_PORT=47600\nDEMO_SESSION_PORT=47601\nDEMO_STATS_PORT=47603\nDEMO_HEALTH_PORT=47604\n'
+		printf 'info() { :; }\nwarn() { :; }\nsleep() { :; }\nnohup() { :; }\n'
+		if [ "$1" = start ]; then printf 'port_in_use() { [ "$1" = 47604 ]; }\n'
+		else printf 'port_in_use() { return 1; }\n'; fi
+		printf 'kill() {\n'
+		printf '\tcase "$1" in\n'
+		printf '\t\t-0) [ "$2" = 4242 ] && [ -f "%s" ] && return 1; return 0 ;;\n' "${TMP}/prr_termed"
+		printf '\t\t-9) printf "KILL %%s\\n" "$2" >>"%s" ;;\n' "${_log}"
+		printf '\t\t*) printf "TERM %%s\\n" "$1" >>"%s"; [ "$1" = 4242 ] && : >"%s" ;;\n' "${_log}" "${TMP}/prr_termed"
+		printf '\tesac\n\treturn 0\n}\n'
+		if [ "$4" = fail ]; then printf 'ps() { return 1; }\n'
+		else printf 'ps() { printf "%%s\\n" "%s"; }\n' "$4"; fi
+		if [ "$2" = __NONE__ ]; then printf 'pid_exe_path() { return 1; }\n'
+		else printf 'pid_exe_path() { [ "$1" = 4242 ] && printf "%%s\\n" "%s"; }\n' "$2"; fi
+		for _fn in proxy_running pre_rename_proxy_running stop_pidfile_proxy start_unsupervised stop_cortex; do
+			sed -n "/^${_fn}()/,/^}/p" "${INSTALL_SH}"
+		done
+		if [ "$1" = start ]; then printf 'start_unsupervised\n'; else printf 'stop_cortex\n'; fi
+	} >"${TMP}/prr.sh"
+	sh "${TMP}/prr.sh" >/dev/null 2>&1
+	if grep -qx 'TERM 4242' "${_log}"; then _old=stopped; else _old=left; fi
+	_now=$(cat "${_pf}" 2>/dev/null || true)
+	case "${_now}" in
+		"") _now=none ;;
+		4242) _now=old ;;
+		*) _now=new ;;
+	esac
+	printf 'old:%s pidfile:%s\n' "${_old}" "${_now}"
+}
+check "pre-rename: start stops the v0.7.0 proxy in our pidfile, then starts cortex" \
+	"old:stopped pidfile:new" \
+	"$(with_pre_rename start /home/u/.local/bin/authbridge-proxy /home/u/.local/bin authbridge-prox)"
+check "pre-rename: start on macOS, where comm is the full path" \
+	"old:stopped pidfile:new" \
+	"$(with_pre_rename start /Users/u/.local/bin/authbridge-proxy /Users/u/.local/bin /Users/u/.local/bin/authbridge-proxy)"
+check "pre-rename: --stop stops it rather than discarding the pidfile" \
+	"old:stopped pidfile:none" \
+	"$(with_pre_rename stop /home/u/.local/bin/authbridge-proxy /home/u/.local/bin authbridge-prox)"
+check "pre-rename: an authbridge-proxy from another directory is not signalled by start" \
+	"old:left pidfile:new" \
+	"$(with_pre_rename start /home/u/src/cortex/authbridge-proxy /home/u/.local/bin authbridge-prox)"
+check "pre-rename: ...nor by --stop" \
+	"old:left pidfile:none" \
+	"$(with_pre_rename stop /home/u/src/cortex/authbridge-proxy /home/u/.local/bin authbridge-prox)"
+check "pre-rename: a pid whose executable cannot be named is not signalled" \
+	"old:left pidfile:new" \
+	"$(with_pre_rename start __NONE__ /home/u/.local/bin authbridge-prox)"
+check "pre-rename: ps and the executable both blind keeps the pidfile's process" \
+	"old:left pidfile:old" \
+	"$(with_pre_rename start __NONE__ /home/u/.local/bin fail)"
+check "pre-rename: our own cortex in the pidfile is left running" \
+	"old:left pidfile:old" \
+	"$(with_pre_rename start /home/u/.local/bin/cortex /home/u/.local/bin cortex)"
+# /proc/<pid>/exe resolves symlinks, so a BIN_DIR reached through one must still match.
+mkdir -p "${TMP}/prr_real"
+: >"${TMP}/prr_real/authbridge-proxy"
+ln -s "${TMP}/prr_real" "${TMP}/prr_link"
+check "pre-rename: a BIN_DIR reached through a symlink still matches" \
+	"old:stopped pidfile:new" \
+	"$(with_pre_rename start "$(cd "${TMP}/prr_real" && pwd -P)/authbridge-proxy" "${TMP}/prr_link" authbridge-prox)"
+
 # --- ensure_tmpdir: exports TMPDIR on BOTH paths (regression: unset-TMPDIR abort) ---
 #
 # With `set -u`, a later "${TMPDIR}" reference (the svc_err mktemp on the supervised

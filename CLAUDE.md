@@ -113,7 +113,7 @@ needs a deprecation window and coordinated PRs in at least two repositories.
 Because image and container names share the binaries' old spelling, `authbridge-envoy`
 or `authbridge-cpex` in a sentence is usually the **image**, and `authbridge-proxy` the
 **container** — not a leftover. Outside those two meanings, `authbridge-proxy` survives
-only where the pre-rename binary is deleted (`remove_stale`, `make dev-install`), in
+where the pre-rename binary is deleted (`remove_stale`, `make dev-install`), in
 the tests asserting it is no longer recognised as ours, and in the release notes; the
 other three old names only in this rule and the spec.
 
@@ -124,8 +124,7 @@ sidecar, an image, a container, that container's logs, a mode field, a ConfigMap
 literal UI label. Both of these are correct: "Cortex provides zero-trust token
 management", "the AuthBridge sidecar validates the JWT".
 
-`install.sh` is the reference implementation — zero prose "AuthBridge", with
-`authbridge-proxy` appearing only in the code that removes the pre-rename binary.
+`install.sh` is the reference implementation — zero prose "AuthBridge".
 
 ## What Cortex Does
 

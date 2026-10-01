@@ -285,7 +285,7 @@ func serviceInstall(p servicePaths, yes, forceRestart bool, stdout, stderr io.Wr
 	// Adopt rather than collide. Two copies cannot share the ports, and the
 	// supervised one would lose the race and crash-loop while the hand-started one
 	// kept serving — a break that only surfaces at the next reboot.
-	adopt := runningPID(p.pidFile)
+	adopt := adoptablePID(p)
 	if adopt > 0 && !yes {
 		// Preview only. The connection count is printed once, at the point of action
 		// below, so it cannot be announced for a run that turns out to change nothing.
@@ -553,7 +553,7 @@ func serviceUninstall(p servicePaths, yes bool, stdout, stderr io.Writer) int {
 func serviceStatus(p servicePaths, stdout io.Writer) int {
 	if !serviceInstalled(p) {
 		fmt.Fprintf(stdout, "not installed (%s)\n", p.unitFile)
-		if pid := runningPID(p.pidFile); pid > 0 {
+		if pid := adoptablePID(p); pid > 0 {
 			fmt.Fprintf(stdout, "  a hand-started Cortex is running (pid %d); nothing restarts it\n", pid)
 		}
 		return 0

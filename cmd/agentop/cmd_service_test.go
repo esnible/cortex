@@ -207,6 +207,94 @@ func TestRunningPID_OnlyClaimsOurOwnProcess(t *testing.T) {
 	}
 }
 
+const sleeperEnv = "AGENTOP_TEST_SLEEPER"
+
+func init() {
+	if os.Getenv(sleeperEnv) == "1" {
+		time.Sleep(time.Minute)
+		os.Exit(0)
+	}
+}
+
+// startSleeperAt runs a copy of this test binary from path, so the process's
+// executable is path itself — a shell script's would be its interpreter.
+func startSleeperAt(t *testing.T, path string) int {
+	t.Helper()
+	self, err := os.Executable()
+	if err != nil {
+		t.Skip("cannot locate the test binary")
+	}
+	b, err := os.ReadFile(self)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, b, 0o755); err != nil { //nolint:gosec // an executable fixture
+		t.Fatal(err)
+	}
+	cmd := exec.Command(path)
+	cmd.Env = append(os.Environ(), sleeperEnv+"=1")
+	if err := cmd.Start(); err != nil {
+		t.Skipf("cannot start the fixture process: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = cmd.Process.Kill()
+		_ = cmd.Wait()
+	})
+	return cmd.Process.Pid
+}
+
+// TestServiceStatus_ReportsTheV070ProxyInThePidfile: v0.7.0's installer ran
+// <bin dir>/authbridge-proxy without a supervisor and recorded it in this pidfile.
+func TestServiceStatus_ReportsTheV070ProxyInThePidfile(t *testing.T) {
+	p := servicePathsFixture(t)
+	pid := startSleeperAt(t, filepath.Join(filepath.Dir(p.binary), "authbridge-proxy"))
+	_ = os.WriteFile(p.pidFile, []byte(strconv.Itoa(pid)), 0o600)
+
+	var out bytes.Buffer
+	_ = serviceStatus(p, &out)
+	if want := "is running (pid " + strconv.Itoa(pid) + ")"; !strings.Contains(out.String(), want) {
+		t.Errorf("status did not report the v0.7.0 proxy %q:\n%s", want, out.String())
+	}
+}
+
+func TestAdoptablePID_PreRenameProxyOnlyBesideOurs(t *testing.T) {
+	p := servicePathsFixture(t)
+	write := func(pid int) { _ = os.WriteFile(p.pidFile, []byte(strconv.Itoa(pid)), 0o600) }
+
+	ours := startSleeperAt(t, filepath.Join(filepath.Dir(p.binary), "authbridge-proxy"))
+	write(ours)
+	if got := adoptablePID(p); got != ours {
+		t.Errorf("authbridge-proxy beside cortex -> %d, want %d", got, ours)
+	}
+
+	elsewhere := t.TempDir()
+	stranger := startSleeperAt(t, filepath.Join(elsewhere, "authbridge-proxy"))
+	write(stranger)
+	if got := adoptablePID(p); got != 0 {
+		t.Errorf("authbridge-proxy from another directory -> %d, want 0", got)
+	}
+
+	link := filepath.Join(t.TempDir(), "bin")
+	if err := os.Symlink(filepath.Dir(p.binary), link); err != nil {
+		t.Fatal(err)
+	}
+	viaLink := p
+	viaLink.binary = filepath.Join(link, "cortex")
+	write(ours)
+	if got := adoptablePID(viaLink); got != ours {
+		t.Errorf("bin dir reached through a symlink -> %d, want %d", got, ours)
+	}
+
+	write(os.Getpid())
+	if got := adoptablePID(p); got != 0 {
+		t.Errorf("a live process that is neither -> %d, want 0", got)
+	}
+	write(999999)
+	if got := adoptablePID(p); got != 0 {
+		t.Errorf("dead pid -> %d, want 0", got)
+	}
+}
+
 // TestDialableAddr covers the bind-vs-dial distinction the health probe depends
 // on: ":9091" is not something a client can connect to.
 func TestDialableAddr(t *testing.T) {

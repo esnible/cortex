@@ -898,12 +898,49 @@ proxy_running() {
 	esac
 }
 
+pre_rename_proxy_running() {
+	_pid=$(cat "${PROXY_PIDFILE}" 2>/dev/null) || return 1
+	case "${_pid}" in
+		"" | *[!0-9]*) return 1 ;;
+	esac
+	kill -0 "${_pid}" 2>/dev/null || return 1
+	_pre_exe=$(pid_exe_path "${_pid}") || return 1
+	_pre_old="${BIN_DIR}/authbridge-proxy"
+	[ "${_pre_exe}" = "${_pre_old}" ] && return 0
+	command -v readlink >/dev/null 2>&1 || return 1
+	_pre_a=$(readlink -f "${_pre_exe}" 2>/dev/null || true)
+	_pre_b=$(readlink -f "${_pre_old}" 2>/dev/null || true)
+	[ -n "${_pre_a}" ] && [ "${_pre_a}" = "${_pre_b}" ]
+}
+
+stop_pidfile_proxy() {
+	_pid=$(cat "${PROXY_PIDFILE}")
+	info "Stopping the background proxy (pid ${_pid})..."
+	kill "${_pid}" 2>/dev/null || true
+	# Wait longer than the proxy's own 15s graceful drain before escalating, so a
+	# normal shutdown is never cut short into a SIGKILL that drops in-flight
+	# requests. This matches agentop's stopPID, which waits 18s for the same reason.
+	_i=0
+	while [ "${_i}" -lt 18 ] && kill -0 "${_pid}" 2>/dev/null; do
+		_i=$((_i + 1))
+		sleep 1
+	done
+	if kill -0 "${_pid}" 2>/dev/null; then
+		warn "pid ${_pid} did not exit after 18s; sending SIGKILL"
+		kill -9 "${_pid}" 2>/dev/null || true
+	fi
+	rm -f "${PROXY_PIDFILE}"
+}
+
 # start_unsupervised runs the proxy as a plain background process for environments
 # without a usable launchd/systemd. It uses the proxy's own --supervise restart loop
 # (built for exactly this — "launchd cannot be relied on"), so a crash still comes
 # back, and records the pid so stop/status have one process to target. Verified: on
 # a clean SIGTERM to this pid the listeners close and no child is left behind.
 start_unsupervised() {
+	if pre_rename_proxy_running; then
+		stop_pidfile_proxy
+	fi
 	if proxy_running; then
 		info "Cortex is already running (pid $(cat "${PROXY_PIDFILE}"))."
 		return 0
@@ -953,23 +990,8 @@ stop_cortex() {
 	fi
 	# Unsupervised: kill the process recorded in the pidfile — the only handle that
 	# works where the sandbox hides other processes from ps/pkill.
-	if proxy_running; then
-		_pid=$(cat "${PROXY_PIDFILE}")
-		info "Stopping the background proxy (pid ${_pid})..."
-		kill "${_pid}" 2>/dev/null || true
-		# Wait longer than the proxy's own 15s graceful drain before escalating, so a
-		# normal shutdown is never cut short into a SIGKILL that drops in-flight
-		# requests. This matches agentop's stopPID, which waits 18s for the same reason.
-		_i=0
-		while [ "${_i}" -lt 18 ] && kill -0 "${_pid}" 2>/dev/null; do
-			_i=$((_i + 1))
-			sleep 1
-		done
-		if kill -0 "${_pid}" 2>/dev/null; then
-			warn "pid ${_pid} did not exit after 18s; sending SIGKILL"
-			kill -9 "${_pid}" 2>/dev/null || true
-		fi
-		rm -f "${PROXY_PIDFILE}"
+	if proxy_running || pre_rename_proxy_running; then
+		stop_pidfile_proxy
 		_stopped=1
 	elif [ -f "${PROXY_PIDFILE}" ]; then
 		# A stale pidfile from a proxy that already died: clear it so status stays honest.

@@ -301,6 +301,18 @@ func unloadService(goos string, p servicePaths) error {
 // runningPID returns the pid from a pidfile only when it is alive AND is one of
 // ours — see isProxyComm. Same narrow check install.sh's proxy_running uses.
 func runningPID(pidFile string) int {
+	pid := livePID(pidFile)
+	if pid == 0 {
+		return 0
+	}
+	out, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "comm=").Output()
+	if err != nil || !isProxyComm(string(out)) {
+		return 0 // pid recycled onto something else
+	}
+	return pid
+}
+
+func livePID(pidFile string) int {
 	b, err := os.ReadFile(pidFile) //nolint:gosec // operator-supplied path
 	if err != nil {
 		return 0
@@ -312,11 +324,45 @@ func runningPID(pidFile string) int {
 	if err := syscall.Kill(pid, 0); err != nil {
 		return 0
 	}
-	out, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "comm=").Output()
-	if err != nil || !isProxyComm(string(out)) {
-		return 0 // pid recycled onto something else
+	return pid
+}
+
+func adoptablePID(p servicePaths) int {
+	if pid := runningPID(p.pidFile); pid > 0 {
+		return pid
+	}
+	pid := livePID(p.pidFile)
+	if pid == 0 {
+		return 0
+	}
+	exe := pidExePath(pid)
+	if exe == "" || !samePath(exe, filepath.Join(filepath.Dir(p.binary), "authbridge-proxy")) {
+		return 0
 	}
 	return pid
+}
+
+func pidExePath(pid int) string {
+	if exe, err := os.Readlink("/proc/" + strconv.Itoa(pid) + "/exe"); err == nil {
+		return strings.TrimSuffix(exe, " (deleted)")
+	}
+	out, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "comm=").Output()
+	if err != nil {
+		return ""
+	}
+	if comm := strings.TrimSpace(string(out)); filepath.IsAbs(comm) {
+		return comm
+	}
+	return ""
+}
+
+func samePath(a, b string) bool {
+	if a == b {
+		return true
+	}
+	ra, errA := filepath.EvalSymlinks(a)
+	rb, errB := filepath.EvalSymlinks(b)
+	return errA == nil && errB == nil && ra == rb
 }
 
 // isProxyComm reports whether a `ps -o comm=` value names our proxy: its basename is
