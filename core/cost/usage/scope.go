@@ -6,6 +6,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/rossoctl/cortex/core/pipeline"
 )
 
 // BucketScope says whether ScopeToAgent narrows the per-bucket series as well as the
@@ -167,10 +169,18 @@ func narrowBucketsToAgent(buckets []Bucket, agent string) []Bucket {
 	return out
 }
 
-// AgentSnapshot is Snapshot narrowed to one agent's traffic, for /v1/usage?agent=. The agent axis
-// is read uncapped, so an agent past MaxSeriesInResponse is still found.
-func (a *Aggregator) AgentSnapshot(window, resolution time.Duration, sessionID, agent string) Snapshot {
-	return NarrowToAgent(a.snapshot(window, resolution, sessionID, GroupAgent, math.MaxInt), agent)
+// AgentSnapshot is Snapshot narrowed to one agent's traffic, for /v1/usage?agent=.
+//
+// A RECOGNISED AGENT IS READ FROM ITS OWN RING, so group is honoured — see Aggregator.agents. Any
+// other label, and any agent within a session, is narrowed from the agent axis instead, read
+// uncapped so an agent past MaxSeriesInResponse is still found, and served as group none.
+func (a *Aggregator) AgentSnapshot(window, resolution time.Duration, sessionID, agent string, group Group) Snapshot {
+	if sessionID == "" && pipeline.IsKnownAgent(agent) {
+		snap := a.snapshot(window, resolution, "", agent, group, MaxSeriesInResponse)
+		snap.Agent = agent
+		return snap
+	}
+	return NarrowToAgent(a.snapshot(window, resolution, sessionID, "", GroupAgent, math.MaxInt), agent)
 }
 
 // NarrowToAgent is ScopeToAgent for a producer answering agent=: a group=agent snapshot becomes

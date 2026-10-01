@@ -38,8 +38,10 @@ import (
 //	            "method" is an alias for "model".
 //	agent       an agent, as group=agent reports it (versionless: a versioned label is
 //	            read as its agent); narrows the window to that agent's traffic, and the
-//	            response echoes it in "agent". A window served from the ring is then
-//	            served with group none. Refused past usage.MaxLabelLen.
+//	            response echoes it in "agent". A window served from the ring keeps its
+//	            group for a recognised agent (pipeline.IsKnownAgent) with no session;
+//	            any other is served with group none, and "group" says which. Refused
+//	            past usage.MaxLabelLen.
 //
 // THREE THINGS A CLIENT MUST NOT GET WRONG:
 //
@@ -273,7 +275,7 @@ func (s *Server) ringSnapshot(window, resolution time.Duration, sessionID, agent
 	if agent == "" {
 		return s.usage.Snapshot(window, resolution, sessionID, group)
 	}
-	return s.usage.AgentSnapshot(window, resolution, sessionID, agent)
+	return s.usage.AgentSnapshot(window, resolution, sessionID, agent, group)
 }
 
 // errSessionWithSymbolicWindow refuses session= alongside window=today|7d|month. A fixed

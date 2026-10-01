@@ -15,7 +15,8 @@ import (
 //
 // OTHER IS ALWAYS NARROWED HERE, never sent: it is no label the server knows, so agent=Other would
 // come back as zero. The cost is the breakdown — narrowed buckets carry no series, so every axis
-// is served as none, and the drawer says so (drawerScopeNote) as it does for a ring window.
+// is served as none, and the drawer says so (drawerScopeNote) as it does for any window a server
+// could not break down for one agent.
 func fetchUsageScoped(ctx context.Context, client *apiclient.Client, window string, resolution time.Duration, agent string, group usage.Group) (*usage.Snapshot, error) {
 	if agent == "" {
 		return client.GetUsageWindow(ctx, window, resolution, "", group)
