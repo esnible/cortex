@@ -32,7 +32,8 @@ func TestRunServiceInstall_ReportsWhatHappened(t *testing.T) {
 
 // With no health URL there is nothing to probe, so the install succeeds without
 // claiming health: the result `agentop setup` reports as "started", not "started and
-// healthy". Only the result tells the two apart; `.exit` is 0 for both.
+// healthy". Without parsing stdout, only the result tells the two apart; `.exit`
+// is 0 for both.
 func TestRunServiceInstall_UnprobedInstallIsNotHealthy(t *testing.T) {
 	fakeSupervisor(t)
 	sc := newServiceScene(t)

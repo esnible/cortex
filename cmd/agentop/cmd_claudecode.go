@@ -431,8 +431,9 @@ func planClaudeCodeEnable(settingsPath, cortexCfgPath string) (claudeCodePlan, e
 }
 
 // printTrustFileNotes warns about CA files that do not exist yet. Command output
-// only, kept out of plan and apply: a caller that applies and then starts the proxy
-// itself has nothing to warn about, because the files appear on that start.
+// only, kept out of plan and apply: the proxy writes these files on start (the
+// bundle only where it finds a system root store), so a caller that applies before
+// the proxy has started should check them after that start, not warn before it.
 func printTrustFileNotes(want map[string]string, stdout io.Writer) {
 	// Both trust files are reported only when a ca_dir was configured at all.
 	// wanted() populates these keys under `if cfg.TLSBridge.CADir != ""`, so
