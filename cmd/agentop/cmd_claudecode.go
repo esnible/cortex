@@ -372,29 +372,41 @@ func wantedFromLoaded(cfg *config.Config, source string) (map[string]string, err
 	return out, nil
 }
 
-func claudeCodeEnable2(settingsPath, cortexCfgPath, statePath string, yes bool, stdout, stderr io.Writer) int {
+// claudeCodePlan is what enable would change, worked out without touching anything.
+//
+// Split from the command so `agentop setup` can show the change on its own consent
+// screen and apply it after one question, and so the checks that refuse — a value
+// someone else set, a bridge that is off — run before anything else on the machine
+// has changed.
+type claudeCodePlan struct {
+	settingsPath string
+	doc          map[string]any    // the settings file as read; apply mutates it
+	env          map[string]string // its env block before the change
+	want         map[string]string // the managed values enable writes
+	changes      []string          // "  KEY=VALUE" per value that differs; none = already enabled
+}
+
+// planClaudeCodeEnable runs every check enable makes before it would prompt, in the
+// same order. An error is the refusal, worded to follow "agentop: ".
+func planClaudeCodeEnable(settingsPath, cortexCfgPath string) (claudeCodePlan, error) {
 	want, cfg, err := wantedFromConfig(cortexCfgPath)
 	if err != nil {
-		fmt.Fprintf(stderr, "agentop: %v\n", err)
-		return 1
+		return claudeCodePlan{}, err
 	}
 	// Same bridge-posture gate `agentop exec` applies. Without it, `mode: disabled`
 	// with a ca_dir set was written into settings.json and produced exactly the
 	// silent break the ca_dir check below exists to prevent.
 	if !bridgeEnabled(cfg) {
-		fmt.Fprintf(stderr, "agentop: %v\n", errBridgeDisabled(cortexCfgPath))
-		return 1
+		return claudeCodePlan{}, errBridgeDisabled(cortexCfgPath)
 	}
 	if _, ok := want[envCACerts]; !ok {
-		fmt.Fprintf(stderr, "agentop: %s has no tls_bridge.ca_dir, so Claude Code has no CA to trust;\n"+
-			"  requests would fail certificate verification. Enable the TLS bridge first.\n", cortexCfgPath)
-		return 1
+		return claudeCodePlan{}, fmt.Errorf("%s has no tls_bridge.ca_dir, so Claude Code has no CA to trust;\n"+
+			"  requests would fail certificate verification. Enable the TLS bridge first.", cortexCfgPath)
 	}
 
 	doc, err := readSettings(settingsPath)
 	if err != nil {
-		fmt.Fprintf(stderr, "agentop: %v\n", err)
-		return 1
+		return claudeCodePlan{}, err
 	}
 	env := envStrings(doc)
 
@@ -403,77 +415,67 @@ func claudeCodeEnable2(settingsPath, cortexCfgPath, statePath string, yes bool, 
 	// give no clue why.
 	for _, k := range managedKeys {
 		if cur, ok := env[k]; ok && cur != want[k] && !isCortexValue(k, cur) {
-			fmt.Fprintf(stderr, "agentop: %s is already set to %q in %s.\n"+
-				"  Refusing to overwrite a value you set. Remove it first, or edit the file by hand.\n",
+			return claudeCodePlan{}, fmt.Errorf("%s is already set to %q in %s.\n"+
+				"  Refusing to overwrite a value you set. Remove it first, or edit the file by hand.",
 				k, cur, settingsPath)
-			return 1
 		}
 	}
 
+	pl := claudeCodePlan{settingsPath: settingsPath, doc: doc, env: env, want: want}
+	for _, k := range managedKeys {
+		if env[k] != want[k] {
+			pl.changes = append(pl.changes, fmt.Sprintf("  %s=%s", k, want[k]))
+		}
+	}
+	return pl, nil
+}
+
+// printTrustFileNotes warns about CA files that do not exist yet. Command output
+// only: `agentop setup` runs enable before the proxy has minted them, and `agentop
+// doctor` is where their absence is reported.
+func printTrustFileNotes(want map[string]string, stdout io.Writer) {
 	// Both trust files are reported only when a ca_dir was configured at all.
 	// wanted() populates these keys under `if cfg.TLSBridge.CADir != ""`, so
 	// without one the paths are "" and an unguarded Stat printed
 	// "Note:  does not exist yet." with a blank path — a note about no file.
-	if want[envCACerts] != "" {
-		// The CA path is written whether or not the file exists, because enabling
-		// before the first start is legitimate — the proxy generates it on boot. But
-		// a NODE_EXTRA_CA_CERTS pointing at a missing file fails SILENTLY: requests
-		// keep working, every one tunnels through opaquely, and nothing is parsed.
-		// Say so now rather than let that be discovered later.
-		if _, serr := os.Stat(want[envCACerts]); serr != nil {
-			fmt.Fprintf(stdout, "Note: %s does not exist yet.\n"+
-				"  Cortex creates it on first start. Until then Claude Code cannot verify the\n"+
-				"  bridge and every request tunnels through unparsed — which looks like nothing\n"+
-				"  is wrong. Start Cortex, then check with: agentop configure claude-code status\n\n",
-				want[envCACerts])
-		}
-		// The bundle is checked separately: it is written by a LATER step than
-		// ca.crt (the proxy assembles it from the CA plus the platform roots), and
-		// on a host where no root store could be located it never appears at all. A
-		// tool whose CA variable points at a missing file fails closed with a
-		// certificate error rather than silently, so say which tools are affected.
-		if _, serr := os.Stat(want[envSSLCert]); serr != nil {
-			fmt.Fprintf(stdout, "Note: %s does not exist yet.\n"+
-				"  Cortex assembles it on start from the CA plus this machine's root store;\n"+
-				"  git, curl and Python read it. If it is still missing after a start, Cortex\n"+
-				"  could not find a system root bundle — check the proxy log for \"trust bundle\".\n\n",
-				want[envSSLCert])
-		}
+	if want[envCACerts] == "" {
+		return
 	}
+	// The CA path is written whether or not the file exists, because enabling
+	// before the first start is legitimate — the proxy generates it on boot. But
+	// a NODE_EXTRA_CA_CERTS pointing at a missing file fails SILENTLY: requests
+	// keep working, every one tunnels through opaquely, and nothing is parsed.
+	// Say so now rather than let that be discovered later.
+	if _, serr := os.Stat(want[envCACerts]); serr != nil {
+		fmt.Fprintf(stdout, "Note: %s does not exist yet.\n"+
+			"  Cortex creates it on first start. Until then Claude Code cannot verify the\n"+
+			"  bridge and every request tunnels through unparsed — which looks like nothing\n"+
+			"  is wrong. Start Cortex, then check with: agentop configure claude-code status\n\n",
+			want[envCACerts])
+	}
+	// The bundle is checked separately: it is written by a LATER step than
+	// ca.crt (the proxy assembles it from the CA plus the platform roots), and
+	// on a host where no root store could be located it never appears at all. A
+	// tool whose CA variable points at a missing file fails closed with a
+	// certificate error rather than silently, so say which tools are affected.
+	if _, serr := os.Stat(want[envSSLCert]); serr != nil {
+		fmt.Fprintf(stdout, "Note: %s does not exist yet.\n"+
+			"  Cortex assembles it on start from the CA plus this machine's root store;\n"+
+			"  git, curl and Python read it. If it is still missing after a start, Cortex\n"+
+			"  could not find a system root bundle — check the proxy log for \"trust bundle\".\n\n",
+			want[envSSLCert])
+	}
+}
 
-	var changes []string
-	for _, k := range managedKeys {
-		if env[k] != want[k] {
-			changes = append(changes, fmt.Sprintf("  %s=%s", k, want[k]))
-		}
-	}
-	if len(changes) == 0 {
-		fmt.Fprintf(stdout, "Already enabled: %s routes Claude Code through Cortex.\n", settingsPath)
-		return 0
-	}
-	// After the no-op return, unlike the two notes above: those report a file that is
-	// missing now, this one a platform fact the user needs once — see darwinGoNote.
-	if runtime.GOOS == "darwin" && want[envCACerts] != "" {
-		fmt.Fprint(stdout, darwinGoNote(want[envCACerts]))
-	}
-
-	// Three short lines, not three paragraphs. This is a confirmation prompt, so it
-	// needs to say what changes and that the file is backed up; the rest (how to undo
-	// it, that `claude` needs no env vars afterwards) belongs in the closing summary,
-	// where it was also being printed.
-	fmt.Fprintf(stdout, "Adds to the \"env\" block of %s:\n%s\n",
-		settingsPath, strings.Join(changes, "\n"))
-	fmt.Fprintf(stdout, "Nothing else in the file changes; a copy is kept as %s.bak\n\n", settingsPath)
-	if !yes && !claudeCodeConfirm(stdout) {
-		fmt.Fprintln(stdout, "Not changed.")
-		return exitDeclined
-	}
-
+// applyClaudeCodeEnable records what the managed keys held, then writes the plan's
+// values. Failing to record is a warning on stderr, as it always was: the write still
+// happens, and disable then deletes the keys rather than restoring them.
+func applyClaudeCodeEnable(pl claudeCodePlan, statePath string, stderr io.Writer) error {
 	// Record what was there before, so disable restores rather than deletes.
 	if statePath != "" {
-		st := managedState{Settings: settingsPath, Prior: map[string]*string{}}
+		st := managedState{Settings: pl.settingsPath, Prior: map[string]*string{}}
 		for _, k := range managedKeys {
-			if v, ok := env[k]; ok {
+			if v, ok := pl.env[k]; ok {
 				vv := v
 				st.Prior[k] = &vv
 			} else {
@@ -486,11 +488,43 @@ func claudeCodeEnable2(settingsPath, cortexCfgPath, statePath string, yes bool, 
 		}
 	}
 
-	raw := envRaw(doc)
+	raw := envRaw(pl.doc)
 	for _, k := range managedKeys {
-		raw[k] = want[k]
+		raw[k] = pl.want[k]
 	}
-	if err := writeSettings(settingsPath, doc); err != nil {
+	return writeSettings(pl.settingsPath, pl.doc)
+}
+
+func claudeCodeEnable2(settingsPath, cortexCfgPath, statePath string, yes bool, stdout, stderr io.Writer) int {
+	pl, err := planClaudeCodeEnable(settingsPath, cortexCfgPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "agentop: %v\n", err)
+		return 1
+	}
+	printTrustFileNotes(pl.want, stdout)
+	if len(pl.changes) == 0 {
+		fmt.Fprintf(stdout, "Already enabled: %s routes Claude Code through Cortex.\n", settingsPath)
+		return 0
+	}
+	// After the no-op return, unlike the two notes above: those report a file that is
+	// missing now, this one a platform fact the user needs once — see darwinGoNote.
+	if runtime.GOOS == "darwin" && pl.want[envCACerts] != "" {
+		fmt.Fprint(stdout, darwinGoNote(pl.want[envCACerts]))
+	}
+
+	// Three short lines, not three paragraphs. This is a confirmation prompt, so it
+	// needs to say what changes and that the file is backed up; the rest (how to undo
+	// it, that `claude` needs no env vars afterwards) belongs in the closing summary,
+	// where it was also being printed.
+	fmt.Fprintf(stdout, "Adds to the \"env\" block of %s:\n%s\n",
+		settingsPath, strings.Join(pl.changes, "\n"))
+	fmt.Fprintf(stdout, "Nothing else in the file changes; a copy is kept as %s.bak\n\n", settingsPath)
+	if !yes && !claudeCodeConfirm(stdout) {
+		fmt.Fprintln(stdout, "Not changed.")
+		return exitDeclined
+	}
+
+	if err := applyClaudeCodeEnable(pl, statePath, stderr); err != nil {
 		fmt.Fprintf(stderr, "agentop: %v\n", err)
 		return 1
 	}
