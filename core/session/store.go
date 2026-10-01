@@ -368,19 +368,49 @@ func (s *Store) AppendTrailing(b *Bucket, event pipeline.SessionEvent) bool {
 	return s.append("", b, event) != nil
 }
 
+// AppendPair appends first and then second to the named session under one lock
+// acquisition, so no concurrent append can land between them, and returns the bucket
+// both went into. agentop folds a bridged tunnel's open row into the event directly
+// after it in the session, and two separate appends could be split by any traffic in
+// between.
+func (s *Store) AppendPair(sessionID string, first, second pipeline.SessionEvent) *Bucket {
+	p1, p2 := prepareAppend(&first), prepareAppend(&second)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e := s.appendLocked(sessionID, nil, first, p1)
+	// e.ID, not sessionID: the first append has already capped the id and followed any
+	// adoption, and the second must land in the same entry.
+	s.appendLocked(e.ID, nil, second, p2)
+	return &Bucket{e: e}
+}
+
+// appendPrep is what an append computes from the event alone, before taking the lock.
+// See prepareAppend for why each part is hoisted out of the critical section.
+type appendPrep struct {
+	money     eventMoney
+	titleRank int
+	titleText string
+	agentName string
+}
+
 // append is Append when b is nil, and AppendTrailing when it is not. It returns the
 // session the event went into, nil when AppendTrailing refused it.
 func (s *Store) append(sessionID string, b *Bucket, event pipeline.SessionEvent) *entry {
-	if len(sessionID) > MaxSessionIDLen {
-		sessionID = sessionID[:MaxSessionIDLen]
-	}
+	prep := prepareAppend(&event)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.appendLocked(sessionID, b, event, prep)
+}
 
+// prepareAppend computes everything an append needs from the event alone. It runs
+// before the store's lock is taken.
+func prepareAppend(event *pipeline.SessionEvent) appendPrep {
 	// BEFORE THE LOCK. This is a json.Unmarshal of the event's plugin map, the most
 	// expensive thing on this path, and it touches no store state — so it has no business
 	// inside a critical section that blocks every reader and every other appender. Doing it
 	// here is also what lets ListSessions read two integers instead of decoding every event
 	// of every session on agentop's two-second poll; see entry.cost.
-	money := moneyOf(&event)
+	money := moneyOf(event)
 
 	// BEFORE THE LOCK FOR THE SAME REASON, and unlike sess.context.Add below — see the comment
 	// there, which correctly declines to hoist a phase check and a couple of int adds. This is not
@@ -405,11 +435,17 @@ func (s *Store) append(sessionID string, b *Bucket, event pipeline.SessionEvent)
 	//
 	// Only the candidate's EXTRACTION is hoisted, which is the expensive half; the rank comparison
 	// and sanitizeTitle both stay under the lock, for the reason given at the fold site below.
-	titleRank, titleText := titleCandidate(&event)
-	agentName := event.Client.AffinityName()
+	titleRank, titleText := titleCandidate(event)
+	return appendPrep{money: money, titleRank: titleRank, titleText: titleText, agentName: event.Client.AffinityName()}
+}
 
-	s.mu.Lock()
-	defer s.mu.Unlock()
+// appendLocked is append's critical section. s.mu must be held; prep is what
+// prepareAppend computed from event before the lock was taken.
+func (s *Store) appendLocked(sessionID string, b *Bucket, event pipeline.SessionEvent, prep appendPrep) *entry {
+	if len(sessionID) > MaxSessionIDLen {
+		sessionID = sessionID[:MaxSessionIDLen]
+	}
+	money, titleRank, titleText, agentName := prep.money, prep.titleRank, prep.titleText, prep.agentName
 
 	now := s.clock()
 	var sess *entry
