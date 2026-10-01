@@ -131,7 +131,7 @@ const ambiguityWindow = 5 * time.Minute
 func (s *Store) SessionForClient(client string) string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	now := time.Now()
+	now := s.clock()
 	if client != "" {
 		var newest string
 		var at time.Time

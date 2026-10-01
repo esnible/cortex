@@ -89,7 +89,7 @@ func (s *Server) handleUsage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	spec, err := usage.ParseWindowSpec(r.URL.Query().Get("window"), time.Now())
+	spec, err := usage.ParseWindowSpec(r.URL.Query().Get("window"), s.clock())
 	if err != nil {
 		writeUsageError(w, err)
 		return
