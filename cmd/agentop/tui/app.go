@@ -743,7 +743,8 @@ type model struct {
 	// startup gate, and their order is by cost, so an index would silently come to mean a
 	// different agent the moment spending changed. The label is also what usage.ScopeToAgent
 	// takes and what `agentop cost --agent` accepts, so the TUI's scope and the CLI's flag are the
-	// same string — an operator can copy one into the other.
+	// same string — an operator can copy one into the other. The one exception is otherAgents,
+	// which pools every unrecognised agent and is no label the server or the CLI knows.
 	//
 	// NOT PERSISTED across runs. Every other view choice here is (see Settings), and this one
 	// deliberately is not: the set of agents on a proxy is a property of what is running right

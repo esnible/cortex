@@ -1073,6 +1073,10 @@ func drawerScopeNote(snap *usage.Snapshot, asked usage.Group, windowLabel string
 	if snap == nil || snap.Agent == "" || snap.Group != usage.GroupNone || asked == "" || asked == usage.GroupNone {
 		return ""
 	}
+	// Other is several agents, so "one agent" would misdescribe it.
+	if snap.Agent == otherAgents {
+		return "no " + string(asked) + " breakdown for " + otherAgents + " in " + windowLabel
+	}
 	return "no " + string(asked) + " breakdown for one agent in " + windowLabel
 }
 

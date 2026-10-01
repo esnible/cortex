@@ -165,6 +165,85 @@ func TestParseUserAgent_TheTrailingScanReadsLastToFirst(t *testing.T) {
 	}
 }
 
+// The IBM Bob IDE is one agent under every User-Agent it sends inference or account traffic
+// with, and the version is Bob's, not its SDK's.
+//
+// CAPTURED 2026-10-01 from IBM Bob 2.2.1 against api.us-east.bob.ibm.com, verbatim (#1210).
+// Unrecognised, these were three AGENTS rows — and the one reading "IBM Bob/2.2.1" carried
+// only the /admin/v1 calls, so it showed 0 tokens while the inference sat under two AI-SDK
+// rows nobody would read as Bob.
+func TestParseUserAgent_IBMBobIDEIsOneAgent(t *testing.T) {
+	for _, tc := range []struct {
+		name, ua string
+	}{
+		{"inference client", "ai-sdk/openai-compatible/3.0.36 ai-sdk/provider-utils/5.0.29 runtime/node.js/v24.15.0 IBM Bob/2.2.1"},
+		{"secondary client", "ai/7.0.16 ai-sdk/provider-utils/5.0.29 runtime/node.js/v24.15.0 IBM Bob/2.2.1"},
+		// /admin/v1/profile and /admin/v1/teams/…: the vendor first, as a bare token.
+		{"bare form", "IBM Bob/2.2.1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := ParseUserAgent(tc.ua)
+			if got == nil {
+				t.Fatalf("ParseUserAgent(%q) = nil, want a client", tc.ua)
+			}
+			if got.Name != "ibm-bob" || got.Version != "2.2.1" {
+				t.Errorf("Name, Version = %q, %q, want %q, %q", got.Name, got.Version, "ibm-bob", "2.2.1")
+			}
+			if got.AffinityName() != "ibm-bob" {
+				t.Errorf("AffinityName() = %q, want ibm-bob — without it the session is no agent's", got.AffinityName())
+			}
+			if want := "ibm-bob"; AgentName(got.Label()) != want {
+				t.Errorf("AgentName(Label()) = %q, want %q — this is the AGENTS row", AgentName(got.Label()), want)
+			}
+		})
+	}
+}
+
+// The IDE's Electron shell and its update check stay unrecognised: both carry the VS Code base
+// version where Bob's would go, and neither sends inference.
+func TestParseUserAgent_IBMBobIDEShellIsNotClaimed(t *testing.T) {
+	for _, ua := range []string{
+		"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) IBMBob/1.126.0+bob2.2.1 Chrome/148.0.7778",
+		"Code/1.126.0+bob2.2.1 Darwin/24.6.0",
+	} {
+		if got := ParseUserAgent(ua); got.Name != "" {
+			t.Errorf("ParseUserAgent(%q).Name = %q, want unrecognised", ua, got.Name)
+		}
+	}
+}
+
+// IsKnownAgent answers for canonical names only: what AgentName folds a recognised Label to.
+func TestIsKnownAgent(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		want bool
+	}{
+		{"claude-code", true},
+		{"bob-shell", true},
+		{"ibm-bob", true},
+		// A product token is not a canonical name: claude-cli is how Claude Code is RECOGNISED.
+		{"claude-cli", false},
+		{"bob", false},
+		// Versioned labels have to be folded first; the godoc says so.
+		{"claude-code/2.1.285", false},
+		{"curl", false},
+		{UnknownClientLabel, false},
+		{"(other)", false},
+		{"", false},
+	} {
+		if got := IsKnownAgent(tc.name); got != tc.want {
+			t.Errorf("IsKnownAgent(%q) = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+	// Every value ParseUserAgent can put in Name is one this accepts, so a new knownClients
+	// entry cannot be recognised by the parser and rejected here.
+	for product, name := range knownClients {
+		if !IsKnownAgent(name) {
+			t.Errorf("knownClients[%q] = %q, which IsKnownAgent rejects", product, name)
+		}
+	}
+}
+
 // An unrecognised User-Agent with several tokens still reports no name.
 //
 // The trailing scan must not turn "nothing matched" into a guess. curl/8.4.0 is already

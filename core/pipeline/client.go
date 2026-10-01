@@ -276,6 +276,40 @@ var knownClients = map[string]string{
 	// the bare form too, on /admin/v1/profile and /inference/v1/model/info, where bob-shell
 	// is the only token there is.
 	"bob-shell": "bob-shell",
+	// The IBM Bob IDE, which is not Bob Shell: a VS Code fork with its own settings file
+	// (`agentop configure bob`) and its own inference client. Named ibm-bob for the product,
+	// "IBM Bob", hyphenated the way claude-code is — a canonical name must be one token, or
+	// AgentName cannot fold its versions into one row.
+	//
+	// THE PRODUCT TOKEN IS "Bob", NOT "IBM". The IDE sends "IBM Bob/2.2.1", so the first
+	// token is a bare "IBM" and the agent is the token after it — which is the trailing scan's
+	// case, and the same one Bob Shell's inference client needs: the IDE's two inference
+	// User-Agents are "ai-sdk/openai-compatible/… IBM Bob/2.2.1" and "ai/… IBM Bob/2.2.1".
+	// Keying on "ibm" instead would claim every IBM product that names its vendor first, and
+	// lose the version, which "IBM" does not carry. Captured 2026-10-01 from IBM Bob 2.2.1;
+	// see #1210 for what leaving it unrecognised cost.
+	//
+	// NOT CLAIMED: the IDE's Electron shell ("Mozilla/5.0 … IBMBob/1.126.0+bob2.2.1 …") and
+	// its update check ("Code/1.126.0+bob2.2.1 …"). Both carry the VS Code base version rather
+	// than Bob's, and "code" is no agent's token. Neither carries inference.
+	"bob": "ibm-bob",
+}
+
+// IsKnownAgent reports whether name is the canonical name of a coding agent ParseUserAgent
+// recognises — "claude-code", "bob-shell", "ibm-bob" — as AgentName folds a Label to it.
+//
+// FOR A CONSUMER THAT HAS TO TELL AN AGENT FROM A RAW User-Agent, which a label alone cannot
+// say: "curl" is what AgentName answers for curl/8.4.0, and nothing in that string marks it
+// as unrecognised. agentop's AGENTS pane pools every label this rejects under one row.
+//
+// False for UnknownClientLabel and for any label carrying a version: fold with AgentName first.
+func IsKnownAgent(name string) bool {
+	for _, known := range knownClients {
+		if name == known {
+			return true
+		}
+	}
+	return false
 }
 
 // ParseUserAgent derives an EventClient from a User-Agent header value.

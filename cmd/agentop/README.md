@@ -1202,6 +1202,22 @@ one-agent proxy goes straight to the sessions pane and says nothing. Nothing is
 remembered between runs: a second agent appearing is exactly when the picker
 becomes worth showing, so a remembered dismissal would go stale then.
 
+**Agents the proxy does not recognise share one row, `Other`**, listed last. The
+proxy names an agent only from a User-Agent it recognises (`claude-code`,
+`bob-shell`, `ibm-bob`); anything else is reported under its raw User-Agent, and
+one program can send several — the IBM Bob IDE was three rows before it was
+recognised, and none of them could reach its session ([#1210]). Picking `Other`
+lists every session that names no recognised agent, including the `default` and
+`pending:` buckets and sessions only agentop's cache still holds, so every listed
+session belongs to exactly one row. An `Other` row that only sessions put there —
+no unrecognised traffic in the window — is shown when the picker opens, but never
+opens it by itself. Its figures are the pooled series, narrowed by agentop rather
+than asked of the server, so the spend drawer reads `BY NONE` on every axis under
+it. The raw User-Agents are still in the unscoped drawer's agent axis and in
+`agentop cost --by agent`.
+
+[#1210]: https://github.com/rossoctl/cortex/issues/1210
+
 While a scope is active, two things on the usage pane change and both say so:
 `[b]` disappears from the footer, because the scope needs `group=agent` on the
 wire and there is no second axis left to break down by; and the latency metric
@@ -1210,7 +1226,7 @@ times are recorded per bucket across every agent that shared it, so
 `/v1/usage` carries nothing that could attribute them to one.
 
 Elsewhere, the sessions pane lists only that agent's sessions — the `default` and
-`pending:` buckets belong to no one agent and are hidden — and every pane's title
+`pending:` buckets belong to no one agent and are listed under `Other` — and every pane's title
 says `agent=`. Against a server that names no session's agent, the list stays whole
 and its footer says `list not scoped`. The spend band and its drawer show that
 agent's figures, asked of the server with `/v1/usage?agent=`; against a server too

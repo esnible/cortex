@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"slices"
 	"time"
 
 	"github.com/charmbracelet/bubbles/table"
@@ -46,7 +47,11 @@ type agentRow struct {
 // agentRowsFromSnapshot is agentRowsFromBuckets with each row's units attached: the agent's own
 // SeriesCurrencies entry when the server sent one, else the window's list, so an older server's
 // mixed window withholds every row rather than labelling one agent with another's units.
+//
+// UNRECOGNISED AGENTS ARE ONE ROW, otherAgents, folded here by foldOtherAgents before anything is
+// counted. See otherAgents for why a row per raw User-Agent was a row that scoped nothing.
 func agentRowsFromSnapshot(snap *usage.Snapshot) []agentRow {
+	snap = foldOtherAgents(snap)
 	rows := agentRowsFromBuckets(snap.Buckets)
 	for i := range rows {
 		units, ok := snap.SeriesCurrencies[rows[i].label]
@@ -65,6 +70,11 @@ func agentRowsFromBuckets(buckets []usage.Bucket) []agentRow {
 		labels = append(labels, label)
 	}
 	usage.SortSeriesLabels(labels, totals)
+	// OTHER GOES LAST whatever it spent: it is the remainder, not an agent competing for rank, and
+	// a catch-all sorted above a named agent reads as the busiest program on the machine.
+	if i := slices.Index(labels, otherAgents); i >= 0 {
+		labels = append(append(labels[:i:i], labels[i+1:]...), otherAgents)
+	}
 	out := make([]agentRow, 0, len(labels))
 	for _, label := range labels {
 		out = append(out, agentRow{label: label, Counts: totals[label]})
@@ -113,7 +123,11 @@ func agentsPaneRefusal(rows []agentRow) string {
 		return "agents: no agent traffic seen in this window yet"
 	case 1:
 		// Names the agent, so it is visible that a per-agent breakdown would be one row
-		// repeating the figure already on screen.
+		// repeating the figure already on screen. Other is no agent's name, so that case says
+		// what it means instead.
+		if rows[0].label == otherAgents {
+			return "agents: no recognised agent has been seen — a breakdown would be one row"
+		}
 		return "agents: only " + rows[0].label + " has been seen — a breakdown would be one row"
 	}
 	return ""
@@ -250,7 +264,7 @@ func newAgentsTable() table.Model {
 	return t
 }
 
-// rebuildAgentsTable rebuilds rows from m.agents.
+// rebuildAgentsTable rebuilds rows from m.pickerRows, which selectedAgentLabel indexes too.
 func (m *model) rebuildAgentsTable() {
 	// Columns and rows change together, as in rebuildSessionsTable: SESSIONS appears only once a
 	// session names its agent, so a server that names none shows the table unchanged.
@@ -264,8 +278,9 @@ func (m *model) rebuildAgentsTable() {
 		m.agentsTbl.SetRows(nil)
 		m.agentsTbl.SetColumns(want)
 	}
-	rows := make([]table.Row, 0, len(m.agents))
-	for _, a := range m.agents {
+	picker := m.pickerRows()
+	rows := make([]table.Row, 0, len(picker))
+	for _, a := range picker {
 		rows = append(rows, table.Row{
 			// SANITISED AT RENDER TIME. The label is a User-Agent, so it is
 			// request-controlled; tui.sanitizeLabel is the package's render-time copy of the
@@ -349,17 +364,18 @@ func (m *model) enterAgentsOrRefuse(from paneID) (entered bool, refusal string) 
 
 // selectedAgentLabel is the label of the row under the cursor, or "" when there is none.
 //
-// READ OFF m.agents BY CURSOR INDEX, not out of the rendered table cell: the cell is passed
+// READ OFF m.pickerRows BY CURSOR INDEX, not out of the rendered table cell: the cell is passed
 // through sanitizeLabel, which is a display transform — a control character or a long label
 // arrives on the wire and leaves that function altered, so scoping to what the cell says could
 // scope to a string no agent ever sent. The two are kept in step by rebuildAgentsTable, which
-// builds the rows from m.agents in order.
+// builds the rows from m.pickerRows in order.
 func (m *model) selectedAgentLabel() string {
+	picker := m.pickerRows()
 	i := m.agentsTbl.Cursor()
-	if i < 0 || i >= len(m.agents) {
+	if i < 0 || i >= len(picker) {
 		return ""
 	}
-	return m.agents[i].label
+	return picker[i].label
 }
 
 // leaveAgentsPane returns to whichever pane opened the AGENTS pane.
@@ -393,12 +409,16 @@ func (m *model) leaveAgentsPane() tea.Cmd {
 }
 
 // agentSessionsCell counts the listed sessions that belong to the agent a row names, or a dash
-// where none does.
+// where none does. Other's count is what its scope lists; see otherSessionsCount.
 func (m *model) agentSessionsCell(label string) string {
 	n := 0
-	for _, s := range m.sessions {
-		if s.Agent == label {
-			n++
+	if label == otherAgents {
+		n = m.otherSessionsCount()
+	} else {
+		for _, s := range m.sessions {
+			if s.Agent == label {
+				n++
+			}
 		}
 	}
 	if n == 0 {

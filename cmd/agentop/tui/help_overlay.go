@@ -390,7 +390,8 @@ var paneKeys = map[paneID]keyGroup{
 		// views can honour it rather than whether any can.
 		notes: []string{
 			"Opens only when two or more agents have been seen. It scopes the sessions " +
-				"list, the usage pane and the spend band.",
+				"list, the usage pane and the spend band. Other pools every agent the proxy " +
+				"does not recognise.",
 		},
 	},
 }

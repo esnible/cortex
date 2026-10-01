@@ -305,8 +305,9 @@ func (m *model) rebuildSessionsTable() {
 	adopted := m.adoptedSessionIDs()
 	for _, id := range m.cachedOnlySessionIDs() {
 		// A scope lists only sessions the server names an agent for, and an adopted pending bucket
-		// lives on under the session that adopted it.
-		if (m.filter != "" && !strings.Contains(id, m.filter)) || scope != "" || adopted[id] {
+		// lives on under the session that adopted it. Other is the exception: a session the server
+		// no longer lists names no agent, which is that row's definition.
+		if (m.filter != "" && !strings.Contains(id, m.filter)) || (scope != "" && scope != otherAgents) || adopted[id] {
 			continue
 		}
 		cached := m.events[id]
@@ -400,12 +401,18 @@ func (m *model) cachedOnlySessionIDs() []string {
 }
 
 // sessionListed reports whether the sessions table shows s: the filter, and under an agent scope
-// only the sessions of that agent.
+// only the sessions of that agent — under Other, every session that names no recognised agent.
 func (m *model) sessionListed(s session.SessionSummary, scope string) bool {
 	if m.filter != "" && !strings.Contains(s.ID, m.filter) {
 		return false
 	}
-	return scope == "" || s.Agent == scope
+	switch scope {
+	case "":
+		return true
+	case otherAgents:
+		return inOtherAgents(s)
+	}
+	return s.Agent == scope
 }
 
 // sessionsListTwoAgents reports whether the listed sessions name two or more agents, which is when
