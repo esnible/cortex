@@ -898,6 +898,16 @@ proxy_running() {
 	esac
 }
 
+pidfile_process_unnamed() {
+	_pid=$(cat "${PROXY_PIDFILE}" 2>/dev/null) || return 1
+	case "${_pid}" in
+		"" | *[!0-9]*) return 1 ;;
+	esac
+	kill -0 "${_pid}" 2>/dev/null || return 1
+	_comm=$(ps -o comm= -p "${_pid}" 2>/dev/null) || return 0
+	[ -z "${_comm}" ]
+}
+
 pre_rename_proxy_running() {
 	_pid=$(cat "${PROXY_PIDFILE}" 2>/dev/null) || return 1
 	case "${_pid}" in
@@ -1555,7 +1565,7 @@ fi
 # The service now runs cortex wherever it could be set up, so the pre-rename proxy can
 # go. Where it could not (the fallback above), remove_stale finds the old unit still
 # naming it and leaves it in place.
-remove_stale authbridge-proxy cortex
+pidfile_process_unnamed || remove_stale authbridge-proxy cortex
 
 # tool-prune is in the config but INERT: its remove list is empty, so it does
 # nothing until a name is added. That is deliberate for an install.

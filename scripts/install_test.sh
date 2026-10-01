@@ -755,6 +755,34 @@ check "pre-rename: a BIN_DIR reached through a symlink still matches" \
 	"old:stopped pidfile:new" \
 	"$(with_pre_rename start "$(cd "${TMP}/prr_real" && pwd -P)/authbridge-proxy" "${TMP}/prr_link" authbridge-prox)"
 
+# --- pidfile_process_unnamed: a live pid that ps cannot name keeps the old binary ---
+#
+# Where a sandbox hides processes from ps, the pidfile's process may be v0.7.0's
+# supervisor, which re-execs its own path after a crash; deleting that file took
+# Cortex down at the next crash (reproduced). kill and ps are mocked.
+with_unnamed() { # pidfile-content(__MISSING__)  kill_exit  ps_mode(fail|empty|COMM)
+	_pf="${TMP}/un_pidfile"
+	if [ "$1" = "__MISSING__" ]; then rm -f "${_pf}"; else printf '%s\n' "$1" >"${_pf}"; fi
+	{
+		printf 'PROXY_PIDFILE=%s\n' "${_pf}"
+		printf 'kill() { return %s; }\n' "$2"
+		case "$3" in
+			fail)  printf 'ps() { return 1; }\n' ;;
+			empty) printf 'ps() { return 0; }\n' ;;
+			*)     printf 'ps() { printf "%%s\\n" "%s"; }\n' "$3" ;;
+		esac
+		sed -n '/^pidfile_process_unnamed()/,/^}/p' "${INSTALL_SH}"
+		printf 'if pidfile_process_unnamed; then echo unnamed; else echo named-or-gone; fi\n'
+	} >"${TMP}/un.sh"
+	sh "${TMP}/un.sh" 2>/dev/null
+}
+check "unnamed: alive, ps prints nothing (sandbox) -> unnamed" "unnamed" "$(with_unnamed 4242 0 empty)"
+check "unnamed: alive, ps fails -> unnamed" "unnamed" "$(with_unnamed 4242 0 fail)"
+check "unnamed: alive, ps names cortex -> named" "named-or-gone" "$(with_unnamed 4242 0 cortex)"
+check "unnamed: dead pid -> gone" "named-or-gone" "$(with_unnamed 4242 1 empty)"
+check "unnamed: no pidfile -> gone" "named-or-gone" "$(with_unnamed __MISSING__ 0 empty)"
+check "unnamed: non-numeric pidfile -> gone" "named-or-gone" "$(with_unnamed abc 0 empty)"
+
 # --- ensure_tmpdir: exports TMPDIR on BOTH paths (regression: unset-TMPDIR abort) ---
 #
 # With `set -u`, a later "${TMPDIR}" reference (the svc_err mktemp on the supervised
@@ -1184,10 +1212,10 @@ check "a unit already moved to cortex lets it go" "gone" "$(gone_or_kept "${_bin
 check "install.sh removes the stale abctl once" "1" \
 	"$(grep -c '^remove_stale abctl agentop$' "${INSTALL_SH}" || true)"
 check "install.sh removes the stale proxy once" "1" \
-	"$(grep -c '^remove_stale authbridge-proxy cortex$' "${INSTALL_SH}" || true)"
+	"$(grep -c '^pidfile_process_unnamed || remove_stale authbridge-proxy cortex$' "${INSTALL_SH}" || true)"
 # ...and only after starting the service, which is what rewrites the unit.
 check "the proxy is removed after the service is started" "1" \
-	"$(awk '/^\t\t\tstart_unsupervised \|\| die/{s=NR} /^remove_stale authbridge-proxy cortex$/{r=NR} END{print (s && r > s) ? 1 : 0}' "${INSTALL_SH}")"
+	"$(awk '/^\t\t\tstart_unsupervised \|\| die/{s=NR} /^pidfile_process_unnamed \|\| remove_stale authbridge-proxy cortex$/{r=NR} END{print (s && r > s) ? 1 : 0}' "${INSTALL_SH}")"
 # make dev-install extracts this function rather than carrying a copy.
 check "make dev-install runs install.sh's remove_stale, not a copy" "1" \
 	"$(grep -c "sed -n '/^remove_stale()/,/^}/p' scripts/install.sh" "${REPO_ROOT}/Makefile" || true)"
