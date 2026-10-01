@@ -69,6 +69,11 @@ func endpointPath(pctx *pipeline.Context) string {
 // mistake even when it is not.
 const bobPath = "/inference/v1/chat/completions"
 
+// zenPath is OpenCode Zen's inference endpoint (opencode.ai/zen). It speaks the
+// OPENAI dialect — the body is {model, messages, ...} — despite living under a
+// /zen prefix, so it needs the same explicit routing bobPath does.
+const zenPath = "/zen/v1/chat/completions"
+
 func (p *InferenceParser) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.Action {
 	// Dispatch by endpoint dialect: OpenAI chat/completions vs Anthropic
 	// Messages. No Invocation is recorded when the parser doesn't apply
@@ -83,7 +88,7 @@ func (p *InferenceParser) OnRequest(_ context.Context, pctx *pipeline.Context) p
 	// needs neither a model nor a body. See the nil-extension guard in OnResponseFrame.
 	var ext *pipeline.InferenceExtension
 	switch endpointPath(pctx) {
-	case "/v1/chat/completions", "/v1/completions", "/chat/completions", "/completions", bobPath:
+	case "/v1/chat/completions", "/v1/completions", "/chat/completions", "/completions", bobPath, zenPath:
 		ext = parseOpenAIRequest(pctx.Body)
 	case anthropicMessagesPath:
 		ext = parseAnthropicRequest(pctx.Body)
