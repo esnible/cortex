@@ -122,7 +122,7 @@ build-images:  ## Build the agent, MCP server, and SPARC service images
 
 build-authbridge:  ## Build the authbridge image WITH the sparc plugin (operator's tag)
 	@echo "[*] building $(AUTHBRIDGE_IMAGE) (includes sparc plugin)"
-	cd ../.. && $(CONTAINER_RUNTIME) build -f cmd/authbridge-proxy/Dockerfile -t $(AUTHBRIDGE_IMAGE) .
+	cd ../.. && $(CONTAINER_RUNTIME) build -f cmd/cortex/Dockerfile -t $(AUTHBRIDGE_IMAGE) .
 
 load-images: build-images build-authbridge  ## Load all images into kind
 	@for img in $(AGENT_IMAGE) $(MCP_IMAGE) $(SPARC_IMAGE) $(AUTHBRIDGE_IMAGE); do \

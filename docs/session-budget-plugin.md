@@ -18,12 +18,12 @@ local cache serves the hot path with zero I/O.
 Opt-in — build with `-tags include_plugin_sessionbudget`:
 
 ```bash
-docker build -f cmd/authbridge-proxy/Dockerfile \
+docker build -f cmd/cortex/Dockerfile \
   --build-arg GO_BUILD_TAGS="include_plugin_sessionbudget" \
   -t authbridge:latest .
 ```
 
-Same tag works for `cmd/authbridge-envoy/Dockerfile`.
+Same tag works for `cmd/cortex-envoy/Dockerfile`.
 
 ## Configuration
 

@@ -2,7 +2,7 @@
 
 **Status**: Implemented — kept as the design record, not a live proposal.
 The plugin pipeline shipped in `core/pipeline`, and the CPEX
-integration in `core/plugins/cpex` + `cmd/authbridge-cpex`. Read
+integration in `core/plugins/cpex` + `cmd/cortex-cpex`. Read
 [`framework-architecture.md`](../../docs/framework-architecture.md),
 [`plugin-reference.md`](../../docs/plugin-reference.md) and
 [`cpex-plugin.md`](../../docs/cpex-plugin.md) for current behaviour;

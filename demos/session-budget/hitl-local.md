@@ -74,7 +74,7 @@ the proxy and its plugins:
   curl -s http://localhost:11434/v1/models | jq -r '.data[].id'
   ```
 
-- Go toolchain matching `cmd/authbridge-proxy/go.mod` for
+- Go toolchain matching `cmd/cortex/go.mod` for
   building the proxy binary.
 
 ## Setup
@@ -89,14 +89,14 @@ docker exec sb-demo-redis redis-cli PING  # expect PONG
 ### Build the proxy binary (once)
 
 `session-budget` is opt-in via build tag (it links go-redis into the
-binary). Build it in-tree from the `cmd/authbridge-proxy` module:
+binary). Build it in-tree from the `cmd/cortex` module:
 
 ```bash
-cd cmd/authbridge-proxy
+cd cmd/cortex
 go build -tags include_plugin_sessionbudget -o authbridge-proxy .
 ```
 
-This produces `cmd/authbridge-proxy/authbridge-proxy` —
+This produces `cmd/cortex/authbridge-proxy` —
 that's the binary the rest of this doc invokes.
 
 ### The config
@@ -204,7 +204,7 @@ approver listening on 127.0.0.1:9099 (auto-approve=false, auto-deny=false)
 From the repo root:
 
 ```bash
-./cmd/authbridge-proxy/authbridge-proxy \
+./cmd/cortex/authbridge-proxy \
   -config ./demos/session-budget/local/config.yaml
 ```
 

@@ -50,7 +50,7 @@ updates:
 
   # Go - mode-specific binaries
   - package-ecosystem: gomod
-    directory: /cmd/authbridge-proxy
+    directory: /cmd/cortex
     schedule:
       interval: weekly
     ignore:
@@ -62,7 +62,7 @@ updates:
       - dependency-name: "github.com/maximhq/bifrost/core"
         versions: [">=1.8.0"]
   - package-ecosystem: gomod
-    directory: /cmd/authbridge-envoy
+    directory: /cmd/cortex-envoy
     schedule:
       interval: weekly
     ignore:

@@ -11,7 +11,7 @@
 # Uses alpine base (~5 MB) — needs bash for the supervisor entrypoint.
 # authbridge-proxy is CGO_ENABLED=0 static, so musl is fine.
 #
-# Build context: . (repository root; needs access to core/ and cmd/authbridge-proxy/)
+# Build context: . (repository root; needs access to core/ and cmd/cortex/)
 #
 # core embeds github.com/rossoctl/context-guru (a published module, fetched via
 # GOPROXY like any other dependency). It builds pure-Go — skeleton's cgo is behind
@@ -28,7 +28,7 @@ RUN apk add --no-cache git
 WORKDIR /app
 
 COPY core/ core/
-COPY cmd/authbridge-proxy/ cmd/authbridge-proxy/
+COPY cmd/cortex/ cmd/cortex/
 
 # Plugins are all opt-in, so a build with no tags registers none. Such an image
 # is never a valid artifact: it crash-loops on any config naming a plugin, and
@@ -40,7 +40,7 @@ RUN test -n "${GO_BUILD_TAGS}" || { \
       echo "Pass a profile, e.g. --build-arg GO_BUILD_TAGS=\"\$(go -C scripts/profile-tags run . full)\"" >&2; \
       exit 1; }
 ENV GOWORK=off
-RUN cd cmd/authbridge-proxy && CGO_ENABLED=0 GOOS=linux go build -tags "${GO_BUILD_TAGS}" -ldflags="-s -w" -o /authbridge-proxy .
+RUN cd cmd/cortex && CGO_ENABLED=0 GOOS=linux go build -tags "${GO_BUILD_TAGS}" -ldflags="-s -w" -o /authbridge-proxy .
 
 # Stage 2: Runtime — alpine (has bash, ~5 MB base)
 FROM alpine:3.20@sha256:beefdbd8a1da6d2915566fde36db9db0b524eb737fc57cd1367effd16dc0d06d
@@ -48,7 +48,7 @@ FROM alpine:3.20@sha256:beefdbd8a1da6d2915566fde36db9db0b524eb737fc57cd1367effd1
 RUN apk add --no-cache bash ca-certificates
 
 COPY --from=builder --chmod=755 /authbridge-proxy /usr/local/bin/authbridge-proxy
-COPY --chmod=755 cmd/authbridge-proxy/entrypoint.sh /usr/local/bin/entrypoint.sh
+COPY --chmod=755 cmd/cortex/entrypoint.sh /usr/local/bin/entrypoint.sh
 
 USER 1001
 

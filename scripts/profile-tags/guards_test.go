@@ -221,7 +221,7 @@ var reservedFileSuffixes = map[string]bool{
 // causes. A file named plugins_sparc.go carries an implicit GOARCH=sparc
 // constraint, so it compiles on no normal machine — the plugin vanishes with no
 // build error, and a tag-scanning guard still "finds" it because the directive is
-// right there in the source. cmd/authbridge-proxy already worked around this by
+// right there in the source. cmd/cortex already worked around this by
 // naming its file plugins_sparcplugin.go; nothing enforced it until now.
 func TestNoPluginFileShadowedByGOOSGOARCH(t *testing.T) {
 	files, err := pluginFiles(cmdDir)

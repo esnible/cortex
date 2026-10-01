@@ -83,7 +83,7 @@ The cost is settled **once**, on the terminal frame, from one of two sources:
 | File | Purpose |
 |------|---------|
 | `core/plugins/litellm_budgettrack/plugin.go` | Plugin implementation |
-| `cmd/authbridge-proxy/plugins_litellm_budgettrack.go` | Registration (build-tag gated) |
+| `cmd/cortex/plugins_litellm_budgettrack.go` | Registration (build-tag gated) |
 
 ## Plugin Configuration
 
@@ -248,7 +248,7 @@ Every plugin is opt-in. This one is carried by the `full` and `lite` profiles;
 to link it explicitly:
 
 ```bash
-go build -tags include_plugin_litellm_budgettrack ./cmd/authbridge-proxy/
+go build -tags include_plugin_litellm_budgettrack ./cmd/cortex/
 ```
 
 The registration file uses the standard build-tag pattern:
@@ -288,7 +288,7 @@ cd core/plugins/litellm_budgettrack
 go test -v ./...
 
 # Or build authbridge-proxy with the plugin and test end-to-end, from the repo root:
-go build ./cmd/authbridge-proxy/
+go build ./cmd/cortex/
 ./authbridge-proxy --config test-config.yaml
 # Send requests with x-litellm-response-cost header in responses
 ```

@@ -155,24 +155,24 @@ cortex/
 │   └── storage/redis/                #   Redis driver for the storage.Store interface
 │                                     #   (its own module, nested but not part of core)
 │
-├── cmd/authbridge-proxy/             # proxy-sidecar mode (default). Full plugin set.
+├── cmd/cortex/             # proxy-sidecar mode (default). Full plugin set.
 │   ├── main.go                       #   (the authbridge-lite image is this binary
 │   │                                 #    built with the `lite` profile's tags)
 │   ├── Dockerfile                    #   proxy-sidecar image (the `authbridge` image)
 │   └── entrypoint.sh
 │
-├── cmd/authbridge-envoy/             # envoy-sidecar mode. Full plugin set.
+├── cmd/cortex-envoy/             # envoy-sidecar mode. Full plugin set.
 │   ├── main.go
 │   ├── Dockerfile                    #   envoy-sidecar combined image (Envoy + authbridge-envoy)
 │   └── entrypoint.sh
 │
-├── cmd/authbridge-cpex/              # proxy-sidecar mode + cpex plugin. -tags cpex, cgo required.
+├── cmd/cortex-cpex/              # proxy-sidecar mode + cpex plugin. -tags cpex, cgo required.
 │   ├── main.go
 │   ├── Dockerfile                    #   proxy-sidecar build linking libcpex_ffi.a
 │   ├── CPEX_FFI_VERSION              #   pinned CPEX FFI ABI version (build-arg source of truth)
 │   └── entrypoint.sh
 │
-├── cmd/authbridge-praxis/            # proxy-sidecar rendered into a Praxis proxy config.
+├── cmd/cortex-praxis/            # proxy-sidecar rendered into a Praxis proxy config.
 │   ├── main.go                       #   PAUSED: ships in no image, registers no
 │   ├── Dockerfile                    #   plugins, has no demo — but deliberately kept
 │   └── entrypoint.sh                 #   and kept compiling. Do not delete.
@@ -305,10 +305,10 @@ Sidecar binaries, one Dockerfile each; the `authbridge-lite` image is a build va
 
 | Binary | Mode | Listeners | Plugins |
 |--------|------|-----------|---------|
-| `cmd/authbridge-proxy/` | proxy-sidecar (default) | HTTP forward + reverse proxies | full (incl. parsers) |
-| `cmd/authbridge-envoy/` | envoy-sidecar | gRPC ext_proc on :9090 | full (incl. parsers) |
-| `cmd/authbridge-cpex/` | proxy-sidecar | HTTP forward + reverse proxies | full + `cpex` (cgo) |
-| `cmd/authbridge-praxis/` | proxy-sidecar | HTTP (Praxis-rendered) | **none** — paused, see [`cmd/README.md`](cmd/README.md) |
+| `cmd/cortex/` | proxy-sidecar (default) | HTTP forward + reverse proxies | full (incl. parsers) |
+| `cmd/cortex-envoy/` | envoy-sidecar | gRPC ext_proc on :9090 | full (incl. parsers) |
+| `cmd/cortex-cpex/` | proxy-sidecar | HTTP forward + reverse proxies | full + `cpex` (cgo) |
+| `cmd/cortex-praxis/` | proxy-sidecar | HTTP (Praxis-rendered) | **none** — paused, see [`cmd/README.md`](cmd/README.md) |
 | `authbridge-lite` _(image: proxy + `lite` profile)_ | proxy-sidecar | HTTP forward + reverse proxies | sidecar-minimum plugin set (see `scripts/profile-tags`) |
 
 Every sidecar binary but praxis pins one deployment shape and refuses a
@@ -321,7 +321,7 @@ with. See [`cmd/agentop/README.md`](cmd/agentop/README.md) for flags and keybind
 
 **Plugins are all opt-in.** Each one lives in a `cmd/*/plugins_<name>.go` file
 gated by `//go:build include_plugin_<name>` (15 such files in
-`cmd/authbridge-proxy/`); `main.go` imports no plugin package directly, so a build
+`cmd/cortex/`); `main.go` imports no plugin package directly, so a build
 with no `-tags` registers no plugins at all and rejects every config it is handed.
 Tag sets come from [`scripts/profile-tags`](scripts/profile-tags/), one profile per
 shipped artifact.
@@ -722,10 +722,10 @@ All images are pushed to `ghcr.io/rossoctl/cortex/` from
 
 | Image | Source | Description |
 |-------|--------|-------------|
-| **`authbridge`** | **`cmd/authbridge-proxy/Dockerfile`** | **proxy-sidecar image (default mode): authbridge-proxy, full plugin set incl. parsers. No Envoy.** |
-| `authbridge-envoy` | `cmd/authbridge-envoy/Dockerfile` | envoy-sidecar combined image: Envoy + authbridge-envoy (ext_proc, full plugin set) |
-| `authbridge-lite` | `cmd/authbridge-proxy/Dockerfile` (+ `GO_BUILD_TAGS` from the `lite` profile) | proxy-sidecar image with a sidecar-minimum plugin set (see `scripts/profile-tags`). A build variant of `authbridge`, not a separate binary; not yet referenced by the operator's default config |
-| `authbridge-cpex` | `cmd/authbridge-cpex/Dockerfile` | proxy-sidecar build with the CPEX plugin. Two tag sources: the literal `cpex` tag, always required because it gates `cmd/authbridge-cpex/main.go`, plus the plugin tags its Dockerfile appends from `GO_BUILD_TAGS` (resolved from the `cpex` profile in `build.yaml`) — `cpex` alone registers no plugins. Links `libcpex_ffi.a` from a pinned CPEX release (CGO_ENABLED=1). Routes hooks through the CPEX framework (APL DSL + named CPEX policy plugins). FFI ABI version is read from `cmd/authbridge-cpex/CPEX_FFI_VERSION` |
+| **`authbridge`** | **`cmd/cortex/Dockerfile`** | **proxy-sidecar image (default mode): authbridge-proxy, full plugin set incl. parsers. No Envoy.** |
+| `authbridge-envoy` | `cmd/cortex-envoy/Dockerfile` | envoy-sidecar combined image: Envoy + authbridge-envoy (ext_proc, full plugin set) |
+| `authbridge-lite` | `cmd/cortex/Dockerfile` (+ `GO_BUILD_TAGS` from the `lite` profile) | proxy-sidecar image with a sidecar-minimum plugin set (see `scripts/profile-tags`). A build variant of `authbridge`, not a separate binary; not yet referenced by the operator's default config |
+| `authbridge-cpex` | `cmd/cortex-cpex/Dockerfile` | proxy-sidecar build with the CPEX plugin. Two tag sources: the literal `cpex` tag, always required because it gates `cmd/cortex-cpex/main.go`, plus the plugin tags its Dockerfile appends from `GO_BUILD_TAGS` (resolved from the `cpex` profile in `build.yaml`) — `cpex` alone registers no plugins. Links `libcpex_ffi.a` from a pinned CPEX release (CGO_ENABLED=1). Routes hooks through the CPEX framework (APL DSL + named CPEX policy plugins). FFI ABI version is read from `cmd/cortex-cpex/CPEX_FFI_VERSION` |
 | `proxy-init` | `deploy/proxy-init/Dockerfile.init` | Alpine + iptables init container (envoy-sidecar + proxy-sidecar enforce-redirect modes) |
 | `sparc-service` | `deploy/sparc-service/Dockerfile` | Python SPARC reflection service (FastAPI wrapper around the ALTK pre-tool reflection component), called by the `sparc` plugin |
 
@@ -756,7 +756,7 @@ Hooks:
 
 - `go vet ./...` **is** a gate, on 7 of the 12 modules: `core`, both
   `scripts/*`, and the `cmd/{authbridge-proxy,authbridge-envoy,agentop,authbridge-praxis}`
-  matrix. Not vetted anywhere: `cmd/authbridge-cpex` (deliberately excluded — it
+  matrix. Not vetted anywhere: `cmd/cortex-cpex` (deliberately excluded — it
   needs CGO and a pinned `libcpex_ffi.a`, so `build.yaml` covers it via the image
   build), `core/storage/redis`, and the three `demos/*` modules.
 - `go fmt ./...` is **not** a gate. `go fmt` is `gofmt -l -w`: it rewrites the
@@ -775,7 +775,7 @@ touched one of the five unvetted modules.
 | agentop (TUI) | Go 1.26.5, bubbletea |
 | keycloak_sync.py / setup scripts | Python 3.12, python-keycloak (`>=7.1.1,<8`) |
 | sparc-service | Python 3.10+, FastAPI, agent-lifecycle-toolkit |
-| Proxy | Envoy v1.37.1 (pinned by digest in `cmd/authbridge-envoy/Dockerfile`) |
+| Proxy | Envoy v1.37.1 (pinned by digest in `cmd/cortex-envoy/Dockerfile`) |
 | Traffic interception | iptables (via init container) |
 | Identity | SPIFFE/SPIRE (JWT-SVIDs) |
 | Auth provider | Keycloak (OAuth2/OIDC, token exchange RFC 8693) |
@@ -862,12 +862,12 @@ cd ../..
 
 # Sidecar images. Pick whichever you need; the operator selects the image per
 # workload from the resolved AuthBridge mode.
-podman build -f cmd/authbridge-proxy/Dockerfile -t authbridge:latest .       # proxy-sidecar (default)
-podman build -f cmd/authbridge-envoy/Dockerfile -t authbridge-envoy:latest . # envoy-sidecar
+podman build -f cmd/cortex/Dockerfile -t authbridge:latest .       # proxy-sidecar (default)
+podman build -f cmd/cortex-envoy/Dockerfile -t authbridge-envoy:latest . # envoy-sidecar
 # authbridge-lite: same proxy Dockerfile, built with the `lite` profile
 # from scripts/profile-tags. Plugins are all opt-in, so
 # GO_BUILD_TAGS is required — omitting it registers no plugins.
-podman build -f cmd/authbridge-proxy/Dockerfile \
+podman build -f cmd/cortex/Dockerfile \
   --build-arg GO_BUILD_TAGS="$(go -C scripts/profile-tags run . lite)" \
   -t authbridge-lite:latest .
 
@@ -910,7 +910,7 @@ For an interactive walkthrough see
 - Test by rebuilding the affected image. `GO_BUILD_TAGS` is required — every
   plugin is opt-in, so a build without it registers none and rejects every
   config it is handed:
-  `podman build -f cmd/authbridge-envoy/Dockerfile
+  `podman build -f cmd/cortex-envoy/Dockerfile
   --build-arg GO_BUILD_TAGS="$(go -C scripts/profile-tags run . envoy)"
   -t authbridge-envoy:latest .` then `kind load docker-image
   authbridge-envoy:latest --name rossoctl`.

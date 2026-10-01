@@ -489,7 +489,7 @@ func serviceInstall(p servicePaths, yes, forceRestart bool, stdout, stderr io.Wr
 // crashRecoveryNote explains why there are two authbridge-proxy processes on macOS.
 //
 // launchd does not restart these agents — see renderUnitFor and
-// cmd/authbridge-proxy/supervise.go — so crash recovery belongs to the supervisor, not
+// cmd/cortex/supervise.go — so crash recovery belongs to the supervisor, not
 // to KeepAlive. A package-level const so its content can be asserted on any platform,
 // not only when the test happens to run on darwin.
 const crashRecoveryNote = "A supervisor process handles crashes (launchd will not restart these agents)."

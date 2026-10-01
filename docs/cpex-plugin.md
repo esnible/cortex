@@ -74,7 +74,7 @@ It is **not** the right home for:
 ### Build constraint
 
 The cpex plugin links `libcpex_ffi.a` via cgo. The `authbridge-cpex`
-binary (`cmd/authbridge-cpex/`) is the only build target that compiles
+binary (`cmd/cortex-cpex/`) is the only build target that compiles
 the plugin — built with `-tags cpex` and `CGO_ENABLED=1`. Other
 binaries (`authbridge-proxy`, `authbridge-envoy`, `authbridge-lite`)
 stay pure-Go and never import the plugin.
@@ -344,8 +344,8 @@ need to route background results separately from foreground logs.
 
 ## See also
 
-- `cmd/authbridge-cpex/README.md` — binary build + deployment.
-- `cmd/authbridge-cpex/CPEX_FFI_VERSION` — pinned CPEX FFI ABI version
+- `cmd/cortex-cpex/README.md` — binary build + deployment.
+- `cmd/cortex-cpex/CPEX_FFI_VERSION` — pinned CPEX FFI ABI version
   the binary was built against.
 - [CPEX repository](https://github.com/contextforge-org/cpex) — APL
   DSL, sub-plugin reference, FFI ABI.

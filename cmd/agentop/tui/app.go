@@ -2543,7 +2543,7 @@ func yankDir() (string, error) {
 //
 // A loose mode on a directory agentop owns is tightened rather than refused, which
 // is what the rest of the tree already does for this exact problem:
-// writeBuiltinConfig in cmd/authbridge-proxy/local.go chmods ~/.cortex to 0700
+// writeBuiltinConfig in cmd/cortex/local.go chmods ~/.cortex to 0700
 // after MkdirAll, and again one level down for the CA directory. Self-healing
 // beats handing the user a chmod to run by hand, and if the chmod fails — someone
 // else owns it — the refusal below still stands. Symlinks and non-directories stay

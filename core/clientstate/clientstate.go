@@ -3,7 +3,7 @@
 // pointed at the CA in force.
 //
 // It exists because that record is a contract between two separate main packages in
-// two separate modules (cmd/agentop writes it, cmd/authbridge-proxy reads it) that
+// two separate modules (cmd/agentop writes it, cmd/cortex reads it) that
 // cannot import each other. Before this, each carried its own copy of the relative
 // path and its own inline struct, with nothing tying them together: renaming a JSON
 // field or moving the file would leave the reader silently returning nothing, the

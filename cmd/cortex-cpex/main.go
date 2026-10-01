@@ -1,16 +1,21 @@
-// Package main is the envoy-sidecar authbridge binary: an ext_proc
-// gRPC server intended to run alongside Envoy in a sidecar (or as a
-// shared service hooked into Envoy's external_processor filter).
+//go:build cpex
+
+// Package main is the CPEX-enabled authbridge binary: identical to
+// authbridge-proxy (HTTP forward + reverse proxies, full rossoctl
+// plugin set) plus the `cpex` plugin which routes hooks through the
+// CPEX (Context Plugin Execution) framework — including the APL DSL
+// and any pre-built CPEX policy plugins (Cedar, PII scanner, audit
+// logger, etc.).
 //
-// It links only the plugins its build tags name — nothing is compiled in
-// by default. Every plugin has its own plugins_<name>.go file gated by
-// `//go:build include_plugin_<name>`, and this binary's set is the
-// `envoy` profile in scripts/profile-tags. main.go imports no
-// plugin package directly.
+// This binary requires `-tags cpex` and links libcpex_ffi via cgo.
+// The build constraint at the top of this file ensures a no-tag
+// build fails fast rather than silently producing an authbridge-proxy
+// duplicate.
 //
-// Mode is hardcoded to envoy-sidecar; YAML configs that specify a
-// different mode are rejected at boot. For proxy-sidecar mode (HTTP
-// forward/reverse proxies, no Envoy), use cmd/authbridge-proxy.
+// For envoy-sidecar mode use authbridge-envoy; for a no-cgo, pure-Go
+// build use authbridge-proxy. The body of main() below is duplicated
+// from authbridge-proxy/main.go pending a core-side `Run()`
+// extraction — see this binary's README for the extraction proposal.
 package main
 
 import (
@@ -19,18 +24,11 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
-	"net"
 	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
-
-	extprocv3 "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/health"
-	healthpb "google.golang.org/grpc/health/grpc_health_v1"
-	"google.golang.org/grpc/reflection"
 
 	"github.com/rossoctl/cortex/core/auth"
 	"github.com/rossoctl/cortex/core/bootstrap"
@@ -43,37 +41,40 @@ import (
 	"github.com/rossoctl/cortex/core/session"
 	"github.com/rossoctl/cortex/core/sessionapi"
 	"github.com/rossoctl/cortex/core/spiffe"
+	authtls "github.com/rossoctl/cortex/core/tlsconfig"
 
-	// Only the ext_proc listener is compiled in (no HTTP proxies).
-	"github.com/rossoctl/cortex/core/listener/extproc"
-	"github.com/rossoctl/cortex/core/listener/skiphost"
-	// Plugins. Auth gates first, then the protocol parsers that
-	// supply session-event context for agentop.
+	"github.com/rossoctl/cortex/core/listener/forwardproxy"
+	"github.com/rossoctl/cortex/core/listener/reverseproxy"
+	// Plugins — same set as authbridge-proxy, plus the cpex plugin
+	// which lives behind //go:build cpex. The cpex import only fires
+	// in this binary's build; pure-Go binaries (authbridge-proxy,
+	// authbridge-envoy, authbridge-lite) don't import it.
 )
 
 // warnCostLedgerInert says out loud that a cost_ledger block in this binary's config
 // does nothing. Safe to call unconditionally; silent when the block is absent.
 //
-// INERT BY DESIGN, not an oversight, and that is why this is a log line rather than
-// wiring or a refusal:
+// FOURTH BINARY WITH THIS SHAPE, and the same answer as authbridge-envoy's for the same
+// reasons — see warnCostLedgerInert there, which this mirrors deliberately rather than
+// paraphrases. This binary builds a session store and stops: no usage aggregator, no
+// ledger, and a session API constructed without WithUsage, so the whole block is loaded,
+// validated, and thrown away.
 //
-//   - Wiring it would be wrong here. authbridge-envoy is an ext_proc sidecar, which
-//     is a Kubernetes shape, and the ledger is deliberately OFF in Kubernetes (see
-//     CostLedgerConfig): a pod's filesystem is ephemeral, one replica's day files are
-//     invisible to the next, and the right sink for fleet-wide spend is a central
-//     collector rather than N per-pod files nobody collects. Wiring it would
-//     manufacture exactly the arrangement the proxy's own comment argues against.
+// INERT IS THE RIGHT ANSWER; the silence was not:
 //
-//   - Refusing it at load would be wrong too. config.Validate is shared by every
-//     binary, and the gap is per-BINARY rather than per-mode — authbridge-cpex runs
-//     proxy-sidecar mode and has no ledger either — so a mode-keyed refusal would
-//     both miss cpex and turn a stray inherited key into a crash-loop over an
-//     observability nicety. main.go already makes that trade the other way for a
-//     ledger it cannot open.
+//   - Wiring it would be wrong here. authbridge-cpex runs proxy-sidecar mode in
+//     Kubernetes, where the ledger is deliberately off (see CostLedgerConfig): a pod's
+//     filesystem is ephemeral, one replica's day files are invisible to the next, and the
+//     right sink for fleet-wide spend is a central collector rather than N per-pod files
+//     nobody collects.
+//   - Refusing it at load would be wrong too. config.Validate is shared by every binary
+//     and this gap is per-BINARY rather than per-mode, so a mode-keyed refusal would turn
+//     a stray inherited key into a crash-loop over an observability nicety.
 //
-// What is NOT defensible is what it did before: load the key, validate it, and
-// discard it without a word. The line names the key, says it is inert, and points at
-// the binary that does honour it.
+// What is not defensible is loading the key, validating it, and discarding it without a
+// word. The line names the key as it is spelled in YAML, says INERT rather than
+// "disabled" (which reads as the ordinary Kubernetes default), and points at the binary
+// that does honour it.
 func warnCostLedgerInert(cfg *config.Config, logger *slog.Logger) {
 	if logger == nil {
 		logger = slog.Default()
@@ -81,8 +82,8 @@ func warnCostLedgerInert(cfg *config.Config, logger *slog.Logger) {
 	if cfg.CostLedger == nil {
 		return
 	}
-	logger.Warn("cost_ledger is configured but INERT in authbridge-envoy — no cost history will be written",
-		"reason", "this binary wires no cost ledger and no usage aggregator; the ext_proc sidecar is a Kubernetes shape, where per-pod day files are the wrong sink for spend (use a central collector)",
+	logger.Warn("cost_ledger is configured but INERT in authbridge-cpex — no cost history will be written",
+		"reason", "this binary wires no cost ledger and no usage aggregator; it runs in Kubernetes, where per-pod day files are the wrong sink for spend (use a central collector)",
 		"effect", "the whole cost_ledger block is ignored, including dir and retention_days",
 		"fix", "remove the cost_ledger block here; for durable local cost history run authbridge-proxy --local, which does honour it")
 }
@@ -91,43 +92,23 @@ func main() {
 	configPath := flag.String("config", "", "path to config YAML file")
 	flag.Parse()
 
-	bootstrap.InitLogging("authbridge-envoy")
+	bootstrap.InitLogging("authbridge-cpex")
 	bootstrap.StartSignalToggle()
 
 	if *configPath == "" {
 		log.Fatal("--config is required and must point to a YAML file")
 	}
 
-	// Build the SPIFFE Provider when the spiffe block is configured.
-	// envoy-sidecar mode terminates mTLS in Envoy itself (via the
-	// file-based DownstreamTlsContext / UpstreamTlsContext referencing
-	// /opt/svid*.pem in the rendered envoy-config) — this binary
-	// doesn't see the TLS bytes directly, so X509Source() isn't read
-	// here. The Provider is still needed because token-exchange's
-	// spiffe identity path consumes a JWTSource via DI, and the file
-	// mirror is what keeps /opt/svid.pem, /opt/svid_key.pem,
-	// /opt/svid_bundle.pem, and /opt/jwt_svid.token fresh on disk for
-	// Envoy and other consumers.
-	//
-	// We need cfg first to read the spiffe block, so do a one-shot
-	// Load before buildPipelines runs (buildPipelines re-Loads
-	// internally for hot-reload). The Provider is captured by
-	// buildPipelines via closure so reload-time pipeline rebuilds
-	// inject the same Provider into freshly constructed plugin
-	// instances.
 	bootCfg, err := config.Load(*configPath)
 	if err != nil {
 		log.Fatalf("failed to load config %q: %v", *configPath, err)
 	}
-	slog.Debug("config loaded", "configPath", *configPath)
-
 	var provider *spiffe.Provider
 	if bootCfg.SPIFFE != nil {
 		mirrorFiles := true
 		if bootCfg.SPIFFE.MirrorFiles != nil {
 			mirrorFiles = *bootCfg.SPIFFE.MirrorFiles
 		}
-		slog.Debug("About to create SPIFFE Provider", "bootCfg.SPIFFE.Socket", bootCfg.SPIFFE.Socket)
 		provider, err = spiffe.NewProvider(context.Background(), spiffe.ProviderConfig{
 			SocketPath:  bootCfg.SPIFFE.Socket,
 			MirrorFiles: mirrorFiles,
@@ -137,9 +118,6 @@ func main() {
 			log.Fatalf("spiffe provider: %v", err)
 		}
 		defer provider.Close()
-		slog.Debug("SPIFFE provider created", "bootCfg.SPIFFE.Socket", bootCfg.SPIFFE.Socket)
-	} else {
-		slog.Debug("Config does not use SPIFFE")
 	}
 
 	// Built once, outside buildPipelines, because the reloader re-invokes that
@@ -160,12 +138,12 @@ func main() {
 		if err != nil {
 			return nil, nil, nil, err
 		}
-		if c.Mode != "" && c.Mode != config.ModeEnvoySidecar {
+		if c.Mode != "" && c.Mode != config.ModeProxySidecar {
 			return nil, nil, nil, fmt.Errorf(
-				"authbridge-envoy supports only mode=%q (got %q); use cmd/authbridge for other modes",
-				config.ModeEnvoySidecar, c.Mode)
+				"authbridge-cpex supports only mode=%q (got %q); use cmd/cortex-envoy for envoy-sidecar mode",
+				config.ModeProxySidecar, c.Mode)
 		}
-		c.Mode = config.ModeEnvoySidecar
+		c.Mode = config.ModeProxySidecar
 		config.ApplyPreset(c)
 		if err := config.Validate(c); err != nil {
 			return nil, nil, nil, err
@@ -237,26 +215,70 @@ func main() {
 	} else {
 		slog.Info("session tracking disabled")
 	}
-	// This binary builds a session store and stops there — no usage aggregator, no
-	// cost ledger — so a cost_ledger block in its config is loaded, validated, and
-	// thrown away. That is a deliberate absence (see the helper), but silence about
-	// it is not.
+	// Outside the branch on purpose, like authbridge-proxy's: this binary builds a session
+	// store and stops there — no usage aggregator, no cost ledger — so a cost_ledger block
+	// in its config is loaded, validated and thrown away. That absence is deliberate (see
+	// the helper); the silence about it was not, and a warning that only exists down one
+	// arm of an if is the shape that produces the next silence.
 	warnCostLedgerInert(cfg, slog.Default())
 
-	store := memstore.New()
-	defer store.Close() // stop the TTL janitor on normal main return
+	var httpServers []*http.Server
 
-	// SkipHosts: outbound destinations that bypass the pipeline AND
-	// session recording entirely. See ListenerConfig.SkipHosts for the
-	// motivating case (chatty observability sidecars evicting the
-	// inbound A2A user intent from the session FIFO).
-	skipHosts, err := skiphost.New(cfg.Listener.SkipHosts)
-	if err != nil {
-		log.Fatalf("listener.skip_hosts: %v", err)
+	var (
+		rpMTLS      *reverseproxy.MTLSOptions
+		fpMTLS      *forwardproxy.MTLSOptions
+		mtlsMetrics *authtls.Metrics
+	)
+	if cfg.MTLS != nil {
+		if provider == nil {
+			log.Fatal("mtls requires the spiffe block to be configured")
+		}
+		strict := cfg.MTLS.ResolvedMode() == config.MTLSModeStrict
+		src := provider.X509Source()
+		mtlsMetrics = authtls.NewMetrics()
+		rpMTLS = &reverseproxy.MTLSOptions{Source: src, Strict: strict, Metrics: mtlsMetrics}
+		if strict {
+			fpMTLS = &forwardproxy.MTLSOptions{Source: src, Metrics: mtlsMetrics}
+		}
+		slog.Info("mTLS enabled", "mode", cfg.MTLS.ResolvedMode())
+	} else {
+		slog.Info("mTLS disabled (no mtls block in config)")
 	}
 
-	var grpcServers []*grpc.Server
-	grpcServers = append(grpcServers, startGRPCExtProc(inboundH, outboundH, sessions, store, skipHosts, cfg.Listener.ExtProcAddr))
+	rpSrv, err := reverseproxy.NewServer(inboundH, sessions, cfg.Listener.ReverseProxyBackend, rpMTLS)
+	if err != nil {
+		log.Fatalf("creating reverse proxy: %v", err)
+	}
+	fpSrv, err := forwardproxy.NewServer(outboundH, sessions, fpMTLS)
+	if err != nil {
+		log.Fatalf("creating forward proxy: %v", err)
+	}
+	sharedStore := memstore.New()
+	defer sharedStore.Close()
+	rpSrv.Shared = sharedStore
+	fpSrv.Shared = sharedStore
+	// Same per-session bucketing as authbridge-proxy: a client-supplied session
+	// id beats the global ActiveSession(), so concurrent agent sessions stay
+	// separable. Falls back to the previous behavior when absent.
+	//
+	// The default list is shared with the laptop binary, so it applies in-cluster
+	// too — where the headers are client-asserted by whatever can reach this proxy
+	// rather than by an agent the operator started. session.id_headers: [] is the
+	// off switch wherever attribution is a trust boundary; see
+	// session.IDFromHeaders.
+	fpSrv.SessionIDHeaders = cfg.Session.SessionIDHeaders()
+	fpSrv.ClientAffinity = cfg.Session.ClientAffinityEnabled()
+	rpHTTP, err := bootstrap.StartReverseProxyServer("reverse-proxy", rpSrv, cfg.Listener.ReverseProxyAddr)
+	if err != nil {
+		log.Fatalf("reverse-proxy listen: %v", err)
+	}
+	httpServers = append(httpServers, rpHTTP)
+	fpHTTP, err := bootstrap.StartHTTPServer("forward-proxy", fpSrv.Handler(), cfg.Listener.ForwardProxyAddr)
+	if err != nil {
+		log.Fatalf("forward-proxy listen: %v", err)
+	}
+	httpServers = append(httpServers, fpHTTP)
+	_ = mtlsMetrics
 
 	statsProvider := func() *auth.Stats {
 		sources := plugins.CollectStats(inboundH.Load())
@@ -268,9 +290,6 @@ func main() {
 		log.Fatalf("stat server listen: %v", statErr)
 	}
 
-	// Warm the plugin catalog at boot so any factory that violates the
-	// constructor contract surfaces here rather than on the first
-	// /v1/plugins request.
 	plugins.WarmCatalog()
 
 	var sessionAPISrv *sessionapi.Server
@@ -290,7 +309,7 @@ func main() {
 		}()
 	}
 
-	slog.Info("authbridge-envoy starting", "mode", cfg.Mode, "logLevel", bootstrap.LogLevel().String())
+	slog.Info("authbridge-cpex starting", "mode", cfg.Mode, "logLevel", bootstrap.LogLevel().String())
 
 	healthSrv, healthErr := bootstrap.StartHealthServer(inboundH, outboundH, cfg.Listener.HealthAddr)
 	if healthErr != nil {
@@ -305,12 +324,8 @@ func main() {
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer shutdownCancel()
 
-	for _, srv := range grpcServers {
-		go func(s *grpc.Server) {
-			<-shutdownCtx.Done()
-			s.Stop()
-		}(srv)
-		srv.GracefulStop()
+	for _, srv := range httpServers {
+		srv.Shutdown(shutdownCtx)
 	}
 	statSrv.Shutdown(shutdownCtx)
 	healthSrv.Shutdown(shutdownCtx)
@@ -324,35 +339,4 @@ func main() {
 	if sessions != nil {
 		sessions.Close()
 	}
-}
-
-func startGRPCExtProc(inbound, outbound *pipeline.Holder, sessions *session.Store, store pipeline.SharedStore, skipHosts *skiphost.Matcher, addr string) *grpc.Server {
-	srv := grpc.NewServer()
-	extprocv3.RegisterExternalProcessorServer(srv, &extproc.Server{
-		InboundPipeline:  inbound,
-		OutboundPipeline: outbound,
-		Sessions:         sessions,
-		Shared:           store,
-		SkipHosts:        skipHosts,
-	})
-	registerHealth(srv)
-	reflection.Register(srv)
-
-	go func() {
-		lis, err := net.Listen("tcp", addr)
-		if err != nil {
-			log.Fatalf("ext_proc listen %s: %v", addr, err)
-		}
-		slog.Info("ext_proc gRPC listening", "addr", addr)
-		if err := srv.Serve(lis); err != nil {
-			log.Fatalf("ext_proc serve: %v", err)
-		}
-	}()
-	return srv
-}
-
-func registerHealth(srv *grpc.Server) {
-	healthSrv := health.NewServer()
-	healthpb.RegisterHealthServer(srv, healthSrv)
-	healthSrv.SetServingStatus("", healthpb.HealthCheckResponse_SERVING)
 }

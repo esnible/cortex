@@ -45,7 +45,7 @@ if [[ -z "$BIN" ]]; then
   # Plugins are all opt-in build tags, and the built-in --local config names four
   # of them. Without the `local` profile's tags the binary starts, fails to build
   # its pipeline, and exits — so the tags are required, not an optimisation.
-  go build -tags "$(go -C scripts/profile-tags run . local)" -o "$BIN" ./cmd/authbridge-proxy
+  go build -tags "$(go -C scripts/profile-tags run . local)" -o "$BIN" ./cmd/cortex
 fi
 
 # start_proxy <home> [ca-dir] — boots against that HOME on our own ports.

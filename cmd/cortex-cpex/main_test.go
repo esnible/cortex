@@ -19,7 +19,7 @@ import (
 // TAGGED cpex, like main.go, because it reads a symbol defined there. This module is
 // deliberately absent from the CI matrix — the binary needs CGO and libcpex_ffi.a from a
 // pinned release, so build.yaml covers it through the image build — so these run under
-// `go test -tags cpex ./cmd/authbridge-cpex/` locally rather than on every PR. Stated
+// `go test -tags cpex ./cmd/cortex-cpex/` locally rather than on every PR. Stated
 // rather than left implicit: a test nobody runs is worth less than one that runs, and the
 // import guard below is the half that matters most if this module ever joins the matrix.
 

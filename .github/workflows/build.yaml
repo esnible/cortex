@@ -36,7 +36,7 @@ jobs:
           # in-process over the SPIRE Workload API; no spiffe-helper.
           - name: authbridge-envoy
             context: .
-            dockerfile: cmd/authbridge-envoy/Dockerfile
+            dockerfile: cmd/cortex-envoy/Dockerfile
 
           # AuthBridge proxy-sidecar combined image (default mode) —
           # authbridge-proxy (full plugin set, includes parsers).
@@ -44,7 +44,7 @@ jobs:
           # SPIRE Workload API; no spiffe-helper.
           - name: authbridge
             context: .
-            dockerfile: cmd/authbridge-proxy/Dockerfile
+            dockerfile: cmd/cortex/Dockerfile
 
           # AuthBridge proxy-sidecar LITE image — the SAME authbridge-proxy
           # binary + Dockerfile, built with a trimmed plugin set (roughly
@@ -54,7 +54,7 @@ jobs:
           # adding a plugin doesn't require editing this file.
           - name: authbridge-lite
             context: .
-            dockerfile: cmd/authbridge-proxy/Dockerfile
+            dockerfile: cmd/cortex/Dockerfile
 
           # AuthBridge proxy-sidecar CPEX image — authbridge-proxy built
           # with -tags cpex (links libcpex_ffi.a from a pinned CPEX
@@ -64,7 +64,7 @@ jobs:
           # file in the build step below.
           - name: authbridge-cpex
             context: .
-            dockerfile: cmd/authbridge-cpex/Dockerfile
+            dockerfile: cmd/cortex-cpex/Dockerfile
 
           # SPARC reflection service — the backend the `sparc` plugin calls.
           # Deployed once per cluster via deploy/sparc-service/deploy.
@@ -143,8 +143,8 @@ jobs:
           profile_tags() { go -C scripts/profile-tags run . "$1"; }
           case "${{ matrix.image_config.name }}" in
             authbridge-cpex)
-              VERSION="$(tr -d '[:space:]' < cmd/authbridge-cpex/CPEX_FFI_VERSION)"
-              ABI="$(tr -d '[:space:]' < cmd/authbridge-cpex/CPEX_FFI_ABI)"
+              VERSION="$(tr -d '[:space:]' < cmd/cortex-cpex/CPEX_FFI_VERSION)"
+              ABI="$(tr -d '[:space:]' < cmd/cortex-cpex/CPEX_FFI_ABI)"
               {
                 echo "args<<EOF"
                 echo "CPEX_FFI_VERSION=${VERSION}"

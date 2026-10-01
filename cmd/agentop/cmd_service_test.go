@@ -81,7 +81,7 @@ func TestRenderUnit_BothPlatforms(t *testing.T) {
 			}
 		}
 		// TimeoutStopSec must exceed the proxy's own 15s graceful-shutdown deadline
-		// (cmd/authbridge-proxy/main.go), explicitly — not by accident of whatever
+		// (cmd/cortex/main.go), explicitly — not by accident of whatever
 		// systemd's own default happens to be. See the rationale comment above
 		// renderUnitFor's linux branch.
 		if !strings.Contains(u, "TimeoutStopSec=20\n") {

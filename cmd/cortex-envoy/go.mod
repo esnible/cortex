@@ -1,10 +1,17 @@
-module github.com/rossoctl/cortex/cmd/authbridge-proxy
+module github.com/rossoctl/cortex/cmd/cortex-envoy
 
 go 1.26.5
 
+replace (
+	github.com/rossoctl/cortex/core => ../../core
+	github.com/rossoctl/cortex/core/storage/redis => ../../core/storage/redis
+)
+
 require (
+	github.com/envoyproxy/go-control-plane/envoy v1.39.0
 	github.com/rossoctl/cortex/core v0.0.0
 	github.com/rossoctl/cortex/core/storage/redis v0.0.0
+	google.golang.org/grpc v1.84.0
 )
 
 require (
@@ -35,8 +42,10 @@ require (
 	github.com/cenkalti/backoff/v5 v5.0.3 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/cloudwego/base64x v0.1.6 // indirect
+	github.com/cncf/xds/go v0.0.0-20260202195803-dba9d589def2 // indirect
 	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.1 // indirect
 	github.com/dlclark/regexp2 v1.11.5 // indirect
+	github.com/envoyproxy/protoc-gen-validate v1.3.3 // indirect
 	github.com/fsnotify/fsnotify v1.10.1 // indirect
 	github.com/go-jose/go-jose/v4 v4.1.5 // indirect
 	github.com/go-logr/logr v1.4.4 // indirect
@@ -71,6 +80,7 @@ require (
 	github.com/open-policy-agent/opa v1.21.0 // indirect
 	github.com/opencontainers/go-digest v1.0.0 // indirect
 	github.com/opencontainers/image-spec v1.1.1 // indirect
+	github.com/planetscale/vtprotobuf v0.6.1-0.20240319094008-0393e58bdf10 // indirect
 	github.com/prometheus/client_golang v1.24.1 // indirect
 	github.com/prometheus/client_model v0.6.3 // indirect
 	github.com/prometheus/common v0.70.1 // indirect
@@ -120,14 +130,8 @@ require (
 	golang.org/x/time v0.16.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260819154853-08b0e4226688 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260819154853-08b0e4226688 // indirect
-	google.golang.org/grpc v1.84.0 // indirect
 	google.golang.org/protobuf v1.36.12 // indirect
 	gopkg.in/ini.v1 v1.67.3 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	oras.land/oras-go/v2 v2.6.2 // indirect
-)
-
-replace (
-	github.com/rossoctl/cortex/core => ../../core
-	github.com/rossoctl/cortex/core/storage/redis => ../../core/storage/redis
 )

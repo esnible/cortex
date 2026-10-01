@@ -83,7 +83,7 @@ func RegisteredPlugins() []string {
 // SPIFFEConsumerPlugins returns the sorted names of registered plugins whose
 // instances implement spiffe.ProviderConsumer — i.e. the plugins BuildWithSPIFFE
 // would inject the Provider into. Callers that gate Provider construction on
-// actual need (see cmd/authbridge-proxy's spiffeProviderNeeded) use this to
+// actual need (see cmd/cortex's spiffeProviderNeeded) use this to
 // assert their need-detection covers every consumer; a new consumer that slips
 // past the predicate would otherwise silently receive a nil Provider.
 //

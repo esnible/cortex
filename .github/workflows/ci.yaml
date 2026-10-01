@@ -148,8 +148,8 @@ jobs:
       fail-fast: false
       matrix:
         binary:
-          - authbridge-proxy
-          - authbridge-envoy
+          - cortex
+          - cortex-envoy
           # agentop is published by release-binaries.yaml, so it has to build
           # under GOWORK=off here too. Omitting it let a missing go.sum entry
           # for a core transitive dep reach main: the workspace build used
@@ -162,7 +162,7 @@ jobs:
           # workspace hides exactly this class of breakage. (authbridge-cpex is
           # deliberately not here: it needs CGO and libcpex_ffi.a from a pinned
           # release, so build.yaml covers it via its image build instead.)
-          - authbridge-praxis
+          - cortex-praxis
     defaults:
       run:
         working-directory: cmd/${{ matrix.binary }}
@@ -193,11 +193,11 @@ jobs:
       # profiles, so build AND test each one here. build.yaml only exercises them
       # on tag/main pushes; this catches a profile-only regression on the PR.
       - name: Build + test each shipped profile
-        if: matrix.binary == 'authbridge-proxy' || matrix.binary == 'authbridge-envoy'
+        if: matrix.binary == 'cortex' || matrix.binary == 'cortex-envoy'
         run: |
           case "${{ matrix.binary }}" in
-            authbridge-proxy) profiles="local full lite" ;;
-            authbridge-envoy) profiles="envoy" ;;
+            cortex) profiles="local full lite" ;;
+            cortex-envoy) profiles="envoy" ;;
           esac
           for profile in ${profiles}; do
             echo "::group::profile ${profile}"

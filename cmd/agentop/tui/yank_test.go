@@ -251,7 +251,7 @@ func TestYankRefusesASymlinkedDir(t *testing.T) {
 }
 
 // A pre-existing world-readable directory agentop owns is TIGHTENED, not refused.
-// That matches writeBuiltinConfig in cmd/authbridge-proxy/local.go, which chmods
+// That matches writeBuiltinConfig in cmd/cortex/local.go, which chmods
 // ~/.cortex to 0700 after MkdirAll for this same reason — self-healing beats
 // handing the user a chmod to run by hand.
 func TestYankTightensALooseModeDir(t *testing.T) {

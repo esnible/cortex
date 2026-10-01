@@ -53,7 +53,7 @@ go run ./approver.go
 Proxy, from the repo root:
 
 ```bash
-./cmd/authbridge-proxy/authbridge-proxy \
+./cmd/cortex/authbridge-proxy \
   -config ./demos/session-budget/local/config-https.yaml
 ```
 

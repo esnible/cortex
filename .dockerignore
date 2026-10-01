@@ -29,7 +29,7 @@ dist
 # would otherwise be shipped into the build context and then ignored by the
 # builder, which recompiles from source anyway.
 #
-# `cmd/*/authbridge-*` catches the in-package builds (cmd/authbridge-proxy/
+# `cmd/*/authbridge-*` catches the in-package builds (cmd/cortex/
 # authbridge-proxy and friends) without touching the package DIRECTORIES, which
 # are one path segment shorter, nor any source file — no tracked file under
 # cmd/*/ begins with "authbridge-".

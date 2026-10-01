@@ -80,7 +80,7 @@ echo "=========================================="
 cd "${REPO_ROOT}"
 # Every plugin is opt-in, so the plugin set must be named: a build without
 # GO_BUILD_TAGS registers none and rejects every config it is handed.
-${CONTAINER_RUNTIME} build -f cmd/authbridge-proxy/Dockerfile \
+${CONTAINER_RUNTIME} build -f cmd/cortex/Dockerfile \
   --build-arg GO_BUILD_TAGS="$(go -C scripts/profile-tags run . full)" \
   -t ghcr.io/rossoctl/cortex/authbridge:local .
 load_image_to_kind ghcr.io/rossoctl/cortex/authbridge:local
@@ -92,7 +92,7 @@ echo "=========================================="
 echo "Building authbridge-envoy (envoy-sidecar combined)"
 echo "=========================================="
 cd "${REPO_ROOT}"
-${CONTAINER_RUNTIME} build -f cmd/authbridge-envoy/Dockerfile \
+${CONTAINER_RUNTIME} build -f cmd/cortex-envoy/Dockerfile \
   --build-arg GO_BUILD_TAGS="$(go -C scripts/profile-tags run . envoy)" \
   -t ghcr.io/rossoctl/cortex/authbridge-envoy:local .
 load_image_to_kind ghcr.io/rossoctl/cortex/authbridge-envoy:local
@@ -106,7 +106,7 @@ echo "=========================================="
 echo "Building authbridge-lite (proxy build variant: lite profile, see scripts/profile-tags)"
 echo "=========================================="
 cd "${REPO_ROOT}"
-${CONTAINER_RUNTIME} build -f cmd/authbridge-proxy/Dockerfile \
+${CONTAINER_RUNTIME} build -f cmd/cortex/Dockerfile \
   --build-arg GO_BUILD_TAGS="$(go -C scripts/profile-tags run . lite)" \
   -t ghcr.io/rossoctl/cortex/authbridge-lite:local .
 load_image_to_kind ghcr.io/rossoctl/cortex/authbridge-lite:local

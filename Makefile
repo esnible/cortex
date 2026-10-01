@@ -24,8 +24,8 @@ fmt: ## Run formatters across all sub-projects
 	@# modules from ./..., and moving it under core/ made it only look covered.
 	cd core/storage/redis && go fmt ./...
 	cd cmd/agentop && go fmt ./...
-	cd cmd/authbridge-proxy && go fmt ./...
-	cd cmd/authbridge-envoy && go fmt ./...
+	cd cmd/cortex && go fmt ./...
+	cd cmd/cortex-envoy && go fmt ./...
 	@# Scope matches the ruff hooks in .pre-commit-config.yaml. Both skip the root
 	@# tests/ tree, which `authbridge/` never covered and which does not format clean.
 	@# Must be `--exclude ./tests`, root-anchored like the hook's `^tests/`: plain
@@ -80,7 +80,7 @@ authbridge-proxy: ## Build authbridge-proxy to ./bin/authbridge-proxy (PROFILE=f
 	@# place it appeared.
 	@TAGS=$$(go -C scripts/profile-tags run . $(or $(PROFILE),full)) && \
 		echo "→ building authbridge-proxy (profile $(or $(PROFILE),full)): $$TAGS" && \
-		cd cmd/authbridge-proxy && \
+		cd cmd/cortex && \
 		GOWORK=off go build -tags "$$TAGS" -o $(BIN_DIR)/authbridge-proxy .
 
 ##@ Local Dev

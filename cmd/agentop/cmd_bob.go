@@ -31,7 +31,7 @@ const (
 
 	// bobCACommonName is the subject every generated bridge CA carries. A literal
 	// rather than an import: bridgeCACommonName lives in package main of
-	// cmd/authbridge-proxy and is not importable from here. darwinGoNote already
+	// cmd/cortex and is not importable from here. darwinGoNote already
 	// carries the same copy for the same reason.
 	bobCACommonName = "authbridge-tls-bridge-ca"
 

@@ -702,9 +702,9 @@ identity:
 
 The mTLS code lives in `core/tlsconfig` + `core/spiffe` (framework-
 shared) and `core/listener/internal/tlssniff` (listener-internal
-byte-peek dispatcher). Only `cmd/authbridge-proxy` wires it up (this
+byte-peek dispatcher). Only `cmd/cortex` wires it up (this
 also covers the `authbridge-lite` image — the same binary built with the
-`lite` profile); `cmd/authbridge-envoy` stays on
+`lite` profile); `cmd/cortex-envoy` stays on
 plaintext-localhost because Envoy handles wire encryption via SDS
 independently.
 

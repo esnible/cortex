@@ -15,7 +15,7 @@ import (
 // are safe.
 //
 // The fake lives outside _test.go so future integration suites in
-// cmd/authbridge-cpex/ or downstream tools can reuse it. The cost is
+// cmd/cortex-cpex/ or downstream tools can reuse it. The cost is
 // that it ships in the authbridge-cpex binary; no caller path
 // instantiates it from production code, so the risk is just dead
 // bytes. If binary size becomes a concern this moves to

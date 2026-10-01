@@ -63,7 +63,7 @@ AGENT_IMAGE       := echo-agent:latest
 UPSTREAM_IMAGE    := echo-upstream:latest
 
 # Repo root (demos/echo -> demos -> repo root). The sidecar Dockerfile
-# lives at cmd/authbridge-proxy/Dockerfile and builds with the repo root
+# lives at cmd/cortex/Dockerfile and builds with the repo root
 # as context.
 REPO_ROOT         := $(abspath ../..)
 
@@ -106,7 +106,7 @@ preflight:  ## Verify rossoctl is installed + tools are available
 
 build-sidecar:  ## Build the authbridge sidecar image from the repo root
 	@echo "[*] Building $(SIDECAR_IMAGE) from $(REPO_ROOT) ..."
-	$(CONTAINER_RUNTIME) build -f $(REPO_ROOT)/cmd/authbridge-proxy/Dockerfile -t $(SIDECAR_IMAGE) $(REPO_ROOT)
+	$(CONTAINER_RUNTIME) build -f $(REPO_ROOT)/cmd/cortex/Dockerfile -t $(SIDECAR_IMAGE) $(REPO_ROOT)
 
 load-sidecar:  ## Load the sidecar image into the kind cluster
 	@echo "[*] Loading $(SIDECAR_IMAGE) into kind cluster $(KIND_CLUSTER_NAME) ..."

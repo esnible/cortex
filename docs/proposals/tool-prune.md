@@ -332,7 +332,7 @@ called directly.
 
 `install-demo.sh` already downloads both binaries with checksum verification and
 prints next steps. `authbridge-proxy` writes `cortex-ca/demo.yaml` on first run
-(`cmd/authbridge-proxy/demo.go`), and that file is hot-reloaded — its own header
+(`cmd/cortex/demo.go`), and that file is hot-reloaded — its own header
 says so — so the list can be filled in without a restart.
 
 - `demoConfigYAML()` gains the `tool-prune` entry with `on_error: observe` and an

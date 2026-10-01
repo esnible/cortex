@@ -7,7 +7,7 @@ import (
 )
 
 // TestTags_Local pins the desktop profile. The set mirrors the plugin list
-// cmd/authbridge-proxy/local.go writes into ~/.cortex/config.yaml — the three
+// cmd/cortex/local.go writes into ~/.cortex/config.yaml — the three
 // parsers plus tool-prune. If those diverge, a laptop either ships plugins its
 // config never names or names plugins the binary cannot load, and the latter is
 // a refuse-to-start (`unknown plugin ...`) rather than a degraded feature.

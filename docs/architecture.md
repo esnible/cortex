@@ -469,21 +469,21 @@ declarative profile per shipped artifact and emits its tags:
 
 ```bash
 # Desktop set
-go build -tags "$(go -C scripts/profile-tags run . local)" ./cmd/authbridge-proxy
+go build -tags "$(go -C scripts/profile-tags run . local)" ./cmd/cortex
 
 # Everything a Kubernetes sidecar ships
-go build -tags "$(go -C scripts/profile-tags run . full)" ./cmd/authbridge-proxy
+go build -tags "$(go -C scripts/profile-tags run . full)" ./cmd/cortex
 
 # A profile plus one optional plugin
 go build -tags "$(go -C scripts/profile-tags run . full),include_plugin_sessionbudget" \
-  ./cmd/authbridge-proxy
+  ./cmd/cortex
 ```
 
 **Docker build:**
 
 ```bash
 docker build --build-arg GO_BUILD_TAGS="$(go -C scripts/profile-tags run . full)" \
-  -f cmd/authbridge-proxy/Dockerfile .
+  -f cmd/cortex/Dockerfile .
 ```
 
 Tags combine with commas. Go does **not** error on a tag that matches nothing, so
@@ -521,9 +521,9 @@ when `-tags include_plugin_<name>` is passed.
 ## Component Documentation
 
 - [core](../core/README.md) — The runtime library: framework, listeners, cost, session store, auth (Go module)
-- [cmd/authbridge-proxy](../cmd/authbridge-proxy/) — proxy-sidecar binary (default mode, full plugin set)
-- [cmd/authbridge-envoy](../cmd/authbridge-envoy/) — envoy-sidecar binary (Envoy + ext_proc, full plugin set)
-- `authbridge-lite` image — `cmd/authbridge-proxy` built with the `lite` profile (see `scripts/profile-tags`); a build variant, not a separate binary
+- [cmd/cortex](../cmd/cortex/) — proxy-sidecar binary (default mode, full plugin set)
+- [cmd/cortex-envoy](../cmd/cortex-envoy/) — envoy-sidecar binary (Envoy + ext_proc, full plugin set)
+- `authbridge-lite` image — `cmd/cortex` built with the `lite` profile (see `scripts/profile-tags`); a build variant, not a separate binary
 - [proxy-init](../deploy/proxy-init/README.md) — iptables init container (envoy-sidecar mode only)
 - [docs/](./) — framework architecture and plugin author references
 

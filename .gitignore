@@ -80,15 +80,15 @@ __pycache__/
 # two `scripts/` helpers further down. The `demos/*` mains are deliberately not
 # listed. Keep adding to it.
 cmd/agentop/agentop
-cmd/authbridge-proxy/authbridge-proxy
-cmd/authbridge-envoy/authbridge-envoy
-cmd/authbridge-cpex/authbridge-cpex
-cmd/authbridge-praxis/authbridge-praxis
+cmd/cortex/authbridge-proxy
+cmd/cortex-envoy/authbridge-envoy
+cmd/cortex-cpex/authbridge-cpex
+cmd/cortex-praxis/authbridge-praxis
 # Built from the repo root rather than from inside the package dir, a binary lands
 # here instead, so ignore those spellings too. Note `go build ./cmd/...` is NOT
 # one of those commands: with more than one main package Go compiles and discards
 # (`go help build`). What lands a binary here is a single-package build such as
-# `go build ./cmd/authbridge-proxy`, or `go build -o . ./cmd/...`.
+# `go build ./cmd/cortex`, or `go build -o . ./cmd/...`.
 # `authbridge-lite` appears here but has no cmd/ entry above: it is a build
 # variant of authbridge-proxy, not its own module. No build emits that filename —
 # the lite variant is always written as authbridge-proxy — so this entry is purely

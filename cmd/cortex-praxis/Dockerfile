@@ -17,7 +17,7 @@
 # on exactly the configs that need inbound auth.
 #
 # Build context: . (repository root; needs access to core/ and
-# cmd/authbridge-praxis/)
+# cmd/cortex-praxis/)
 #
 # Praxis source is not vendored in this repo, so the Rust stage fetches it from
 # git. PRAXIS_REPO / PRAXIS_REF pin what gets built; PRAXIS_REF defaults to a
@@ -174,11 +174,11 @@ RUN apk add --no-cache git
 WORKDIR /app
 
 COPY core/ core/
-COPY cmd/authbridge-praxis/ cmd/authbridge-praxis/
+COPY cmd/cortex-praxis/ cmd/cortex-praxis/
 
 ARG GO_BUILD_TAGS=""
 ENV GOWORK=off
-RUN cd cmd/authbridge-praxis && CGO_ENABLED=0 GOOS=linux go build -tags "${GO_BUILD_TAGS}" -ldflags="-s -w" -o /authbridge-praxis .
+RUN cd cmd/cortex-praxis && CGO_ENABLED=0 GOOS=linux go build -tags "${GO_BUILD_TAGS}" -ldflags="-s -w" -o /authbridge-praxis .
 
 # ── Stage 3: Runtime ───────────────────────────────────────────────────────
 #
@@ -191,7 +191,7 @@ RUN apk add --no-cache bash ca-certificates
 
 COPY --from=go-builder --chmod=755 /authbridge-praxis /usr/local/bin/authbridge-praxis
 COPY --from=praxis-builder --chmod=755 /praxis-bin /usr/local/bin/praxis
-COPY --chmod=755 cmd/authbridge-praxis/entrypoint.sh /usr/local/bin/entrypoint.sh
+COPY --chmod=755 cmd/cortex-praxis/entrypoint.sh /usr/local/bin/entrypoint.sh
 
 # The generator writes into /tmp and Praxis reads from there, so the runtime
 # user needs a writable /tmp. Alpine ships it 1777, which covers an arbitrary

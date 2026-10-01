@@ -305,10 +305,10 @@ allowing traffic in that state is rarely intended.
 CGO_ENABLED=0 go -C core test ./plugins/cpex/...
 
 # Build the real backend: links libcpex_ffi.a, -tags cpex, CGO on
-podman build -f cmd/authbridge-cpex/Dockerfile -t authbridge-cpex:latest .
+podman build -f cmd/cortex-cpex/Dockerfile -t authbridge-cpex:latest .
 ```
 
-The pinned CPEX FFI ABI version lives in `cmd/authbridge-cpex/CPEX_FFI_VERSION`.
+The pinned CPEX FFI ABI version lives in `cmd/cortex-cpex/CPEX_FFI_VERSION`.
 
 ## See also
 

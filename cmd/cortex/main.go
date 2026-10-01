@@ -12,7 +12,7 @@
 //
 // Mode is hardcoded to proxy-sidecar; YAML configs that specify a
 // different mode are rejected at boot. For envoy-sidecar mode, use
-// cmd/authbridge-envoy.
+// cmd/cortex-envoy.
 package main
 
 import (
@@ -454,7 +454,7 @@ func main() {
 		}
 		if c.Mode != "" && c.Mode != config.ModeProxySidecar {
 			return nil, nil, nil, fmt.Errorf(
-				"authbridge-proxy supports only mode=%q (got %q); use cmd/authbridge-envoy for envoy-sidecar mode",
+				"authbridge-proxy supports only mode=%q (got %q); use cmd/cortex-envoy for envoy-sidecar mode",
 				config.ModeProxySidecar, c.Mode)
 		}
 		c.Mode = config.ModeProxySidecar

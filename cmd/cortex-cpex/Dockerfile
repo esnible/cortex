@@ -4,7 +4,7 @@
 # plugins). Built with -tags cpex; links libcpex_ffi.a from a
 # pinned CPEX release.
 #
-# Build context: . (repository root; needs core/ and cmd/authbridge-cpex/)
+# Build context: . (repository root; needs core/ and cmd/cortex-cpex/)
 #
 # Why not just authbridge-proxy: that image is pure-Go, CGO_ENABLED=0.
 # CPEX requires cgo. Operators switch images (not build flags) to
@@ -119,7 +119,7 @@ RUN apk add --no-cache git ca-certificates gcc musl-dev
 WORKDIR /app
 
 COPY core/ core/
-COPY cmd/authbridge-cpex/ cmd/authbridge-cpex/
+COPY cmd/cortex-cpex/ cmd/cortex-cpex/
 
 COPY --from=ffi /ffi/libcpex_ffi.a /libs/libcpex_ffi.a
 
@@ -135,7 +135,7 @@ ENV CGO_ENABLED=1
 ENV CGO_LDFLAGS="-L/libs -lcpex_ffi -lm"
 # Let Go auto-download the toolchain version go.mod requires. The pinned
 # base image carries 1.25.1; cpex bindings need 1.25.4 (and transitively
-# bump our cmd/authbridge-cpex/go.mod). GOTOOLCHAIN=auto means "download
+# bump our cmd/cortex-cpex/go.mod). GOTOOLCHAIN=auto means "download
 # the version go.mod asks for" — keeps the base image pin stable across
 # toolchain bumps.
 ENV GOTOOLCHAIN=auto
@@ -154,7 +154,7 @@ RUN test -n "${GO_BUILD_TAGS}" || { \
       exit 1; }
 # -trimpath drops absolute build paths for reproducibility; -s -w drop the
 # Go symbol table + DWARF (panic traces still resolve via pclntab).
-RUN cd cmd/authbridge-cpex && \
+RUN cd cmd/cortex-cpex && \
     go build -tags "cpex${GO_BUILD_TAGS:+,${GO_BUILD_TAGS}}" -trimpath -ldflags="-s -w" -o /authbridge-cpex .
 
 # ---------- Stage 3: runtime ----------------------------------------
@@ -169,7 +169,7 @@ FROM alpine:3.20@sha256:beefdbd8a1da6d2915566fde36db9db0b524eb737fc57cd1367effd1
 RUN apk add --no-cache bash ca-certificates libgcc
 
 COPY --from=builder --chmod=755 /authbridge-cpex /usr/local/bin/authbridge-cpex
-COPY --chmod=755 cmd/authbridge-cpex/entrypoint.sh /usr/local/bin/entrypoint.sh
+COPY --chmod=755 cmd/cortex-cpex/entrypoint.sh /usr/local/bin/entrypoint.sh
 
 USER 1001
 

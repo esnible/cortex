@@ -4,7 +4,7 @@ set -euo pipefail
 # AuthBridge CPEX-enabled sidecar entrypoint with process supervision.
 # Manages: authbridge-cpex (authbridge-proxy + CPEX plugin).
 #
-# Identical to cmd/authbridge-proxy/entrypoint.sh except for the
+# Identical to cmd/cortex/entrypoint.sh except for the
 # binary name; promote to a shared script when one is extracted.
 
 CRITICAL_PIDS=""
