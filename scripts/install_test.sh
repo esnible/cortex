@@ -1015,5 +1015,59 @@ check "fingerprint of a missing CA is empty and does not abort" "survived:[]" "$
 check "fingerprint of a present CA is non-empty" "1" \
 	"$(sh "${_probe}" 2>/dev/null | grep -c 'survived:\[.\+\]' || true)"
 
+# --- remove_stale_abctl: only our own pre-rename abctl goes ---
+#
+# The fixtures carry NUL bytes because a real Go binary does, and grep's handling of
+# binary input is the part that differs between BSD and GNU. Each one is executable
+# and would drop a sentinel if run: the decision must come from reading the file, so
+# an abctl too old to know --version (or someone else's) is never executed.
+
+with_remove_stale_abctl() { # bin-dir
+	{
+		printf 'BIN_DIR=%s\n' "$1"
+		printf 'info() { printf "%%s\\n" "$*"; }\n'
+		sed -n '/^remove_stale_abctl()/,/^}/p' "${INSTALL_SH}"
+		printf 'remove_stale_abctl\n'
+	} >"${TMP}/stale.sh"
+	sh "${TMP}/stale.sh"
+}
+
+stale_abctl() { # bin-dir module-path-or-other-text
+	mkdir -p "$1"
+	{
+		printf '#!/bin/sh\ntouch "%s/ran"\nexit 0\n' "$1"
+		printf '\000\177ELF\000path\t%s\000mod\t%s\t(devel)\000' "$2" "$2"
+	} >"$1/abctl"
+	chmod +x "$1/abctl"
+}
+
+for _mod in \
+	github.com/rossoctl/cortex/authbridge/cmd/abctl \
+	github.com/rossoctl/cortex/cmd/abctl; do
+	_bin="${TMP}/stale-$(printf '%s' "${_mod}" | tr '/.' '__')"
+	stale_abctl "${_bin}" "${_mod}"
+	_out=$(with_remove_stale_abctl "${_bin}")
+	check "our abctl ($_mod) is removed" "gone" "$([ -e "${_bin}/abctl" ] && echo kept || echo gone)"
+	check "  and says so" "1" "$(printf '%s' "${_out}" | grep -c 'agentop now' || true)"
+	check "  without running it" "absent" "$([ -e "${_bin}/ran" ] && echo ran || echo absent)"
+done
+
+# A different tool that shares the name — even one whose --version would print
+# "abctl vX", which is exactly what a --version check would have been fooled by.
+_bin="${TMP}/stale-foreign"
+stale_abctl "${_bin}" "example.com/someone/else/abctl"
+printf 'echo abctl v1.0.0\n' >>"${_bin}/abctl"
+_out=$(with_remove_stale_abctl "${_bin}")
+check "someone else's abctl is kept" "kept" "$([ -e "${_bin}/abctl" ] && echo kept || echo gone)"
+check "  silently" "" "${_out}"
+check "  and not run" "absent" "$([ -e "${_bin}/ran" ] && echo ran || echo absent)"
+
+_bin="${TMP}/stale-none"
+mkdir -p "${_bin}"
+check "no abctl: nothing to do, and success" "0:" "$(_o=$(with_remove_stale_abctl "${_bin}"); printf '%s:%s' "$?" "${_o}")"
+
+check "install.sh calls remove_stale_abctl exactly once" "1" \
+	"$(grep -c '^remove_stale_abctl$' "${INSTALL_SH}" || true)"
+
 printf '\n%s passed, %s failed\n' "${PASS}" "${FAIL}"
 [ "${FAIL}" = "0" ]

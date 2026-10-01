@@ -105,6 +105,13 @@ dev-install: authbridge-proxy agentop ## Build from this tree, install to ~/.loc
 		{ rm -f $(DEV_BIN_DIR)/$$b.new; exit 1; }; \
 	done
 	@echo "→ installed to $(DEV_BIN_DIR)"
+	@# agentop was abctl before the rename, and there is no alias: an abctl left on PATH
+	@# still manages the same unit. Same test as install.sh's remove_stale_abctl — ours
+	@# by the module path Go embeds, never by running it.
+	@if [ -f $(DEV_BIN_DIR)/abctl ] && \
+		grep -qE 'github\.com/rossoctl/cortex/(authbridge/)?cmd/abctl' $(DEV_BIN_DIR)/abctl; then \
+		rm -f $(DEV_BIN_DIR)/abctl && echo "→ removed $(DEV_BIN_DIR)/abctl — it is called agentop now"; \
+	fi
 	@# Everything below runs by absolute path, so a missing PATH entry does not fail
 	@# this target — it fails the NEXT thing the developer types. install.sh checks the
 	@# same thing and offers to fix the shell profile; a build target should not edit

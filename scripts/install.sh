@@ -86,6 +86,24 @@ installed_version() {
 	[ -x "${BIN_DIR}/$1" ] || return 0
 	"${BIN_DIR}/$1" --version 2>/dev/null | awk 'NR==1{print $NF}'
 }
+
+# remove_stale_abctl deletes the abctl that releases before the rename installed.
+# agentop is the same tool under a new name, and there is no alias: an abctl left on
+# PATH still manages the same launchd/systemd unit while disagreeing with agentop about
+# which build wrote it — the skew `service status` warns about.
+#
+# "Ours" is read from the module path Go embeds in every binary, not by running it: a
+# build older than --version would not answer, and a tool of someone else's that
+# happens to be called abctl is not ours to delete. Stripped release builds keep the
+# path too (v0.7.0's carries it several hundred times); every abctl release is
+# post-org-move, so rossoctl/cortex is the only spelling to match.
+remove_stale_abctl() {
+	[ -f "${BIN_DIR}/abctl" ] || return 0
+	grep -qE 'github\.com/rossoctl/cortex/(authbridge/)?cmd/abctl' \
+		"${BIN_DIR}/abctl" 2>/dev/null || return 0
+	rm -f "${BIN_DIR}/abctl"
+	info "Removed ${BIN_DIR}/abctl — it is called agentop now."
+}
 # SUPERVISOR_NAME is the human label; SUPERVISOR_CMD is the actual command the
 # messages name, so "launchctl may not be used here" reads as the thing the user
 # would otherwise reach for.
@@ -1145,6 +1163,10 @@ rm -rf "$tmp"
 trap - EXIT
 fi # end of the skip-if-already-at-this-version guard
 fi # end of download block
+
+# Every path above leaves a agentop in BIN_DIR (the skip paths refuse to go on without
+# one), so the abctl it replaces can go — including on a re-run that downloaded nothing.
+remove_stale_abctl
 
 # offer_path_setup adds BIN_DIR to the shell profile, with consent.
 #

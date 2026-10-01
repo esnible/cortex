@@ -76,9 +76,16 @@ The sidecar injection webhook lives in a separate repo: [rossoctl/operator](http
 
 ### Naming: Cortex is the product, AuthBridge is the sidecar
 
-Two renames have happened and only one of them finished. **Kagenti → Rossoctl is
+Three renames have happened and two of them finished. **Kagenti → Rossoctl is
 complete** — apart from this rule, every remaining `kagenti` string is inside
 `docs/superpowers/`, a frozen archive. Treat a new one as a mistake.
+
+**abctl → agentop is complete too**, and was a clean break: no alias, no reading of
+the old on-disk names (see `docs/superpowers/specs/2026-09-30-abctl-to-agentop-rename-design.md`).
+Outside `docs/superpowers/`, `abctl` survives only in the code that deletes a
+pre-rename binary — `remove_stale_abctl` in `install.sh`, its tests, and
+`make dev-install` — in the release-notes line announcing the rename, and in this
+rule. Treat any other new one as a mistake.
 
 **AuthBridge → Cortex is deliberately partial, and the boundary is the point.**
 `Cortex` is the product: this repo, the registry namespace, the laptop service,

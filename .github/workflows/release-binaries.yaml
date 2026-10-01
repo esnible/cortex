@@ -195,6 +195,11 @@ jobs:
           add() { notes="${notes}${1}"$'\n'; }
           add 'Prebuilt `agentop` and `authbridge-proxy` binaries for linux and macOS (amd64/arm64).'
           add ''
+          # The rename shipped with no alias, so it has to be said somewhere a v0.7.0
+          # user will look. Drop this once no supported release predates it.
+          add '`agentop` was called `abctl` through v0.7.0. The installer deletes the old'
+          add '`~/.local/bin/abctl`; delete one you installed by hand yourself.'
+          add ''
           add '`authbridge-proxy` ships in variants matching the container images:'
           add 'unqualified (default plugin set, matches the `authbridge` image),'
           add '`-lite` (trimmed plugin set, matches `authbridge-lite`), plus one variant per'
