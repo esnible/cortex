@@ -382,6 +382,34 @@ func TestInferenceParser_BobPath_ChatCompletions(t *testing.T) {
 	}
 }
 
+// TestInferenceParser_ZenPath covers OpenCode Zen (opencode.ai/zen), which mounts an
+// OpenAI-dialect inference API under a /zen prefix. Same failure mode as BobPath:
+// without the path the parser falls to the default arm and records no telemetry.
+func TestInferenceParser_ZenPath_ChatCompletions(t *testing.T) {
+	p := NewInferenceParser()
+	pctx := &pipeline.Context{
+		Path: zenPath,
+		Body: []byte(`{"model":"claude-sonnet-5","messages":[{"role":"user","content":"hi"}],"stream":false}`),
+	}
+	action := p.OnRequest(context.Background(), pctx)
+	if action.Type != pipeline.Continue {
+		t.Fatalf("expected Continue, got %v", action.Type)
+	}
+	ext := pctx.Extensions.Inference
+	if ext == nil {
+		t.Fatalf("Extensions.Inference is nil for %s", zenPath)
+	}
+	if ext.Model != "claude-sonnet-5" {
+		t.Errorf("Model = %q, want claude-sonnet-5", ext.Model)
+	}
+	if len(ext.Messages) != 1 || ext.Messages[0].Content != "hi" {
+		t.Errorf("Messages = %+v, want one user message \"hi\"", ext.Messages)
+	}
+	if !ext.IsAction {
+		t.Error("IsAction should be true: an outbound LLM call is an agent action")
+	}
+}
+
 // A query string must not defeat the match. endpointPath cuts at "?", and this is
 // the failure mode that made /v1/messages?beta=true invisible on the extproc path.
 func TestInferenceParser_BobPath_WithQueryString(t *testing.T) {
