@@ -207,7 +207,7 @@ func (m *model) rebuildSessionsTable() {
 	if c := m.sessionsTbl.Cursor(); c >= 0 && c < len(m.sessionRowIDs) {
 		prev = m.sessionRowIDs[c]
 	}
-	now := time.Now()
+	now := m.clock()
 	// ONE FUNCTION SETS THE HEADER AND THE ROWS, and it is this one. They have to change
 	// together — the money columns come and go with the terminal width — and anything that
 	// moves one without the other is a crash rather than a cosmetic bug:

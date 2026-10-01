@@ -375,6 +375,12 @@ func withGen(gen int, c tea.Cmd) tea.Cmd {
 
 // Model is the top-level Bubble Tea model.
 type model struct {
+	// now is the clock event timestamps are measured against — today only the sessions
+	// pane's UPDATED column. nil means time.Now; see clock. The TUI's own timers (polls,
+	// flashes, retries) stay on the real clock whatever this is, because they measure the
+	// TUI's own behaviour rather than the age of anything it was sent.
+	now func() time.Time
+
 	endpoint string
 	client   *apiclient.Client
 	// localEndpoint is what `[l]` connects to and what the footer and help
@@ -820,9 +826,27 @@ type model struct {
 	save func(UserSettings) error
 }
 
+// Option configures a model at construction time.
+type Option func(*model)
+
+// WithClock replaces the clock event timestamps are measured against. No production
+// caller: the README demo feeds a server running on a shifted clock, and without the same
+// shift here every session would read as days old and render as an absolute date.
+func WithClock(fn func() time.Time) Option {
+	return func(m *model) { m.now = fn }
+}
+
+// clock is the instant event timestamps are measured against. See model.now.
+func (m *model) clock() time.Time {
+	if m.now != nil {
+		return m.now()
+	}
+	return time.Now()
+}
+
 // New returns a fresh model pointed at the given client. ctx governs both
 // the HTTP calls and the SSE goroutine; cancelling it shuts everything down.
-func New(ctx context.Context, c *apiclient.Client) tea.Model {
+func New(ctx context.Context, c *apiclient.Client, opts ...Option) tea.Model {
 	ctx, cancel := context.WithCancel(ctx)
 
 	ti := textinput.New()
@@ -847,7 +871,7 @@ func New(ctx context.Context, c *apiclient.Client) tea.Model {
 	// harvester, and the sessions list refreshes every two seconds.
 	sessionMeta := loadSessionMetadataForModel()
 
-	return &model{
+	m := &model{
 		endpoint:     c.Endpoint(),
 		client:       c,
 		ctx:          ctx,
@@ -874,6 +898,10 @@ func New(ctx context.Context, c *apiclient.Client) tea.Model {
 		lastTick:           time.Now(),
 		connState:          connStateInfo{phase: connConnecting},
 	}
+	for _, opt := range opts {
+		opt(m)
+	}
+	return m
 }
 
 // initSessionView fires the session-view bootstrap: SSE pump, first

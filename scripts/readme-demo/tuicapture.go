@@ -79,6 +79,8 @@ type Capturer struct {
 	ledger *ledger.Writer
 	ts     *httptest.Server
 	cancel context.CancelFunc
+	// now is the one clock the whole stack reads — see demoAnchor.
+	now func() time.Time
 
 	m      tea.Model
 	cmds   []tea.Cmd
@@ -154,20 +156,45 @@ func WriteTitles(home string, f Fixture) error {
 	return os.WriteFile(filepath.Join(dir, "session-metadata.json"), blob, 0o644)
 }
 
+// demoAnchor is the instant the demo's clock reads when the capture starts.
+//
+// THE FIXTURE IS LAID OUT RELATIVE TO "NOW", and the spend band's spans are calendar
+// spans. turnTime puts one turn per session 26 hours back so 7 DAYS and THIS MONTH exceed
+// TODAY — which on the real clock stops being true on the 1st of every month, and early on
+// the 2nd, when that turn lands in the previous month: THIS MONTH collapsed to TODAY's
+// figure and the committed asset read as stale for a day and a half. The turns minutes
+// old crossed into yesterday the same way in the first minutes of every day.
+//
+// So the ledger, the aggregator, the session API and the TUI all read one clock, shifted
+// so that it starts here: mid-month and midday, as far from both boundaries as a calendar
+// allows. Shifted, not frozen — it still advances in real time, because the capture's
+// polls and the newest turn's "seconds old" depend on time actually passing. Local, not
+// UTC: the ledger cuts its day in its clock's zone, and noon in that zone is what keeps
+// the anchor clear of midnight in every timezone the generator runs in.
+//
+// FIVE SECONDS PAST THE MINUTE, not on it. The newest turn sits on the current minute
+// boundary, so an anchor on the boundary put it under a second old for the first frames,
+// and "just now" is the one age the masking does not rewrite.
+var demoAnchor = time.Date(2026, time.September, 15, 12, 0, 5, 0, time.Local)
+
 // NewCapturer builds the synthetic stack, replays the fixture into it, and
 // attaches a TUI model sized to cols x rows.
 func NewCapturer(f Fixture, cols, rows int, ledgerDir string) (*Capturer, error) {
 	lipgloss.SetColorProfile(termenv.TrueColor)
 	lipgloss.SetHasDarkBackground(true)
 
-	ledger, err := ledger.New(ledgerDir)
+	offset := time.Until(demoAnchor)
+	clock := func() time.Time { return time.Now().Add(offset) }
+
+	ledger, err := ledger.New(ledgerDir, ledger.WithClock(clock))
 	if err != nil {
 		return nil, fmt.Errorf("cost ledger: %w", err)
 	}
 	c := &Capturer{
-		store:  session.New(0, 0, 100),
-		usage:  usage.New(),
+		store:  session.New(0, 0, 100, session.WithClock(clock)),
+		usage:  usage.New(usage.WithClock(clock)),
 		ledger: ledger,
+		now:    clock,
 		cols:   cols,
 		rows:   rows,
 		perCmd: 400 * time.Millisecond,
@@ -184,12 +211,13 @@ func NewCapturer(f Fixture, cols, rows int, ledgerDir string) (*Capturer, error)
 		sessionapi.WithHeartbeatInterval(time.Hour),
 		sessionapi.WithUsage(c.usage),
 		sessionapi.WithCostLedger(c.ledger),
+		sessionapi.WithClock(c.now),
 	)
 	c.ts = httptest.NewServer(srv.Server().Handler)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	c.cancel = cancel
-	c.m = tui.New(ctx, apiclient.New(c.ts.URL))
+	c.m = tui.New(ctx, apiclient.New(c.ts.URL), tui.WithClock(c.now))
 	c.pump(c.m.Init())
 	c.resize()
 
@@ -233,7 +261,7 @@ type pendingEvent struct {
 // enough to make two panes disagree.
 func (c *Capturer) build(f Fixture) []pendingEvent {
 	var out []pendingEvent
-	now := time.Now()
+	now := c.now()
 	for si, s := range f.Sessions {
 		for ti, t := range s.Turns {
 			at := turnTime(now, si, ti, len(s.Turns))

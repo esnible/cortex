@@ -444,9 +444,10 @@ type SessionConfig struct {
 
 	// ClientAffinity files a request that carries NO session header under the newest
 	// session of the same coding agent (by User-Agent), rather than under the single
-	// most-recently-updated session. Off by default, which keeps today's attribution.
+	// most-recently-updated session. nil means "unset → default on"; explicit `false`
+	// opts out. Read it through ClientAffinityEnabled.
 	//
-	// Turn it on where more than one coding agent shares this proxy — Claude Code and
+	// It matters where more than one coding agent shares this proxy — Claude Code and
 	// Bob Shell on one laptop. Without it each agent's header-less calls (Bob's startup
 	// probes and task classifier, Claude Code's WebFetch) land in whichever session spoke
 	// last, which is the other agent's half the time. With it, a known agent's calls
@@ -456,7 +457,23 @@ type SessionConfig struct {
 	// ActiveSession(). Anything else resolves exactly as before, which is what keeps
 	// in-cluster A2A correlation intact. Needs id_headers non-empty; see
 	// session.Store.SessionForClient.
-	ClientAffinity bool `yaml:"client_affinity" json:"client_affinity"`
+	//
+	// ON BY DEFAULT because the template is not enough. Only the --local built-in config
+	// used to turn it on, and that file is written once and never regenerated, so every
+	// laptop installed before the key existed kept filing Bob's classifier completions —
+	// real inference, priced in Bob's own unit — under a concurrent Claude Code session.
+	// A pointer, like Enabled above, so the default can flip without taking away the
+	// off switch.
+	ClientAffinity *bool `yaml:"client_affinity" json:"client_affinity"`
+}
+
+// ClientAffinityEnabled reports whether header-less requests are filed by coding agent.
+// Defaults to true when ClientAffinity is unset, so operators need to explicitly opt out.
+func (s SessionConfig) ClientAffinityEnabled() bool {
+	if s.ClientAffinity == nil {
+		return true
+	}
+	return *s.ClientAffinity
 }
 
 // SessionIDHeaders returns the headers to consult for a client-supplied session

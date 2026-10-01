@@ -380,6 +380,9 @@ func TestReloader_RefusesSessionChange(t *testing.T) {
 		{"max_events", "session: {max_events: 500}\n", config.SessionConfig{MaxEvents: 500}},
 		{"id_headers emptied", "session: {id_headers: []}\n", config.SessionConfig{IDHeaders: []string{}}},
 		{"enabled false", "session: {enabled: false}\n", config.SessionConfig{Enabled: &off}},
+		// Unset means on, so writing the off switch into a running config is a change
+		// in behaviour, not a no-op — and nothing can reach the running listener.
+		{"client_affinity false", "session: {client_affinity: false}\n", config.SessionConfig{ClientAffinity: &off}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r, b, cfgPath, inH, outH := setup(t)

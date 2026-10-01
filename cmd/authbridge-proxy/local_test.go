@@ -630,7 +630,7 @@ func TestBuiltinConfig_SeparatesCodingAgentSessions(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !cfg.Session.ClientAffinity {
+	if !cfg.Session.ClientAffinityEnabled() {
 		t.Error("built-in config: session.client_affinity is off, want on")
 	}
 	if !slices.Contains(cfg.Session.SessionIDHeaders(), session.BobSessionHeader) {

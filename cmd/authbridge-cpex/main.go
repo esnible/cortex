@@ -267,7 +267,7 @@ func main() {
 	// off switch wherever attribution is a trust boundary; see
 	// session.IDFromHeaders.
 	fpSrv.SessionIDHeaders = cfg.Session.SessionIDHeaders()
-	fpSrv.ClientAffinity = cfg.Session.ClientAffinity
+	fpSrv.ClientAffinity = cfg.Session.ClientAffinityEnabled()
 	rpHTTP, err := bootstrap.StartReverseProxyServer("reverse-proxy", rpSrv, cfg.Listener.ReverseProxyAddr)
 	if err != nil {
 		log.Fatalf("reverse-proxy listen: %v", err)

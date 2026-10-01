@@ -171,6 +171,10 @@ type Recorder interface {
 
 // Store is an in-memory, per-pod session store. It is safe for concurrent use.
 type Store struct {
+	// now stamps CreatedAt and UpdatedAt and is what expiry is judged against. nil means
+	// time.Now; see clock.
+	now func() time.Time
+
 	mu          sync.RWMutex
 	sessions    map[string]*entry
 	ttl         time.Duration
@@ -264,7 +268,7 @@ func (s *Subscription) Drops() uint64 {
 // <= 0 likewise keeps every session. A background goroutine runs cleanup every
 // TTL/2.
 // Call Close() during graceful shutdown to stop the background goroutine.
-func New(ttl time.Duration, maxEvents int, maxSessions int) *Store {
+func New(ttl time.Duration, maxEvents int, maxSessions int, opts ...Option) *Store {
 	s := &Store{
 		sessions:    make(map[string]*entry),
 		ttl:         ttl,
@@ -272,12 +276,33 @@ func New(ttl time.Duration, maxEvents int, maxSessions int) *Store {
 		maxSessions: maxSessions,
 		stop:        make(chan struct{}),
 	}
+	for _, opt := range opts {
+		opt(s)
+	}
 	// No reaper when nothing can expire: with ttl <= 0 the interval below clamps to one
 	// second and Cleanup would wake every second forever to find nothing.
 	if ttl > 0 {
 		go s.backgroundCleanup()
 	}
 	return s
+}
+
+// Option configures a Store at construction time.
+type Option func(*Store)
+
+// WithClock replaces the clock sessions are stamped and expired by. No production
+// caller: the README demo runs its whole stack on one shifted clock, and a store left on
+// the real one stamps UpdatedAt weeks away from the clock the TUI measures it against.
+func WithClock(fn func() time.Time) Option {
+	return func(s *Store) { s.now = fn }
+}
+
+// clock is the instant sessions are stamped and expired by. See Store.now.
+func (s *Store) clock() time.Time {
+	if s.now != nil {
+		return s.now()
+	}
+	return time.Now()
 }
 
 // Close stops the background cleanup goroutine and closes every subscriber's
@@ -386,7 +411,7 @@ func (s *Store) append(sessionID string, b *Bucket, event pipeline.SessionEvent)
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	now := time.Now()
+	now := s.clock()
 	var sess *entry
 	if b != nil {
 		if s.sessions[b.e.ID] != b.e || s.isExpired(b.e, now) {
@@ -672,7 +697,7 @@ func (s *Store) View(sessionID string) *pipeline.SessionView {
 	if !ok {
 		return nil
 	}
-	if s.isExpired(sess, time.Now()) {
+	if s.isExpired(sess, s.clock()) {
 		return nil
 	}
 
@@ -743,7 +768,7 @@ func (s *Store) ViewPage(sessionID string, before uint64, limit int) *pipeline.S
 	if !ok {
 		return nil
 	}
-	if s.isExpired(sess, time.Now()) {
+	if s.isExpired(sess, s.clock()) {
 		return nil
 	}
 
@@ -963,7 +988,7 @@ func (s *Store) ListSessions() []SessionSummary {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	now := time.Now()
+	now := s.clock()
 	out := make([]SessionSummary, 0, len(s.sessions))
 	adoptedBy := s.adoptedByLocked()
 	for id, sess := range s.sessions {
@@ -1112,7 +1137,7 @@ func (s *Store) ActiveSession() string {
 		return ""
 	}
 	sess, ok := s.sessions[s.activeID]
-	if !ok || s.isExpired(sess, time.Now()) {
+	if !ok || s.isExpired(sess, s.clock()) {
 		return ""
 	}
 	return s.activeID
@@ -1181,7 +1206,7 @@ func (s *Store) rekeyLocked(oldID, newID string) bool {
 func (s *Store) Cleanup() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.cleanupLocked(time.Now())
+	s.cleanupLocked(s.clock())
 }
 
 func (s *Store) cleanupLocked(now time.Time) {

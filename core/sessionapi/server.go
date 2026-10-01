@@ -61,6 +61,11 @@ type Server struct {
 	// process-cumulative, so logging it per read turned one lost row into a warning on every poll for
 	// the life of the process.
 	loggedDropped atomic.Int64
+	// now resolves /v1/usage's symbolic windows (window=today, window=month). nil means
+	// time.Now. It must read the same clock as the ledger and the aggregator behind it, or
+	// "today" is cut at one instant and filled from another — which is why a caller pinning
+	// one of them has to pin all three.
+	now func() time.Time
 }
 
 // CatalogEntry is the wire shape for one plugin in /v1/plugins. Mirrors
@@ -136,6 +141,23 @@ func WithUsage(a *usage.Aggregator) Option {
 // that has no ledger by design.
 func WithCostLedger(l *ledger.Writer) Option {
 	return func(s *Server) { s.ledger = l }
+}
+
+// WithClock replaces the clock /v1/usage resolves its symbolic windows against. No
+// production caller: it exists for the README demo, which pins the ledger, the aggregator
+// and this server to one shifted clock so its spend figures do not depend on what day the
+// generator runs. Without it, a fixture turn placed yesterday fell out of THIS MONTH on the
+// 1st of every month and the committed asset read as stale.
+func WithClock(fn func() time.Time) Option {
+	return func(s *Server) { s.now = fn }
+}
+
+// clock is the instant symbolic windows are resolved at. See Server.now.
+func (s *Server) clock() time.Time {
+	if s.now != nil {
+		return s.now()
+	}
+	return time.Now()
 }
 
 // WithCatalog attaches a CatalogProvider so the server exposes the
