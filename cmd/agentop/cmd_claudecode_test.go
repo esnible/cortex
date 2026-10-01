@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -208,6 +209,31 @@ func TestClaudeCodeEnable_Idempotent(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "Already enabled") {
 		t.Errorf("second run did not report it was already done: %q", out.String())
+	}
+}
+
+// TestClaudeCodeEnable_DarwinNoteOnlyWhenChanging: install.sh --claude-code runs
+// enable on every upgrade, and the macOS note rode along on each one — most of an
+// upgrade's output, about a case that needs nothing doing. It belongs to the run
+// that changes the file.
+func TestClaudeCodeEnable_DarwinNoteOnlyWhenChanging(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("darwinGoNote is printed on macOS only")
+	}
+	settings, cfg := fixture(t, settingsWithSecret)
+	var out, errb bytes.Buffer
+	if code := claudeCodeEnable(settings, cfg, true, &out, &errb); code != 0 {
+		t.Fatalf("first: %s", errb.String())
+	}
+	if !strings.Contains(out.String(), "add-trusted-cert") {
+		t.Errorf("the run that changes the file did not print the note:\n%s", out.String())
+	}
+	out.Reset()
+	if code := claudeCodeEnable(settings, cfg, true, &out, &errb); code != 0 {
+		t.Fatalf("second: %s", errb.String())
+	}
+	if strings.Contains(out.String(), "add-trusted-cert") {
+		t.Errorf("the no-op re-run repeated the note:\n%s", out.String())
 	}
 }
 

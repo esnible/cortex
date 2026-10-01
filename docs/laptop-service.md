@@ -496,7 +496,8 @@ security delete-certificate -c authbridge-tls-bridge-ca \
 `git`, `curl` and Python are **not** affected on macOS — they read their bundles
 through OpenSSL/LibreSSL, which honours the variables on every platform. And on
 Linux `SSL_CERT_FILE` works normally, so nothing extra is needed there.
-`agentop configure claude-code enable` prints this note when it runs on macOS.
+`agentop configure claude-code enable` prints a short form of this note on macOS
+when it changes your settings (not on a re-run that finds them already enabled).
 
 Cortex keeps running; nothing sends traffic to it. `agentop configure claude-code
 enable` puts it back.

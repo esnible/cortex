@@ -149,20 +149,20 @@ var bundleKeys = []string{envSSLCert, envGitCA, envRequestsCA, envCurlCA}
 // predicts is a bare "x509: certificate signed by unknown authority" from a tool
 // the user has just been told is configured — the same "no error points at the
 // cause" problem this command exists to remove.
+//
+// Said only when enable is about to change the settings, not on the "Already
+// enabled" re-run that install.sh --claude-code makes on every upgrade: repeated
+// there, a note about a case that needs nothing doing was most of the upgrade's
+// output. Short for the same reason; docs/laptop-service.md ("Go tools on macOS
+// need the keychain") carries the why.
 func darwinGoNote(caPath string) string {
-	return "Note: on macOS, SSL_CERT_FILE is inert. Go reads roots from the keychain, not\n" +
-		"  from any CA file, so that one variable does nothing here (git, curl and Python\n" +
-		"  are unaffected — they honour theirs on every platform).\n\n" +
-		"  Nothing to do in the common case: gh, go, pip and npm are not intercepted at\n" +
-		"  all, because the bridge tunnels GitHub, the Go module proxy and the package\n" +
-		"  registries by default. Their traffic holds nothing a parser can read.\n\n" +
-		"  Only if you add a host to tls_bridge.passthrough_hosts' replacement list, or\n" +
-		"  point a Go program at a bridged host, does that program need the CA — and on\n" +
-		"  macOS only the keychain can give it one:\n\n" +
-		"    security add-trusted-cert -k ~/Library/Keychains/login.keychain-db \\\n" +
-		"      -p ssl " + caPath + "\n\n" +
-		"  Undo with: security delete-certificate -c authbridge-tls-bridge-ca \\\n" +
-		"    ~/Library/Keychains/login.keychain-db\n\n"
+	return "Note: SSL_CERT_FILE is inert on macOS; Go tools (go, gh) use the keychain only.\n" +
+		"  Nothing to do by default: Cortex tunnels GitHub, the Go module proxy and the\n" +
+		"  package registries unread. Only if you bridge a host a Go tool talks to, run:\n" +
+		"    security add-trusted-cert -k ~/Library/Keychains/login.keychain-db -p ssl \\\n" +
+		"      " + caPath + "\n" +
+		"  (undo: security delete-certificate -c authbridge-tls-bridge-ca \\\n" +
+		"     ~/Library/Keychains/login.keychain-db)\n\n"
 }
 
 const claudeCodeUsage = `agentop configure claude-code — route Claude Code through Cortex without shell env vars
@@ -439,9 +439,6 @@ func claudeCodeEnable2(settingsPath, cortexCfgPath, statePath string, yes bool, 
 				"  could not find a system root bundle — check the proxy log for \"trust bundle\".\n\n",
 				want[envSSLCert])
 		}
-		if runtime.GOOS == "darwin" {
-			fmt.Fprint(stdout, darwinGoNote(want[envCACerts]))
-		}
 	}
 
 	var changes []string
@@ -453,6 +450,11 @@ func claudeCodeEnable2(settingsPath, cortexCfgPath, statePath string, yes bool, 
 	if len(changes) == 0 {
 		fmt.Fprintf(stdout, "Already enabled: %s routes Claude Code through Cortex.\n", settingsPath)
 		return 0
+	}
+	// After the no-op return, unlike the two notes above: those report a file that is
+	// missing now, this one a platform fact the user needs once — see darwinGoNote.
+	if runtime.GOOS == "darwin" && want[envCACerts] != "" {
+		fmt.Fprint(stdout, darwinGoNote(want[envCACerts]))
 	}
 
 	// Three short lines, not three paragraphs. This is a confirmation prompt, so it
