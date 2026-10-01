@@ -150,7 +150,7 @@ func TestEveryPluginFileIsTagged(t *testing.T) {
 }
 
 // TestNoUnconditionalPluginImports guards the hole that shipped in
-// authbridge-envoy and authbridge-cpex: both blank-imported plugin packages
+// cortex-envoy and cortex-cpex: both blank-imported plugin packages
 // straight from main.go, so those plugins could not be excluded by any tag and
 // no error said so. Every plugin must enter through a tagged plugins_*.go file.
 func TestNoUnconditionalPluginImports(t *testing.T) {

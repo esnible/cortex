@@ -40,14 +40,14 @@ Tool call blocked by platform:
             rossoctl UI (browser)            Agent Pod (team1, operator-injected sidecar)
        ┌────────────────────────┐         ┌──────────────────────────────────────────────┐
        │ user types             │         │                                              │
-       │ "Summarize my emails." │ A2A POST│  cortex :8000 ──▶ agent :8001      │
+       │ "Summarize my emails." │ A2A POST│  cortex :8000 ──▶ agent :8001                │
        │                        │ ──────▶ │  (reverse proxy + a2a-parser inbound +       │
        │                        │ Bearer  │   jwt-validation; populates Session.Intents) │
        │                        │ token   │                                              │
        │ chat response with     │ ◀────── │                       │ outbound HTTP via    │
        │ ⚠️ Security event…    │         │                       │ HTTP_PROXY=:8081     │
        └────────────────────────┘         │                       ▼                      │
-                                          │  cortex :8081 (forward proxy +     │
+                                          │  cortex :8081 (forward proxy +               │
                                           │   token-exchange + mcp-parser + ibac)        │
                                           │                       │                      │
                                           └───────────────────────┼──────────────────────┘

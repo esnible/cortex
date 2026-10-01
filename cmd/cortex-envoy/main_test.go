@@ -63,7 +63,7 @@ func TestWarnCostLedgerInert_SaysSoWhenTheBlockIsPresent(t *testing.T) {
 	// And it has to say what to do, since the operator's intent (durable cost
 	// history) is achievable — just not in this binary.
 	fix, _ := recs[0]["fix"].(string)
-	if !strings.Contains(fix, "cortex") {
+	if !strings.Contains(fix, "cortex --local") {
 		t.Errorf("warn must point at the binary that honours the block, got %q", fix)
 	}
 }

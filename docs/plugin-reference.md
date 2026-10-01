@@ -1272,7 +1272,7 @@ outbound resolve run in the **same** process:
 
 - the reverse+forward proxy sidecar (`cortex`, and its
   `authbridge-lite` image variant);
-- a **single-replica** extproc (`authbridge-envoy`).
+- a **single-replica** extproc (`cortex-envoy`).
 
 Multi-replica (HA) deployments can land mint and resolve on different
 processes, which the in-memory store cannot bridge. Those need an external store behind the same

@@ -9,7 +9,7 @@
 //
 // This binary requires `-tags cpex` and links libcpex_ffi via cgo.
 // The build constraint at the top of this file ensures a no-tag
-// build fails fast rather than silently producing an cortex
+// build fails fast rather than silently producing a cortex
 // duplicate.
 //
 // For envoy-sidecar mode use cortex-envoy; for a no-cgo, pure-Go

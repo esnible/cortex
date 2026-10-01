@@ -155,24 +155,24 @@ cortex/
 │   └── storage/redis/                #   Redis driver for the storage.Store interface
 │                                     #   (its own module, nested but not part of core)
 │
-├── cmd/cortex/             # proxy-sidecar mode (default). Full plugin set.
+├── cmd/cortex/                       # proxy-sidecar mode (default). Full plugin set.
 │   ├── main.go                       #   (the authbridge-lite image is this binary
 │   │                                 #    built with the `lite` profile's tags)
 │   ├── Dockerfile                    #   proxy-sidecar image (the `authbridge` image)
 │   └── entrypoint.sh
 │
-├── cmd/cortex-envoy/             # envoy-sidecar mode. Full plugin set.
+├── cmd/cortex-envoy/                 # envoy-sidecar mode. Full plugin set.
 │   ├── main.go
 │   ├── Dockerfile                    #   envoy-sidecar combined image (Envoy + cortex-envoy)
 │   └── entrypoint.sh
 │
-├── cmd/cortex-cpex/              # proxy-sidecar mode + cpex plugin. -tags cpex, cgo required.
+├── cmd/cortex-cpex/                  # proxy-sidecar mode + cpex plugin. -tags cpex, cgo required.
 │   ├── main.go
 │   ├── Dockerfile                    #   proxy-sidecar build linking libcpex_ffi.a
 │   ├── CPEX_FFI_VERSION              #   pinned CPEX FFI ABI version (build-arg source of truth)
 │   └── entrypoint.sh
 │
-├── cmd/cortex-praxis/            # proxy-sidecar rendered into a Praxis proxy config.
+├── cmd/cortex-praxis/                # proxy-sidecar rendered into a Praxis proxy config.
 │   ├── main.go                       #   PAUSED: ships in no image, registers no
 │   ├── Dockerfile                    #   plugins, has no demo — but deliberately kept
 │   └── entrypoint.sh                 #   and kept compiling. Do not delete.
@@ -276,7 +276,7 @@ into workload pods. Default deployment shape (proxy-sidecar mode):
          ┌────────────────────────────────────┐
          │            WORKLOAD POD            │
          │                                    │
-         │  cortex ──► SPIRE Agent  │  (in-process
+         │  cortex ──► SPIRE Agent            │  (in-process
          │    - spiffe.Provider reads SVIDs   │   Workload API
          │      over the Workload API and     │   client; shaped
          │      mirrors them under /opt/      │   by the `spiffe:`
@@ -341,14 +341,14 @@ ships in variants that mirror the container images:
 
 One variant per opt-in plugin currently offered for try-out (today:
 `-sessionbudget`) — never enumerate combos. To add one, append to the
-`proxy_variants` array in the workflow. `authbridge-cpex` stays image-only
+`proxy_variants` array in the workflow. `cortex-cpex` stays image-only
 (needs cgo); `context-guru` is opt-in but not yet offered as a variant.
 
 **Go modules** (12 in total; `go.work` links 9 of them — the three
 self-contained `demos/*` modules are outside the workspace. `go-tidy-check` in
 `ci.yaml` does cover all 12: it discovers them with `find`, not from `go.work`):
 - `core/` — the runtime library: `pipeline`, `plugins`, `listener`, `config`, `spiffe` (the framework, 57% of it); `cost/{pricing,settle,ledger,event,usage}` (21%); `session`, `sessionapi`, `observe`, `redact` (10%); `auth`, `bypass`, `capabilities` (1.6%); plus transport and storage glue. **Consumed outside this repo**, so removing exported API here is a cross-repo change.
-- `cmd/authbridge-{proxy,envoy,cpex,praxis}/` — thin main packages that import core and start the listeners they need; they import no plugin package directly. (The `authbridge-lite` image is `cortex` built with the `lite` profile.)
+- `cmd/cortex{,-envoy,-cpex,-praxis}/` — thin main packages that import core and start the listeners they need; they import no plugin package directly. (The `authbridge-lite` image is `cortex` built with the `lite` profile.)
 - `cmd/agentop/` — the TUI; also released as a standalone binary.
 - `core/storage/redis/`, `scripts/{profile-tags,readme-demo}/`, and the self-contained `demos/{echo,finance-sparc,ibac}/`.
 - `go.work` — workspace linking core + the binaries for local development.
@@ -755,7 +755,7 @@ Hooks:
 `ci.yaml` both run, but only one of them can fail:
 
 - `go vet ./...` **is** a gate, on 7 of the 12 modules: `core`, both
-  `scripts/*`, and the `cmd/{cortex,authbridge-envoy,agentop,authbridge-praxis}`
+  `scripts/*`, and the `cmd/{cortex,cortex-envoy,agentop,cortex-praxis}`
   matrix. Not vetted anywhere: `cmd/cortex-cpex` (deliberately excluded — it
   needs CGO and a pinned `libcpex_ffi.a`, so `build.yaml` covers it via the image
   build), `core/storage/redis`, and the three `demos/*` modules.
@@ -962,7 +962,7 @@ resulting `/shared/client-id.txt` and `/shared/client-secret.txt`.
   `go mod tidy -diff` in every module — `ci.yaml`'s `go-tidy-check` gates on it,
   and `build`/`vet`/`test` all pass while it fails.
 - Logging with `log/slog`; the binaries log under their own name
-  (`cortex`, `authbridge-envoy`). Note the `authbridge-lite` image runs
+  (`cortex`, `cortex-envoy`). Note the `authbridge-lite` image runs
   the `cortex` binary, so it logs as `cortex`.
 - gRPC ext-proc uses `envoyproxy/go-control-plane` types (in `core/listener/extproc`)
 - JWT validation uses `lestrrat-go/jwx/v2` (in `core/plugins/jwtvalidation/validation`)

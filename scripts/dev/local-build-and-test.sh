@@ -73,7 +73,7 @@ echo ""
 # Build authbridge (proxy-sidecar combined: cortex + spiffe-helper)
 # Default deployment shape — used when the workload's mode is proxy-sidecar.
 # After cortex#411 the unified binary was split into three
-# mode-specific binaries; each has its own Dockerfile under cmd/authbridge-*/.
+# mode-specific binaries; each has its own Dockerfile under cmd/cortex*/.
 echo "=========================================="
 echo "Building authbridge (proxy-sidecar combined)"
 echo "=========================================="

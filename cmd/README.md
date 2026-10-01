@@ -69,7 +69,7 @@ local single-host setups typically pin them all to `127.0.0.1`. `cortex
 [`proxy-init`](../deploy/proxy-init/) and must match its `TRANSPARENT_PORT` /
 `INBOUND_TRANSPARENT_PORT`. A mismatch redirects traffic to a dead port.
 
-**Envoy-sidecar (`authbridge-envoy`):**
+**Envoy-sidecar (`cortex-envoy`):**
 
 | Port | Purpose |
 |---|---|
@@ -85,7 +85,7 @@ local single-host setups typically pin them all to `127.0.0.1`. `cortex
   `enforce-redirect` egress guard and the opt-in transparent inbound listener
   both use [`proxy-init`](../deploy/proxy-init/).
 - **Need ambient/transparent interception via Envoy**: use
-  `authbridge-envoy`. Requires the [`proxy-init`](../deploy/proxy-init/)
+  `cortex-envoy`. Requires the [`proxy-init`](../deploy/proxy-init/)
   iptables init container.
 - **Size-constrained, no protocol-aware events needed**: use the
   `authbridge-lite` image — the `cortex` binary built with the

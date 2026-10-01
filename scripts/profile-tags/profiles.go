@@ -59,7 +59,7 @@ var membership = map[PluginName][]ProfileName{
 	"litellm_budgettrack": {ProfileFull, ProfileLite},
 	"staticinject":        {ProfileFull, ProfileLite},
 
-	// Only authbridge-cpex carries the cpex plugin; it is registered nowhere else.
+	// Only cortex-cpex carries the cpex plugin; it is registered nowhere else.
 	"cpex": {ProfileCpex},
 
 	// No profile: both are heavy and linked only when a caller asks. context-guru

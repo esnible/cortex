@@ -36,7 +36,7 @@ the proxy and its plugins:
 
 ```text
                                  ┌────────────────────────────────────┐
-                                 │  cortex   (:47601)       │
+                                 │  cortex   (:47601)                 │
                                  │                                    │
    curl ──HTTP_PROXY──▶ forward ─┼─▶ outbound pipeline                │
                        proxy     │     ├─ session-budget    (plugin)  │

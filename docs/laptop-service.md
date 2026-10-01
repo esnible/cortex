@@ -20,7 +20,7 @@ it restarted within a couple of seconds, which looks like a process refusing to 
 That restart is the point, though, and it is worth seeing once:
 
 ```sh
-kill -9 $(pgrep -f 'cortex --config')   # comes back within ~2s
+kill -9 $(pgrep -f 'cortex --config')             # comes back within ~2s
 agentop service status                            # healthy again
 ```
 
@@ -280,7 +280,7 @@ anything and tells you so, rather than failing at `launchctl bootstrap` with
 Cortex still runs there; it just is not supervised:
 
 ```sh
-cortex --local     # in its own terminal, or backgrounded
+cortex --local               # in its own terminal, or backgrounded
 agentop                      # the viewer, as usual
 ```
 

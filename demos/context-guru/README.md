@@ -99,7 +99,7 @@ export CG_MODEL_BASE=https://api.openai.com                    # any OpenAI-wire
 ./run.sh drive enforce      # (or observe / off)
 ```
 
-`run.sh setup` builds the `authbridge-proxy` image **with the context-guru plugin**
+`run.sh setup` builds `cortex` **with the context-guru plugin** into an image
 (`-tags include_plugin_contextguru` — see *Build integration* below), loads it + the
 enhanced `finance-mcp` into the `rossoctl` kind cluster, creates a 12,288-token-window
 Ollama model (`llama3.2-ctx12k`) so the raw request truncates, and deploys the agent

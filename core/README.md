@@ -18,10 +18,10 @@ The remainder is transport, storage and integration glue — the table covers th
 not every package.
 
 **On the two names.** `Cortex` is the product; `AuthBridge` is the injected sidecar
-component, and it is still the correct word inside artifact identifiers — the
-`authbridge-*` binaries that import this module, the images they ship in, the
-`x-authbridge-*` headers they set, the `AUTHBRIDGE_*` env vars they read. None of those
-can be renamed from here. So in prose, say Cortex for the product and AuthBridge for the
+component, and it is still the correct word inside artifact identifiers — the images
+the `cortex*` binaries that import this module ship in, the `authbridge-proxy` container
+the operator runs them as, the `x-authbridge-*` headers they set, the `AUTHBRIDGE_*` env
+vars they read. None of those can be renamed from here. So in prose, say Cortex for the product and AuthBridge for the
 sidecar. The full frozen list is in [CLAUDE.md](../CLAUDE.md#naming-cortex-is-the-product-authbridge-is-the-sidecar).
 
 **It is not protocol-free.** An earlier version of this file claimed no gRPC and no

@@ -1481,7 +1481,7 @@ else
 			die "port ${DEMO_FORWARD_PORT} is held by a proxy this install does not manage:
     pid ${svc_foreign%% *}  ${svc_foreign#* }
   That process will not shut down on its own, so re-running will not help. It is
-  most likely an cortex started by hand or from another checkout. Stop it
+  most likely a cortex started by hand or from another checkout. Stop it
   and re-run this installer:
     kill ${svc_foreign%% *}
   If it comes back on its own, it is another install's supervised service rather

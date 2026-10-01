@@ -11,7 +11,7 @@ import (
 )
 
 // TestEveryBinaryInjectsPricing guards the gap that shipped in this PR's first round:
-// only cmd/cortex was wired, so authbridge-envoy and authbridge-cpex
+// only cmd/cortex was wired, so cortex-envoy and cortex-cpex
 // injected no resolver at all.
 //
 // That was a zero-config REGRESSION rather than a missing feature. tool-prune is

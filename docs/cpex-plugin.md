@@ -1,6 +1,6 @@
 # cpex plugin
 
-> **`authbridge-cpex` is a build variant** of the AuthBridge proxy-sidecar
+> **`cortex-cpex` is a build variant** of the AuthBridge proxy-sidecar
 > (`cortex`), deployed *in place of* `cortex` when
 > CPEX policy enforcement is needed — not an additional sidecar.
 
@@ -73,7 +73,7 @@ It is **not** the right home for:
 
 ### Build constraint
 
-The cpex plugin links `libcpex_ffi.a` via cgo. The `authbridge-cpex`
+The cpex plugin links `libcpex_ffi.a` via cgo. The `cortex-cpex`
 binary (`cmd/cortex-cpex/`) is the only build target that compiles
 the plugin — built with `-tags cpex` and `CGO_ENABLED=1`. Other
 binaries (`cortex`, `cortex-envoy`, `authbridge-lite`)
