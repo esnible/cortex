@@ -1,13 +1,17 @@
 #!/bin/sh
 # release_smoke_test_linux.sh — the Linux half of the release smoke test (#957).
 #
-# Exercises install.sh + abctl service exactly as a real user would, against a
-# real published release: fresh install, upgrade over an existing install
-# (config preserved), a no-op re-run, and a clean uninstall. Run against a real
-# tag/release, not a local build — there is no supported "install from this
-# on-disk tarball" mode in install.sh, so this always downloads for real.
+# Exercises install.sh + agentop service exactly as a real user would, against
+# a real published release: fresh install, upgrade over an existing install
+# (config preserved, and the NEW binary actually serving), a no-op re-run, and
+# a clean uninstall. Run against a real tag/release, not a local build — there
+# is no supported "install from this on-disk tarball" mode in install.sh, so
+# this always downloads for real.
 #
-# Usage: release_smoke_test_linux.sh <tag-under-test>
+# Usage: release_smoke_test_linux.sh <tag-under-test> [triggering-commit-sha]
+# The sha is only needed for a main-latest run, to anchor the post-upgrade
+# version check to the exact commit that triggered this run rather than
+# whatever main-latest happens to point at by the time the check executes.
 #
 # Deliberately NOT covered here: driving a real request through the proxy and
 # asserting a parsed event with a non-zero token count (#957's third bullet).
@@ -15,8 +19,10 @@
 # exist yet — tracked there, not attempted here.
 set -eu
 
-TAG="${1:?usage: release_smoke_test_linux.sh <tag-under-test>}"
-ABCTL="${HOME}/.local/bin/abctl"
+TAG="${1:?usage: release_smoke_test_linux.sh <tag-under-test> [sha]}"
+TRIGGER_SHA="${2:-}"
+AGENTOP="${HOME}/.local/bin/agentop"
+PROXY_BIN="${HOME}/.local/bin/cortex"
 CFG="${HOME}/.cortex/config.yaml"
 UNIT="${HOME}/.config/systemd/user/cortex.service"
 
@@ -40,15 +46,24 @@ trap 'rm -rf "${TMP_DIR}"' EXIT
 # real `curl | sh` user hits. Reading the script from a temp file via stdin
 # redirection (rather than running it as `sh /path/to/tmpfile`) keeps that
 # property: $0 stays "sh", not a file path.
+#
+# `return`, not `exit`, on failure: this function is called under `if !` at
+# the no-op-re-run call site below. `exit` inside a function terminates the
+# WHOLE script immediately, even when the function is the subject of an `if`
+# — so an `exit` here would skip that call site's own `then` branch (which
+# prints the captured output for diagnosis) entirely, leaving a bare red CI
+# run with the failure message trapped in a file nobody prints. `return`
+# propagates the failure to the caller instead, which every call site (both
+# the bare ones under `set -e` and the one under `if !`) handles correctly.
 install_cortex() {
 	tmp="$(mktemp "${TMP_DIR}/install.XXXXXX")"
 	if ! curl -fsSL -o "${tmp}" https://raw.githubusercontent.com/rossoctl/cortex/main/scripts/install.sh; then
 		echo "FAIL: could not download install.sh" >&2
-		exit 1
+		return 1
 	fi
 	if [ ! -s "${tmp}" ]; then
 		echo "FAIL: downloaded install.sh is empty" >&2
-		exit 1
+		return 1
 	fi
 	sh -s -- --ref="$1" --yes <"${tmp}"
 }
@@ -65,11 +80,90 @@ assert_contains() {
 	fi
 }
 
-assert_healthy() {
-	out="$(mktemp "${TMP_DIR}/status.XXXXXX")"
-	"${ABCTL}" service status | tee "${out}"
-	assert_contains "${out}" "healthy:" "abctl service status did not report healthy"
+# The CLI's name just installed, which is only ever in doubt on the FIRST
+# install below: INSTALL_TAG can resolve to a release from before the
+# abctl->agentop rename (confirmed still live today — testing v0.8.0 itself
+# again resolves its "older" release to the pre-rename v0.7.0), in which case
+# that release's own install.sh installs abctl, not agentop. Every step after
+# the upgrade installs TAG itself, which is always current by construction
+# (it is the thing under test), so only this one call site needs to detect
+# rather than assume.
+detect_cli() {
+	if [ -x "${AGENTOP}" ]; then
+		printf '%s\n' "${AGENTOP}"
+	elif [ -x "${HOME}/.local/bin/abctl" ]; then
+		printf '%s\n' "${HOME}/.local/bin/abctl"
+	else
+		echo "FAIL: neither agentop nor abctl found in ~/.local/bin after install" >&2
+		exit 1
+	fi
 }
+
+assert_healthy() {
+	# assert_healthy <cli-path>
+	out="$(mktemp "${TMP_DIR}/status.XXXXXX")"
+	"$1" service status | tee "${out}"
+	assert_contains "${out}" "healthy:" "$1 service status did not report healthy"
+}
+
+# Confirms the systemd unit is actually running the binary just installed, not
+# a stale process left over from before the upgrade — exactly the regression
+# #1203's own systemd fix addressed (pre-fix, agentop service install under
+# systemd ran enable --now even when a unit was already active, leaving the
+# OLD process serving under a unit that still reports healthy). assert_healthy
+# and the config-marker check both pass in that exact broken state, since
+# neither looks at which process is actually behind the port — this is the
+# one check in this script that would have caught it.
+#
+# Compares /proc/<pid>/exe rather than trusting `agentop service status` or
+# `systemctl is-active`: both report on the UNIT, which stays "active"
+# whether systemd started a fresh process or simply never noticed the old one
+# needed replacing.
+assert_running_binary_is_current() {
+	pid="$(systemctl --user show -p MainPID --value cortex.service)"
+	if [ -z "${pid}" ] || [ "${pid}" = "0" ]; then
+		echo "FAIL: cortex.service reports no MainPID" >&2
+		exit 1
+	fi
+	exe="$(readlink "/proc/${pid}/exe" 2>/dev/null || true)"
+	want="$(readlink -f "${PROXY_BIN}")"
+	if [ "${exe}" != "${want}" ]; then
+		echo "FAIL: cortex.service (pid ${pid}) runs '${exe}', not the upgraded ${want}" >&2
+		exit 1
+	fi
+}
+
+# Confirms the running binary's own reported version matches what this run
+# installed — a second, independent signal alongside the inode check above,
+# and the one that also ties a main-latest run to the exact commit that
+# triggered it (see TRIGGER_SHA below): a later merge can re-point main-latest
+# and clobber its assets while this job is still running, so without this a
+# pass could be describing the NEXT build rather than the one actually under
+# test.
+assert_running_version_is() {
+	got="$("${PROXY_BIN}" --version)"
+	if [ "${got}" != "cortex $1" ]; then
+		echo "FAIL: ${PROXY_BIN} --version printed '${got}', want 'cortex $1'" >&2
+		exit 1
+	fi
+}
+
+# release-binaries.yaml stamps a v* build with the tag itself, and a
+# main-latest build with "main-<7-char sha>" of the commit that triggered it
+# (ldflags -X main.version). Resolving the expected string here, once, rather
+# than at each call site.
+case "${TAG}" in
+	main-latest)
+		if [ -z "${TRIGGER_SHA}" ]; then
+			echo "FAIL: main-latest run needs the triggering commit sha as \$2" >&2
+			exit 1
+		fi
+		expected_version="main-$(printf '%s' "${TRIGGER_SHA}" | cut -c1-7)"
+		;;
+	*)
+		expected_version="${TAG}"
+		;;
+esac
 
 # The most recent STABLE release created strictly BEFORE the tag under test —
 # the realistic "what a user who hasn't upgraded in a while" starting point.
@@ -85,15 +179,17 @@ assert_healthy() {
 # old enough (pre-rename artifact names, no install.sh at any path it
 # probes), the fresh install of that "older" release would fail outright.
 #
-# createdAt, not publishedAt: main-latest is a moving tag whose assets get
-# clobbered on every push to main, and its createdAt is refreshed by that —
-# publishedAt is not, staying frozen at whenever the release was first
-# created (2026-09-09 here, confirmed against the live API). Anchoring on
-# publishedAt would permanently exclude every stable release published after
-# that first day from ever being picked for a main-latest run. createdAt
-# holds for a normal, non-rolling release too — verified against the live API
-# that it lands a few minutes before that release's own publishedAt, so
-# nothing here regresses for the v* case.
+# createdAt, not publishedAt: release-binaries.yaml PATCHes main-latest's own
+# tag ref to the triggering commit on every push to main, and a release's
+# createdAt follows the commit its tag points at — the lightweight
+# main-latest tag's commit date for that one, an annotated v* tag's tagger
+# date for the rest. publishedAt stays frozen at whenever the release object
+# was first created and does not move with it, confirmed live across two
+# different days (main-latest's createdAt advanced from 2026-09-30T13:43:16Z
+# to 2026-10-01T15:37:57Z as main kept moving; publishedAt stayed at
+# 2026-09-09T21:11:29Z throughout). Anchoring on publishedAt would permanently
+# exclude every stable release published after that first day from ever being
+# picked for a main-latest run.
 #
 # set -eu alone won't catch a failure inside a pipeline under dash (no
 # pipefail), so each gh call below is checked explicitly rather than trusted
@@ -115,7 +211,7 @@ log "Testing ${TAG} (upgrading from: ${OLDER_TAG:-none found; first release})"
 INSTALL_TAG="${OLDER_TAG:-${TAG}}"
 log "Fresh install: ${INSTALL_TAG}"
 install_cortex "${INSTALL_TAG}"
-assert_healthy
+assert_healthy "$(detect_cli)"
 
 if [ -n "${OLDER_TAG}" ]; then
 	# A marker only this test writes, to prove config survives the upgrade
@@ -126,16 +222,17 @@ if [ -n "${OLDER_TAG}" ]; then
 	log "Upgrade: ${INSTALL_TAG} -> ${TAG}"
 	install_cortex "${TAG}"
 	assert_contains "${CFG}" "${marker}" "config marker did not survive the upgrade"
-	assert_healthy
+	# TAG is always current by construction from here on, so the plain
+	# AGENTOP path is safe without detect_cli.
+	assert_healthy "${AGENTOP}"
+	assert_running_binary_is_current
+	assert_running_version_is "${expected_version}"
 fi
 
 log "No-op re-run: ${TAG}"
-# Redirected, not piped through tee: install_cortex is a function with its own
-# early `exit 1` on a failed download, and each side of a pipe runs in its own
-# subshell — an exit inside install_cortex on the left of a pipe would only
-# kill that subshell, with the pipeline's own exit status coming from tee
-# (which sees a closed/empty stdin and exits 0 regardless), silently hiding
-# exactly the failure this function's error handling exists to surface.
+# Redirected, not piped through tee: install_cortex now returns on failure
+# instead of exiting, so its own stderr lands in reinstall_out for the
+# diagnostic cat below rather than needing a pipe at all.
 reinstall_out="$(mktemp "${TMP_DIR}/reinstall.XXXXXX")"
 if ! install_cortex "${TAG}" >"${reinstall_out}" 2>&1; then
 	echo "FAIL: re-running install failed" >&2
@@ -152,7 +249,7 @@ log "Uninstall"
 # afterward.
 cfg_before="$(cksum <"${CFG}")"
 uninstall_out="$(mktemp "${TMP_DIR}/uninstall.XXXXXX")"
-"${ABCTL}" service uninstall --yes | tee "${uninstall_out}"
+"${AGENTOP}" service uninstall --yes | tee "${uninstall_out}"
 assert_contains "${uninstall_out}" "Removed" "uninstall did not report success"
 if [ -f "${UNIT}" ]; then
 	echo "FAIL: unit file still present after uninstall: ${UNIT}" >&2

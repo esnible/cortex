@@ -11,7 +11,7 @@
 # arm64: out of scope here. No real arm64 GitHub-hosted runner exists in this
 # org, and no arm64-execution pattern exists anywhere in this repo's CI today
 # (build.yaml's QEMU usage builds container images for arm64 but never runs
-# one) — extending that to install.sh/abctl would be new infrastructure, not
+# one) — extending that to install.sh/agentop would be new infrastructure, not
 # a small addition to this workflow.
 #
 # Deliberately not covered: driving a real request through the proxy and
@@ -66,7 +66,7 @@ jobs:
           esac
           echo "tag=${tag}" >>"${GITHUB_OUTPUT}"
 
-      # Same enable-linger + wait-for-bus recipe ci.yaml's abctl leg already uses
+      # Same enable-linger + wait-for-bus recipe ci.yaml's agentop leg already uses
       # for the real-systemd integration test (#1076) — proven to work on GitHub's
       # ubuntu-latest runners. The runner has no interactive login, so nothing has
       # started a systemd --user session yet; enable-linger asks logind to start
@@ -90,4 +90,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           SMOKE_TEST_TAG: ${{ steps.tag.outputs.tag }}
-        run: sh scripts/release_smoke_test_linux.sh "${SMOKE_TEST_TAG}"
+          # Anchors the post-upgrade version check to the exact commit that
+          # triggered THIS run, not whatever main-latest happens to point at
+          # by the time the assertion executes — a later merge can re-point
+          # the tag and clobber its assets while this job is still running.
+          SMOKE_TEST_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: sh scripts/release_smoke_test_linux.sh "${SMOKE_TEST_TAG}" "${SMOKE_TEST_SHA}"

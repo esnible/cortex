@@ -14,7 +14,7 @@ release assets already exist rather than racing the upload. Maps the
 triggering run's `head_branch` to the tag under test (`v*` as-is; `main` →
 `main-latest`, the same `CHANNEL_TAG` `scripts/install.sh` itself uses).
 Reuses the exact `enable-linger` + wait-for-`/run/user/<uid>/bus` recipe
-`ci.yaml`'s `abctl` leg already uses for the real-systemd integration test
+`ci.yaml`'s `agentop` leg already uses for the real-systemd integration test
 (#1076) — proven to work on GitHub-hosted `ubuntu-latest` runners.
 
 The actual test logic lives in `scripts/release_smoke_test_linux.sh`, kept
@@ -35,15 +35,15 @@ invocation would skip.
 - [x] `scripts/release_smoke_test_linux.sh`: fresh install of the most recent
       stable release before the tag under test (auto-detected via
       `gh release list`, not hardcoded — a fixed "known good" version would
-      drift out of the release list over time), assert `abctl service status`
+      drift out of the release list over time), assert `agentop service status`
       reports healthy.
 - [x] Upgrade to the tag under test: a config marker only this test writes,
       asserted still present after the upgrade (proves `migrateConfig`'s
       additive-only behavior holds beyond just its own listener pins),
       re-assert healthy.
-- [x] No-op re-run of the same tag: assert `abctl service install` reports
+- [x] No-op re-run of the same tag: assert `agentop service install` reports
       `"Already current"` rather than re-installing.
-- [x] `abctl service uninstall`: assert `"Removed"`, the unit file is gone,
+- [x] `agentop service uninstall`: assert `"Removed"`, the unit file is gone,
       and `~/.cortex/config.yaml` is untouched (per uninstall's own promise).
 - [x] `.github/workflows/release-smoke-linux.yaml`: the `workflow_run`
       trigger, tag resolution, systemd session setup, and the script
@@ -93,6 +93,44 @@ invocation would skip.
       instead: one `TMP_DIR`, one `trap 'rm -rf "${TMP_DIR}"' EXIT` set once,
       cleaning up on every exit path rather than trusting each call site to
       remember its own.
+- [x] Fix (review): rebased onto main and swept `abctl`→`agentop`,
+      `authbridge-proxy`→`cortex` — #1203 shipped that rename while this
+      branch was in flight (branch was 133 commits behind), and it already
+      shipped in `v0.8.0`/`v0.8.1`. `cortex.service` (the unit name) and
+      `~/.cortex/config.yaml` (the proxy's own config) are unaffected by
+      either rename, confirmed directly against current `cmd/agentop/`.
+- [x] Fix (review): the fresh-install leg can resolve `INSTALL_TAG` to a
+      pre-rename release (confirmed still live: testing `v0.8.0` itself
+      resolves its own "older" release to the pre-rename `v0.7.0`), whose
+      own `install.sh` installs `abctl`, not `agentop`. Added `detect_cli`
+      for that one call site only — every step after the upgrade installs
+      `TAG` itself, which is always current by construction.
+- [x] Fix (review): `install_cortex` called `exit 1` on a failed download,
+      but it's invoked under `if !` at the no-op-re-run call site — `exit`
+      inside a function terminates the whole script even there, skipping
+      that call site's own diagnostic `cat` entirely and leaving a bare red
+      CI run with the failure message trapped in a file nobody prints.
+      Changed to `return 1`; verified under `dash` that the caller now sees
+      both the failure and the captured output.
+- [x] Fix (review): the upgrade leg asserted health and the config marker,
+      but never that the *new* binary was actually serving — exactly the
+      regression #1203's own systemd fix addressed (pre-fix, a stale old
+      process could keep serving after "upgrade" while status reported
+      healthy and a re-run said "Already current"; this leg's existing
+      checks all pass in that broken state). Added
+      `assert_running_binary_is_current` (compares `/proc/<pid>/exe` against
+      the installed binary, not the unit's active/inactive state) and
+      `assert_running_version_is` (checks `cortex --version` against the
+      tag, or `main-<7-char sha>` for `main-latest` — ties a `main-latest`
+      run to the exact commit that triggered it, since a later merge can
+      re-point the tag and clobber its assets while this job is still
+      running).
+- [x] Fix (review): the `createdAt` explanation was right in conclusion but
+      wrong about the mechanism — it isn't that "assets get clobbered,
+      createdAt refreshed" as a general Releases API behavior. What actually
+      happens: `release-binaries.yaml` PATCHes `main-latest`'s own tag ref to
+      the triggering commit on every push to main, and `createdAt` follows
+      the commit its tag points at. Corrected the comment accordingly.
 
 ## Result
 
