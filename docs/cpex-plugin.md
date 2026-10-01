@@ -1,7 +1,7 @@
 # cpex plugin
 
-> **`authbridge-cpex` is a build variant** of the AuthBridge proxy-sidecar
-> (`authbridge-proxy`), deployed *in place of* `authbridge-proxy` when
+> **`cortex-cpex` is a build variant** of the AuthBridge proxy-sidecar
+> (`cortex`), deployed *in place of* `cortex` when
 > CPEX policy enforcement is needed — not an additional sidecar.
 
 The `cpex` plugin embeds the [CPEX](https://github.com/contextforge-org/cpex)
@@ -17,7 +17,7 @@ sub-plugins those hooks dispatch to.
 
 ```text
 ┌──────────────────────────────────────────────────────────────────┐
-│ authbridge-cpex (binary built with -tags cpex, links libcpex_ffi)│
+│ cortex-cpex (binary built with -tags cpex, links libcpex_ffi)│
 │                                                                  │
 │  pipeline:                                                       │
 │   ┌─────────────┐  ┌─────────────┐  ┌─────────────────────────┐ │
@@ -73,10 +73,10 @@ It is **not** the right home for:
 
 ### Build constraint
 
-The cpex plugin links `libcpex_ffi.a` via cgo. The `authbridge-cpex`
-binary (`cmd/authbridge-cpex/`) is the only build target that compiles
+The cpex plugin links `libcpex_ffi.a` via cgo. The `cortex-cpex`
+binary (`cmd/cortex-cpex/`) is the only build target that compiles
 the plugin — built with `-tags cpex` and `CGO_ENABLED=1`. Other
-binaries (`authbridge-proxy`, `authbridge-envoy`, `authbridge-lite`)
+binaries (`cortex`, `cortex-envoy`, `authbridge-lite`)
 stay pure-Go and never import the plugin.
 
 The plugin's chassis (config decode, dispatch, Invocation recording)
@@ -336,7 +336,7 @@ need to route background results separately from foreground logs.
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| Pipeline build fails at boot: `cpex plugin: this binary was not built with -tags cpex` | Operator pointed `authbridge-proxy` (no cgo) at a config containing a `cpex` plugin. | Use the `authbridge-cpex` image instead; or rebuild with `-tags cpex` against a downloaded `libcpex_ffi.a`. |
+| Pipeline build fails at boot: `cpex plugin: this binary was not built with -tags cpex` | Operator pointed `cortex` (no cgo) at a config containing a `cpex` plugin. | Use the `authbridge-cpex` image instead; or rebuild with `-tags cpex` against a downloaded `libcpex_ffi.a`. |
 | Pipeline build fails: `cpex bypass_paths: invalid bypass pattern` | An entry in `bypass_paths` has bad `path.Match` syntax. | Fix the glob pattern (`/api/*/v1`, `/static/**` etc.). |
 | Pipeline build fails: `cpex config: pattern "*" matches everything` | Operator wrote a wildcard pattern in `bypass_hosts` or `bypass_paths`. | If you want to disable cpex, remove it from the pipeline; don't bypass everything. |
 | All traffic is rejected with `cpex.error` (a 200 MCP error frame for MCP calls, else 502), JWKS errors in logs | CPEX's APL identity plugin can't reach Keycloak. | Check the `apl.identity.jwt.jwks_url` is reachable from inside the pod; check the cpex bypass list doesn't include Keycloak (it should). |
@@ -344,8 +344,8 @@ need to route background results separately from foreground logs.
 
 ## See also
 
-- `cmd/authbridge-cpex/README.md` — binary build + deployment.
-- `cmd/authbridge-cpex/CPEX_FFI_VERSION` — pinned CPEX FFI ABI version
+- `cmd/cortex-cpex/README.md` — binary build + deployment.
+- `cmd/cortex-cpex/CPEX_FFI_VERSION` — pinned CPEX FFI ABI version
   the binary was built against.
 - [CPEX repository](https://github.com/contextforge-org/cpex) — APL
   DSL, sub-plugin reference, FFI ABI.

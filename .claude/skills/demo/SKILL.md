@@ -52,10 +52,10 @@ docker build -t ghcr.io/rossoctl/examples/<tool>:latest ./mcp/<tool>/
 # name a profile: a build without it registers no plugins and rejects every
 # config it is handed.
 cd cortex
-docker build -f cmd/authbridge-proxy/Dockerfile \
+docker build -f cmd/cortex/Dockerfile \
   --build-arg GO_BUILD_TAGS="$(go -C scripts/profile-tags run . full)" \
   -t ghcr.io/rossoctl/cortex/authbridge:latest .
-docker build -f cmd/authbridge-envoy/Dockerfile \
+docker build -f cmd/cortex-envoy/Dockerfile \
   --build-arg GO_BUILD_TAGS="$(go -C scripts/profile-tags run . envoy)" \
   -t ghcr.io/rossoctl/cortex/authbridge-envoy:latest .
 
@@ -69,7 +69,7 @@ kind load docker-image <image> --name rossoctl
 `scripts/dev/local-build-and-test.sh` builds and Kind-loads `authbridge`,
 `authbridge-envoy`, `authbridge-lite` and `proxy-init` (plus `spiffe-idp-setup`
 from the rossoctl repo) — prefer it over building by hand. Note it does not build
-`authbridge-cpex` or `authbridge-praxis`.
+`authbridge-cpex` or `cortex-praxis`.
 
 Use fully qualified image names in Dockerfiles (e.g., `docker.io/library/golang:1.26-alpine`) to avoid Podman/Buildah "short-name resolution enforced" errors in Shipwright builds.
 
@@ -226,8 +226,8 @@ curl -s -H "Authorization: Bearer $ADMIN_TOKEN" \
 | Change | Action |
 |--------|--------|
 | `init-iptables.sh` or `Dockerfile.init` | Rebuild proxy-init image, `kind load`, delete pod |
-| `core/` or `cmd/authbridge-proxy/` | Rebuild the `authbridge` image, `kind load`, delete pod |
-| `core/` or `cmd/authbridge-envoy/` | Rebuild the `authbridge-envoy` image, `kind load`, delete pod |
+| `core/` or `cmd/cortex/` | Rebuild the `authbridge` image, `kind load`, delete pod |
+| `core/` or `cmd/cortex-envoy/` | Rebuild the `authbridge-envoy` image, `kind load`, delete pod |
 | `configmaps.yaml` (any section) | `kubectl apply -f configmaps.yaml`, delete pod |
 | `*-deployment.yaml` | `kubectl apply -f <file>` (rolling update) |
 | `setup_keycloak.py` | Re-run `python setup_keycloak.py` |

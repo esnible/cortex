@@ -435,5 +435,5 @@ func (c *Config) WarnIfUnpinned(log *slog.Logger) {
 		"effect", "a gateway that bills below list is OVERSTATED — measured at 0.76x list on the shipped gateways, so ~1.32x high without a multiplier",
 		"fix", "set pricing.endpoints[].multiplier for your gateway (one scalar; 0.76 means a 24% discount), or per-model rates; see docs/pricing.md",
 		"note", "gateways matching the shipped rules already have a multiplier applied and need nothing",
-		"check", "abctl pricing --host <gateway> shows the rates in effect and their provenance; abctl observe annotates the cost total [bundled] rather than [configured]")
+		"check", "agentop pricing --host <gateway> shows the rates in effect and their provenance; agentop observe annotates the cost total [bundled] rather than [configured]")
 }

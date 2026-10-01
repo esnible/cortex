@@ -1,9 +1,9 @@
-// Package clientstate owns the on-disk record abctl writes when it points an agent
-// at Cortex, and which authbridge-proxy reads back to check the agent is still
+// Package clientstate owns the on-disk record agentop writes when it points an agent
+// at Cortex, and which cortex reads back to check the agent is still
 // pointed at the CA in force.
 //
 // It exists because that record is a contract between two separate main packages in
-// two separate modules (cmd/abctl writes it, cmd/authbridge-proxy reads it) that
+// two separate modules (cmd/agentop writes it, cmd/cortex reads it) that
 // cannot import each other. Before this, each carried its own copy of the relative
 // path and its own inline struct, with nothing tying them together: renaming a JSON
 // field or moving the file would leave the reader silently returning nothing, the
@@ -27,9 +27,9 @@ const RelPath = "claude-code-state.json"
 // pointed at a stale file cannot recover until it restarts.
 const CAEnvVar = "NODE_EXTRA_CA_CERTS"
 
-// State is the record abctl writes.
+// State is the record agentop writes.
 //
-// Prior holds what abctl DISPLACED, captured before it overwrote the settings, and
+// Prior holds what agentop DISPLACED, captured before it overwrote the settings, and
 // exists so `disable` can restore rather than delete. It is emphatically not what
 // the client currently uses — every enable makes the two differ — so a reader asking
 // "what CA does this client load?" must go through Settings. See CurrentCA.
@@ -60,10 +60,10 @@ func Load(path string) (*State, error) {
 // that cannot be established for any reason.
 //
 // Deliberately never consults State.Prior. Doing so answers a different question —
-// what abctl replaced — and gets the important cases backwards: for Prior to hold
+// what agentop replaced — and gets the important cases backwards: for Prior to hold
 // another environment's CA, the same enable that recorded it must also have pointed
 // the client at the current one, so a Prior-based comparison flags clients that are
-// already correct. Worse, abctl freezes the record on first write, so such a
+// already correct. Worse, agentop freezes the record on first write, so such a
 // comparison can never go quiet afterwards.
 //
 // Every failure answers "": this feeds diagnostics, and a settings file that is
@@ -72,7 +72,7 @@ func (s *State) CurrentCA() string {
 	if s == nil || s.Settings == "" {
 		return ""
 	}
-	b, err := os.ReadFile(s.Settings) //nolint:gosec // path comes from abctl's own record
+	b, err := os.ReadFile(s.Settings) //nolint:gosec // path comes from agentop's own record
 	if err != nil {
 		return ""
 	}
@@ -82,7 +82,7 @@ func (s *State) CurrentCA() string {
 	if json.Unmarshal(b, &doc) != nil {
 		return ""
 	}
-	// A non-string value is not a path; mirrors abctl's own envStrings.
+	// A non-string value is not a path; mirrors agentop's own envStrings.
 	if v, ok := doc.Env[CAEnvVar].(string); ok {
 		return v
 	}

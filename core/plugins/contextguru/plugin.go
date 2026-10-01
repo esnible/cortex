@@ -346,7 +346,7 @@ func sessionID(pctx *pipeline.Context) string {
 	return ""
 }
 
-// ConfigSchema surfaces the operator-facing fields in abctl / /v1/plugins.
+// ConfigSchema surfaces the operator-facing fields in agentop / /v1/plugins.
 func (p *ContextGuru) ConfigSchema() []pipeline.FieldSchema {
 	return []pipeline.FieldSchema{
 		{Name: "paths", Type: "[]string", Description: "Inference request paths to compact (default: chat/completions, completions, messages)."},

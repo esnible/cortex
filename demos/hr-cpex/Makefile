@@ -83,9 +83,9 @@ preflight:  ## Check that prerequisites are in place
 build-images: preflight  ## Build authbridge-cpex + hr-mcp + agent docker images
 	@echo "[build] authbridge-cpex from $(AUTHBRIDGE_ROOT)"
 	cd $(AUTHBRIDGE_ROOT) && docker build \
-		-f cmd/authbridge-cpex/Dockerfile \
-		--build-arg CPEX_FFI_VERSION=$$(cat cmd/authbridge-cpex/CPEX_FFI_VERSION | tr -d '[:space:]') \
-		--build-arg CPEX_FFI_ABI=$$(cat cmd/authbridge-cpex/CPEX_FFI_ABI | tr -d '[:space:]') \
+		-f cmd/cortex-cpex/Dockerfile \
+		--build-arg CPEX_FFI_VERSION=$$(cat cmd/cortex-cpex/CPEX_FFI_VERSION | tr -d '[:space:]') \
+		--build-arg CPEX_FFI_ABI=$$(cat cmd/cortex-cpex/CPEX_FFI_ABI | tr -d '[:space:]') \
 		-t $(AUTHBRIDGE_IMAGE) .
 	@echo "[build] hr-mcp from $(HR_MCP_SRC)"
 	cd $(HR_MCP_SRC) && docker build -t $(HR_MCP_IMAGE) .

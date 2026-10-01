@@ -386,7 +386,7 @@ emit_inbound_exemptions() {
 
   # SIDECAR_PORTS_EXCLUDE: AuthBridge's own listeners (health, stats,
   # session-events, forward proxy). Gating health breaks probes; gating the rest
-  # breaks abctl and operator introspection.
+  # breaks agentop and operator introspection.
   # INBOUND_PORTS_EXCLUDE: the operator/user escape hatch for app ports that must
   # not be validated — e.g. an OpenShift oauth-proxy doing its own auth on 8443.
   for _p in $(echo "${SIDECAR_PORTS_EXCLUDE},${INBOUND_PORTS_EXCLUDE}" | tr ',' ' '); do

@@ -99,7 +99,7 @@ export CG_MODEL_BASE=https://api.openai.com                    # any OpenAI-wire
 ./run.sh drive enforce      # (or observe / off)
 ```
 
-`run.sh setup` builds the `authbridge-proxy` image **with the context-guru plugin**
+`run.sh setup` builds `cortex` **with the context-guru plugin** into an image
 (`-tags include_plugin_contextguru` — see *Build integration* below), loads it + the
 enhanced `finance-mcp` into the `rossoctl` kind cluster, creates a 12,288-token-window
 Ollama model (`llama3.2-ctx12k`) so the raw request truncates, and deploys the agent
@@ -112,11 +112,11 @@ context-guru belongs to **no shipped profile**: every plugin is opt-in, and this
 one is not named by any profile in `scripts/profile-tags`, so it is
 linked only when the binary is built with `-tags include_plugin_contextguru`. Its embedded engine pulls a large
 transitive dependency set (bifrost/core, tiktoken-go, tree-sitter grammars,
-starlark), so the default `authbridge-proxy`/`authbridge-envoy` binaries stay lean
+starlark), so the default `cortex`/`cortex-envoy` binaries stay lean
 and a deployment that doesn't want compaction never pays for it.
 
 ```bash
-podman build -f cmd/authbridge-proxy/Dockerfile \
+podman build -f cmd/cortex/Dockerfile \
   --build-arg GO_BUILD_TAGS=include_plugin_contextguru -t authbridge-cg:latest .
 ```
 

@@ -15,7 +15,7 @@ const (
 	SessionResponse
 	// SessionDenied is a terminal event for inbound requests a pipeline
 	// plugin rejected (e.g., jwt-validation failing a token check). The
-	// listener records this instead of a Request/Response pair so abctl
+	// listener records this instead of a Request/Response pair so agentop
 	// and other session consumers can distinguish denials from normal
 	// request/response flow without scanning StatusCode.
 	SessionDenied
@@ -100,7 +100,7 @@ type SessionEvent struct {
 	// the counter lives on the store's entry, so whole-session eviction followed
 	// by traffic under the same id starts again at 1. A client holding a cursor
 	// across that boundary cannot detect it from Seq and must order pages by At —
-	// see session.entry.nextSeq and abctl's applyOlderPage.
+	// see session.entry.nextSeq and agentop's applyOlderPage.
 	//
 	// Serialized via sessionEventWire like every other field here, not by a tag on
 	// this struct — SessionEvent has a custom MarshalJSON.
@@ -171,7 +171,7 @@ type SessionEvent struct {
 	// Tunnel marks both rows of an opaque CONNECT / transparent-redirect tunnel:
 	// the bytes are not HTTP, so there's no protocol parse. Set only by
 	// recordTunnelOpened (the request-phase open) and recordTunnelClosed (the
-	// response-phase close, which shares the open's RequestID). Consumers (abctl)
+	// response-phase close, which shares the open's RequestID). Consumers (agentop)
 	// use it to fold the OPEN into the decrypted inner request a TLS bridge
 	// produces — an explicit producer signal rather than inferring "tunnel" from
 	// host/extension shape, which an ordinary unparsed request could otherwise
@@ -192,7 +192,7 @@ type SessionEvent struct {
 	BytesDown int64
 
 	// TunnelReason says WHY the bytes were left opaque. Empty when Tunnel is
-	// false, and empty on a bridged CONNECT (abctl folds that row into the
+	// false, and empty on a bridged CONNECT (agentop folds that row into the
 	// decrypted inner request, whose own action is the interesting one).
 	//
 	// It exists because "tunnel" with no reason is indistinguishable from a
@@ -276,9 +276,9 @@ type SessionEvent struct {
 // It marshals as a plain JSON string, so the wire contract is unchanged.
 type TunnelReason string
 
-// Tunnel reasons. Stable strings: abctl renders them and operators grep them.
+// Tunnel reasons. Stable strings: agentop renders them and operators grep them.
 //
-// Each is at most 18 characters, which is the width of abctl's PLUGIN column
+// Each is at most 18 characters, which is the width of agentop's PLUGIN column
 // (events_columns.go). A longer value truncates in the cell, which would break the
 // one property that makes these useful — that the token in the timeline is the same
 // token you grep for in the proxy log.
@@ -396,7 +396,7 @@ func tlsVersionString(v uint16) string {
 type sessionEventWire struct {
 	SessionID string `json:"sessionId,omitempty"`
 	// omitempty for the same skew reason as the fields at the bottom of this struct:
-	// a new abctl against a proxy that predates paging decodes 0 and can tell that
+	// a new agentop against a proxy that predates paging decodes 0 and can tell that
 	// this event carries no cursor, rather than mistaking it for the first event of
 	// the session.
 	Seq         uint64                     `json:"seq,omitempty"`
@@ -416,21 +416,21 @@ type sessionEventWire struct {
 	DurationMs  int64                      `json:"durationMs,omitempty"`
 	TLS         *EventTLS                  `json:"tls,omitempty"`
 	Tunnel      bool                       `json:"tunnel,omitempty"`
-	// omitempty so both skew directions are safe: an old abctl ignores an unknown
-	// key, and a new abctl against an old proxy sees "" and renders exactly what it
+	// omitempty so both skew directions are safe: an old agentop ignores an unknown
+	// key, and a new agentop against an old proxy sees "" and renders exactly what it
 	// renders today.
 	TunnelReason TunnelReason `json:"tunnelReason,omitempty"`
 	// omitempty for the same skew reason, and because only a tunnel's close row
 	// has a count to report.
 	BytesUp   int64 `json:"bytesUp,omitempty"`
 	BytesDown int64 `json:"bytesDown,omitempty"`
-	// omitempty for the same skew reason as TunnelReason above: an old abctl
-	// ignores keys it does not know, and a new abctl against a proxy that
+	// omitempty for the same skew reason as TunnelReason above: an old agentop
+	// ignores keys it does not know, and a new agentop against a proxy that
 	// predates these fields sees "" and renders what it renders today.
 	HTTPMethod string `json:"httpMethod,omitempty"`
 	HTTPPath   string `json:"httpPath,omitempty"`
 	// omitempty, and a POINTER, so both skew directions are safe and absence stays
-	// absence: an old abctl ignores a key it does not know, an event recorded before
+	// absence: an old agentop ignores a key it does not know, an event recorded before
 	// this field existed decodes to nil rather than to an empty struct, and a
 	// request that sent no User-Agent emits no key at all. A value type here would
 	// make "no client" and "a client that named nothing" the same wire bytes.
@@ -468,7 +468,7 @@ func (e SessionEvent) MarshalJSON() ([]byte, error) {
 
 // UnmarshalJSON accepts the on-the-wire form written by MarshalJSON. This
 // makes SessionEvent round-trippable through JSON so off-process clients
-// (e.g. abctl) can decode straight into the canonical type.
+// (e.g. agentop) can decode straight into the canonical type.
 func (e *SessionEvent) UnmarshalJSON(data []byte) error {
 	var w sessionEventWire
 	if err := json.Unmarshal(data, &w); err != nil {
@@ -566,7 +566,7 @@ type SessionView struct {
 	// View names the projection the server applied, and is set only when one was:
 	// "summary" means the message bodies were omitted (see sessionapi.summarizeEvent).
 	//
-	// An ECHO, not a request. It exists because abctl and the proxy install
+	// An ECHO, not a request. It exists because agentop and the proxy install
 	// separately, so a client asking for a summary cannot assume it got one — an
 	// older proxy ignores the parameter and returns full events. Absence therefore
 	// has a precise meaning to a client that asked: "this server does not project",

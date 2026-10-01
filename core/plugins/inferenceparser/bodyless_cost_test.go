@@ -193,7 +193,7 @@ func TestBodylessResponse_PositiveCostHeaderIsCharged(t *testing.T) {
 				t.Error("Priced() = false; the aggregator would fall through to its own rate table")
 			}
 			// The charge must not cost us the diagnostic. Exactly one Skip row: the
-			// response row abctl pairs with the request row.
+			// response row agentop pairs with the request row.
 			if n := skipRows(pctx); n != 1 {
 				t.Errorf("no_response_body Skip rows = %d, want 1", n)
 			}

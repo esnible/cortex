@@ -2,11 +2,11 @@ go 1.26.5
 
 use (
 	./core
-	./cmd/abctl
-	./cmd/authbridge-cpex
-	./cmd/authbridge-envoy
-	./cmd/authbridge-praxis
-	./cmd/authbridge-proxy
+	./cmd/agentop
+	./cmd/cortex-cpex
+	./cmd/cortex-envoy
+	./cmd/cortex-praxis
+	./cmd/cortex
 	./scripts/profile-tags
 	./scripts/readme-demo
 	./core/storage/redis

@@ -65,7 +65,7 @@ type settleState struct {
 }
 
 // The per-response cost event this plugin publishes lives in core/cost/event:
-// the usage aggregator and abctl both decode it, so the shape belongs where all
+// the usage aggregator and agentop both decode it, so the shape belongs where all
 // three can share one declaration rather than in this package.
 
 type spendLedger struct {

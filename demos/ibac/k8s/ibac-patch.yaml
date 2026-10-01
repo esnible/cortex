@@ -29,12 +29,12 @@ inbound_prepend:
 outbound_append:
   - name: inference-parser
     # Surfaces the agent's outbound LLM calls (POST /v1/chat/completions
-    # to ollama). Each call shows up in abctl with the model name and
+    # to ollama). Each call shows up in agentop with the model name and
     # prompt summary.
   - name: mcp-parser
     # Surfaces the agent's outbound MCP traffic (POST /mcp to the
     # ibac-email-server in this demo). Each tools/call request +
-    # response shows up in abctl with the tool name (get_emails) and
+    # response shows up in agentop with the tool name (get_emails) and
     # arguments. IBAC reads pctx.Extensions.MCP for action-description
     # enrichment — its "allow/aligned" verdict on the email-fetch row
     # gets an "MCP_TOOL: get_emails" line in the show-result forensic.

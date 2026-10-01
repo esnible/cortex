@@ -187,7 +187,7 @@ func NewLineageTelemetry() *LineageTelemetry {
 func (p *LineageTelemetry) Name() string { return pluginName }
 
 // ConfigSchema exposes the Config fields for schema-aware tooling
-// (/v1/plugins, /v1/pipeline, abctl edit templates), the same one-line
+// (/v1/plugins, /v1/pipeline, agentop edit templates), the same one-line
 // delegation every configurable sibling plugin uses.
 func (p *LineageTelemetry) ConfigSchema() []pipeline.FieldSchema {
 	return pipeline.SchemaOf(Config{})

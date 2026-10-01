@@ -269,7 +269,7 @@ func TestCapabilities_RequiresAnyParser(t *testing.T) {
 		}
 	}
 	if caps.Description == "" {
-		t.Fatal("Description empty — abctl catalog renders blank")
+		t.Fatal("Description empty — agentop catalog renders blank")
 	}
 }
 

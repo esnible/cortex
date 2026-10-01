@@ -6,7 +6,7 @@ import "sync/atomic"
 //
 // It exists because of a lifetime mismatch in the proxy. buildPipelines is a
 // closure the config reloader re-invokes on every change
-// (cmd/authbridge-proxy/main.go:296,300), so plugins are reconstructed; but the
+// (cmd/cortex/main.go:296,300), so plugins are reconstructed; but the
 // usage aggregator that shares the same rates is created once, outside that
 // closure (main.go:370), and outlives every rebuild. A resolver reconstructed per
 // build would leave the aggregator holding a stale table forever, and pricing

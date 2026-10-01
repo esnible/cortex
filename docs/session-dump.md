@@ -14,7 +14,7 @@ currently resident to files.
 
 Reach for it when you want to keep a session past a restart, hand traffic to
 someone who cannot reach the proxy, or analyse many sessions at once — anything
-beyond what the `abctl` TUI shows live.
+beyond what the `agentop` TUI shows live.
 
 Its limits follow from being a snapshot tool rather than storage: it captures
 only what the store still holds at the moment it runs, and it has to be run
@@ -22,7 +22,7 @@ before the thing you want to keep is gone. That is the gap #901 closes.
 
 ## Install
 
-`scripts/install.sh` installs it alongside `abctl` and `authbridge-proxy`, as
+`scripts/install.sh` installs it alongside `agentop` and `cortex`, as
 `~/.local/bin/cortex-session-dump` — so any install from the first release after
 this change lands already has it. Check with:
 
@@ -70,7 +70,7 @@ is a claim that it exists, and a typo or a session evicted since you read it
 should not look like success. `--active` matching nothing is a legitimate empty
 result and exits 0.
 
-It finds the API itself, probing `127.0.0.1:47601` (what `authbridge-proxy
+It finds the API itself, probing `127.0.0.1:47601` (what `cortex
 --local` pins) then `127.0.0.1:9094` (the mode presets' default). For anything
 else, or an in-cluster proxy, pass `--api`:
 
@@ -172,7 +172,7 @@ Distinct from session data, and often what you actually want:
 | Active config | `~/.cortex/config.yaml` | `kubectl get cm authbridge-runtime-config -o yaml` |
 | Config as loaded | `curl 127.0.0.1:47602/config` | `curl <pod>:9093/config` |
 | Hot-reload status | `curl 127.0.0.1:47602/reload/status` | `curl <pod>:9093/reload/status` |
-| Live session view | `abctl` | `abctl` (picks a pod, port-forwards for you) |
+| Live session view | `agentop` | `agentop` (picks a pod, port-forwards for you) |
 
 The stats port is `47602` on a laptop install and `9093` in-cluster, mirroring
 the session API's `47601` / `9094` split.

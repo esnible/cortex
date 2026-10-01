@@ -757,7 +757,7 @@ func TestSumCost_SaturatesRatherThanWrapping(t *testing.T) {
 //
 // THIS IS THE INVARIANT THAT MAKES THE INCREMENT SAFE. ListSessions stopped decoding every
 // event on every poll — that was an unbounded json.Unmarshal loop under the read lock, on
-// abctl's two-second timer — and reads two integers instead. An incremental total is only as
+// agentop's two-second timer — and reads two integers instead. An incremental total is only as
 // good as the recomputation it claims to equal, and the trim is where they can part company:
 // trimEventsPinIntent does not drop a plain prefix when it pins an intent, so a caller
 // re-deriving the dropped set would subtract the wrong events.

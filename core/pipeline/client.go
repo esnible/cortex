@@ -249,7 +249,7 @@ func capUA(s string) string {
 // name.
 //
 // Deliberately small. Claude Code is the only agent with full support today —
-// cmd/abctl/toolscan/known.go hardcodes its built-in tool names, so the
+// cmd/agentop/toolscan/known.go hardcodes its built-in tool names, so the
 // tool-prune analysis only works for it — and OpenCode, Codex and the rest arrive
 // with their own detection work rather than a speculative entry here. A guess
 // that is wrong is worse than an unrecognised agent, because an unrecognised one
@@ -269,7 +269,7 @@ var knownClients = map[string]string{
 	// Shell sends is already its product name, so renaming it would invent a third spelling
 	// beside the binary (`bob`) and the IDE ("IBM Bob"). It arrives with its own detection
 	// work — the inference endpoint is parsed (inferenceparser's bobPath), its session header
-	// is session.BobSessionHeader, and `abctl configure bobshell` sets it up — so this is a
+	// is session.BobSessionHeader, and `agentop configure bobshell` sets it up — so this is a
 	// supported agent rather than the speculative entry the paragraph above refuses.
 	//
 	// Earns its place in the FIRST-token map as well as the trailing scan because Bob sends

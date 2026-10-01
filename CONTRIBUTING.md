@@ -37,7 +37,7 @@ pre-commit install
 cd deploy/proxy-init && make docker-build-init
 ```
 
-Most day-to-day work needs no cluster: `make abctl` / `make authbridge-proxy`
+Most day-to-day work needs no cluster: `make agentop` / `make cortex`
 build to `./bin/`, and `make dev-install` puts them on your PATH. Note that
 `dev-install` restarts the shared local Cortex service, which cuts every
 attached session.
@@ -126,7 +126,7 @@ You should not need `--ref` to get a release. The plain one-liner resolves the n
 release itself, from the releases API and — when that is unavailable — from
 `releases.atom`, which is not bound by the API's 60-requests-per-hour-per-IP limit.
 
-Each binary reports its own build: `abctl --version` → `main-a1b2c3d`. Quote that,
+Each binary reports its own build: `agentop --version` → `main-a1b2c3d`. Quote that,
 not "main", in a bug report — the channel moves under you.
 
 Three things to know:
@@ -178,7 +178,7 @@ one-liner is safe as soon as `main` carries the `newest_release()` v-tag filter:
 resolves a `v` tag, re-execs that released copy, and the copy then matches
 `case "${SCRIPT_REF}" in v*)` and never calls `newest_release` at all. What needs a
 *filtered release* is anyone running a **released** copy as the parent — including the
-pinned one-liner this installer prints in its own "abctl is too old" message. An
+pinned one-liner this installer prints in its own "agentop is too old" message. An
 unfiltered parent resolves the rolling release as its version and installs unreleased
 binaries. Cutting a release first stops that window growing; it cannot fix copies already
 published.

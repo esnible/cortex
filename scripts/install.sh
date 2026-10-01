@@ -3,7 +3,7 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/rossoctl/cortex/main/scripts/install.sh | sh
 #
-# Detects your OS/arch, downloads the prebuilt `abctl` and `authbridge-proxy`
+# Detects your OS/arch, downloads the prebuilt `agentop` and `cortex`
 # binaries for the newest release, verifies their SHA-256 checksums, installs
 # them to ~/.local/bin, and starts Cortex in the background — then prints the
 # commands to watch traffic and point an agent at it, plus how to stop it.
@@ -86,6 +86,39 @@ installed_version() {
 	[ -x "${BIN_DIR}/$1" ] || return 0
 	"${BIN_DIR}/$1" --version 2>/dev/null | awk 'NR==1{print $NF}'
 }
+
+# remove_stale OLD NEW deletes a binary that a release before the renames installed:
+# abctl (now agentop) and authbridge-proxy (now cortex). There are no aliases, and a
+# stale abctl left on PATH would still manage the same launchd/systemd unit while
+# disagreeing with agentop about which build wrote it.
+#
+# "Ours" is read from the module path Go embeds in every binary, not by running it: a
+# build older than --version would not answer, and a tool of someone else's that
+# happens to share the name is not ours to delete. Stripped release builds keep the
+# path too (v0.7.0's abctl carries it several hundred times); every release is
+# post-org-move, so rossoctl/cortex is the only spelling to match.
+#
+# Nor while an installed service unit still names it. --install-only, or a supervisor
+# that could not take the job, leaves the pre-rename unit in place, and deleting the
+# binary under it would leave launchd or systemd starting a file that is gone. The
+# unit is searched for "/OLD" rather than the full path because both formats escape
+# paths (XML in the plist, shell quoting in the systemd unit); a rewritten unit names
+# only the new binary. `make dev-install` runs this same function, extracted from here.
+remove_stale() {
+	_old="${BIN_DIR}/$1"
+	[ -f "${_old}" ] || return 0
+	grep -qE "github\.com/rossoctl/cortex/(authbridge/)?cmd/$1" "${_old}" 2>/dev/null || return 0
+	for _unit in "${HOME}/Library/LaunchAgents/io.rossoctl.cortex.plist" \
+		"${HOME}/.config/systemd/user/cortex.service"; do
+		if grep -qF "/$1" "${_unit}" 2>/dev/null; then
+			info "Kept ${_old}: the installed service still runs it. It is called $2 now;"
+			info "  \`agentop service install\` moves the service over, then delete the old file."
+			return 0
+		fi
+	done
+	rm -f "${_old}"
+	info "Removed ${_old} — it is called $2 now."
+}
 # SUPERVISOR_NAME is the human label; SUPERVISOR_CMD is the actual command the
 # messages name, so "launchctl may not be used here" reads as the thing the user
 # would otherwise reach for.
@@ -164,7 +197,7 @@ Usage:
   curl -fsSL https://raw.githubusercontent.com/rossoctl/cortex/main/scripts/install.sh | sh
   curl -fsSL ...install.sh | sh -s -- [option]
 
-Installs abctl and authbridge-proxy to ~/.local/bin, starts the proxy with its
+Installs agentop and cortex to ~/.local/bin, starts the proxy with its
 built-in config in ~/.cortex, and prints the command to send an agent through it.
 Traffic is decrypted and parsed for viewing; nothing is rewritten.
 
@@ -189,9 +222,9 @@ Options:
   -h, --help       this text
 
 After installing, to cut Claude Code's token cost:
-  abctl tools scan --write ~/.cortex/config.yaml   (proposes which tools to prune)
+  agentop tools scan --write ~/.cortex/config.yaml   (proposes which tools to prune)
 Then watch the $ saved on every prompt Claude Code sends, live in:
-  abctl
+  agentop
 
 The session store is memory-only. To write it to files before it is lost:
   cortex-session-dump --out ./cortex-dump
@@ -384,8 +417,8 @@ resolve_version() { # version_ref
 
 # ere_escape quotes the ERE metacharacters in a literal so it matches exactly.
 # Archive names contain dots, and an unescaped "." matches any character: the
-# pattern for abctl_v0.7.0-alpha.3_..tar.gz also accepted
-# abctl_v0X7X0-alpha_3_..Xtar.gz. Nothing exploitable followed — the count check
+# pattern for agentop_v0.7.0-alpha.3_..tar.gz also accepted
+# agentop_v0X7X0-alpha_3_..Xtar.gz. Nothing exploitable followed — the count check
 # or sha_check rejected it — but this script's whole subject is precision here.
 ere_escape() {
 	# shellcheck disable=SC2016 # the sed script is literal on purpose
@@ -566,7 +599,7 @@ ca_fingerprint() {
 
 # Demo listener ports — loopback, and deliberately uncommon to avoid colliding
 # with common dev tools. Keep in sync with the built-in config in
-# cmd/authbridge-proxy/local.go.
+# cmd/cortex/local.go.
 DEMO_FORWARD_PORT=47600
 DEMO_SESSION_PORT=47601
 DEMO_STATS_PORT=47602
@@ -614,7 +647,7 @@ demo_ports_busy() {
 # pid_exe_path prints the full executable path of a pid, or nothing when it cannot
 # be resolved. `ps -o comm=` is NOT usable here: on Linux `comm` is the kernel's
 # comm field — argv[0]'s basename capped at 15 chars (TASK_COMM_LEN-1) — so it
-# prints "authbridge-prox" for our 16-char binary and never a path. Only macOS
+# prints a bare name (the old 16-char one came out cut to 15) and never a path. Only macOS
 # prints a path there. The callers below compare against a full install path, so
 # a truncated name would compare unequal every time.
 #
@@ -659,7 +692,7 @@ pid_exe_path() { # pid
 # port_holder prints "<pid> <executable-path>" for whatever listens on the given
 # loopback port, and nothing when it cannot name both. The binary path is the
 # whole point here: it is what distinguishes our own proxy from a foreign one,
-# since every candidate is named authbridge-proxy.
+# since every candidate is named cortex.
 #
 # Two pid sources, mirroring port_in_use: lsof, then `ss -p` (iproute2, the
 # default on modern Linux where lsof is often not installed, and the platform
@@ -717,7 +750,7 @@ port_holder() {
 # proxies fighting over one port.
 #
 # "Ours" is decided by the pidfile and by the binary path we install to, not by
-# process name: every candidate is named authbridge-proxy, so the name cannot
+# process name: every candidate is named cortex, so the name cannot
 # discriminate.
 #
 # This fails CLOSED in every direction. When the holder cannot be named — no
@@ -758,7 +791,7 @@ foreign_proxy_holder() {
 	# Keeping the plain text check as well matters for the case where the file is
 	# gone: an install whose binary was replaced under a running process still
 	# reads as ours on the string alone.
-	_fp_mine="${BIN_DIR}/authbridge-proxy"
+	_fp_mine="${BIN_DIR}/cortex"
 	[ "${_fp_cmd}" = "${_fp_mine}" ] && return 1
 	if command -v readlink >/dev/null 2>&1; then
 		_fp_a=$(readlink -f "${_fp_cmd}" 2>/dev/null || true)
@@ -769,12 +802,12 @@ foreign_proxy_holder() {
 	printf '%s %s\n' "${_fp_pid}" "${_fp_cmd}"
 }
 
-# service_install_action classifies the outcome of `abctl service install` into one
+# service_install_action classifies the outcome of `agentop service install` into one
 # word, so the decision is one testable place instead of a chain of greps inline.
-#   $1 = abctl's exit status   $2 = abctl's combined stdout+stderr
+#   $1 = agentop's exit status   $2 = agentop's combined stdout+stderr
 # Prints exactly one of:
 #   supervised — it worked.
-#   refused    — abctl declined ON PURPOSE (a `refus`* message, e.g. a config that
+#   refused    — agentop declined ON PURPOSE (a `refus`* message, e.g. a config that
 #                would expose a listener). This is the one failure we must NOT paper
 #                over: running the same proxy unsupervised would defeat that check.
 #   foreign-proxy — the forward port is held by a proxy from a DIFFERENT install,
@@ -792,7 +825,7 @@ foreign_proxy_holder() {
 #                clean install. This is the default, so a NEW failure mode falls back
 #                (Cortex runs) instead of leaving it down.
 # The distinction is by exit + `refus` + ports, NOT a positive match on the failure
-# text: abctl prints the launchd EIO to stdout, so a stderr-only signature missed it
+# text: agentop prints the launchd EIO to stdout, so a stderr-only signature missed it
 # and the installer died where it should have fallen back.
 service_install_action() { # status output
 	[ "$1" = "0" ] && { printf 'supervised\n'; return 0; }
@@ -817,12 +850,12 @@ PROXY_PIDFILE="${CORTEX_DIR}/proxy.pid"
 # `die` after the binaries are already on disk.
 #
 #   macOS: in a seatbelt sandbox `launchctl bootstrap` fails with an I/O error
-#   (exit 5) that abctl surfaces as a plain non-zero exit. `launchctl print` on our
+#   (exit 5) that agentop surfaces as a plain non-zero exit. `launchctl print` on our
 #   own GUI domain can answer positively even when bootstrap cannot, so probe
 #   `launchctl list`, which needs a real, reachable user domain and fails when
 #   confined.
 #
-#   Linux: abctl installs a systemd *user* unit, which needs both systemctl and a
+#   Linux: agentop installs a systemd *user* unit, which needs both systemctl and a
 #   running per-user manager (a session/D-Bus). That manager is absent in many
 #   containers, minimal images, and non-systemd inits (OpenRC, runit, s6), so a bare
 #   `command -v systemctl` is not enough — `systemctl --user show-environment` is a
@@ -845,9 +878,11 @@ supervisor_usable() {
 #   - a non-numeric or negative pidfile would make `kill` parse its argument wrong;
 #   - after an unclean shutdown the OS can recycle the pid onto an unrelated process
 #     of the same user, which we must not SIGTERM/SIGKILL.
-# Where `ps` can name the process we require it to be authbridge-prox(y) — the same
-# check abctl's runningPID uses, so `abctl service install` and this script agree on
-# what counts as "our proxy". Where the sandbox hides processes from `ps`, ps prints
+# Where `ps` can name the process we require its basename to be exactly cortex — the
+# same check agentop's runningPID uses, so `agentop service install` and this script agree
+# on what counts as "our proxy". Exact, not a pattern: macOS prints the full path, and
+# a path under ~/.cortex or any checkout of this repo contains the word, so a looser
+# match would claim a stranger's pid for stop_cortex to signal. Where the sandbox hides processes from `ps`, ps prints
 # nothing and the pidfile remains the only handle, so we keep the kill -0 result.
 proxy_running() {
 	_pid=$(cat "${PROXY_PIDFILE}" 2>/dev/null) || return 1
@@ -857,10 +892,54 @@ proxy_running() {
 	kill -0 "${_pid}" 2>/dev/null || return 1
 	_comm=$(ps -o comm= -p "${_pid}" 2>/dev/null) || return 0
 	[ -z "${_comm}" ] && return 0
-	case "${_comm}" in
-		*authbridge-prox*) return 0 ;;
+	case "${_comm##*/}" in
+		cortex) return 0 ;;
 		*) return 1 ;;
 	esac
+}
+
+pidfile_process_unnamed() {
+	_pid=$(cat "${PROXY_PIDFILE}" 2>/dev/null) || return 1
+	case "${_pid}" in
+		"" | *[!0-9]*) return 1 ;;
+	esac
+	kill -0 "${_pid}" 2>/dev/null || return 1
+	_comm=$(ps -o comm= -p "${_pid}" 2>/dev/null) || return 0
+	[ -z "${_comm}" ]
+}
+
+pre_rename_proxy_running() {
+	_pid=$(cat "${PROXY_PIDFILE}" 2>/dev/null) || return 1
+	case "${_pid}" in
+		"" | *[!0-9]*) return 1 ;;
+	esac
+	kill -0 "${_pid}" 2>/dev/null || return 1
+	_pre_exe=$(pid_exe_path "${_pid}") || return 1
+	_pre_old="${BIN_DIR}/authbridge-proxy"
+	[ "${_pre_exe}" = "${_pre_old}" ] && return 0
+	command -v readlink >/dev/null 2>&1 || return 1
+	_pre_a=$(readlink -f "${_pre_exe}" 2>/dev/null || true)
+	_pre_b=$(readlink -f "${_pre_old}" 2>/dev/null || true)
+	[ -n "${_pre_a}" ] && [ "${_pre_a}" = "${_pre_b}" ]
+}
+
+stop_pidfile_proxy() {
+	_pid=$(cat "${PROXY_PIDFILE}")
+	info "Stopping the background proxy (pid ${_pid})..."
+	kill "${_pid}" 2>/dev/null || true
+	# Wait longer than the proxy's own 15s graceful drain before escalating, so a
+	# normal shutdown is never cut short into a SIGKILL that drops in-flight
+	# requests. This matches agentop's stopPID, which waits 18s for the same reason.
+	_i=0
+	while [ "${_i}" -lt 18 ] && kill -0 "${_pid}" 2>/dev/null; do
+		_i=$((_i + 1))
+		sleep 1
+	done
+	if kill -0 "${_pid}" 2>/dev/null; then
+		warn "pid ${_pid} did not exit after 18s; sending SIGKILL"
+		kill -9 "${_pid}" 2>/dev/null || true
+	fi
+	rm -f "${PROXY_PIDFILE}"
 }
 
 # start_unsupervised runs the proxy as a plain background process for environments
@@ -869,11 +948,14 @@ proxy_running() {
 # back, and records the pid so stop/status have one process to target. Verified: on
 # a clean SIGTERM to this pid the listeners close and no child is left behind.
 start_unsupervised() {
+	if pre_rename_proxy_running; then
+		stop_pidfile_proxy
+	fi
 	if proxy_running; then
 		info "Cortex is already running (pid $(cat "${PROXY_PIDFILE}"))."
 		return 0
 	fi
-	nohup "${BIN_DIR}/authbridge-proxy" --local --supervise \
+	nohup "${BIN_DIR}/cortex" --local --supervise \
 		>>"${CORTEX_DIR}/proxy.log" 2>&1 &
 	_pid=$!
 	printf '%s\n' "${_pid}" > "${PROXY_PIDFILE}"
@@ -897,7 +979,7 @@ start_unsupervised() {
 	return 0
 }
 
-# stop_cortex stops a running Cortex — the supervised service if abctl installed one,
+# stop_cortex stops a running Cortex — the supervised service if agentop installed one,
 # and the background proxy recorded in the pidfile — then reports on the ports so
 # "stopped" is verified rather than assumed. Re-runnable and safe: with nothing
 # running it says so and exits 0 rather than failing. This backs `install.sh --stop`,
@@ -905,36 +987,21 @@ start_unsupervised() {
 # only reliable handle on the process.
 stop_cortex() {
 	_stopped=""
-	# Supervised: hand it back to abctl, which owns the launchd/systemd unit. `service
+	# Supervised: hand it back to agentop, which owns the launchd/systemd unit. `service
 	# stop` exits non-zero with "no service installed" when there is none — that is a
 	# normal state here, not an error, so only a DIFFERENT failure is surfaced.
-	if [ -x "${BIN_DIR}/abctl" ]; then
-		if _svc_out=$("${BIN_DIR}/abctl" service stop 2>&1); then
+	if [ -x "${BIN_DIR}/agentop" ]; then
+		if _svc_out=$("${BIN_DIR}/agentop" service stop 2>&1); then
 			info "Stopped the supervised service (${SUPERVISOR_NAME})."
 			_stopped=1
 		elif ! printf '%s' "${_svc_out}" | grep -qi "no service installed"; then
-			warn "abctl service stop reported: ${_svc_out}"
+			warn "agentop service stop reported: ${_svc_out}"
 		fi
 	fi
 	# Unsupervised: kill the process recorded in the pidfile — the only handle that
 	# works where the sandbox hides other processes from ps/pkill.
-	if proxy_running; then
-		_pid=$(cat "${PROXY_PIDFILE}")
-		info "Stopping the background proxy (pid ${_pid})..."
-		kill "${_pid}" 2>/dev/null || true
-		# Wait longer than the proxy's own 15s graceful drain before escalating, so a
-		# normal shutdown is never cut short into a SIGKILL that drops in-flight
-		# requests. This matches abctl's stopPID, which waits 18s for the same reason.
-		_i=0
-		while [ "${_i}" -lt 18 ] && kill -0 "${_pid}" 2>/dev/null; do
-			_i=$((_i + 1))
-			sleep 1
-		done
-		if kill -0 "${_pid}" 2>/dev/null; then
-			warn "pid ${_pid} did not exit after 18s; sending SIGKILL"
-			kill -9 "${_pid}" 2>/dev/null || true
-		fi
-		rm -f "${PROXY_PIDFILE}"
+	if proxy_running || pre_rename_proxy_running; then
+		stop_pidfile_proxy
 		_stopped=1
 	elif [ -f "${PROXY_PIDFILE}" ]; then
 		# A stale pidfile from a proxy that already died: clear it so status stays honest.
@@ -994,7 +1061,7 @@ print_env_instructions() {
 print_local_start_help() {
 	info "  This environment has no usable OS service supervisor, so Cortex runs as a"
 	info "  plain background process (it will NOT restart after a reboot or logout):"
-	info "    start:   \"${BIN_DIR}/authbridge-proxy\" --local --supervise   (backgrounded)"
+	info "    start:   \"${BIN_DIR}/cortex\" --local --supervise   (backgrounded)"
 	info "    stop:    kill \$(cat ${PROXY_PIDFILE})"
 	info "    status:  curl -fsS http://localhost:${DEMO_HEALTH_PORT}/ >/dev/null && echo up || echo down"
 	info "    logs:    tail -f ${CORTEX_DIR}/proxy.log"
@@ -1026,14 +1093,14 @@ fi
 
 # --- preflight: fail early (before downloading) if a listener port is taken ---
 if [ "$MODE" = "local" ]; then
-	# A Cortex of ours holding these ports is fine — `abctl service install` adopts
+	# A Cortex of ours holding these ports is fine — `agentop service install` adopts
 	# it, and keeping a second copy of that narrow "is this pid really ours" check
 	# here would only let the two drift. This probe is for a FOREIGN listener, and
 	# it runs before the download so the failure is early and cheap.
 	for p in "$DEMO_FORWARD_PORT" "$DEMO_SESSION_PORT" "$DEMO_STATS_PORT" "$DEMO_HEALTH_PORT"; do
 		if port_in_use "$p"; then
 			if [ -f "${CORTEX_DIR}/config.yaml" ]; then
-				# Ours, most likely: let abctl adopt it rather than refusing here.
+				# Ours, most likely: let agentop adopt it rather than refusing here.
 				continue
 			fi
 			die "port ${p} is already in use by something else. Free it, or change the ports in ${CORTEX_DIR}/config.yaml, then re-run."
@@ -1043,7 +1110,7 @@ fi
 
 # --- skip the download entirely when asked (offline re-run) ---
 if [ "${AUTHBRIDGE_SKIP_DOWNLOAD:-}" = "1" ]; then
-	for b in abctl authbridge-proxy; do
+	for b in agentop cortex; do
 		[ -x "${BIN_DIR}/${b}" ] || die "AUTHBRIDGE_SKIP_DOWNLOAD=1 but ${BIN_DIR}/${b} is missing"
 	done
 	version="already installed"
@@ -1062,23 +1129,23 @@ tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 
 base="https://github.com/${REPO}/releases/download/${version}"
-abctl_tgz="abctl_${version}_${os}_${arch}.tar.gz"
-proxy_tgz="authbridge-proxy_${version}_${os}_${arch}.tar.gz"
+agentop_tgz="agentop_${version}_${os}_${arch}.tar.gz"
+proxy_tgz="cortex_${version}_${os}_${arch}.tar.gz"
 
 # Already at this version? Then there is nothing to download, and nothing to
 # overwrite. Re-running the one-liner is how people upgrade, so it runs constantly
 # against installs that are already current — it should cost nothing and change
 # nothing. Both binaries must match: replacing one and not the other is the version
 # skew that put an older proxy in the launchd unit.
-if installed_version abctl | grep -qx "${version}" &&
-	installed_version authbridge-proxy | grep -qx "${version}"; then
+if installed_version agentop | grep -qx "${version}" &&
+	installed_version cortex | grep -qx "${version}"; then
 	info "Already at ${version} — not re-downloading."
 	skip_install=1
 fi
 
 if [ -z "${skip_install:-}" ]; then
 info "Downloading ${version} for ${os}/${arch}..."
-curl -fsSL "${base}/${abctl_tgz}" -o "${tmp}/${abctl_tgz}" || die "download failed: ${abctl_tgz}"
+curl -fsSL "${base}/${agentop_tgz}" -o "${tmp}/${agentop_tgz}" || die "download failed: ${agentop_tgz}"
 curl -fsSL "${base}/${proxy_tgz}" -o "${tmp}/${proxy_tgz}" || die "download failed: ${proxy_tgz}"
 curl -fsSL "${base}/checksums.txt" -o "${tmp}/checksums.txt" || die "download failed: checksums.txt"
 
@@ -1091,10 +1158,10 @@ curl -fsSL "${base}/checksums.txt" -o "${tmp}/checksums.txt" || die "download fa
 # Matching is anchored to end-of-line so an unrelated future artifact in
 # checksums.txt can't make verification fail on a file we never fetched.
 : > "${tmp}/checksums.filtered"
-for archive in "${abctl_tgz}" "${proxy_tgz}"; do
+for archive in "${agentop_tgz}" "${proxy_tgz}"; do
 	# The name may be preceded by whitespace, sha256sum's binary-mode "*", or a
 	# path component: the release workflow runs `sha256sum ./*.tar.gz`, so every
-	# real line reads "HASH  ./abctl_....tar.gz". An earlier version of this
+	# real line reads "HASH  ./agentop_....tar.gz". An earlier version of this
 	# pattern required the name immediately after whitespace or "*", which matched
 	# nothing against an actual release and refused every install.
 	# Anchored to the whole line and to the exact shape our own workflow emits:
@@ -1128,9 +1195,9 @@ fi
 
 # --- extract + install ---
 mkdir -p "$BIN_DIR"
-tar -xzf "${tmp}/${abctl_tgz}" -C "$tmp"
+tar -xzf "${tmp}/${agentop_tgz}" -C "$tmp"
 tar -xzf "${tmp}/${proxy_tgz}" -C "$tmp"
-for b in abctl authbridge-proxy; do
+for b in agentop cortex; do
 	[ -f "${tmp}/${b}" ] || die "archive did not contain expected binary: ${b}"
 	chmod +x "${tmp}/${b}"
 	mv -f "${tmp}/${b}" "${BIN_DIR}/${b}"
@@ -1138,7 +1205,7 @@ done
 
 # macOS: clear the quarantine flag so Gatekeeper doesn't block the unsigned binaries.
 if [ "$os" = "darwin" ] && command -v xattr >/dev/null 2>&1; then
-	xattr -dr com.apple.quarantine "${BIN_DIR}/abctl" "${BIN_DIR}/authbridge-proxy" 2>/dev/null || true
+	xattr -dr com.apple.quarantine "${BIN_DIR}/agentop" "${BIN_DIR}/cortex" 2>/dev/null || true
 fi
 
 rm -rf "$tmp"
@@ -1146,14 +1213,19 @@ trap - EXIT
 fi # end of the skip-if-already-at-this-version guard
 fi # end of download block
 
+# Every path above leaves an agentop in BIN_DIR (the skip paths refuse to go on without
+# one), so the abctl it replaces can go — including on a re-run that downloaded nothing.
+# The old proxy waits until the service has been moved off it, after the start below.
+remove_stale abctl agentop
+
 # offer_path_setup adds BIN_DIR to the shell profile, with consent.
 #
 # Warning and printing a line to paste was not enough: the first thing a real user hit
-# was `abctl: command not found`, before any of the actual bugs. An install that
+# was `agentop: command not found`, before any of the actual bugs. An install that
 # succeeds and then cannot run the command it just told you to run is the worst first
 # impression available, and the most common one.
 #
-# Consent, a backup, and a guarded block, matching what `abctl claude-code enable` does
+# Consent, a backup, and a guarded block, matching what `agentop claude-code enable` does
 # to settings.json — same pattern, no new concept. Declining keeps the old advice.
 offer_path_setup() {
 	_profile=""
@@ -1186,7 +1258,7 @@ offer_path_setup() {
 	fi
 
 	info ""
-	info "${BIN_DIR} is not on your PATH, so \`abctl\` will not be found."
+	info "${BIN_DIR} is not on your PATH, so \`agentop\` will not be found."
 	info "This adds two lines to ${_profile}:"
 	info "  ${PATH_MARKER}"
 	info "  export PATH=\"${BIN_DIR}:\$PATH\""
@@ -1224,7 +1296,7 @@ offer_path_setup() {
 #
 # cortex-session-dump writes the in-memory session store to files. The store is
 # memory-only, so without it a restart is unrecoverable data loss and the only
-# readers are abctl and raw curl.
+# readers are agentop and raw curl.
 #
 # STOPGAP: rossoctl/cortex#901 ("persist sessions") is the real fix -- the proxy
 # writing sessions itself, rather than a helper someone has to remember to run.
@@ -1288,11 +1360,11 @@ install_session_dump() {
 install_session_dump
 
 # --- report ---
-proxy="${BIN_DIR}/authbridge-proxy"
+proxy="${BIN_DIR}/cortex"
 ca_dir="${CORTEX_DIR}/ca" # matches defaultCortexDir()+caDirName in local.go
 case ":${PATH}:" in
-	*":${BIN_DIR}:"*) abctl_cmd="abctl" proxy_cmd="authbridge-proxy" ;;
-	*) abctl_cmd="${BIN_DIR}/abctl" proxy_cmd="$proxy" ;;
+	*":${BIN_DIR}:"*) agentop_cmd="agentop" proxy_cmd="cortex" ;;
+	*) agentop_cmd="${BIN_DIR}/agentop" proxy_cmd="$proxy" ;;
 esac
 
 # Both skip paths have already said what they did ("Already at <v>" or "Using the
@@ -1300,7 +1372,7 @@ esac
 # and untrue.
 if [ -z "${skip_install:-}" ]; then
 	info ""
-	info "Installed abctl and authbridge-proxy to ${BIN_DIR}"
+	info "Installed agentop and cortex to ${BIN_DIR}"
 fi
 case ":${PATH}:" in
 	*":${BIN_DIR}:"*) ;;
@@ -1336,21 +1408,21 @@ if [ -z "${NO_SERVICE}" ] && ! supervisor_usable; then
 	NO_SERVICE=1
 fi
 
-# The service subcommand is only needed on the supervised path. Skip the abctl-age
+# The service subcommand is only needed on the supervised path. Skip the agentop-age
 # check entirely when running unsupervised — the proxy binary is all we use there.
 if [ -z "${NO_SERVICE}" ]; then
-	# This script starts the proxy through `abctl service`, so an abctl that predates
+	# This script starts the proxy through `agentop service`, so an agentop that predates
 	# that command cannot be driven by it. Say which mismatch it is, rather than
 	# letting `unknown subcommand "service"` surface as a bare non-zero exit after the
 	# binaries are already installed.
-	if ! "${BIN_DIR}/abctl" service status >/dev/null 2>&1 &&
-		"${BIN_DIR}/abctl" service 2>&1 | grep -q "unknown subcommand"; then
+	if ! "${BIN_DIR}/agentop" service status >/dev/null 2>&1 &&
+		"${BIN_DIR}/agentop" service 2>&1 | grep -q "unknown subcommand"; then
 		# Only offer the matching-release URL when $version really is a tag: under
 		# AUTHBRIDGE_SKIP_DOWNLOAD it reads "already installed", which would otherwise
 		# be spliced into a nonsense URL.
 		case "${version}" in
 			v*)
-				die "the ${version} abctl has no 'service' command, which this installer needs
+				die "the ${version} agentop has no 'service' command, which this installer needs
   in order to start Cortex. Either run that release's own installer, piped -- a
   local copy of this script never re-execs, so --ref would pin only its binaries
   and land you back here:
@@ -1359,7 +1431,7 @@ if [ -z "${NO_SERVICE}" ]; then
     --ref=<newer tag>"
 				;;
 			*)
-				die "the abctl in ${BIN_DIR} has no 'service' command, which this installer
+				die "the agentop in ${BIN_DIR} has no 'service' command, which this installer
   needs in order to start Cortex. Install a newer one — drop
   AUTHBRIDGE_SKIP_DOWNLOAD, or pass --ref=<a release that has it>."
 				;;
@@ -1369,19 +1441,19 @@ fi
 
 # Materialise the config before starting the proxy either way. This used to happen as
 # a side effect of starting `--local` in the background; with the service doing the
-# starting, nothing else creates the file, and `abctl service install` refuses to run
+# starting, nothing else creates the file, and `agentop service install` refuses to run
 # without it. The unsupervised start needs it just as much.
 if [ ! -f "${CORTEX_DIR}/config.yaml" ]; then
 	# Executed by explicit path, and REPORTED by the same explicit path. proxy_cmd is
-	# the display form — a bare "authbridge-proxy" when BIN_DIR is on PATH — so naming
+	# the display form — a bare "cortex" when BIN_DIR is on PATH — so naming
 	# it here would hand back a command that resolves through PATH, which is not
 	# necessarily the binary that just failed. That distinction is the whole point of
-	# pinning the path: an older authbridge-proxy earlier on PATH is exactly how the
+	# pinning the path: an older cortex earlier on PATH is exactly how the
 	# service came up dead in end-to-end testing.
-	if ! "${BIN_DIR}/authbridge-proxy" --local --write-config; then
+	if ! "${BIN_DIR}/cortex" --local --write-config; then
 		die "could not write ${CORTEX_DIR}/config.yaml.
   Run this to see why:
-    \"${BIN_DIR}/authbridge-proxy\" --local --write-config"
+    \"${BIN_DIR}/cortex\" --local --write-config"
 	fi
 fi
 
@@ -1415,21 +1487,21 @@ else
 	set +e
 	# --proxy: use the binary this script just installed, not whatever happens to be
 	# earlier on PATH. An end-to-end run found the unit pointing at an older
-	# authbridge-proxy from another directory, which rejected --supervise and exited,
+	# cortex from another directory, which rejected --supervise and exited,
 	# so the service never came up.
 	#
-	# Capture abctl's COMBINED output (2>&1) through tee: it stays visible live —
+	# Capture agentop's COMBINED output (2>&1) through tee: it stays visible live —
 	# including "Waiting for the previous Cortex to stop (up to 30s)..." — while also
 	# being recorded so service_install_action can read the failure reason. Capturing
-	# stderr alone was the bug behind "could not set up the service (exit 1)": abctl
+	# stderr alone was the bug behind "could not set up the service (exit 1)": agentop
 	# prints "launchctl bootstrap failed ... Input/output error" to STDOUT, so the old
 	# stderr-only signature matched nothing and the script died instead of falling back.
-	# abctl's exit status is carried through the pipe via a status file (POSIX sh has no
+	# agentop's exit status is carried through the pipe via a status file (POSIX sh has no
 	# PIPESTATUS). mktemp, not a predictable "$$" name, avoids the symlink-preplant shape
 	# (CWE-59); ensure_tmpdir has resolved a writable TMPDIR by now.
 	svc_out_file=$(mktemp "${TMPDIR}/cortex-svc-out.XXXXXX")
 	svc_st_file=$(mktemp "${TMPDIR}/cortex-svc-st.XXXXXX")
-	{ "${BIN_DIR}/abctl" service install --yes --proxy "${BIN_DIR}/authbridge-proxy" 2>&1; echo $? >"${svc_st_file}"; } | tee "${svc_out_file}"
+	{ "${BIN_DIR}/agentop" service install --yes --proxy "${BIN_DIR}/cortex" 2>&1; echo $? >"${svc_st_file}"; } | tee "${svc_out_file}"
 	svc_status=$(cat "${svc_st_file}" 2>/dev/null || echo 1)
 	svc_out=$(cat "${svc_out_file}" 2>/dev/null || true)
 	rm -f "${svc_out_file}" "${svc_st_file}"
@@ -1443,9 +1515,9 @@ else
 			SUPERVISED=1
 			;;
 		refused)
-			# abctl declined on purpose (a config that would expose a listener, say).
+			# agentop declined on purpose (a config that would expose a listener, say).
 			# Running the same proxy unsupervised would defeat that check, so do not.
-			die "abctl refused to set up the service — a safety decision, not an
+			die "agentop refused to set up the service — a safety decision, not an
   environment limit, so Cortex was NOT started. Its message was:
     ${svc_out}"
 			;;
@@ -1459,12 +1531,12 @@ else
 			die "port ${DEMO_FORWARD_PORT} is held by a proxy this install does not manage:
     pid ${svc_foreign%% *}  ${svc_foreign#* }
   That process will not shut down on its own, so re-running will not help. It is
-  most likely an authbridge-proxy started by hand or from another checkout. Stop it
+  most likely a cortex started by hand or from another checkout. Stop it
   and re-run this installer:
     kill ${svc_foreign%% *}
   If it comes back on its own, it is another install's supervised service rather
   than a hand-started copy, and killing it only triggers a respawn. Stop the
-  service that owns it instead — \`abctl service uninstall\` from THAT install, or
+  service that owns it instead — \`agentop service uninstall\` from THAT install, or
   by hand:
     macOS:  launchctl bootout gui/\$(id -u)/io.rossoctl.cortex
     Linux:  systemctl --user disable --now cortex.service
@@ -1490,6 +1562,11 @@ else
 	esac
 fi
 
+# The service now runs cortex wherever it could be set up, so the pre-rename proxy can
+# go. Where it could not (the fallback above), remove_stale finds the old unit still
+# naming it and leaves it in place.
+pidfile_process_unnamed || remove_stale authbridge-proxy cortex
+
 # tool-prune is in the config but INERT: its remove list is empty, so it does
 # nothing until a name is added. That is deliberate for an install.
 #
@@ -1504,35 +1581,35 @@ local_cfg="${CORTEX_DIR}/config.yaml"
 # the closing summary, so the middle of the flow carries no side quests.
 if [ -f "${local_cfg}" ] && [ -z "${WIRE_CLAUDE_CODE}" ]; then
 	info "  Point Claude Code at Cortex, then just run \`claude\`:"
-	info "    ${abctl_cmd} claude-code enable"
+	info "    ${agentop_cmd} claude-code enable"
 	info ""
 fi
-# --claude-code: hand off to abctl, which owns the JSON merge (a shell-side edit
+# --claude-code: hand off to agentop, which owns the JSON merge (a shell-side edit
 # of a file holding API tokens is not worth attempting) and prompts on /dev/tty —
 # stdin here is the script itself when piped, so it cannot be read for an answer.
 if [ -n "${WIRE_CLAUDE_CODE:-}" ]; then
 	info ""
 	set +e
 	if [ -n "${ASSUME_YES}" ]; then
-		"${BIN_DIR}/abctl" claude-code enable --yes
+		"${BIN_DIR}/agentop" claude-code enable --yes
 	else
-		"${BIN_DIR}/abctl" claude-code enable
+		"${BIN_DIR}/agentop" claude-code enable
 	fi
 	cc_status=$?
 	set -e
 	case "${cc_status}" in
 		0)
 			info ""
-			info "  \"${abctl_cmd}\"                         watch traffic — and the \$ saved on every Claude Code prompt"
-			info "  \"${abctl_cmd}\" tools scan              propose unused tools to prune (the \$ saved then shows live in \"${abctl_cmd}\")"
+			info "  \"${agentop_cmd}\"                         watch traffic — and the \$ saved on every Claude Code prompt"
+			info "  \"${agentop_cmd}\" tools scan              propose unused tools to prune (the \$ saved then shows live in \"${agentop_cmd}\")"
 			# `service stop` is meaningless where no service could be installed, so do
 			# not offer it there — offer the pidfile kill for the unsupervised path.
 			if [ -z "${SUPERVISED}" ]; then
 				info "  kill \$(cat ${PROXY_PIDFILE})   stop Cortex (unsupervised)"
 			else
-				info "  \"${abctl_cmd}\" service stop            stop Cortex"
+				info "  \"${agentop_cmd}\" service stop            stop Cortex"
 			fi
-			info "  \"${abctl_cmd}\" claude-code disable     undo"
+			info "  \"${agentop_cmd}\" claude-code disable     undo"
 			info ""
 			# Claude Code is wired up, but other tools/harnesses on this machine still
 			# need the environment variables — print them so this install is not
@@ -1550,20 +1627,20 @@ if [ -n "${WIRE_CLAUDE_CODE:-}" ]; then
 			# the manual instructions below.
 			info ""
 			info "  Claude Code left unchanged. To do it later:"
-			info "    \"${abctl_cmd}\" claude-code enable"
+			info "    \"${agentop_cmd}\" claude-code enable"
 			info ""
 			;;
 		*)
 			# Anything else went wrong (a foreign HTTPS_PROXY, unparseable settings).
 			# Reporting that as "left unchanged" and exiting 0 would claim a success
 			# that did not happen.
-			die "abctl claude-code enable failed (exit ${cc_status}); Cortex is running but Claude Code is not configured for it"
+			die "agentop claude-code enable failed (exit ${cc_status}); Cortex is running but Claude Code is not configured for it"
 			;;
 	esac
 fi
-info "  Watch traffic:   \"${abctl_cmd}\"   (also shows the \$ saved on every Claude Code prompt)"
-info "  Prune unused tools to save more:  ${abctl_cmd} tools scan --write ${CORTEX_DIR}/config.yaml"
-info "    (tools scan only proposes the prune list; the actual \$ saved shows live in \"${abctl_cmd}\".)"
+info "  Watch traffic:   \"${agentop_cmd}\"   (also shows the \$ saved on every Claude Code prompt)"
+info "  Prune unused tools to save more:  ${agentop_cmd} tools scan --write ${CORTEX_DIR}/config.yaml"
+info "    (tools scan only proposes the prune list; the actual \$ saved shows live in \"${agentop_cmd}\".)"
 info ""
 if [ -z "${SUPERVISED}" ]; then
 	print_local_start_help
@@ -1582,17 +1659,17 @@ if [ -n "${ca_fp_after}" ] && [ "${ca_fp_before}" != "${ca_fp_after}" ]; then
 	info "    it tunnels through unparsed instead. Restart them to see their traffic."
 	info ""
 fi
-# The full, harness-agnostic environment block. `abctl claude-code enable` wires
+# The full, harness-agnostic environment block. `agentop claude-code enable` wires
 # these into ~/.claude/settings.json for Claude Code specifically; the variables
 # below are what every OTHER tool or agent needs, and are printed unconditionally so
 # this install is never Claude-Code-only.
 print_env_instructions
 info ""
 info "  Wire up Claude Code specifically (writes ~/.claude/settings.json):"
-info "    ${abctl_cmd} claude-code enable"
+info "    ${agentop_cmd} claude-code enable"
 info ""
 if [ -n "${SUPERVISED}" ]; then
-	info "  Stop it:         \"${abctl_cmd}\" service stop      (start / restart / status too)"
+	info "  Stop it:         \"${agentop_cmd}\" service stop      (start / restart / status too)"
 else
 	info "  Stop it:         kill \$(cat ${PROXY_PIDFILE})   (running unsupervised)"
 fi

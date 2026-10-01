@@ -132,7 +132,7 @@ type ibacConfig struct {
 }
 
 // ConfigSchema exposes the ibacConfig fields for schema-aware tooling
-// (abctl edit templates, future rossoctl-UI forms, etc.). Implements
+// (agentop edit templates, future rossoctl-UI forms, etc.). Implements
 // pipeline.SchemaProvider; absence would simply make IBAC opaque to
 // such tooling without affecting runtime.
 func (p *IBAC) ConfigSchema() []pipeline.FieldSchema {

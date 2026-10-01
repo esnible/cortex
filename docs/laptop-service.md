@@ -1,30 +1,30 @@
 # Running Cortex: start, stop, and remove it
 
 Cortex runs as a service, so there is nothing to launch by hand and nothing to keep
-in a terminal. Everything below is `abctl service`; run it with no action to see the
+in a terminal. Everything below is `agentop service`; run it with no action to see the
 list.
 
 ```sh
-abctl service status      # is it running, and is it answering?
-abctl service start       # start it
-abctl service stop        # stop it, and keep it stopped
-abctl service restart     # stop and start
-abctl service install     # set it up in the first place (the installer does this)
-abctl service uninstall   # stop it and remove the service
+agentop service status      # is it running, and is it answering?
+agentop service start       # start it
+agentop service stop        # stop it, and keep it stopped
+agentop service restart     # stop and start
+agentop service install     # set it up in the first place (the installer does this)
+agentop service uninstall   # stop it and remove the service
 ```
 
 **Never use `kill` or `pkill` to stop it.** The proxy is supervised, so killing it gets
 it restarted within a couple of seconds, which looks like a process refusing to die.
-`abctl service stop` is the stop that works.
+`agentop service stop` is the stop that works.
 
 That restart is the point, though, and it is worth seeing once:
 
 ```sh
-kill -9 $(pgrep -f 'authbridge-proxy --config')   # comes back within ~2s
-abctl service status                              # healthy again
+kill -9 $(pgrep -f 'cortex --config')             # comes back within ~2s
+agentop service status                            # healthy again
 ```
 
-On macOS you will see **two** `authbridge-proxy` processes: a supervisor (the one
+On macOS you will see **two** `cortex` processes: a supervisor (the one
 launchd starts, holding no ports) and the proxy itself. launchd does not restart user
 agents added mid-session — verified across `KeepAlive`, `StartInterval` and
 `RunAtLoad` — so the supervisor is what makes crash recovery work. On Linux there is
@@ -52,12 +52,12 @@ session that reports an error has lost one request and will recover; it does not
 restarting. When a restart genuinely is needed, install says how many connections it is
 about to cut.
 
-To restart deliberately: `abctl service restart`.
+To restart deliberately: `agentop service restart`.
 
 ## How traffic is grouped into sessions
 
 Each Claude Code session gets its own bucket, named with that session's id — the same
-UUID Claude Code uses for its own transcript, so `abctl` and
+UUID Claude Code uses for its own transcript, so `agentop` and
 `~/.claude/projects/<project>/<id>.jsonl` agree on what a session is. Two windows open in
 different repos are two buckets, and resuming a session (`claude --resume`) files back
 into the original one rather than starting a new one.
@@ -103,7 +103,7 @@ Some limitations worth knowing:
   every session. It matters where telemetry attribution is a trust boundary rather than a
   convenience, and `session.id_headers: []` is the way to opt out there.
 
-## Why traffic disappears from `abctl`
+## Why traffic disappears from `agentop`
 
 One limit by default, and it is not a clock:
 
@@ -124,7 +124,7 @@ One limit by default, and it is not a clock:
   stored once per session rather than once per turn, which cut heap by 10.4x on a
   300-turn measurement — so "5000 events" costs far less than multiplying by a request
   size suggests, but it is not free.
-- `abctl` fetches the **most recent** 500 events of a session, not all of them, and says
+- `agentop` fetches the **most recent** 500 events of a session, not all of them, and says
   so in the events footer (`· N older not fetched`). A session's whole history can be a
   gigabyte of JSON; asking for it took 17s and timed out at 10, which showed up as an
   events pane holding only what arrived after you opened it.
@@ -137,7 +137,7 @@ One limit by default, and it is not a clock:
 - `max_sessions` is **reachable in normal use**, which it effectively was not before.
   Every `claude` invocation mints a new bucket, so the 101st session on a busy machine
   evicts the least-recently-updated one — whole session and all. If an older session has
-  vanished from `abctl` entirely rather than just losing its oldest rows, this is why.
+  vanished from `agentop` entirely rather than just losing its oldest rows, this is why.
   Raise `session.max_sessions` if you work across many sessions and want them to stay.
 
   This cap is also the only thing bounding the churn described above: because bucket names
@@ -180,13 +180,13 @@ Size a mounted volume from that table, not from the laptop number, and lower
 **Where that default comes from.** It is **on wherever the ledger can survive a restart** —
 which means either an explicit `cost_ledger.dir` (in Kubernetes, a path on a mounted volume) or
 being started from a config inside `~/.cortex`, which is what a local install is and what both
-`abctl service install` and `--local` do. A resolvable `$HOME` is deliberately *not* enough:
+`agentop service install` and `--local` do. A resolvable `$HOME` is deliberately *not* enough:
 `HOME=/root` resolves in almost every container, and neither is a leftover `~/.cortex` directory,
 which is not a decision anybody made. A container with neither signal can only write to a layer
 that is discarded on restart, so there it stays off and says why in a startup log line.
 
 That rule replaced an earlier one keyed on `--local`, which was the cause of a real bug: the
-installed service runs `authbridge-proxy --config ~/.cortex/config.yaml` and never `--local`, so
+installed service runs `cortex --config ~/.cortex/config.yaml` and never `--local`, so
 "on by default" was false for every install. The generated config also writes
 `cost_ledger: {enabled: true}` explicitly, which is now belt-and-braces rather than the
 mechanism — a config generated before that was added still gets the ledger, because the default
@@ -198,7 +198,7 @@ times a day. Without the ledger, `today`, `7d` and `month` are all still answere
 ring's maximum window, with the response's own `window` field naming the span that was actually
 covered rather than the one you asked for. So the figures stay honest and get much smaller: six
 hours of a day, six hours of a week, and six hours of a month, which is the one that reads most
-wrongly if you take the label at face value. abctl draws such a span as `—` rather than as a
+wrongly if you take the label at face value. agentop draws such a span as `—` rather than as a
 number for that reason.
 
 **What is in the files.** One JSON line per minute per (endpoint, model, agent,
@@ -210,7 +210,7 @@ that is a promise a test asserts against the serialized bytes, not a convention.
 reach the session API, which is **unauthenticated** (the proxy logs `UNAUTHENTICATED; contains
 raw user content; never expose via ingress` when it starts). On a laptop it binds to localhost.
 
-`abctl` is one of those readers now, and the distinction is worth being exact about:
+`agentop` is one of those readers now, and the distinction is worth being exact about:
 `GET /v1/usage` reaches these files only for the symbolic windows `today`, `7d` and `month`,
 which a duration cannot express — so the spend band asks for them by name through
 `apiclient.GetUsageWindow`, and three of its four cells are ledger-backed. Only `LAST 1H` comes
@@ -225,7 +225,7 @@ cost_ledger:
   enabled: false
 ```
 
-then `abctl service restart`.
+then `agentop service restart`.
 
 **The setting takes effect on restart, not on reload.** The running proxy watches that file
 and hot-reloads most of it, but the ledger is opened once at startup, so a `cost_ledger`
@@ -256,9 +256,9 @@ Two other knobs, same restart rule:
 | Setting | Default | Notes |
 |---|---|---|
 | `cost_ledger.dir` | `~/.cortex/cost` | Must be an absolute path. A relative one is refused, because it would resolve against whatever directory the proxy started from |
-| `cost_ledger.retention_days` | 31 | The longest month, so `window=month` is answerable in full on the 31st; a shorter value makes that total a partial one and it is marked as such. Minimum **9** when set. `window=7d` is a rolling 7×24h, not seven calendar days, so it can open **nine** local day files: one extra because a rolling span starts part-way through a date, and one more because a spring-forward week is 167 hours, so the span reaches an hour further back. A retention shorter than the window is disclosed rather than silent — `DaysOutsideRetention` counts the days asked for beyond the setting, the band marks the total as a floor and `abctl cost` prints a coverage line. The floor of 9 is exactly `window=7d`'s worst case, so a legal setting can never answer *that* window short; a `month` asked of a 9-day ledger can |
+| `cost_ledger.retention_days` | 31 | The longest month, so `window=month` is answerable in full on the 31st; a shorter value makes that total a partial one and it is marked as such. Minimum **9** when set. `window=7d` is a rolling 7×24h, not seven calendar days, so it can open **nine** local day files: one extra because a rolling span starts part-way through a date, and one more because a spring-forward week is 167 hours, so the span reaches an hour further back. A retention shorter than the window is disclosed rather than silent — `DaysOutsideRetention` counts the days asked for beyond the setting, the band marks the total as a floor and `agentop cost` prints a coverage line. The floor of 9 is exactly `window=7d`'s worst case, so a legal setting can never answer *that* window short; a `month` asked of a 9-day ledger can |
 
-## `abctl: command not found`
+## `agentop: command not found`
 
 The installer puts both binaries in `~/.local/bin`. If that is not on your PATH it
 offers to add it to your shell profile; new terminals pick it up, and for the one you
@@ -273,19 +273,19 @@ To undo, delete the two lines the installer marked in your profile.
 ## Restricted environments (sandboxes, no launchd session)
 
 Some environments cannot manage services at all — a sandboxed shell, a session without
-a usable launchd domain, CI. `abctl service install` detects this before writing
+a usable launchd domain, CI. `agentop service install` detects this before writing
 anything and tells you so, rather than failing at `launchctl bootstrap` with
 `Input/output error`.
 
 Cortex still runs there; it just is not supervised:
 
 ```sh
-authbridge-proxy --local     # in its own terminal, or backgrounded
-abctl                        # the viewer, as usual
+cortex --local               # in its own terminal, or backgrounded
+agentop                      # the viewer, as usual
 ```
 
 What you give up: no restart after a crash, and nothing brings it back at login. Stop
-it with `kill $(pgrep -f authbridge-proxy)` — there is no service to stop.
+it with `kill $(pgrep -x cortex)` — there is no service to stop.
 
 Two assumptions that do not hold in such environments, and what happens:
 
@@ -297,19 +297,19 @@ Two assumptions that do not hold in such environments, and what happens:
 ## Is it working?
 
 ```sh
-abctl service status
+agentop service status
 ```
 
 `installed:` names the unit file, `healthy:` names the endpoint that answered. If it
 says `NOT answering`, the proxy is loaded but not serving — check `~/.cortex/proxy.log`.
 
-To see traffic rather than status, run `abctl` with no arguments.
+To see traffic rather than status, run `agentop` with no arguments.
 
 ## Start and stop
 
 ```sh
-abctl service start
-abctl service stop
+agentop service start
+agentop service stop
 ```
 
 A stop persists: Cortex stays down across logouts and reboots until you start it
@@ -318,7 +318,7 @@ worse than none.
 
 `stop` also reports how many connections it cut, because until Cortex is back those
 clients have nowhere to go: `HTTPS_PROXY` is fixed in each one's environment when it
-starts, so none of them can fall back to a direct connection. Run `abctl service start`
+starts, so none of them can fall back to a direct connection. Run `agentop service start`
 and they reconnect on their next request — the sessions themselves do not need
 restarting.
 
@@ -329,7 +329,7 @@ They are different, so pick deliberately:
 ### Pause it
 
 ```sh
-abctl service stop
+agentop service stop
 ```
 
 Claude Code fails while Cortex is stopped, because its settings still point at the
@@ -337,18 +337,18 @@ proxy. Either start Cortex again or unwire Claude Code (below).
 
 **A running session cannot route around a stopped Cortex.** `HTTPS_PROXY` is fixed in
 its environment when it starts, so it has no way to fall back to a direct connection,
-and `abctl configure claude-code disable` cannot reach it — that only affects
-sessions started afterwards. What it needs is Cortex back: `abctl service start`,
+and `agentop configure claude-code disable` cannot reach it — that only affects
+sessions started afterwards. What it needs is Cortex back: `agentop service start`,
 after which it reconnects on its next request without being restarted. `service
 stop` tells you how many connections it cut, for exactly this reason.
 
-Use `abctl service stop`, not `kill` or `pkill` — the supervisor restarts the
+Use `agentop service stop`, not `kill` or `pkill` — the supervisor restarts the
 process within seconds, which looks like it refusing to die.
 
 ### Unwire Claude Code
 
 ```sh
-abctl configure claude-code disable
+agentop configure claude-code disable
 ```
 
 This removes only the keys Cortex added to `~/.claude/settings.json`
@@ -367,7 +367,7 @@ direct TLS call it makes.
 
 ### Everything shows as `tunnel` and no plugin ever runs
 
-`abctl observe` shows rows like this, with `tunnel` in ACTION and no method:
+`agentop observe` shows rows like this, with `tunnel` in ACTION and no method:
 
 ```
 18:00:02  out  req  tunnel  client-rejected-ca   ete-litellm.example.com
@@ -418,7 +418,7 @@ wrappers that set `HOME=$PWD` each get their own CA. Point every environment at 
 CA instead:
 
 ```sh
-authbridge-proxy --local --ca-dir /Users/you/.cortex/ca
+cortex --local --ca-dir /Users/you/.cortex/ca
 ```
 
 `--ca-dir` moves only the CA; the config stays at its usual path. On startup the
@@ -470,7 +470,7 @@ error anywhere to notice it by.
 
 ### Go tools on macOS need the keychain, not a variable
 
-`SSL_CERT_FILE` — the Go one, covering `go`, `gh` and `abctl` itself — **does
+`SSL_CERT_FILE` — the Go one, covering `go`, `gh` and `agentop` itself — **does
 nothing on macOS**. Go's `crypto/x509` honours it only in `root_unix.go`, which is
 built for `linux || freebsd || …` and excludes darwin; darwin's `loadSystemRoots`
 returns a sentinel that reads no files, and verification is then handed to
@@ -496,28 +496,28 @@ security delete-certificate -c authbridge-tls-bridge-ca \
 `git`, `curl` and Python are **not** affected on macOS — they read their bundles
 through OpenSSL/LibreSSL, which honours the variables on every platform. And on
 Linux `SSL_CERT_FILE` works normally, so nothing extra is needed there.
-`abctl configure claude-code enable` prints this note when it runs on macOS.
+`agentop configure claude-code enable` prints this note when it runs on macOS.
 
-Cortex keeps running; nothing sends traffic to it. `abctl configure claude-code
+Cortex keeps running; nothing sends traffic to it. `agentop configure claude-code
 enable` puts it back.
 
 ### Remove it
 
 ```sh
-abctl configure claude-code disable   # 1. unwire Claude Code
-abctl service uninstall               # 2. stop it and remove the service
-rm -rf ~/.cortex                      # 3. config, CA, logs, cost history, abctl's UI settings
-rm -f ~/.local/bin/abctl ~/.local/bin/authbridge-proxy
+agentop configure claude-code disable # 1. unwire Claude Code
+agentop service uninstall             # 2. stop it and remove the service
+rm -rf ~/.cortex                      # 3. config, CA, logs, cost history, agentop's UI settings
+rm -f ~/.local/bin/agentop ~/.local/bin/cortex
 ```
 
-Order matters for the first two: `abctl configure claude-code disable` needs to
+Order matters for the first two: `agentop configure claude-code disable` needs to
 read the config that step 3 deletes.
 
 #### Check nothing is left
 
 ```sh
-abctl configure claude-code status   # should say "not enabled"
-pgrep -fl authbridge-prox            # should print nothing
+agentop configure claude-code status # should say "not enabled"
+pgrep -lx cortex                     # should print nothing
 ls ~/.cortex 2>/dev/null             # should print nothing
 ```
 
@@ -555,13 +555,13 @@ once, at startup — and will refuse the new certificates.
 
 That failure is quiet. Cortex falls back to tunnelling rather than breaking the
 connection, so the traffic keeps flowing and nothing on the agent's side complains;
-it simply stops being parsed, which shows up as `tunnel` rows in `abctl observe`.
+it simply stops being parsed, which shows up as `tunnel` rows in `agentop observe`.
 Restart those agents and they are visible again.
 
 An ordinary upgrade is unaffected — it keeps the existing CA. This only applies when
 `~/.cortex` has been deleted, or on a first install with agents already running.
 
-#### If `abctl` is already gone
+#### If `agentop` is already gone
 
 The service can be removed by hand:
 
@@ -593,6 +593,6 @@ CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC
 its tool's trust store rather than adding to it. Leave them behind with the file
 deleted and git, curl and Python fail **every** TLS call — including calls that have
 nothing to do with Cortex — with `error setting certificate verify locations`, on a
-machine you believe you have just cleaned. `abctl configure claude-code disable` removes all
+machine you believe you have just cleaned. `agentop configure claude-code disable` removes all
 seven in the right order, which is why it is step 1 above; this list is only for when
 that binary is already gone.

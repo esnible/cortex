@@ -6,8 +6,8 @@ Cortex provides **secure, transparent token management** for Kubernetes workload
 
 ## Download prebuilt binaries
 
-Prefer not to compile from source? Every `v*` release attaches prebuilt `abctl` (the
-session-inspector TUI) and `authbridge-proxy` binaries for linux and macOS (amd64 +
+Prefer not to compile from source? Every `v*` release attaches prebuilt `agentop` (the
+session-inspector TUI) and `cortex` binaries for linux and macOS (amd64 +
 arm64) on the [Releases page](https://github.com/rossoctl/cortex/releases).
 
 ```sh
@@ -15,22 +15,22 @@ VER=v0.1.0                 # a released tag
 OS=darwin ARCH=arm64       # one of: linux/darwin × amd64/arm64
 base="https://github.com/rossoctl/cortex/releases/download/${VER}"
 
-curl -fsSLO "${base}/abctl_${VER}_${OS}_${ARCH}.tar.gz"
+curl -fsSLO "${base}/agentop_${VER}_${OS}_${ARCH}.tar.gz"
 curl -fsSLO "${base}/checksums.txt"
 sha256sum -c checksums.txt --ignore-missing    # macOS: shasum -a 256 -c ... --ignore-missing
-tar xzf "abctl_${VER}_${OS}_${ARCH}.tar.gz"
-sudo mv abctl /usr/local/bin/                  # onto PATH
-abctl --version
+tar xzf "agentop_${VER}_${OS}_${ARCH}.tar.gz"
+sudo mv agentop /usr/local/bin/                # onto PATH
+agentop --version
 ```
 
-`authbridge-proxy` ships the same way (`authbridge-proxy_${VER}_${OS}_${ARCH}.tar.gz`).
+`cortex` ships the same way (`cortex_${VER}_${OS}_${ARCH}.tar.gz`).
 
 - **Linux** binaries are fully static (`CGO_ENABLED=0`) — no libc dependency, run anywhere.
 - **macOS** binaries are portable but unsigned; after extracting, clear the Gatekeeper
-  quarantine once: `xattr -dr com.apple.quarantine ./abctl` (or `codesign --sign - ./abctl`).
+  quarantine once: `xattr -dr com.apple.quarantine ./agentop` (or `codesign --sign - ./agentop`).
 
-Building from source: `make abctl` or `make authbridge-proxy` from the repo
-root. `authbridge-proxy` defaults to the `full` plugin profile; pass
+Building from source: `make agentop` or `make cortex` from the repo
+root. `cortex` defaults to the `full` plugin profile; pass
 `PROFILE=lite` or `local` for smaller sets. See
 [Build-tag plugin selection](#build-tag-plugin-selection) for the underlying
 `go build` invocations.
@@ -51,7 +51,7 @@ start at all. What you find afterwards differs by platform: macOS restarts it
 indefinitely (the plist supervises the proxy, which backs off between attempts), while
 Linux gives up after five failures inside five minutes and leaves the unit `failed`, so
 there you get a stopped service rather than a looping one. Either way the proxy logs the
-missing plugin and the set it does have, and `abctl service status` shows the last log
+missing plugin and the set it does have, and `agentop service status` shows the last log
 lines; the default `full` avoids the question.
 
 ## Deployment Modes
@@ -60,9 +60,9 @@ Sidecar container images:
 
 | Image | Contents |
 |-------|----------|
-| `authbridge` | proxy-sidecar: the authbridge-proxy binary |
+| `authbridge` | proxy-sidecar: the cortex binary |
 | `authbridge-envoy` | envoy-sidecar combined: Envoy + ext_proc |
-| `authbridge-lite` | `authbridge-proxy` built with the `lite` profile (see `scripts/profile-tags`), a sidecar minimum. A build variant, not a separate binary |
+| `authbridge-lite` | `cortex` built with the `lite` profile (see `scripts/profile-tags`), a sidecar minimum. A build variant, not a separate binary |
 
 | Mode | Image | Use Case | How It Works |
 |------|-------|----------|-------------|
@@ -70,7 +70,7 @@ Sidecar container images:
 | `envoy-sidecar` | `authbridge-envoy` | Transparent interception via iptables | Envoy intercepts all traffic, delegates auth to authbridge via ext_proc gRPC |
 
 There are only these two modes. `lite` is a build *profile*, not a mode: the
-`authbridge-lite` image runs the `authbridge-proxy` binary in `proxy-sidecar`
+`authbridge-lite` image runs the `cortex` binary in `proxy-sidecar`
 mode with a trimmed plugin set (see the profile table below).
 
 The operator resolves the mode per workload from `AgentRuntime.Spec.AuthBridgeMode` → namespace ConfigMap → deprecated `rossoctl.io/authbridge-mode` annotation → cluster default (`proxy-sidecar`). See operator#361.
@@ -454,7 +454,7 @@ declarative profile per shipped artifact and emits its tags:
 
 | Profile | Artifact | Plugins |
 |---------|----------|---------|
-| `local` | desktop `authbridge-proxy` | the three parsers + `tool-prune` |
+| `local` | desktop `cortex` | the three parsers + `tool-prune` |
 | `full` | `authbridge` image, Kubernetes proxy-sidecar | all thirteen |
 | `lite` | `authbridge-lite` image | sidecar minimum: jwt-validation, token-exchange, litellm-budget-track, static-inject |
 | `envoy` | `authbridge-envoy` image | envoy-sidecar set |
@@ -469,21 +469,21 @@ declarative profile per shipped artifact and emits its tags:
 
 ```bash
 # Desktop set
-go build -tags "$(go -C scripts/profile-tags run . local)" ./cmd/authbridge-proxy
+go build -tags "$(go -C scripts/profile-tags run . local)" ./cmd/cortex
 
 # Everything a Kubernetes sidecar ships
-go build -tags "$(go -C scripts/profile-tags run . full)" ./cmd/authbridge-proxy
+go build -tags "$(go -C scripts/profile-tags run . full)" ./cmd/cortex
 
 # A profile plus one optional plugin
 go build -tags "$(go -C scripts/profile-tags run . full),include_plugin_sessionbudget" \
-  ./cmd/authbridge-proxy
+  ./cmd/cortex
 ```
 
 **Docker build:**
 
 ```bash
 docker build --build-arg GO_BUILD_TAGS="$(go -C scripts/profile-tags run . full)" \
-  -f cmd/authbridge-proxy/Dockerfile .
+  -f cmd/cortex/Dockerfile .
 ```
 
 Tags combine with commas. Go does **not** error on a tag that matches nothing, so
@@ -521,9 +521,9 @@ when `-tags include_plugin_<name>` is passed.
 ## Component Documentation
 
 - [core](../core/README.md) — The runtime library: framework, listeners, cost, session store, auth (Go module)
-- [cmd/authbridge-proxy](../cmd/authbridge-proxy/) — proxy-sidecar binary (default mode, full plugin set)
-- [cmd/authbridge-envoy](../cmd/authbridge-envoy/) — envoy-sidecar binary (Envoy + ext_proc, full plugin set)
-- `authbridge-lite` image — `cmd/authbridge-proxy` built with the `lite` profile (see `scripts/profile-tags`); a build variant, not a separate binary
+- [cmd/cortex](../cmd/cortex/) — proxy-sidecar binary (default mode, full plugin set)
+- [cmd/cortex-envoy](../cmd/cortex-envoy/) — envoy-sidecar binary (Envoy + ext_proc, full plugin set)
+- `authbridge-lite` image — `cmd/cortex` built with the `lite` profile (see `scripts/profile-tags`); a build variant, not a separate binary
 - [proxy-init](../deploy/proxy-init/README.md) — iptables init container (envoy-sidecar mode only)
 - [docs/](./) — framework architecture and plugin author references
 

@@ -26,7 +26,7 @@ const (
 //
 // WHY THIS IS WORTH PARSING AT ALL: a session id is not a thread. Claude Code sends a
 // conversation, its subagents and its own one-shot completions under one
-// X-Claude-Code-Session-Id, and a consumer that has to pick out the conversation — abctl's
+// X-Claude-Code-Session-Id, and a consumer that has to pick out the conversation — agentop's
 // CONTEXT gauge — was left inferring it from the message count, which the two populations
 // overlap on (subagent turns at 177 and 186 messages against main threads at 188 and 288).
 // Measured on 19 probed requests across three live sessions, the marker separated them without

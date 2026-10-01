@@ -260,7 +260,7 @@ func TestSettle_SplitUnreportedReachesTheRecord(t *testing.T) {
 //
 // AND A LONE PROMPT HALF IS ENOUGH TO PUBLISH. settleCost's skip gate is
 // `!Priced && !HasPrompt && RejectedReason == ""`, so HasPrompt alone carries a record onto the
-// wire; abctl's renderer then tests PromptUSD > 0 rather than Priced(). So a report this package
+// wire; agentop's renderer then tests PromptUSD > 0 rather than Priced(). So a report this package
 // declared impossible shipped as Priced=false, RejectedReason="", PromptUSD=$0.0038 — and
 // rendered. Reachable from the wire: parsercommon assigns these provider ints with no floor.
 //
@@ -493,7 +493,7 @@ func TestSettle_AHeaderKeepsItsFigureAndTheCountsAreStillRefused(t *testing.T) {
 // That guard requires BOTH halves, so it closed only the case where each is individually under the
 // ceiling and their sum is over. When one half ITSELF breaks the ceiling, pricing.Cost refuses that
 // half, the pair test cannot fire, and the sibling is published on a record that reads unpriced —
-// where abctl's renderer, which tests OutputUSD > 0 rather than Priced(), displays it as money.
+// where agentop's renderer, which tests OutputUSD > 0 rather than Priced(), displays it as money.
 //
 // Driven at $1 per token, the same six-order-of-magnitude rate typo as the fixture above, in both
 // directions: whichever half is the larger one is the one Cost refuses, and the survivor is drawn
@@ -557,7 +557,7 @@ func TestSettle_ARefusedWholeLeavesNoHalfStanding(t *testing.T) {
 			}
 			// The record is what a renderer reads, and it does no Priced() gating of the halves.
 			if rec := NewRecord(got, nil); rec.PromptUSD != 0 || rec.OutputUSD != 0 {
-				t.Errorf("record PromptUSD = %v OutputUSD = %v, want 0/0: this is the figure abctl would display for a refused request",
+				t.Errorf("record PromptUSD = %v OutputUSD = %v, want 0/0: this is the figure agentop would display for a refused request",
 					rec.PromptUSD, rec.OutputUSD)
 			}
 		})

@@ -209,7 +209,7 @@ func TestInferenceParser_CapturesToolDescriptionAndParameters(t *testing.T) {
 	// The schema is kept as the client sent it, so key ORDER survives. This is the
 	// observable difference from decoding into a map: marshaling a map sorts keys, which
 	// would put "properties" ahead of "type" and silently hand every reader — the session
-	// API, abctl, a policy dumping its input — a rewritten schema rather than the one on
+	// API, agentop, a policy dumping its input — a rewritten schema rather than the one on
 	// the wire.
 	raw := string(tool.Parameters)
 	if strings.Index(raw, `"type"`) > strings.Index(raw, `"properties"`) {
@@ -550,7 +550,7 @@ func TestInferenceParser_OnResponse_NoRequestContext(t *testing.T) {
 
 // TestInferenceParser_OnResponse_EmptyBody locks the regression: when
 // the request side parsed (Extensions.Inference populated) but the
-// response body is empty, the parser MUST record a Skip so abctl pairs
+// response body is empty, the parser MUST record a Skip so agentop pairs
 // the timeline rows.
 func TestInferenceParser_OnResponse_EmptyBody(t *testing.T) {
 	p := NewInferenceParser()

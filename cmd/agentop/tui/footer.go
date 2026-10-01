@@ -1,0 +1,227 @@
+package tui
+
+import (
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/charmbracelet/lipgloss"
+)
+
+// feedbackURL is where a user sends feedback or reports a problem. The footer
+// carries it on every screen (see #975): the moment a user is looking at their
+// session data is the moment they have an opinion, and the tool should not make
+// them hunt for the repository. Kept quiet (muted style) and to one line.
+//
+// The /issues/new/choose form drops the user on the template picker — the
+// Laptop feedback form — one click from filing, rather than on the issue list.
+// This is the same destination the docs point at (see rossoctl#977).
+const feedbackURL = "https://github.com/rossoctl/cortex/issues/new/choose"
+
+// footerView renders the bottom two lines: status (connection + rate
+// + optional transient flash, then a muted feedback link) and a
+// context-sensitive keybinding hint. No lipgloss borders; parent view handles
+// the frame.
+func (m *model) footerView() string {
+	var status strings.Builder
+
+	// A sticky flash gets the whole line, starting at column 0.
+	//
+	// Yank is the case this exists for: the path is the longest thing the footer
+	// ever carries, and appending it after the ~32 columns of connection state,
+	// rate pushed it off the right edge on a narrow terminal — the user
+	// saw "yanked → /Users/you/.cortex/agentop-" and could not read the filename,
+	// which is the whole point of showing it. Dropping the prefix while the notice
+	// is up buys those columns back; the prefix returns on the next keypress, and
+	// a sticky flash is by definition something the user just asked for and is
+	// reading right now.
+	if m.flash != "" && m.flashSticky {
+		return styleTitle.Render(fitFlashLine(m.flash, m.width)) + "\n" +
+			styleHint.Render(fitHintLine(m.helpView(), m.width))
+	}
+
+	// Connection state dot.
+	switch m.connState.phase {
+	case connOpen:
+		status.WriteString(styleOK.Render("● connected"))
+	case connReconnecting:
+		status.WriteString(styleWarn.Render(
+			fmt.Sprintf("◐ reconnecting (attempt %d, next in %ds)",
+				m.connState.attempt,
+				int(time.Until(m.connState.nextRetry).Round(time.Second).Seconds()))))
+	case connFailed:
+		msg := "✗ failed"
+		if m.connState.err != nil {
+			msg += ": " + m.connState.err.Error()
+		}
+		status.WriteString(styleError.Render(msg))
+	default:
+		status.WriteString(styleMuted.Render("… connecting"))
+	}
+
+	status.WriteString(styleMuted.Render("  "))
+
+	// Rate. Spelled out rather than "ev/s", which reads as a unit the operator has to
+	// decode before it tells them anything.
+	//
+	// A "drops: N" counter used to sit beside it. Nothing ever incremented it, so it
+	// displayed a hardcoded zero — which is worse than showing nothing, because it
+	// teaches that no event is ever dropped. Removed with its field; see #1060.
+	status.WriteString(styleMuted.Render(fmt.Sprintf("%.1f events/sec", m.rate)))
+	if m.paused {
+		status.WriteString(styleWarn.Render("   [paused]"))
+	}
+	// A filter that is ON but not being edited has nowhere else to show: the filter
+	// box renders only while m.filtering, so a filter restored from the config file
+	// silently truncated the list with nothing on screen explaining it. Shown here
+	// rather than in the hint line because it is state, not a keybinding — the same
+	// reason [paused] sits above.
+	//
+	// Pane-gated for the same reason as [sort: …] below, and it is the same defect:
+	// m.filter is model-global and restored from settings, so it survived onto panes
+	// that filter nothing — the Usage pane fetches an aggregate the filter never
+	// reaches, so "[filter: github-tool]" there claims the chart is narrowed when
+	// every bucket in it is unfiltered.
+	//
+	// Two panes rather than one, unlike the sort indicator: sessions_pane.go and
+	// events_pane.go both read m.filter (the namespaces picker has its own model and
+	// its own copy). Nothing else in the tree does.
+	if m.filter != "" && !m.filtering && (m.pane == paneSessions || m.pane == paneEvents) {
+		status.WriteString(styleWarn.Render("   [filter: " + m.filter + "]"))
+	}
+	if m.pane == paneSessions && m.agentScope != "" && m.sessionsScope() == "" {
+		status.WriteString(styleWarn.Render("   [no session names its agent: list not scoped]"))
+	}
+	// A non-chronological sort, for the same reason as [filter: …] above: it is
+	// state the operator chose, and a table in an order the eye does not expect
+	// reads as a bug when nothing on screen names the ordering.
+	//
+	// Here as well as in the column header, because the sorted column may be one
+	// fitColumns dropped on a narrow terminal — and then there is no header on
+	// screen to carry the glyph, which is precisely when the reordering is most
+	// confusing.
+	//
+	// Gated on the pane as well as the column, because sortCol is model-global and
+	// restored from settings at startup: it survives into panes that hold no sortable
+	// table, where "[sort: COST▼]" names an ordering nothing on screen has. The Usage
+	// pane is a chart in time order and that is the case #1060 reports.
+	//
+	// paneEvents alone, not a list of panes: the events table is the only sortable one
+	// in the TUI — sessions_pane.go never reads sortCol, and the [s]/[d] keys that set
+	// it are handled under paneEvents only.
+	if m.sortCol != "" && m.pane == paneEvents {
+		glyph := sortGlyphAsc
+		if m.sortDesc {
+			glyph = sortGlyphDesc
+		}
+		status.WriteString(styleWarn.Render("   [sort: " + string(m.sortCol) + glyph + "]"))
+	}
+
+	// Flash message (e.g. "yanked → ~/.cortex/agentop-events/...").
+	if m.flash != "" && (m.flashSticky || time.Now().Before(m.flashUntil)) {
+		status.WriteString(styleTitle.Render("   " + m.flash))
+	}
+
+	// Feedback link, quiet and last on the status line. It has the weakest claim
+	// on the columns — the connection state, rate and any flash are what a
+	// user is actively debugging with — so it is the first thing to drop when the
+	// line would otherwise overflow the terminal and wrap onto a third row. It is
+	// dropped whole rather than truncated: half a URL is not clickable and reads
+	// as corruption. On the common wide terminal it is always present, which is
+	// the case #975 is about; a width of 0 (no size yet) keeps it too.
+	feedback := styleMuted.Render("   feedback: " + feedbackURL)
+	if m.width <= 0 || lipgloss.Width(status.String())+lipgloss.Width(feedback) <= m.width {
+		status.WriteString(feedback)
+	}
+
+	hint := fitHintLine(m.helpView(), m.width)
+
+	return fitStatusLine(status.String(), m.width) + "\n" + styleHint.Render(hint)
+}
+
+// fitStatusLine bounds the status row to the terminal.
+//
+// layout() reserves exactly three rows for title + blank + footer, so a status row
+// wider than the terminal wraps and costs the hint line below it — the row carrying
+// [?] keys and [q] quit. Every writer above appends unconditionally, and only the
+// feedback link checked the width, so a state-rich row (paused + a restored filter +
+// an active sort) overflowed at 80 columns: measured 87.
+//
+// Truncates from the RIGHT, unlike fitHintLine's drop-from-the-front. The two lines
+// rank their contents oppositely: the hint line's last entries are the escape hatches
+// a stuck operator needs, while this row leads with the connection state and the
+// rate — what someone is actively debugging with — and trails into optional state
+// markers. So the tail is what should go.
+func fitStatusLine(status string, width int) string {
+	if width <= 0 || lipgloss.Width(status) <= width {
+		return status
+	}
+	return truncToWidth(status, width)
+}
+
+// fitFlashLine bounds a full-width flash to the terminal, truncating from the
+// LEFT so the tail survives. For a path the tail is the filename, which is what
+// the user retypes or completes against; the leading directories are the
+// guessable part, and the README states the directory anyway.
+func fitFlashLine(flash string, width int) string {
+	if width <= 0 || lipgloss.Width(flash) <= width {
+		return flash
+	}
+	const ell = "…"
+	budget := width - lipgloss.Width(ell)
+	if budget <= 0 {
+		return ell
+	}
+	// Walk backwards accumulating DISPLAY COLUMNS, not runes. An earlier version
+	// computed the budget in columns and then sliced by rune index, which
+	// overflowed on any wide character — a CJK path asked to fit 40 columns
+	// rendered 55, because each rune it kept was two columns wide.
+	r := []rune(flash)
+	used := 0
+	i := len(r)
+	for i > 0 {
+		w := lipgloss.Width(string(r[i-1]))
+		if used+w > budget {
+			break
+		}
+		used += w
+		i--
+	}
+	return ell + string(r[i:])
+}
+
+// fitHintLine trims a footer hint line to the terminal width, dropping whole
+// hints from the FRONT.
+//
+// The events footer runs ~135 columns, so an 80-column terminal simply lost the
+// tail — and the tail is where "[?] keys" and "[q] quit" live, the pair a stuck
+// user reaches for. helpView orders its hints so the essential ones come last;
+// this is the half that makes that ordering mean something, by cutting the other
+// end.
+//
+// A leading "…" marks the cut, so a missing hint reads as "there are more" rather
+// than as a key that does not exist. The [?] overlay is the complete reference.
+func fitHintLine(hint string, width int) string {
+	if width <= 0 || lipgloss.Width(hint) <= width {
+		return hint
+	}
+	const sep = "  "
+	const ellipsis = "… "
+
+	parts := strings.Split(hint, sep)
+	// Drop from the front until it fits, always keeping the last hint: one clipped
+	// hint beats a bare ellipsis.
+	for i := 0; i < len(parts)-1; i++ {
+		candidate := ellipsis + strings.Join(parts[i+1:], sep)
+		if lipgloss.Width(candidate) <= width {
+			return candidate
+		}
+	}
+	// Even the last hint alone is too wide. Truncate it rather than return a line
+	// that overflows and wraps, which would push a row of the table off-screen.
+	last := parts[len(parts)-1]
+	if lipgloss.Width(last) <= width {
+		return last
+	}
+	return truncToWidth(last, width)
+}

@@ -144,7 +144,7 @@ func (c *configuredPlugin) OnFinish(ctx context.Context, pctx *Context) {
 // StreamingResponder that costs nothing: no dispatch path selects on it, and
 // a non-provider returns nil, which the session API omits. "No such channel"
 // and "channel with nothing in it" therefore still look identical on the wire,
-// which is what abctl renders as "(none)".
+// which is what agentop renders as "(none)".
 func (c *configuredPlugin) Metrics() []Metric {
 	if mp, ok := c.Plugin.(MetricsProvider); ok {
 		return mp.Metrics()

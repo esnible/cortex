@@ -1,8 +1,8 @@
 # CPEX
 
-> **Deployment note:** `authbridge-cpex` is a **build variant** of the
-> AuthBridge proxy-sidecar (`authbridge-proxy`), deployed *in place of*
-> `authbridge-proxy` — not an additional sidecar. The operator selects
+> **Deployment note:** `cortex-cpex` is a **build variant** of the
+> AuthBridge proxy-sidecar (`cortex`), deployed *in place of*
+> `cortex` — not an additional sidecar. The operator selects
 > the image when CPEX policy enforcement is needed for a workload.
 
 The CPEX plugin routes AuthBridge pipeline hooks through the [CPEX](https://github.com/contextforge-org/cpex) framework,
@@ -57,9 +57,9 @@ the plugin and ship a policy update later.
 
 ### Build tag
 
-The CPEX backend uses cgo and links `libcpex_ffi.a`. Only the `authbridge-cpex`
-binary compiles this package with `-tags cpex`; the `authbridge-proxy`,
-`authbridge-envoy`, and `authbridge-lite` binaries do not import it. Configuring
+The CPEX backend uses cgo and links `libcpex_ffi.a`. Only the `cortex-cpex`
+binary compiles this package with `-tags cpex`; the `cortex`,
+`cortex-envoy`, and `authbridge-lite` binaries do not import it. Configuring
 the `cpex` plugin in any other binary fails at boot with a clear "build the
 cpex binary" error rather than registering a silent no-op. The package itself
 compiles tag-free for unit tests via a fake manager, so
@@ -305,10 +305,10 @@ allowing traffic in that state is rarely intended.
 CGO_ENABLED=0 go -C core test ./plugins/cpex/...
 
 # Build the real backend: links libcpex_ffi.a, -tags cpex, CGO on
-podman build -f cmd/authbridge-cpex/Dockerfile -t authbridge-cpex:latest .
+podman build -f cmd/cortex-cpex/Dockerfile -t authbridge-cpex:latest .
 ```
 
-The pinned CPEX FFI ABI version lives in `cmd/authbridge-cpex/CPEX_FFI_VERSION`.
+The pinned CPEX FFI ABI version lives in `cmd/cortex-cpex/CPEX_FFI_VERSION`.
 
 ## See also
 

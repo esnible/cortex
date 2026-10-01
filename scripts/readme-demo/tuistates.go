@@ -1,6 +1,6 @@
 package main
 
-// tuistates walks the abctl beats and turns each settled screen into a state.
+// tuistates walks the agentop beats and turns each settled screen into a state.
 
 import (
 	"fmt"
@@ -8,12 +8,12 @@ import (
 )
 
 // firstBeatStagger is how long the opening screen takes to paint itself in, row
-// by row. The table is static by the time it is captured — abctl is not animating
+// by row. The table is static by the time it is captured — agentop is not animating
 // anything — so the reveal is the emitter's, and it exists because a table that
 // simply appears reads as a screenshot while one that fills reads as a live tool.
 const firstBeatStagger = 70 * time.Millisecond
 
-// TUIStates captures one screen per beat from a real abctl model.
+// TUIStates captures one screen per beat from a real agentop model.
 func TUIStates(a Act, start time.Duration, g Grid, home, ledgerDir string) ([]State, error) {
 	var sum time.Duration
 	for _, b := range a.Beats {

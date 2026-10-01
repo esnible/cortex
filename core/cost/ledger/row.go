@@ -250,7 +250,7 @@ func truncateLabel(s string) string {
 //     rather than out of habit: it is the copy in front of a file that is retained for
 //     retentionDays and cannot be edited afterwards, so it is the one that has to hold
 //     even if a future edit weakens the other.
-//   - abctl's tui.sanitizeLabel is a third copy, at RENDER time, in a main module this
+//   - agentop's tui.sanitizeLabel is a third copy, at RENDER time, in a main module this
 //     library must not import. It still filters C0 and DEL only — named here because a
 //     divergence stated is a divergence someone can fix.
 //
@@ -267,7 +267,7 @@ func truncateLabel(s string) string {
 // AND THE DIVERGENCE THIS USED TO WARN ABOUT IS CLOSED. It read "usage (the ring) does not
 // sanitise, so a label carrying control bytes is spelled differently in the two halves and
 // group=model would show it as two series" — the ring sanitises now, with the same predicate,
-// so one hostile label is one series in both halves. abctl's render-time copy is the only
+// so one hostile label is one series in both halves. agentop's render-time copy is the only
 // remaining narrower filter, and it is named above rather than left to be discovered.
 func sanitizeLabel(s string) string {
 	if !hasControlRunes(s) {

@@ -70,7 +70,7 @@ const (
 // outlives what it describes.
 //
 // Exported for readers outside this package, because the store is not the only place these
-// events pile up: abctl decodes the same events off the session API and held more memory
+// events pile up: agentop decodes the same events off the session API and held more memory
 // than the proxy it was watching. Feed events through one Interner in the order they were
 // recorded — the rolling table depends on consecutive events being neighbours, so shuffled
 // input still returns correct strings but shares almost nothing. The zero value is ready

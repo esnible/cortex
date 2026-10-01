@@ -32,7 +32,7 @@ type WindowSpec struct {
 	Lines []string `yaml:"lines"`
 }
 
-// Beat is one captured abctl screen: the keys that get there, and how long it
+// Beat is one captured agentop screen: the keys that get there, and how long it
 // stays on screen.
 type Beat struct {
 	Label   string        `yaml:"label"`

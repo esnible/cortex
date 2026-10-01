@@ -495,7 +495,7 @@ func scanUntilPrefix(t *testing.T, sc *bufio.Scanner, prefix string, d time.Dura
 
 // TestHandleGet_SerializesInvocations verifies the wire shape of
 // SessionEvent.Invocations on /v1/sessions/{id}. A downstream consumer
-// (abctl, curl pipes, scripts) must be able to decode the structured
+// (agentop, curl pipes, scripts) must be able to decode the structured
 // Inbound / Outbound slices without a side channel — this locks the
 // schema, including the 5-value Action vocabulary.
 func TestHandleGet_SerializesInvocations(t *testing.T) {
@@ -540,7 +540,7 @@ func TestHandleGet_SerializesInvocations(t *testing.T) {
 	}
 
 	// Structural decode — consumer can unmarshal straight into the
-	// canonical types. This is the contract abctl relies on.
+	// canonical types. This is the contract agentop relies on.
 	var view pipeline.SessionView
 	if err := json.Unmarshal(body, &view); err != nil {
 		t.Fatalf("SessionView unmarshal: %v", err)
@@ -565,7 +565,7 @@ func TestHandleGet_SerializesInvocations(t *testing.T) {
 }
 
 // TestHandleGet_SerializesPluginsMap verifies the escape-hatch Plugins
-// field round-trips as keyed json.RawMessage — abctl consumes each
+// field round-trips as keyed json.RawMessage — agentop consumes each
 // plugin's payload by key without needing to know the plugin's schema
 // at compile time.
 func TestHandleGet_SerializesPluginsMap(t *testing.T) {
@@ -598,7 +598,7 @@ func TestHandleGet_SerializesPluginsMap(t *testing.T) {
 		t.Fatalf("rate-limiter key missing: %+v", view.Events[0].Plugins)
 	}
 	// Round-trip the per-plugin payload to a caller-defined type — the
-	// exact pattern abctl will use to render plugin events it knows
+	// exact pattern agentop will use to render plugin events it knows
 	// about, while leaving unknown plugins as raw JSON.
 	var payload struct {
 		Allowed    bool `json:"allowed"`

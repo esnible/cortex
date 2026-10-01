@@ -79,30 +79,30 @@ __pycache__/
 # pattern that is safe, so the list below is exhaustive for `cmd/` and for the
 # two `scripts/` helpers further down. The `demos/*` mains are deliberately not
 # listed. Keep adding to it.
-cmd/abctl/abctl
-cmd/authbridge-proxy/authbridge-proxy
-cmd/authbridge-envoy/authbridge-envoy
-cmd/authbridge-cpex/authbridge-cpex
-cmd/authbridge-praxis/authbridge-praxis
+cmd/agentop/agentop
+cmd/cortex/cortex
+cmd/cortex-envoy/cortex-envoy
+cmd/cortex-cpex/cortex-cpex
+cmd/cortex-praxis/cortex-praxis
 # Built from the repo root rather than from inside the package dir, a binary lands
 # here instead, so ignore those spellings too. Note `go build ./cmd/...` is NOT
 # one of those commands: with more than one main package Go compiles and discards
 # (`go help build`). What lands a binary here is a single-package build such as
-# `go build ./cmd/authbridge-proxy`, or `go build -o . ./cmd/...`.
+# `go build ./cmd/cortex`, or `go build -o . ./cmd/...`.
 # `authbridge-lite` appears here but has no cmd/ entry above: it is a build
-# variant of authbridge-proxy, not its own module. No build emits that filename —
-# the lite variant is always written as authbridge-proxy — so this entry is purely
+# variant of cortex, not its own module. No build emits that filename —
+# the lite variant is always written as cortex — so this entry is purely
 # defensive, against someone passing `-o authbridge-lite` by hand.
 #
 # Leading slash is load-bearing now that the repo root IS the module root: a bare
-# `abctl` has no separator, so git would match it at any depth — including the
-# package directory `cmd/abctl`, silently ignoring new source files under it.
-/abctl
-/authbridge-proxy
-/authbridge-envoy
-/authbridge-cpex
+# `agentop` has no separator, so git would match it at any depth — including the
+# package directory `cmd/agentop`, silently ignoring new source files under it.
+/agentop
+/cortex
+/cortex-envoy
+/cortex-cpex
 /authbridge-lite
-/authbridge-praxis
+/cortex-praxis
 
 # MLflow local tracking store — created by `mlflow` runs in the working tree.
 # Local experiment state, not project source.
@@ -129,5 +129,5 @@ cortex-ca/
 /profile-tags
 /readme-demo
 
-# Output dir for `make abctl` / `make authbridge-proxy`.
+# Output dir for `make agentop` / `make cortex`.
 /bin/

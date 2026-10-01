@@ -150,7 +150,7 @@ func TestEveryPluginFileIsTagged(t *testing.T) {
 }
 
 // TestNoUnconditionalPluginImports guards the hole that shipped in
-// authbridge-envoy and authbridge-cpex: both blank-imported plugin packages
+// cortex-envoy and cortex-cpex: both blank-imported plugin packages
 // straight from main.go, so those plugins could not be excluded by any tag and
 // no error said so. Every plugin must enter through a tagged plugins_*.go file.
 func TestNoUnconditionalPluginImports(t *testing.T) {
@@ -221,7 +221,7 @@ var reservedFileSuffixes = map[string]bool{
 // causes. A file named plugins_sparc.go carries an implicit GOARCH=sparc
 // constraint, so it compiles on no normal machine — the plugin vanishes with no
 // build error, and a tag-scanning guard still "finds" it because the directive is
-// right there in the source. cmd/authbridge-proxy already worked around this by
+// right there in the source. cmd/cortex already worked around this by
 // naming its file plugins_sparcplugin.go; nothing enforced it until now.
 func TestNoPluginFileShadowedByGOOSGOARCH(t *testing.T) {
 	files, err := pluginFiles(cmdDir)

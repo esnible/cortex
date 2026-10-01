@@ -15,13 +15,13 @@ import "github.com/rossoctl/cortex/core/pipeline"
 //
 // THE RULE: a field may be dropped only if NEITHER the events table nor its
 // filter reads it. The filter is the half that is easy to forget, and forgetting
-// it is silent — a `/completion text` search simply stops matching. abctl's
-// eventHaystack and matchEventRow (cmd/abctl/tui/events_pane.go) are the source of
+// it is silent — a `/completion text` search simply stops matching. agentop's
+// eventHaystack and matchEventRow (cmd/agentop/tui/events_pane.go) are the source of
 // truth for that half; TestSummarizeEvent_KeepsEverythingTheFilterSearches names
 // each field they read so this cannot drift again.
 //
 // WHAT STAYS, and why each one is not obvious:
-//   - Invocations. Timeline data, not detail data — abctl renders one row PER
+//   - Invocations. Timeline data, not detail data — agentop renders one row PER
 //     INVOCATION, the ACTION column comes from it, and the filter searches each
 //     invocation's plugin, action, reason, path and Details.
 //   - Token counts, all of them separately. Cost is derived from the
@@ -63,7 +63,7 @@ func summarizeEvent(e *pipeline.SessionEvent) *pipeline.SessionEvent {
 		inf := *e.Inference
 		// COUNTED BEFORE BEING DROPPED. Two facts about a conversation survive with none of its
 		// content — whether the request carried a tool manifest, and how long the conversation
-		// is — and abctl's CONTEXT gauge needs both: the manifest separates an agentic turn from
+		// is — and agentop's CONTEXT gauge needs both: the manifest separates an agentic turn from
 		// a one-shot completion, the message count tells its thread from a subagent's where the
 		// proxy states no agentRole. It read them off the slices below, so this projection blanked
 		// that column for every row the timeline delivered while the unprojected SSE stream kept

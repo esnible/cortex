@@ -146,7 +146,7 @@ func (p *StaticInject) Capabilities() pipeline.PluginCapabilities {
 }
 
 // ConfigSchema implements pipeline.SchemaProvider; surfaces field metadata
-// to abctl edit templates and other config-aware tooling.
+// to agentop edit templates and other config-aware tooling.
 func (p *StaticInject) ConfigSchema() []pipeline.FieldSchema {
 	return pipeline.SchemaOf(staticInjectConfig{})
 }

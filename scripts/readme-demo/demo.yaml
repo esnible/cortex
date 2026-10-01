@@ -4,7 +4,7 @@
 # CI fails if docs/assets/cortex-demo.svg does not match this file.
 #
 # Every string in the shell act is copied from the real source, not paraphrased.
-# The sources are scripts/install.sh and cmd/abctl/cmd_claudecode.go; grep a quoted
+# The sources are scripts/install.sh and cmd/agentop/cmd_claudecode.go; grep a quoted
 # fragment below to find the line it came from, rather than trusting a line number here.
 # Most of these strings interpolate a variable at source, so grep a literal prefix of one
 # rather than the whole rendered line.
@@ -17,7 +17,7 @@ grid:
 
 acts:
   # Acts 1 and 2 of the storyboard are one continuous terminal, because
-  # --claude-code does not merely suggest `abctl claude-code enable`: the
+  # --claude-code does not merely suggest `agentop claude-code enable`: the
   # installer RUNS it and only prints the "run this yourself" hint when it is
   # not doing so — grep `claude-code enable` in scripts/install.sh. So the consent
   # prompt arrives as the tail of the install, with nothing typed but the y.
@@ -29,7 +29,7 @@ acts:
         out:
           - "Resolving newest release..."
           - "Downloading v0.9.3 for darwin/arm64..."
-          - "Installed abctl and authbridge-proxy to ~/.cortex/bin"
+          - "Installed agentop and cortex to ~/.cortex/bin"
           - "Setting up the launchd service..."
           - ""
           - 'Adds to the "env" block of ~/.claude/settings.json:'
@@ -56,7 +56,7 @@ acts:
           - 900ms
 
   # Three Claude Code sessions, one per working directory. These are the same
-  # three the next act opens on: abctl names sessions from Claude Code metadata,
+  # three the next act opens on: agentop names sessions from Claude Code metadata,
   # so the reader should recognise them by title.
   - name: sessions
     kind: windows
@@ -78,7 +78,7 @@ acts:
           - "▸ debug the helm chart"
           - "  Bash helm template ."
 
-  # Where did the money go? Answered with evidence, in the real abctl.
+  # Where did the money go? Answered with evidence, in the real agentop.
   - name: insights
     kind: tui
     runtime: 30s

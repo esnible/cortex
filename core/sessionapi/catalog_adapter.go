@@ -12,7 +12,7 @@ import (
 //
 // Direction is left empty: the catalog describes plugin TYPES, and
 // most plugins can be configured into either chain (parsers especially).
-// abctl renders direction only for the active pipeline, where the
+// agentop renders direction only for the active pipeline, where the
 // answer is positional, not type-level.
 //
 // Fields is populated for plugins that implement

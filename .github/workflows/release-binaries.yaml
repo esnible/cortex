@@ -1,6 +1,6 @@
 name: Release binaries
 
-# Cross-compiles the standalone `abctl` and `authbridge-proxy` binaries and
+# Cross-compiles the standalone `agentop` and `cortex` binaries and
 # attaches them (with SHA-256 checksums) to the GitHub Release for a `v*` tag.
 # Both are pure-Go (CGO_ENABLED=0); each cmd module resolves core via its
 # `replace => ../../core`, so builds run per-module with GOWORK=off — no
@@ -49,7 +49,7 @@ jobs:
     # since it resolves a v-tag and re-execs the released copy, and that copy then hits
     # `case "${SCRIPT_REF}" in v*)` and never calls newest_release at all. What needs a
     # filtered release is anyone invoking a RELEASED copy as the parent — including the
-    # pinned one-liner this script prints in its own abctl-too-old message. An
+    # pinned one-liner this script prints in its own agentop-too-old message. An
     # unfiltered parent resolves the rolling release as its version and installs
     # unreleased binaries.
     #
@@ -80,7 +80,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
-          go-version-file: cmd/authbridge-proxy/go.mod
+          go-version-file: cmd/cortex/go.mod
 
       - name: Build binaries (linux/darwin, amd64/arm64)
         env:
@@ -94,7 +94,7 @@ jobs:
           elif [ "${GITHUB_REF_NAME}" = "main" ] && [ "${GITHUB_EVENT_NAME}" = "push" ]; then
             # TAG names the rolling release and the assets, so the download URL is
             # predictable. VERSION identifies the build, and the two must differ:
-            # abctl's serviceIsCurrent compares the stamp recorded in the installed
+            # agentop's serviceIsCurrent compares the stamp recorded in the installed
             # launchd unit against the running binary to decide whether `service
             # install` is a no-op. A constant stamp would report "Already current"
             # while the old binary kept running — hiding upgrades on the one channel
@@ -121,7 +121,7 @@ jobs:
           } >> "${GITHUB_ENV}"
           mkdir -p dist
 
-          # authbridge-proxy variants: "<suffix>:<build-tags>". Empty suffix is
+          # cortex variants: "<suffix>:<build-tags>". Empty suffix is
           # the default artifact. Every plugin is opt-in, so a variant with no
           # tags would register NO plugins and reject every config it is given —
           # each entry must name a profile. Profiles live in
@@ -141,29 +141,29 @@ jobs:
             # ${TAG}, not ${VERSION}: the filename has to match the download URL the
             # installer builds from the release tag. They are the same string for a
             # v* tag and differ only on the rolling channel release.
-            local archive="dist/authbridge-proxy${suffix}_${TAG}_${os}_${arch}.tar.gz"
-            echo "==> authbridge-proxy${suffix} ${os}/${arch}"
-            ( cd cmd/authbridge-proxy && \
+            local archive="dist/cortex${suffix}_${TAG}_${os}_${arch}.tar.gz"
+            echo "==> cortex${suffix} ${os}/${arch}"
+            ( cd cmd/cortex && \
               GOWORK=off CGO_ENABLED=0 GOOS="${os}" GOARCH="${arch}" \
               go build -trimpath \
                 -tags "${tags}" \
                 -ldflags "-s -w -X main.version=${VERSION}" \
-                -o "${GITHUB_WORKSPACE}/dist/authbridge-proxy" . )
-            tar -C dist -czf "${archive}" authbridge-proxy
-            rm -f dist/authbridge-proxy
+                -o "${GITHUB_WORKSPACE}/dist/cortex" . )
+            tar -C dist -czf "${archive}" cortex
+            rm -f dist/cortex
           }
 
           for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
             os="${target%/*}"; arch="${target#*/}"
 
-            echo "==> abctl ${os}/${arch}"
-            ( cd cmd/abctl && \
+            echo "==> agentop ${os}/${arch}"
+            ( cd cmd/agentop && \
               GOWORK=off CGO_ENABLED=0 GOOS="${os}" GOARCH="${arch}" \
               go build -trimpath \
                 -ldflags "-s -w -X main.version=${VERSION}" \
-                -o "${GITHUB_WORKSPACE}/dist/abctl" . )
-            tar -C dist -czf "dist/abctl_${TAG}_${os}_${arch}.tar.gz" abctl
-            rm -f dist/abctl
+                -o "${GITHUB_WORKSPACE}/dist/agentop" . )
+            tar -C dist -czf "dist/agentop_${TAG}_${os}_${arch}.tar.gz" agentop
+            rm -f dist/agentop
 
             for entry in "${proxy_variants[@]}"; do
               build_proxy "${entry%%:*}" "${entry#*:}" "${os}" "${arch}"
@@ -193,16 +193,24 @@ jobs:
           # backticks literal (no shell expansion).
           notes=""
           add() { notes="${notes}${1}"$'\n'; }
-          add 'Prebuilt `abctl` and `authbridge-proxy` binaries for linux and macOS (amd64/arm64).'
+          add 'Prebuilt `agentop` and `cortex` binaries for linux and macOS (amd64/arm64).'
           add ''
-          add '`authbridge-proxy` ships in variants matching the container images:'
+          # The rename shipped with no alias, so it has to be said somewhere a v0.7.0
+          # user will look. Drop this once no supported release predates it.
+          add '`agentop` was called `abctl` through v0.7.0. The installer deletes the old'
+          add '`~/.local/bin/abctl`; delete one you installed by hand yourself.'
+          add '`cortex` was called `authbridge-proxy` (and `cortex-envoy`, `-cpex`, `-praxis` were'
+          add '`authbridge-*`); image and container names are unchanged. The installer removes the old'
+          add 'binary once the service no longer runs it. Stop a proxy you started by hand first.'
+          add ''
+          add '`cortex` ships in variants matching the container images:'
           add 'unqualified (default plugin set, matches the `authbridge` image),'
           add '`-lite` (trimmed plugin set, matches `authbridge-lite`), plus one variant per'
           add 'opt-in plugin currently offered for try-out (today: `-sessionbudget`).'
           add 'Variants track opt-in plugins one-for-one; arbitrary combinations are not published.'
           add ''
           add 'Verify downloads with `sha256sum -c checksums.txt`. On macOS, clear the'
-          add 'Gatekeeper quarantine after extracting: `xattr -dr com.apple.quarantine ./abctl`.'
+          add 'Gatekeeper quarantine after extracting: `xattr -dr com.apple.quarantine ./agentop`.'
           # The rolling release is not a release, and its notes should not read like
           # one — someone landing on it from a search result needs to know that
           # before they install it.
@@ -213,7 +221,7 @@ jobs:
             add 'Install with:'
             add '    curl -fsSL https://raw.githubusercontent.com/rossoctl/cortex/main/scripts/install.sh | sh -s -- --ref=main'
             add ''
-            add 'Each binary reports its own build (`abctl --version` -> `main-<sha>`). For a'
+            add 'Each binary reports its own build (`agentop --version` -> `main-<sha>`). For a'
             add 'supported install, use the newest `v*` release instead.'
           fi
           if gh release view "${TAG}" >/dev/null 2>&1; then

@@ -2,9 +2,9 @@
 // litellm-budget-track publishes onto a session event.
 //
 // It lives in its own package because the producer is a plugin while the
-// consumers are the usage aggregator and abctl, and none of those should import
+// consumers are the usage aggregator and agentop, and none of those should import
 // each other. Before this package existed the struct was declared once in the
-// plugin, again in abctl, and was about to be declared a third time in the
+// plugin, again in agentop, and was about to be declared a third time in the
 // aggregator — which is the duplication cortex #910 exists to remove.
 //
 // Dependency-light on purpose: the aggregator links this on every build,
@@ -14,7 +14,7 @@
 //
 // THAT EDGE ADDS NOTHING ANYWHERE, and the check is `go list -deps`, not a grep for a direct
 // import: every module that links this package already linked pricing — core and
-// authbridge-proxy price traffic, and abctl reaches it through core/cost/usage and core/config.
+// cortex price traffic, and agentop reaches it through core/cost/usage and core/config.
 package event
 
 import (
@@ -450,7 +450,7 @@ const (
 //	                                       verdict rather than leaving a consumer to pick a field.
 //	is there a figure for THIS cell?       PromptUSD > 0 / OutputUSD > 0 is the right test. A row
 //	                                       with no prompt figure renders blank, and that is a
-//	                                       question about presence, not about trust — abctl's
+//	                                       question about presence, not about trust — agentop's
 //	                                       promptCost and outputCost are this case, deliberately.
 //	do I have a divisor?                   The number itself. litellm-budget-track's drift check
 //	                                       needs a positive authoritative figure to divide by,

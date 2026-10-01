@@ -87,7 +87,7 @@ ext_proc + proxy-init iptables). To exercise it:
 1. Build + load the ext_proc image and point the platform at it (mirrors
    `build-sidecar`/`override-sidecar-image`, but for `images.envoyProxy`):
    ```bash
-   podman build -f ../../cmd/authbridge-envoy/Dockerfile -t authbridge-envoy:placeholder-dev ../..
+   podman build -f ../../cmd/cortex-envoy/Dockerfile -t authbridge-envoy:placeholder-dev ../..
    kind load docker-image authbridge-envoy:placeholder-dev --name rossoctl
    podman exec rossoctl-control-plane ctr -n k8s.io images tag \
      localhost/authbridge-envoy:placeholder-dev docker.io/library/authbridge-envoy:placeholder-dev

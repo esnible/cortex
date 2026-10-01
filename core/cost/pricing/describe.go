@@ -30,7 +30,7 @@ type RowView struct {
 	// single-currency deployment's document is unchanged and a reader who has never configured a
 	// unit is not shown a column of "USD".
 	//
-	// It is here because `abctl pricing` printed "$/Mtok" as a literal sub-header — an assertion
+	// It is here because `agentop pricing` printed "$/Mtok" as a literal sub-header — an assertion
 	// rather than a rendering — and once an endpoint can bill in credits that literal becomes
 	// false. A rate quoted in the wrong currency is the silent-wrong-number failure this package
 	// exists to remove, arriving through the tool built to inspect it.

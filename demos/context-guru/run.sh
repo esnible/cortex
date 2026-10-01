@@ -29,15 +29,15 @@ setup() {
   : "${CG_MODEL_BASE:?set CG_MODEL_BASE to an OpenAI-compatible endpoint for the extract-code model, e.g. https://api.openai.com}"
   local arch; arch=$(docker exec rossoctl-control-plane uname -m | sed 's/aarch64/arm64/;s/x86_64/amd64/')
 
-  echo "==> build authbridge-proxy WITH the context-guru plugin ($arch, pure-Go, -tags include_plugin_contextguru) + image"
+  echo "==> build cortex WITH the context-guru plugin ($arch, pure-Go, -tags include_plugin_contextguru) + image"
   ( cd "$AB" && GOTOOLCHAIN=auto GOOS=linux GOARCH="$arch" CGO_ENABLED=0 \
-      go build -tags include_plugin_contextguru -ldflags="-s -w" -o /tmp/authbridge-proxy-cg ./cmd/authbridge-proxy )
-  local d=/tmp/cg-img; mkdir -p "$d"; cp /tmp/authbridge-proxy-cg "$d/authbridge-proxy"
+      go build -tags include_plugin_contextguru -ldflags="-s -w" -o /tmp/cortex-cg ./cmd/cortex )
+  local d=/tmp/cg-img; mkdir -p "$d"; cp /tmp/cortex-cg "$d/cortex"
   cat > "$d/Dockerfile" <<'DOCKER'
 FROM alpine:3.20@sha256:beefdbd8a1da6d2915566fde36db9db0b524eb737fc57cd1367effd16dc0d06d
 RUN apk add --no-cache ca-certificates
-COPY authbridge-proxy /usr/local/bin/authbridge-proxy
-ENTRYPOINT ["/usr/local/bin/authbridge-proxy"]
+COPY cortex /usr/local/bin/cortex
+ENTRYPOINT ["/usr/local/bin/cortex"]
 DOCKER
   docker build -q -t authbridge-cg:latest "$d" >/dev/null
   kind load docker-image authbridge-cg:latest --name rossoctl

@@ -16,7 +16,7 @@
 
 .PHONY: help preflight host-setup build-images build-authbridge load-images \
         ollama-up deploy wait-pods patch-config setup-keycloak drive demo \
-        build-abctl show-result undeploy logs-agent logs-sparc logs-ollama
+        build-agentop show-result undeploy logs-agent logs-sparc logs-ollama
 
 .DEFAULT_GOAL := help
 
@@ -122,7 +122,7 @@ build-images:  ## Build the agent, MCP server, and SPARC service images
 
 build-authbridge:  ## Build the authbridge image WITH the sparc plugin (operator's tag)
 	@echo "[*] building $(AUTHBRIDGE_IMAGE) (includes sparc plugin)"
-	cd ../.. && $(CONTAINER_RUNTIME) build -f cmd/authbridge-proxy/Dockerfile -t $(AUTHBRIDGE_IMAGE) .
+	cd ../.. && $(CONTAINER_RUNTIME) build -f cmd/cortex/Dockerfile -t $(AUTHBRIDGE_IMAGE) .
 
 load-images: build-images build-authbridge  ## Load all images into kind
 	@for img in $(AGENT_IMAGE) $(MCP_IMAGE) $(SPARC_IMAGE) $(AUTHBRIDGE_IMAGE); do \
@@ -174,11 +174,11 @@ demo: preflight host-setup load-images ollama-up deploy patch-config setup-keycl
 	@echo
 	@echo "Demo complete. UI: http://rossoctl-ui.localtest.me:8080  |  forensic: make show-result"
 
-build-abctl:  ## Build abctl into /tmp (for show-result)
-	cd ../../cmd/abctl && go build -o /tmp/abctl-finance-sparc-demo .
+build-agentop:  ## Build agentop into /tmp (for show-result)
+	cd ../../cmd/agentop && go build -o /tmp/agentop-finance-sparc-demo .
 
-show-result: build-abctl  ## Launch abctl against the agent's session API
-	bash scripts/launch-abctl.sh $(NS) $(AGENT)
+show-result: build-agentop  ## Launch agentop against the agent's session API
+	bash scripts/launch-agentop.sh $(NS) $(AGENT)
 
 undeploy:  ## Remove demo resources (rossoctl install untouched)
 	-kubectl -n $(NS) delete -f k8s/agent.yaml --ignore-not-found

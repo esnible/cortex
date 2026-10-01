@@ -754,14 +754,14 @@ func (s *Server) bridgeServe(client net.Conn, authority, host string, tl *tunnel
 	// any skip left by a different client that does not — which is what stops one stale
 	// agent suppressing this host for everyone until a window elapses.
 	s.TLSBridge.Skip.Succeed(host)
-	// Bridged: record with no reason, which is what tells abctl to fold this row into
+	// Bridged: record with no reason, which is what tells agentop to fold this row into
 	// the decrypted inner request whose own action is the interesting one.
 	markBridged(tl)
 
 	// 3) Serve the decrypted conn through the UNCHANGED pipeline.
 	tlsbridge.ServeConn(tconn, s.bridgedHandler(authority, tl))
 	// ServeConn returns once the connection has closed. A bridged tunnel's decrypted
-	// requests answer it and abctl folds the open into the first of them, so a close row
+	// requests answer it and agentop folds the open into the first of them, so a close row
 	// here would render as an orphan response. With no request at all there is nothing to
 	// fold into, and the open would otherwise be the one tunnel row that never finished.
 	tl.closeUnserved()
@@ -1036,7 +1036,7 @@ func (s *Server) handleStreamingResponse(w http.ResponseWriter, r *http.Request,
 	// client-write error) finalizes aggregating plugins and records
 	// the response event. Without this, a client disconnect mid-stream
 	// leaves inference/a2a stuck in an unfinalized state and emits no
-	// SessionResponse row to abctl.
+	// SessionResponse row to agentop.
 	defer func() {
 		// Use a detached, BOUNDED context for finalization: the client may have
 		// cancelled the request context after reading the full stream, but
@@ -1295,7 +1295,7 @@ func (s *Server) streamFallbackBuffered(w http.ResponseWriter, r *http.Request, 
 // requests a pipeline plugin rejected. Symmetric to the accept path's
 // session recording (above). Lets guardrail plugins (rate-limit,
 // intent-based, content policy) show operators what was blocked and
-// why via /v1/sessions and abctl, instead of the block appearing only
+// why via /v1/sessions and agentop, instead of the block appearing only
 // as a 4xx/5xx on the agent side.
 //
 // Skips when no Invocations were appended — the deny came from a
@@ -1805,7 +1805,7 @@ func passthroughReason(why string) pipeline.TunnelReason {
 }
 
 // markBridged records a successful bridge. Its whole job is to trip the once-guard
-// with no reason attached, which is the signal abctl uses to fold the CONNECT row into
+// with no reason attached, which is the signal agentop uses to fold the CONNECT row into
 // the decrypted request. Named because `tl.open("")` at the call site reads like an
 // oversight rather than a decision.
 func markBridged(tl *tunnelLog) { tl.open("") }
@@ -1946,7 +1946,7 @@ type tunnelLog struct {
 	reason pipeline.TunnelReason
 
 	// served counts the decrypted requests a bridged tunnel carried. Their own response
-	// rows answer the tunnel, and abctl folds its open into the first of them, so
+	// rows answer the tunnel, and agentop folds its open into the first of them, so
 	// bridgeServe records a close only when this is still zero.
 	served int
 }

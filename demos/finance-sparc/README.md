@@ -93,7 +93,7 @@ inbound auth** (no jwt bypass), printing SPARC's verdicts.
   - `score` is SPARC's confidence (0=worst..1=best); shown only when the model returns one.
 - **Full forensic view** — the per-plugin pipeline timeline and the structured SPARC event:
   ```bash
-  make show-result      # abctl TUI against the agent's session API
+  make show-result      # agentop TUI against the agent's session API
   make logs-sparc       # the SPARC reflection service logs
   make logs-agent       # agent + authbridge sidecar logs
   ```

@@ -18,7 +18,7 @@ import "github.com/rossoctl/cortex/core/cost/pricing"
 // but every particular floor is a number nobody can defend — 50% and 10% are equally
 // arbitrary — and a constant whose value is unjustifiable is worse than the behaviour it
 // guards. The display marks every figure inexact instead, and a reader who wants coverage
-// has `abctl cost`, which reports priced against priceable already.
+// has `agentop cost`, which reports priced against priceable already.
 //
 // THE ONE PLACE THIS ARITHMETIC LIVES. The drawer, the text command and the JSON all call
 // it, so three surfaces cannot disagree about a figure derived three times.
@@ -75,7 +75,7 @@ func (c Counts) ApportionTiers() (tiers [pricing.NumTiers]int64, ok bool) {
 //
 // HERE RATHER THAN IN A RENDERER, for the reason ApportionTiers gives for itself: one
 // place, so the surfaces cannot disagree about a figure derived more than once. Kept
-// in this package is also what lets `abctl cost --json` publish it, instead of leaving
+// in this package is also what lets `agentop cost --json` publish it, instead of leaving
 // a consumer to reimplement the rule — which is what costJSON.Tiers refuses for the
 // tier split.
 //
@@ -92,7 +92,7 @@ func (c Counts) ApportionTiers() (tiers [pricing.NumTiers]int64, ok bool) {
 //
 // Accepted because there is no better source: nothing reports a ReasoningCostMicros,
 // and the alternative is showing no figure at all for the component this feature exists
-// to expose. Callers must present it as modelled — `abctl cost` and the drawer already
+// to expose. Callers must present it as modelled — `agentop cost` and the drawer already
 // mark the tier split that way, and the README says so for the child specifically.
 //
 // ok is false when there is no defensible figure, and the caller renders "not known

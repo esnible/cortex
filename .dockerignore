@@ -29,19 +29,19 @@ dist
 # would otherwise be shipped into the build context and then ignored by the
 # builder, which recompiles from source anyway.
 #
-# `cmd/*/authbridge-*` catches the in-package builds (cmd/authbridge-proxy/
-# authbridge-proxy and friends) without touching the package DIRECTORIES, which
+# `cmd/*/cortex*` catches the in-package builds (cmd/cortex/
+# cortex and friends) without touching the package DIRECTORIES, which
 # are one path segment shorter, nor any source file — no tracked file under
-# cmd/*/ begins with "authbridge-".
-abctl
-authbridge-proxy
-authbridge-envoy
-authbridge-cpex
+# cmd/*/ begins with "cortex".
+agentop
+cortex
+cortex-envoy
+cortex-cpex
 authbridge-lite
-authbridge-praxis
+cortex-praxis
 profile-tags
 readme-demo
-cmd/abctl/abctl
-cmd/*/authbridge-*
+cmd/agentop/agentop
+cmd/*/cortex*
 scripts/profile-tags/profile-tags
 scripts/readme-demo/readme-demo

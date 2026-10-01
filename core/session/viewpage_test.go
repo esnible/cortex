@@ -43,7 +43,7 @@ func TestViewPage_ZeroCursorIsTheTail(t *testing.T) {
 // Pinned because a client can hold such a cursor, and the consequence is not local. Seq
 // restarts at 1 for a re-created session, so a cursor from a previous incarnation asks for
 // events "before" a number the new incarnation has not reached — and gets the newest events
-// it has. abctl refuses to prepend those by comparing timestamps rather than Seq
+// it has. agentop refuses to prepend those by comparing timestamps rather than Seq
 // (applyOlderPage); this test records the store behaviour that makes the check necessary.
 func TestViewPage_CursorAboveEverythingHeldReturnsTheTail(t *testing.T) {
 	s := New(0, 0, 100)

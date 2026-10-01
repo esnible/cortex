@@ -49,9 +49,9 @@ func write(t *testing.T, dir, priorCA, currentCA string) string {
 }
 
 // TestCurrentCA_IsTheLiveValueNotPrior is the whole reason this package exists. Prior
-// is what abctl DISPLACED; reading it answers a different question and gets the
+// is what agentop DISPLACED; reading it answers a different question and gets the
 // important cases backwards — it flags clients that are already correct, and because
-// abctl freezes the record on first write, it can never go quiet afterwards.
+// agentop freezes the record on first write, it can never go quiet afterwards.
 func TestCurrentCA_IsTheLiveValueNotPrior(t *testing.T) {
 	dir := t.TempDir()
 	statePath := write(t, dir, "/displaced/old.crt", "/live/current.crt")
@@ -71,7 +71,7 @@ func TestCurrentCA_IsTheLiveValueNotPrior(t *testing.T) {
 }
 
 // TestLoad_MissingIsNotAnError: no record is a normal state — a first install, a
-// machine where abctl never ran — and callers must be able to tell it apart from a
+// machine where agentop never ran — and callers must be able to tell it apart from a
 // record that exists and is broken.
 func TestLoad_MissingIsNotAnError(t *testing.T) {
 	st, err := Load(filepath.Join(t.TempDir(), "absent.json"))

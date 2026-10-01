@@ -7,7 +7,7 @@ body:
     attributes:
       value: |
         Thank you for trying Cortex on your laptop. This form is for feedback on the
-        local tool — the install, `abctl observe`, and the numbers it shows.
+        local tool — the install, `agentop observe`, and the numbers it shows.
 
         For anything that is not about running Cortex on your own machine — an
         operator, Helm or platform problem — open a blank issue instead.
@@ -55,7 +55,7 @@ body:
     id: version
     attributes:
       label: Cortex version
-      description: The output of `abctl --version`.
+      description: The output of `agentop --version`.
       placeholder: "v0.9.0"
     validations:
       required: false
@@ -64,7 +64,7 @@ body:
     attributes:
       label: Service status and logs
       description: >
-        The output of `abctl service status`, and the last part of the service
+        The output of `agentop service status`, and the last part of the service
         log if it is relevant. Remove any secret before you paste.
       render: text
     validations:

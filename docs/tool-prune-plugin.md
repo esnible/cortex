@@ -8,7 +8,7 @@ agent will never call in a given deployment. The manifest is assembled by the
 client, so the proxy is the only place to trim it without changing every client.
 
 The verdict is entirely configuration. `remove` names the tools to drop; there
-is no learning, no state and no storage dependency. `abctl tools scan` proposes
+is no learning, no state and no storage dependency. `agentop tools scan` proposes
 a list, but the plugin only ever does what it was told.
 
 ## Configuration
@@ -47,7 +47,7 @@ nothing, whatever the policy, so filling the list is the single act that enables
 it:
 
 ```sh
-abctl tools scan --write ~/.cortex/config.yaml
+agentop tools scan --write ~/.cortex/config.yaml
 ```
 
 The config is hot-reloaded, so no restart. A reload does rebuild the plugin and
@@ -72,7 +72,7 @@ Two occasions worth it:
 
 ## Reading the metrics
 
-`abctl`'s plugin detail pane shows a `Metrics:` section (source:
+`agentop`'s plugin detail pane shows a `Metrics:` section (source:
 `GET /v1/pipeline`):
 
 ```text
@@ -121,7 +121,7 @@ this is per row.
 
 The plugin publishes the byte saving and the applicable rates on the request
 event; the paired response supplies the prompt token total behind the
-bytes-to-tokens ratio and the tier that picks the rate, so `abctl` finishes the
+bytes-to-tokens ratio and the tier that picks the rate, so `agentop` finishes the
 arithmetic. Pairing is exact, on the proxy-stamped request id. A model with no
 rate shows the token saving with no dollar figure rather than one priced at
 another model's rate.
@@ -189,7 +189,7 @@ aggregate:
   fold it into a cost total or a budget. A test in `core/cost/usage` asserts that the spend
   totals are unchanged by a saving's presence and that the saving still lands.
 
-Independent of `abctl`'s per-run stats pane, which resets when the plugin's counters do.
+Independent of `agentop`'s per-run stats pane, which resets when the plugin's counters do.
 The ledger does not: a window survives a proxy restart, while the per-session total is
 scoped to the events the store still holds and resets with it. Both are correct, and they
 answer different questions — do not read one as a check on the other.
@@ -198,7 +198,7 @@ answer different questions — do not read one as a check on the other.
 
 **Dollars work out of the box**, but rates are **not** a tool-prune option any
 more. They live in the top-level `pricing:` section (see `plugin-catalog.md`),
-resolved by `core/cost/pricing`, so `$ saved` here, `/v1/usage` and `abctl` all price
+resolved by `core/cost/pricing`, so `$ saved` here, `/v1/usage` and `agentop` all price
 the same request identically. The 12 rate knobs and the built-in family table that
 used to live on this plugin are gone.
 
@@ -269,7 +269,7 @@ hide the gap inside the priced denominator, which is how a saving silently vanis
 ## Where the list comes from
 
 ```sh
-abctl tools scan [--days N | --all] [--keep Name,Name] [--dir PATH] [--write CONFIG]
+agentop tools scan [--days N | --all] [--keep Name,Name] [--dir PATH] [--write CONFIG]
 ```
 
 It reads `~/.claude/projects/**/*.jsonl`, deduplicates tool calls by their
@@ -290,7 +290,7 @@ mode ran, so a figure is never ambiguous about the window behind it.
 tools that were *offered*. This is structural, not a defect: a
 configured-but-never-invoked tool leaves no trace. Two consequences:
 
-- The removal candidates are tools abctl knows Claude Code ships that you never
+- The removal candidates are tools agentop knows Claude Code ships that you never
   called — which is also where most of the wasted tokens sit.
 - A tool name the scan has never heard of is **kept**. Removing a tool the model
   needs is the harmful direction of failure; carrying a few extra definitions is

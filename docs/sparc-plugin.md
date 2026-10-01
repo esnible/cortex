@@ -139,7 +139,7 @@ pipeline:
 
 `sparc` records a flat `Invocation` per call (action `allow`/`modify`/`deny`/`observe`,
 `reason`, `tool`, `score`) **and** publishes the full structured verdict via the plugin-event
-escape-hatch (`Extensions.Custom["sparc/event"]` → `SessionEvent.Plugins["sparc"]`), so abctl
+escape-hatch (`Extensions.Custom["sparc/event"]` → `SessionEvent.Plugins["sparc"]`), so agentop
 and other consumers can render the decision, score, track, enforcement mode, and per-issue
 explanations/corrections.
 

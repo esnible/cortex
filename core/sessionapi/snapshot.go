@@ -28,7 +28,7 @@ const snapshotWriteBuffer = 32 << 10
 // Encode grows HeapSys by ~246MB, against ~14MB for this function — same bytes out. Go
 // keeps the difference as idle heap rather than handing it back, so RSS ratchets once per
 // request and does not recover: on the live proxy, four snapshot requests took it from
-// 731MB to 1447MB, still 1447MB two minutes later. abctl requests a snapshot on every
+// 731MB to 1447MB, still 1447MB two minutes later. agentop requests a snapshot on every
 // Enter into a session, so that was a couple hundred megabytes per keystroke.
 //
 // This is the read half of the memory problem; core/session/intern.go is the retention

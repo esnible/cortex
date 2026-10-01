@@ -411,7 +411,7 @@ func foldAnthropicFrame(frame []byte, state *inferenceStreamState, ext *pipeline
 //
 // EVERY SUB-FIELD IT OWNS: Present is unioned here for ALL kinds, so any kind whose bit
 // this sets must have its value merged here too. Split across two places, a bit arrives
-// set with a value of nothing — and `abctl cost` then prints "reasoning (of output) 0",
+// set with a value of nothing — and `agentop cost` then prints "reasoning (of output) 0",
 // the claim ThinkingTokensAbsent forbids.
 //
 // Output is deliberately NOT here: it is cumulative on the wire rather than max-seen,

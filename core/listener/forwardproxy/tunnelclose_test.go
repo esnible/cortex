@@ -157,7 +157,7 @@ func onePair(t *testing.T, store *session.Store, sid string) (open, closed pipel
 	}
 	open, closed = opens[0], closes[0]
 	if open.RequestID == "" || closed.RequestID != open.RequestID {
-		t.Errorf("close RequestID %q does not pair with open %q; abctl pairs the two by it",
+		t.Errorf("close RequestID %q does not pair with open %q; agentop pairs the two by it",
 			closed.RequestID, open.RequestID)
 	}
 	return open, closed
@@ -532,7 +532,7 @@ func bridgedTLS(t *testing.T, raw net.Conn, br *bufio.Reader, target string, bri
 	return tc
 }
 
-// A bridged tunnel's decrypted requests carry their own responses and abctl folds the
+// A bridged tunnel's decrypted requests carry their own responses and agentop folds the
 // CONNECT into the first of them, so a close row there would render as an orphan.
 func TestHandleConnect_BridgedTunnelWithRequestsRecordsNoClose(t *testing.T) {
 	store := session.New(5*time.Minute, 100, 0)

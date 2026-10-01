@@ -17,7 +17,7 @@ const (
 	//
 	// This is the series that shipped as GroupMethod. The aggregator only ever
 	// populated it from Inference.Model (see foldInto) — A2A and MCP method names
-	// never entered it — so "method" was a misnomer from the start. abctl's
+	// never entered it — so "method" was a misnomer from the start. agentop's
 	// events-table METHOD cell DOES show A2A/MCP methods, which is what made the
 	// name look right; that is a different code path.
 	GroupModel Group = "model"
@@ -150,7 +150,7 @@ type Snapshot struct {
 	// MORE THAN ONE ENTRY MEANS Totals.CostMicros IS NOT A FIGURE. Summing credits into dollars
 	// produces a number that is neither, and it looks exactly like a correct one — larger, not
 	// obviously wrong. A consumer seeing two entries must refuse to present a single total;
-	// `abctl cost` does, and says which units it found.
+	// `agentop cost` does, and says which units it found.
 	//
 	// ABSENT MEANS NOT COMPUTED OR NOTHING TO LABEL, and a client must not turn that into a
 	// refusal: an idle window names no unit, and a producer older than the ring's unit tally omits
@@ -228,7 +228,7 @@ type Snapshot struct {
 	//
 	// A CLIENT MUST THEREFORE RENDER THIS AS "may be missing", never as a deduction from the
 	// figure beside it. Both shipped consumers do: the band marks the total a floor, and
-	// `abctl cost` prints a coverage line.
+	// `agentop cost` prints a coverage line.
 	//
 	// SAME SHAPE AS THE UNPRICED COVERAGE GAP beside it — Unpriced over Priceable — which is
 	// why it sits here rather than with the damage counters: both say "this figure covers less

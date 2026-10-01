@@ -2,7 +2,7 @@
 
 A walkthrough of `on_exceed: pause` with a human at the terminal.
 **No Kubernetes required** — this demo runs on your laptop with Docker
-(Redis), Go (approver), and the shipping `authbridge-proxy` binary as
+(Redis), Go (approver), and the shipping `cortex` binary as
 a forward proxy that `curl` points at explicitly. With no inbound A2A
 session to tag the request, the plugin uses its
 `default_session_fallback: true` path to bucket counters under
@@ -17,7 +17,7 @@ Four moving parts on one laptop:
 - **Redis** (Docker) — where session-budget persists per-session counters.
 - **Ollama** — a real local LLM behind an OpenAI-compatible endpoint,
   so `inference-parser` sees real `usage.total_tokens` on each response.
-- **`authbridge-proxy`** — the shipping binary, wired as a forward
+- **`cortex`** — the shipping binary, wired as a forward
   proxy with `inference-parser` + `session-budget` in the outbound
   pipeline. `session-budget` is configured with `max_calls: 2` and
   `on_exceed: pause`.
@@ -36,7 +36,7 @@ the proxy and its plugins:
 
 ```text
                                  ┌────────────────────────────────────┐
-                                 │  authbridge-proxy   (:47601)       │
+                                 │  cortex   (:47601)                 │
                                  │                                    │
    curl ──HTTP_PROXY──▶ forward ─┼─▶ outbound pipeline                │
                        proxy     │     ├─ session-budget    (plugin)  │
@@ -74,7 +74,7 @@ the proxy and its plugins:
   curl -s http://localhost:11434/v1/models | jq -r '.data[].id'
   ```
 
-- Go toolchain matching `cmd/authbridge-proxy/go.mod` for
+- Go toolchain matching `cmd/cortex/go.mod` for
   building the proxy binary.
 
 ## Setup
@@ -89,14 +89,14 @@ docker exec sb-demo-redis redis-cli PING  # expect PONG
 ### Build the proxy binary (once)
 
 `session-budget` is opt-in via build tag (it links go-redis into the
-binary). Build it in-tree from the `cmd/authbridge-proxy` module:
+binary). Build it in-tree from the `cmd/cortex` module:
 
 ```bash
-cd cmd/authbridge-proxy
-go build -tags include_plugin_sessionbudget -o authbridge-proxy .
+cd cmd/cortex
+go build -tags include_plugin_sessionbudget -o cortex .
 ```
 
-This produces `cmd/authbridge-proxy/authbridge-proxy` —
+This produces `cmd/cortex/cortex` —
 that's the binary the rest of this doc invokes.
 
 ### The config
@@ -204,7 +204,7 @@ approver listening on 127.0.0.1:9099 (auto-approve=false, auto-deny=false)
 From the repo root:
 
 ```bash
-./cmd/authbridge-proxy/authbridge-proxy \
+./cmd/cortex/cortex \
   -config ./demos/session-budget/local/config.yaml
 ```
 
@@ -212,7 +212,7 @@ Expected (relevant lines):
 
 ```text
 level=INFO msg="HTTP server listening" name=forward-proxy addr=127.0.0.1:47601
-level=INFO msg="authbridge-proxy starting" mode=proxy-sidecar
+level=INFO msg="cortex starting" mode=proxy-sidecar
 ```
 
 ### Terminal 3 — drive it with curl
@@ -293,7 +293,7 @@ pids=$(lsof -ti :9099 -sTCP:LISTEN); [ -n "$pids" ] && kill $pids
 # pkill -f approver may miss the go-run child (see "Reset between runs");
 # freeing :9099 directly is more reliable.
 pids=$(lsof -ti :9099 -sTCP:LISTEN); [ -n "$pids" ] && kill $pids
-pkill -f authbridge-proxy
+pkill -x cortex
 docker rm -f sb-demo-redis
 ```
 

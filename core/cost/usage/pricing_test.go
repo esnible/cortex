@@ -49,7 +49,7 @@ func snapshotOf(a *Aggregator, now time.Time) Snapshot {
 //
 // Cost used to require litellm-budget-track to be in the pipeline, because it was
 // the only thing that published a figure. A deployment without it reported every
-// request unpriced however many tokens it burned — which is what an abctl capture
+// request unpriced however many tokens it burned — which is what an agentop capture
 // with only tool-prune and inference-parser rows shows.
 func TestPricing_AggregatorPricesWithoutACostEvent(t *testing.T) {
 	now := time.Now().Truncate(BucketWidth)

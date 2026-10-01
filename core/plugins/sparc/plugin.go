@@ -455,7 +455,7 @@ func (p *SPARC) recordAllow(pctx *pipeline.Context, toolName string, verdict Ref
 }
 
 // emitEvent publishes the full SPARC verdict via the plugin-event escape-hatch
-// so abctl / session consumers can render the structured reflection.
+// so agentop / session consumers can render the structured reflection.
 func (p *SPARC) emitEvent(pctx *pipeline.Context, toolName string, verdict ReflectVerdict) {
 	if pctx.Extensions.Custom == nil {
 		pctx.Extensions.Custom = map[string]any{}

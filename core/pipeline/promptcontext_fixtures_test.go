@@ -1,7 +1,7 @@
 package pipeline
 
 // Fixtures for the prompt-context rule. DELIBERATELY A SECOND COPY of the set in
-// cmd/abctl/tui/sessions_context_test.go, not a shared helper package.
+// cmd/agentop/tui/sessions_context_test.go, not a shared helper package.
 //
 // authbridge has no exported test-helper package anywhere, and introducing the first one to
 // avoid copying ~94 lines would cost ~450 lines of churn across 80 call sites. Drift in what the

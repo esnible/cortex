@@ -7,7 +7,7 @@
 //
 // Why MCP rather than plain HTTP: this lets authbridge's mcp-parser
 // observe the agent's tool call (visible as a `tools/call` row in
-// abctl with the tool name + args) and gives IBAC's action
+// agentop with the tool name + args) and gives IBAC's action
 // description an MCP_TOOL field for that traversal. The injection
 // flow is identical to the original huang195/ibac demo — only the
 // transport from agent→email changed.

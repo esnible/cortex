@@ -156,7 +156,7 @@ func TestForwardProxy_GzippedSSE_ParsesTokens(t *testing.T) {
 		t.Errorf("Completion = %q, want \"hi\"", ev.Completion)
 	}
 
-	// The session summary's TotalTokens is what abctl renders in its TOKENS
+	// The session summary's TotalTokens is what agentop renders in its TOKENS
 	// column, so assert the number an operator actually reads — not just the
 	// parsed extension behind it.
 	var total int
@@ -164,7 +164,7 @@ func TestForwardProxy_GzippedSSE_ParsesTokens(t *testing.T) {
 		total += sum.TotalTokens
 	}
 	if total != 43 {
-		t.Errorf("session TotalTokens = %d, want 43 (31 prompt + 12 completion) — this is abctl's TOKENS column", total)
+		t.Errorf("session TotalTokens = %d, want 43 (31 prompt + 12 completion) — this is agentop's TOKENS column", total)
 	}
 }
 

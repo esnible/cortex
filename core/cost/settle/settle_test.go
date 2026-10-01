@@ -444,7 +444,7 @@ func TestComparable(t *testing.T) {
 	}
 }
 
-// Publish writes both keys: abctl is a separate binary that can lag the proxy, and an
+// Publish writes both keys: agentop is a separate binary that can lag the proxy, and an
 // older one reads only the legacy key.
 func TestPublish_WritesBothKeys(t *testing.T) {
 	pctx := ctx(nil, 0, 0)
@@ -467,7 +467,7 @@ func TestAmend(t *testing.T) {
 	if !Amend(pctx, func(ev *event.Event) { ev.DailyTotalUSD = 9 }) {
 		t.Fatal("Amend failed on a published record")
 	}
-	// Both keys must carry the amendment, or an older abctl shows a stale total.
+	// Both keys must carry the amendment, or an older agentop shows a stale total.
 	for _, key := range []string{event.Key, event.PluginName} {
 		ev, ok := pctx.Extensions.Custom[key+pipeline.PluginEventSuffix].(event.Event)
 		if !ok {

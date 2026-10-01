@@ -7,7 +7,7 @@ import (
 
 // Tests below use representative shapes covering every Type the
 // helper recognizes plus the no-tag and pointer-to-struct cases.
-// They lock in the contract that consumers (abctl template
+// They lock in the contract that consumers (agentop template
 // renderer, JSON-Schema generator) build on.
 
 type primitives struct {
@@ -122,7 +122,7 @@ type withSliceOfStruct struct {
 func TestSchemaOf_SliceOfStructIsUnknown(t *testing.T) {
 	// We deliberately don't recurse into slice-of-struct — those
 	// shapes don't fit the per-line YAML-scalar template model
-	// abctl uses. Documented in kindOf comment.
+	// agentop uses. Documented in kindOf comment.
 	got := SchemaOf(withSliceOfStruct{})
 	if len(got) != 1 || got[0].Type != "unknown" {
 		t.Errorf("slice-of-struct should be \"unknown\", got %+v", got)

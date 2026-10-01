@@ -11,7 +11,7 @@ import (
 // sets are visible, so it is the only place the copy can be checked.
 //
 // WHY THE COPY EXISTS AT ALL. usage.Counts.PresentKinds carries these bits on the wire and in
-// the cost ledger, and its consumers — abctl's `cost` command, abctl's spend strip — live in
+// the cost ledger, and its consumers — agentop's `cost` command, agentop's spend strip — live in
 // another module entirely. Before usage exported them, each reader spelled the bits itself and
 // this package's own tests spelled them a third time as a bare `1 | 8`. Three uncoordinated
 // transcriptions of a wire format is a renumbering away from silently misreading every stored

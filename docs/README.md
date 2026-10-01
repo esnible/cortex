@@ -11,11 +11,11 @@ only the repo-level pieces.
 | Understand the sidecar shapes and deployment | [`architecture.md`](architecture.md) |
 | Configure a plugin | [`docs/plugin-catalog.md`](../docs/plugin-catalog.md) |
 | Set up model pricing and gateway discounts, or read the `cost` record | [`docs/pricing.md`](../docs/pricing.md) |
-| See the rates actually in effect | `abctl pricing [--host <gateway>]` |
+| See the rates actually in effect | `agentop pricing [--host <gateway>]` |
 | Write a plugin | [`docs/plugin-reference.md`](../docs/plugin-reference.md) and [`plugin-tutorial.md`](../docs/plugin-tutorial.md) |
 | Understand the pipeline internals and hot-reload | [`docs/framework-architecture.md`](../docs/framework-architecture.md) |
 | Run a demo | [`demos/README.md`](../demos/README.md) |
-| Use the `abctl` TUI | [`cmd/abctl/README.md`](../cmd/abctl/README.md) |
+| Use the `agentop` TUI | [`cmd/agentop/README.md`](../cmd/agentop/README.md) |
 | Write the in-memory session store to files | [`session-dump.md`](session-dump.md) |
 
 ## Configuration reference
@@ -41,8 +41,8 @@ is AI-assistant context rather than operator documentation, and `tls_bridge:` ha
 one field described and the rest undocumented. Recorded here so the gap is nameable rather than absent.
 
 Two things no config file can answer, because the effective values come from the
-file *plus* compiled-in defaults: what rates are in effect (`abctl pricing --host
-<gateway>`) and what pipeline is running (`abctl pipeline get`, or `GET /v1/pipeline`).
+file *plus* compiled-in defaults: what rates are in effect (`agentop pricing --host
+<gateway>`) and what pipeline is running (`agentop pipeline get`, or `GET /v1/pipeline`).
 `GET /config` on the diagnostic listener reports the config **as written**, not as
 resolved.
 

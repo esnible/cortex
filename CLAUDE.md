@@ -55,10 +55,10 @@ This file provides context for Claude (AI assistant) when working with the `cort
     name, do not force past it.
   - **Worktrees do not isolate the running Cortex.** One `~/.cortex/config.yaml`, one
     launchd label, one proxy on `:47600`, and every session's `HTTPS_PROXY` points at
-    it. `abctl service restart` always replaces that instance and cuts every attached
-    session. `abctl service install` only does so when it has something to change or a
+    it. `agentop service restart` always replaces that instance and cuts every attached
+    session. `agentop service install` only does so when it has something to change or a
     running proxy to adopt — with nothing to do it prints `Already current` and leaves
-    the proxy alone. `--ref=main` is an `install.sh` flag, not an `abctl` one; it picks
+    the proxy alone. `--ref=main` is an `install.sh` flag, not an `agentop` one; it picks
     which installer script runs, so whether it interrupts anything depends on what that
     install then finds. Coordinate before any of it.
 
@@ -76,19 +76,29 @@ The sidecar injection webhook lives in a separate repo: [rossoctl/operator](http
 
 ### Naming: Cortex is the product, AuthBridge is the sidecar
 
-Two renames have happened and only one of them finished. **Kagenti → Rossoctl is
+Three renames have happened and two of them finished. **Kagenti → Rossoctl is
 complete** — apart from this rule, every remaining `kagenti` string is inside
 `docs/superpowers/`, a frozen archive. Treat a new one as a mistake.
 
+**abctl → agentop is complete too**, and was a clean break: no alias, no reading of
+the old on-disk names (see `docs/superpowers/specs/2026-09-30-abctl-to-agentop-rename-design.md`).
+Outside `docs/superpowers/`, `abctl` survives only in the code that deletes a
+pre-rename binary — `remove_stale` in `install.sh`, its tests, and `make dev-install`
+— in the release-notes line announcing the rename, and in this rule. Treat any other
+new one as a mistake.
+
 **AuthBridge → Cortex is deliberately partial, and the boundary is the point.**
 `Cortex` is the product: this repo, the registry namespace, the laptop service,
-`~/.cortex/`. `AuthBridge` is the name of the **injected sidecar component**, and it
-survives inside artifact identifiers that other things address by name:
+`~/.cortex/`, and the sidecar binaries — `cortex`, `cortex-envoy`, `cortex-cpex`,
+`cortex-praxis`, renamed from `authbridge-*` as the same kind of clean break (see
+`docs/superpowers/specs/2026-09-30-authbridge-binaries-to-cortex-rename-design.md`).
+`AuthBridge` is the name of the **injected sidecar component**, and it survives inside
+artifact identifiers that other things address by name:
 
 | Frozen — do not rename | Where it is defined |
 |---|---|
 | `authbridge`, `authbridge-envoy`, `authbridge-lite`, `authbridge-cpex` | published image names; the operator selects images **by name** |
-| `authbridge-{proxy,envoy,cpex,praxis}` | binary names, `cmd/` dirs, Go module paths, release tarballs |
+| `authbridge-proxy` as a **container** name | **another repo's API** — the operator's `AuthBridgeProxyContainerName`. `kubectl … -c authbridge-proxy`, agentop's pod picker and the demos' sidecar detection address it. The binary inside is `cortex`; the operator sets only `Args`, so the image's entrypoint picks it |
 | `x-authbridge-{direction,secret}`, `x-authbridge-unmapped-<name>` | wire protocol |
 | `AUTHBRIDGE_*` | env vars users may already have set |
 | `authbridge-config{,-<agent>}`, `authbridge-runtime{,-config,-mtls}`, `authproxy-routes` | ConfigMaps the operator creates and mounts |
@@ -100,14 +110,21 @@ That last row is why "just rename it everywhere" is not on the table: two of the
 a CRD field and a Kubernetes annotation owned by `rossoctl/operator`. Retiring them
 needs a deprecation window and coordinated PRs in at least two repositories.
 
-**The rule for prose and comments:** say **Cortex** when the sentence is about the
-product — what it is, what it does, what a demo demonstrates. Keep **AuthBridge** when
-the phrase names a concrete artifact: a sidecar, an image, a binary, a container, that
-container's logs, a mode field, a ConfigMap, a literal UI label. Both of these are correct: "Cortex
-provides zero-trust token management", "the AuthBridge sidecar validates the JWT".
+Because image and container names share the binaries' old spelling, `authbridge-envoy`
+or `authbridge-cpex` in a sentence is usually the **image**, and `authbridge-proxy` the
+**container** — not a leftover. Outside those two meanings, `authbridge-proxy` survives
+where the pre-rename binary is deleted (`remove_stale`, `make dev-install`), in
+the tests asserting it is no longer recognised as ours, and in the release notes; the
+other three old names only in this rule and the spec.
 
-`install.sh` is the reference implementation — zero prose "AuthBridge", with
-`authbridge-proxy` appearing only as the name of the binary it installs.
+**The rule for prose and comments:** say **Cortex** when the sentence is about the
+product — what it is, what it does, what a demo demonstrates — or names one of its
+binaries. Keep **AuthBridge** when the phrase names one of the artifacts above: a
+sidecar, an image, a container, that container's logs, a mode field, a ConfigMap, a
+literal UI label. Both of these are correct: "Cortex provides zero-trust token
+management", "the AuthBridge sidecar validates the JWT".
+
+`install.sh` is the reference implementation — zero prose "AuthBridge".
 
 ## What Cortex Does
 
@@ -121,7 +138,8 @@ All of this happens transparently via sidecar injection -- no application code c
 
 ## Top-Level Directory Structure
 
-There is no `authbridge/` subdirectory: what used to live there is the repo root.
+What used to live under `authbridge/` is the repo root. Only `authbridge/install.sh`
+remains there: it runs `scripts/install.sh`, for the URL v0.7.0 and its docs give.
 
 ```
 cortex/
@@ -148,29 +166,29 @@ cortex/
 │   └── storage/redis/                #   Redis driver for the storage.Store interface
 │                                     #   (its own module, nested but not part of core)
 │
-├── cmd/authbridge-proxy/             # proxy-sidecar mode (default). Full plugin set.
+├── cmd/cortex/                       # proxy-sidecar mode (default). Full plugin set.
 │   ├── main.go                       #   (the authbridge-lite image is this binary
 │   │                                 #    built with the `lite` profile's tags)
 │   ├── Dockerfile                    #   proxy-sidecar image (the `authbridge` image)
 │   └── entrypoint.sh
 │
-├── cmd/authbridge-envoy/             # envoy-sidecar mode. Full plugin set.
+├── cmd/cortex-envoy/                 # envoy-sidecar mode. Full plugin set.
 │   ├── main.go
-│   ├── Dockerfile                    #   envoy-sidecar combined image (Envoy + authbridge-envoy)
+│   ├── Dockerfile                    #   envoy-sidecar combined image (Envoy + cortex-envoy)
 │   └── entrypoint.sh
 │
-├── cmd/authbridge-cpex/              # proxy-sidecar mode + cpex plugin. -tags cpex, cgo required.
+├── cmd/cortex-cpex/                  # proxy-sidecar mode + cpex plugin. -tags cpex, cgo required.
 │   ├── main.go
 │   ├── Dockerfile                    #   proxy-sidecar build linking libcpex_ffi.a
 │   ├── CPEX_FFI_VERSION              #   pinned CPEX FFI ABI version (build-arg source of truth)
 │   └── entrypoint.sh
 │
-├── cmd/authbridge-praxis/            # proxy-sidecar rendered into a Praxis proxy config.
+├── cmd/cortex-praxis/                # proxy-sidecar rendered into a Praxis proxy config.
 │   ├── main.go                       #   PAUSED: ships in no image, registers no
 │   ├── Dockerfile                    #   plugins, has no demo — but deliberately kept
 │   └── entrypoint.sh                 #   and kept compiling. Do not delete.
 │
-├── cmd/abctl/                        # Terminal UI over the session API (:9094).
+├── cmd/agentop/                      # Terminal UI over the session API (:9094).
 │   ├── tui/                          #   Panes: sessions, events, pipeline, catalog
 │   ├── edit/, apiclient/,            #   Pipeline editing, API client, cluster
 │   │   cluster/, toolscan/           #   port-forward, tool manifest scanning
@@ -189,7 +207,7 @@ cortex/
 │                                     #   not an inert archive.
 │
 ├── scripts/
-│   ├── install.sh                    # Laptop installer (abctl + the local proxy service)
+│   ├── install.sh                    # Laptop installer (agentop + the local proxy service)
 │   ├── keycloak_sync.py              # Declarative Keycloak sync tool (routes.yaml driven)
 │   ├── dev/                          # Loose dev-only shell scripts
 │   │   ├── local-build-and-test.sh   #   Build every image and load it into Kind
@@ -209,7 +227,7 @@ cortex/
 │   └── lineage-attach/               #   OTel shim + scripts for lineage propagation
 │
 ├── demos/                            # 10 scenarios — see demos/README.md for the order
-│   ├── weather-agent/                #   Getting started (+ advanced, + abctl walkthrough)
+│   ├── weather-agent/                #   Getting started (+ advanced, + agentop walkthrough)
 │   ├── github-issue/                 #   Token exchange + scope-based access (largest)
 │   ├── token-exchange-routes/        #   Routes config reference
 │   ├── ibac/, hr-cpex/,              #   Guardrail / policy demos
@@ -232,7 +250,7 @@ cortex/
 
 ### 1. AuthBridge Binaries (Go)
 
-**Sidecar binaries** providing transparent traffic interception for both inbound JWT validation and outbound OAuth 2.0 token exchange (RFC 8693). All sidecar binaries but `authbridge-praxis` pin one deployment shape and refuse a mismatching `mode:` at boot; mode is no longer selected at runtime. The `authbridge-lite` **image** is a build variant of the proxy binary (not a separate binary) — see below.
+**Sidecar binaries** providing transparent traffic interception for both inbound JWT validation and outbound OAuth 2.0 token exchange (RFC 8693). All sidecar binaries but `cortex-praxis` pin one deployment shape and refuse a mismatching `mode:` at boot; mode is no longer selected at runtime. The `authbridge-lite` **image** is a build variant of the proxy binary (not a separate binary) — see below.
 
 **Library:** `core/` — see [`core/README.md`](core/README.md) for the library reference
 **Language:** Go 1.26.5 (`go.work` and the nine workspace modules; the
@@ -269,7 +287,7 @@ into workload pods. Default deployment shape (proxy-sidecar mode):
          ┌────────────────────────────────────┐
          │            WORKLOAD POD            │
          │                                    │
-         │  authbridge-proxy ──► SPIRE Agent  │  (in-process
+         │  cortex ──► SPIRE Agent            │  (in-process
          │    - spiffe.Provider reads SVIDs   │   Workload API
          │      over the Workload API and     │   client; shaped
          │      mirrors them under /opt/      │   by the `spiffe:`
@@ -284,7 +302,7 @@ into workload pods. Default deployment shape (proxy-sidecar mode):
          The operator also creates a Secret with client-id +
          client-secret and mounts it at /shared/.
 
-         For envoy-sidecar mode, replace authbridge-proxy with
+         For envoy-sidecar mode, replace cortex with
          the authbridge-envoy image (Envoy + ext_proc) and add a
          proxy-init container for iptables.
 ```
@@ -298,23 +316,23 @@ Sidecar binaries, one Dockerfile each; the `authbridge-lite` image is a build va
 
 | Binary | Mode | Listeners | Plugins |
 |--------|------|-----------|---------|
-| `cmd/authbridge-proxy/` | proxy-sidecar (default) | HTTP forward + reverse proxies | full (incl. parsers) |
-| `cmd/authbridge-envoy/` | envoy-sidecar | gRPC ext_proc on :9090 | full (incl. parsers) |
-| `cmd/authbridge-cpex/` | proxy-sidecar | HTTP forward + reverse proxies | full + `cpex` (cgo) |
-| `cmd/authbridge-praxis/` | proxy-sidecar | HTTP (Praxis-rendered) | **none** — paused, see [`cmd/README.md`](cmd/README.md) |
+| `cmd/cortex/` | proxy-sidecar (default) | HTTP forward + reverse proxies | full (incl. parsers) |
+| `cmd/cortex-envoy/` | envoy-sidecar | gRPC ext_proc on :9090 | full (incl. parsers) |
+| `cmd/cortex-cpex/` | proxy-sidecar | HTTP forward + reverse proxies | full + `cpex` (cgo) |
+| `cmd/cortex-praxis/` | proxy-sidecar | HTTP (Praxis-rendered) | **none** — paused, see [`cmd/README.md`](cmd/README.md) |
 | `authbridge-lite` _(image: proxy + `lite` profile)_ | proxy-sidecar | HTTP forward + reverse proxies | sidecar-minimum plugin set (see `scripts/profile-tags`) |
 
 Every sidecar binary but praxis pins one deployment shape and refuses a
 mismatching `mode:` at boot; praxis pins none. Mode is no longer selected at
 runtime. See [`cmd/README.md`](cmd/README.md) for which binary pins which shape.
 
-`cmd/abctl/` is also a Go module here but is not a sidecar — it is the
+`cmd/agentop/` is also a Go module here but is not a sidecar — it is the
 operator-facing TUI over the session API, and the component the root README leads
-with. See [`cmd/abctl/README.md`](cmd/abctl/README.md) for flags and keybindings.
+with. See [`cmd/agentop/README.md`](cmd/agentop/README.md) for flags and keybindings.
 
 **Plugins are all opt-in.** Each one lives in a `cmd/*/plugins_<name>.go` file
 gated by `//go:build include_plugin_<name>` (15 such files in
-`cmd/authbridge-proxy/`); `main.go` imports no plugin package directly, so a build
+`cmd/cortex/`); `main.go` imports no plugin package directly, so a build
 with no `-tags` registers no plugins at all and rejects every config it is handed.
 Tag sets come from [`scripts/profile-tags`](scripts/profile-tags/), one profile per
 shipped artifact.
@@ -322,31 +340,31 @@ shipped artifact.
 ### Release binaries
 
 `v*` tag pushes trigger `.github/workflows/release-binaries.yaml`, which
-cross-compiles `authbridge-proxy` and `abctl` for linux/darwin ×
-amd64/arm64 and attaches tarballs to the GitHub Release. `authbridge-proxy`
+cross-compiles `cortex` and `agentop` for linux/darwin ×
+amd64/arm64 and attaches tarballs to the GitHub Release. `cortex`
 ships in variants that mirror the container images:
 
 | Variant | Tarball name shape | Matches |
 |---|---|---|
-| unqualified (default plugins) | `authbridge-proxy_<ver>_<os>_<arch>.tar.gz` | `authbridge` image |
-| `-lite` (sidecar-minimum plugin set — see `scripts/profile-tags`) | `authbridge-proxy-lite_<ver>_<os>_<arch>.tar.gz` | `authbridge-lite` image |
-| `-sessionbudget` (default + opt-in session-budget) | `authbridge-proxy-sessionbudget_<ver>_<os>_<arch>.tar.gz` | no image today |
+| unqualified (default plugins) | `cortex_<ver>_<os>_<arch>.tar.gz` | `authbridge` image |
+| `-lite` (sidecar-minimum plugin set — see `scripts/profile-tags`) | `cortex-lite_<ver>_<os>_<arch>.tar.gz` | `authbridge-lite` image |
+| `-sessionbudget` (default + opt-in session-budget) | `cortex-sessionbudget_<ver>_<os>_<arch>.tar.gz` | no image today |
 
 One variant per opt-in plugin currently offered for try-out (today:
 `-sessionbudget`) — never enumerate combos. To add one, append to the
-`proxy_variants` array in the workflow. `authbridge-cpex` stays image-only
+`proxy_variants` array in the workflow. `cortex-cpex` stays image-only
 (needs cgo); `context-guru` is opt-in but not yet offered as a variant.
 
 **Go modules** (12 in total; `go.work` links 9 of them — the three
 self-contained `demos/*` modules are outside the workspace. `go-tidy-check` in
 `ci.yaml` does cover all 12: it discovers them with `find`, not from `go.work`):
 - `core/` — the runtime library: `pipeline`, `plugins`, `listener`, `config`, `spiffe` (the framework, 57% of it); `cost/{pricing,settle,ledger,event,usage}` (21%); `session`, `sessionapi`, `observe`, `redact` (10%); `auth`, `bypass`, `capabilities` (1.6%); plus transport and storage glue. **Consumed outside this repo**, so removing exported API here is a cross-repo change.
-- `cmd/authbridge-{proxy,envoy,cpex,praxis}/` — thin main packages that import core and start the listeners they need; they import no plugin package directly. (The `authbridge-lite` image is `authbridge-proxy` built with the `lite` profile.)
-- `cmd/abctl/` — the TUI; also released as a standalone binary.
+- `cmd/cortex{,-envoy,-cpex,-praxis}/` — thin main packages that import core and start the listeners they need; they import no plugin package directly. (The `authbridge-lite` image is `cortex` built with the `lite` profile.)
+- `cmd/agentop/` — the TUI; also released as a standalone binary.
 - `core/storage/redis/`, `scripts/{profile-tags,readme-demo}/`, and the self-contained `demos/{echo,finance-sparc,ibac}/`.
 - `go.work` — workspace linking core + the binaries for local development.
 
-**Config format:** YAML with `${ENV_VAR}` expansion, mode presets, and startup validation. The `mode` field must match the binary for all but `authbridge-praxis`, which pins no mode.
+**Config format:** YAML with `${ENV_VAR}` expansion, mode presets, and startup validation. The `mode` field must match the binary for all but `cortex-praxis`, which pins no mode.
 
 ## Component Details
 
@@ -409,7 +427,7 @@ direction, and no mutator of either direction may precede a `ReadsBody`-only
 plugin. See [`docs/plugin-reference.md`](docs/plugin-reference.md#capability-fields).
 
 **Plugin metrics.** Plugins that implement `pipeline.MetricsProvider` have their
-counters surfaced on `GET /v1/pipeline` and rendered in abctl's plugin pane.
+counters surfaced on `GET /v1/pipeline` and rendered in agentop's plugin pane.
 Optional interfaces are not promoted through `configuredPlugin`'s embedded
 `Plugin`, so a new one must be forwarded there explicitly or it is invisible for
 every plugin that has config. Counters are per-process and reset on restart
@@ -469,7 +487,7 @@ Envoy config lives in the `envoy-config` ConfigMap rendered by the [rossoctl Hel
 
 ## Session Events API (`:9094`)
 
-When `session.enabled` is true (default) and `listener.session_api_addr` is non-empty (default `:9094`), the authbridge binary exposes the captured session store over HTTP. Intended for operators debugging the plugin pipeline via `kubectl port-forward` and for the `abctl` TUI.
+When `session.enabled` is true (default) and `listener.session_api_addr` is non-empty (default `:9094`), the authbridge binary exposes the captured session store over HTTP. Intended for operators debugging the plugin pipeline via `kubectl port-forward` and for the `agentop` TUI.
 
 **Trust model:** no authentication. Bind only on in-cluster addresses, never behind ingress. Payloads may contain raw user messages, LLM completions, and tool results.
 
@@ -478,16 +496,16 @@ When `session.enabled` is true (default) and `listener.session_api_addr` is non-
 | Method & Path | Format | Purpose |
 |---|---|---|
 | `GET /` | text | One-line-per-endpoint index. Answers "is this the session API, and on the right port?" — the reason a 404 here was worth replacing. |
-| `GET /v1/sessions` | `application/json` | List active sessions: `{sessions: [{id, createdAt, updatedAt, eventCount, title, agent, adopted, totalTokens, costMicros, avoidedMicros, saturated, active, promptContext}]}`. `id`, `createdAt`, `updatedAt`, `eventCount` and `active` are always present; every other field is `omitempty` — absent rather than zero, on the standing rule that an unknown value must not render as a real one. (Do not read that off the position of `active`: it sits second-to-last, between two `omitempty` fields.) **`title` is a suggestion, not an identifier:** the proxy derives it from the session's own events (a `/rename`, else a `<user_query>`, else ordinary user prose, with `<system-reminder>` blocks excised), so it is a display convenience and nothing addresses a session by it. Absent when nothing in the events named it. **Folded at append time and FIRST-WINS, except that a `/rename` always overrides** — so ordinary conversation does not re-title a session on every turn, and a `/rename` survives eviction of the event that carried it. abctl reads this field as a FALLBACK: its TITLE column prefers a harvested Claude Code transcript title and uses the served title only for a session the harvest cannot name. That precedence is fixed rather than a judgement about which string is better — both sides rank candidates their own way and do not agree on every session. That is the case worth having: an agent with no transcript tree on the operator's disk still routes through the proxy, so a row that used to render blank now has a name. abctl deliberately still treats such a row as unnamed for its own re-harvest backoff, so a served title does not stop it looking for a harvested one. |
+| `GET /v1/sessions` | `application/json` | List active sessions: `{sessions: [{id, createdAt, updatedAt, eventCount, title, agent, adopted, totalTokens, costMicros, avoidedMicros, saturated, active, promptContext}]}`. `id`, `createdAt`, `updatedAt`, `eventCount` and `active` are always present; every other field is `omitempty` — absent rather than zero, on the standing rule that an unknown value must not render as a real one. (Do not read that off the position of `active`: it sits second-to-last, between two `omitempty` fields.) **`title` is a suggestion, not an identifier:** the proxy derives it from the session's own events (a `/rename`, else a `<user_query>`, else ordinary user prose, with `<system-reminder>` blocks excised), so it is a display convenience and nothing addresses a session by it. Absent when nothing in the events named it. **Folded at append time and FIRST-WINS, except that a `/rename` always overrides** — so ordinary conversation does not re-title a session on every turn, and a `/rename` survives eviction of the event that carried it. agentop reads this field as a FALLBACK: its TITLE column prefers a harvested Claude Code transcript title and uses the served title only for a session the harvest cannot name. That precedence is fixed rather than a judgement about which string is better — both sides rank candidates their own way and do not agree on every session. That is the case worth having: an agent with no transcript tree on the operator's disk still routes through the proxy, so a row that used to render blank now has a name. agentop deliberately still treats such a row as unnamed for its own re-harvest backoff, so a served title does not stop it looking for a harvested one. |
 | `GET /v1/sessions/{id}` | `application/json` | The session's most recent events. `?limit=N` (default 500, max 2000) sets the window; `?before=<seq>` returns the page ending just before that event, so the whole session is reachable by paging backward from the tail. `totalEvents` is the session's true length and `oldestSeq` the oldest event the store still holds — both present only when this response is not the whole session, so a client can tell "this is the beginning" from "there is more behind me" without a second request. 404 if unknown/expired. **One response is still not a full snapshot:** with `session.max_events` unset a session can hold thousands of events, and one real session's whole history encoded to 1.1GB — 17s to write, against clients that time out in 10. That cap is why `before` exists — until it did, a session past 2000 events had a beginning no request could reach at any limit, while still costing memory. The response is written one event at a time rather than encoded whole, so serving it costs the proxy heap proportional to one event; see the chatty-traffic gotcha below. |
 | `GET /v1/events` | `text/event-stream` | SSE stream of new events. Optional `?session=<id>` filters to one session. Heartbeat every 30s. |
-| `GET /v1/pipeline` | `application/json` | Active pipeline composition: `{inbound: [...], outbound: [...]}`. Each plugin entry carries `name`, `direction`, `position`, `readsBody`, plus the static metadata (`requires`, `requiresAny`, `description`) and runtime `config` when present. abctl renders this as the Pipeline pane. |
-| `GET /v1/plugins` | `application/json` | Catalog of every registered plugin (whether or not in the active pipeline): `{plugins: [{name, requires, requiresAny, description, ...}]}`. abctl renders this as the Catalog pane (`P` key). 404s when the binary's session API was constructed without `WithCatalog`. |
+| `GET /v1/pipeline` | `application/json` | Active pipeline composition: `{inbound: [...], outbound: [...]}`. Each plugin entry carries `name`, `direction`, `position`, `readsBody`, plus the static metadata (`requires`, `requiresAny`, `description`) and runtime `config` when present. agentop renders this as the Pipeline pane. |
+| `GET /v1/plugins` | `application/json` | Catalog of every registered plugin (whether or not in the active pipeline): `{plugins: [{name, requires, requiresAny, description, ...}]}`. agentop renders this as the Catalog pane (`P` key). 404s when the binary's session API was constructed without `WithCatalog`. |
 | `GET /healthz` | text | Liveness probe. |
 
 ### Quick examples
 
-The `abctl` TUI handles port-forward + connection automatically — pick a
+The `agentop` TUI handles port-forward + connection automatically — pick a
 pod from the Namespaces → Pods picker. For raw HTTP exploration, set up
 your own port-forward first:
 
@@ -521,10 +539,10 @@ curl -N "http://localhost:9094/v1/events?session=$SID"
 Every event on `/v1/sessions/{id}` and `/v1/events` carries:
 
 - `at`, `direction`, `phase` — when, which side, what stage. `phase` is one of `"request"`, `"response"`, or `"denied"` (terminal denial from a pipeline plugin — typically a jwt-validation failure).
-- `seq` — the event's position in its session, counting from 1, and the cursor `?before=` takes. Gaps are normal: FIFO eviction drops a prefix, and the pinned intent can sit far ahead of the retained tail. Absent (zero) from a proxy that predates paging, which is how a client tells it cannot page there. **Unique within one incarnation of a session, not forever:** trimming events never reuses their numbers, but the counter lives on the store entry, and whole-session eviction (`session.ttl`, `max_sessions`) deletes that entry — so a session re-created under the same id restarts at 1. A cursor from before that point is above everything held, and the endpoint answers with the tail, since every event it holds does precede the cursor. A paging client must therefore order pages by `at`, not by `seq` (abctl does); the store cannot tell a re-created session from a trimmed one.
+- `seq` — the event's position in its session, counting from 1, and the cursor `?before=` takes. Gaps are normal: FIFO eviction drops a prefix, and the pinned intent can sit far ahead of the retained tail. Absent (zero) from a proxy that predates paging, which is how a client tells it cannot page there. **Unique within one incarnation of a session, not forever:** trimming events never reuses their numbers, but the counter lives on the store entry, and whole-session eviction (`session.ttl`, `max_sessions`) deletes that entry — so a session re-created under the same id restarts at 1. A cursor from before that point is above everything held, and the endpoint answers with the tail, since every event it holds does precede the cursor. A paging client must therefore order pages by `at`, not by `seq` (agentop does); the store cannot tell a re-created session from a trimmed one.
 - `a2a` / `mcp` / `inference` — protocol parser payloads (one at most).
-- `invocations` — per-plugin invocation records for every plugin that ran on the pipeline pass. Structured as `{inbound: [...], outbound: [...]}`; each entry carries `plugin`, `action` (one of 5 values — see below), `reason` (machine-stable code), and optional plugin-specific context (expected issuer, target audience, cache-hit flag, path, etc.). abctl renders one row per invocation, so operators see an explicit per-plugin timeline.
-- `plugins` — escape-hatch map for plugin-specific observability. Keys are plugin names; values are the raw JSON each plugin emitted. Unknown plugins render as opaque JSON in abctl. See [`docs/plugin-reference.md`](docs/plugin-reference.md#emitting-session-events) for the producer contract.
+- `invocations` — per-plugin invocation records for every plugin that ran on the pipeline pass. Structured as `{inbound: [...], outbound: [...]}`; each entry carries `plugin`, `action` (one of 5 values — see below), `reason` (machine-stable code), and optional plugin-specific context (expected issuer, target audience, cache-hit flag, path, etc.). agentop renders one row per invocation, so operators see an explicit per-plugin timeline.
+- `plugins` — escape-hatch map for plugin-specific observability. Keys are plugin names; values are the raw JSON each plugin emitted. Unknown plugins render as opaque JSON in agentop. See [`docs/plugin-reference.md`](docs/plugin-reference.md#emitting-session-events) for the producer contract.
 - `identity`, `host`, `statusCode`, `error`, `durationMs` — request-level context.
 - `tunnel`, `tunnelReason`, `bytesUp`, `bytesDown` — an opaque CONNECT (or transparent-redirect) tunnel records two rows sharing a `requestId`: the open (`phase: "request"`, `tunnelReason` saying why the bytes stayed opaque) and, when the tunnel ends, the close (`phase: "response"`). The close carries the CONNECT's own `statusCode` — 200, or 502 with the dial error in `error` when the destination could not be reached (`tunnelReason: "dial-failed"`) — plus `durationMs` for how long the tunnel stayed open and the bytes it carried each way (up = client to destination). It is not the destination's status: that travels inside the client's end-to-end TLS. A bridged tunnel records no close, because its open folds into the first decrypted request, which carries its own response — unless it carried no request at all. Tunnel rows are kept out of `/v1/usage`: a tunnel's lifetime is not a request latency.
 - `httpMethod`, `httpPath` — the HTTP verb and path, so a request no parser recognized is still identifiable rather than showing only a host. Distinct from the `method` inside `a2a` / `mcp`, which is a protocol method name. On an opaque tunnel `httpMethod` is `CONNECT` and `httpPath` is absent — opaque bytes carry no request line. The path is query-stripped and percent-decoded, so query-borne credentials never reach the timeline, but a secret in a path *segment* (a bot token, a webhook path) does survive on this unauthenticated surface — worth knowing before exporting events off-box.
@@ -543,7 +561,7 @@ Every plugin emits one of these 5 action values per invocation, so operators can
 
 Use `reason` to discriminate within an action — e.g. `skip/path_bypass` vs `skip/no_matching_route` tell different stories at the detail-pane level but both scan as "skip" in the at-a-glance timeline.
 
-**abctl's ACTION column is not only this vocabulary.** Two of its values are rendering, not plugin output: `—` when nothing acted, and `tunnel` for an opaque CONNECT — a row where no plugin ran and no protocol was parsed, so METHOD is blank and the label is the only thing identifying it. The open row has no STATUS either; the close row recorded when the tunnel ends does, and pairs with the open on the `#` column. Neither is ever emitted by a plugin, and neither is a verdict on the request.
+**agentop's ACTION column is not only this vocabulary.** Two of its values are rendering, not plugin output: `—` when nothing acted, and `tunnel` for an opaque CONNECT — a row where no plugin ran and no protocol was parsed, so METHOD is blank and the label is the only thing identifying it. The open row has no STATUS either; the close row recorded when the tunnel ends does, and pairs with the open on the `#` column. Neither is ever emitted by a plugin, and neither is a verdict on the request.
 
 > **Producer-side contract:** the authoritative definition of the 5-value vocabulary, the `Invocation` struct fields, and which diagnostic fields each plugin type populates lives in [`docs/plugin-reference.md`](docs/plugin-reference.md#emitting-session-events). Edit that file when the vocabulary changes; this table is the consumer-side summary.
 
@@ -648,7 +666,7 @@ are configured at the Envoy data-plane level by extending the
 X.509 SVIDs are read by Envoy directly from `/opt/svid.pem`,
 `/opt/svid_key.pem`, `/opt/svid_bundle.pem` — the same paths
 proxy-sidecar's mTLS uses. The spiffe Provider's file-mirror in
-the `authbridge-envoy` binary keeps these fresh on rotation.
+the `cortex-envoy` binary keeps these fresh on rotation.
 
 **Inbound parity with proxy-sidecar:** byte-identical observable
 semantics — TLS handshakes terminate against the SPIRE trust bundle,
@@ -715,10 +733,10 @@ All images are pushed to `ghcr.io/rossoctl/cortex/` from
 
 | Image | Source | Description |
 |-------|--------|-------------|
-| **`authbridge`** | **`cmd/authbridge-proxy/Dockerfile`** | **proxy-sidecar image (default mode): authbridge-proxy, full plugin set incl. parsers. No Envoy.** |
-| `authbridge-envoy` | `cmd/authbridge-envoy/Dockerfile` | envoy-sidecar combined image: Envoy + authbridge-envoy (ext_proc, full plugin set) |
-| `authbridge-lite` | `cmd/authbridge-proxy/Dockerfile` (+ `GO_BUILD_TAGS` from the `lite` profile) | proxy-sidecar image with a sidecar-minimum plugin set (see `scripts/profile-tags`). A build variant of `authbridge`, not a separate binary; not yet referenced by the operator's default config |
-| `authbridge-cpex` | `cmd/authbridge-cpex/Dockerfile` | proxy-sidecar build with the CPEX plugin. Two tag sources: the literal `cpex` tag, always required because it gates `cmd/authbridge-cpex/main.go`, plus the plugin tags its Dockerfile appends from `GO_BUILD_TAGS` (resolved from the `cpex` profile in `build.yaml`) — `cpex` alone registers no plugins. Links `libcpex_ffi.a` from a pinned CPEX release (CGO_ENABLED=1). Routes hooks through the CPEX framework (APL DSL + named CPEX policy plugins). FFI ABI version is read from `cmd/authbridge-cpex/CPEX_FFI_VERSION` |
+| **`authbridge`** | **`cmd/cortex/Dockerfile`** | **proxy-sidecar image (default mode): cortex, full plugin set incl. parsers. No Envoy.** |
+| `authbridge-envoy` | `cmd/cortex-envoy/Dockerfile` | envoy-sidecar combined image: Envoy + cortex-envoy (ext_proc, full plugin set) |
+| `authbridge-lite` | `cmd/cortex/Dockerfile` (+ `GO_BUILD_TAGS` from the `lite` profile) | proxy-sidecar image with a sidecar-minimum plugin set (see `scripts/profile-tags`). A build variant of `authbridge`, not a separate binary; not yet referenced by the operator's default config |
+| `authbridge-cpex` | `cmd/cortex-cpex/Dockerfile` | proxy-sidecar build with the CPEX plugin. Two tag sources: the literal `cpex` tag, always required because it gates `cmd/cortex-cpex/main.go`, plus the plugin tags its Dockerfile appends from `GO_BUILD_TAGS` (resolved from the `cpex` profile in `build.yaml`) — `cpex` alone registers no plugins. Links `libcpex_ffi.a` from a pinned CPEX release (CGO_ENABLED=1). Routes hooks through the CPEX framework (APL DSL + named CPEX policy plugins). FFI ABI version is read from `cmd/cortex-cpex/CPEX_FFI_VERSION` |
 | `proxy-init` | `deploy/proxy-init/Dockerfile.init` | Alpine + iptables init container (envoy-sidecar + proxy-sidecar enforce-redirect modes) |
 | `sparc-service` | `deploy/sparc-service/Dockerfile` | Python SPARC reflection service (FastAPI wrapper around the ALTK pre-tool reflection component), called by the `sparc` plugin |
 
@@ -748,8 +766,8 @@ Hooks:
 `ci.yaml` both run, but only one of them can fail:
 
 - `go vet ./...` **is** a gate, on 7 of the 12 modules: `core`, both
-  `scripts/*`, and the `cmd/{authbridge-proxy,authbridge-envoy,abctl,authbridge-praxis}`
-  matrix. Not vetted anywhere: `cmd/authbridge-cpex` (deliberately excluded — it
+  `scripts/*`, and the `cmd/{cortex,cortex-envoy,agentop,cortex-praxis}`
+  matrix. Not vetted anywhere: `cmd/cortex-cpex` (deliberately excluded — it
   needs CGO and a pinned `libcpex_ffi.a`, so `build.yaml` covers it via the image
   build), `core/storage/redis`, and the three `demos/*` modules.
 - `go fmt ./...` is **not** a gate. `go fmt` is `gofmt -l -w`: it rewrites the
@@ -765,10 +783,10 @@ touched one of the five unvetted modules.
 | Area | Technology |
 |------|------------|
 | AuthBridge sidecar binaries | Go 1.26.5, envoy-control-plane, lestrrat-go/jwx |
-| abctl (TUI) | Go 1.26.5, bubbletea |
+| agentop (TUI) | Go 1.26.5, bubbletea |
 | keycloak_sync.py / setup scripts | Python 3.12, python-keycloak (`>=7.1.1,<8`) |
 | sparc-service | Python 3.10+, FastAPI, agent-lifecycle-toolkit |
-| Proxy | Envoy v1.37.1 (pinned by digest in `cmd/authbridge-envoy/Dockerfile`) |
+| Proxy | Envoy v1.37.1 (pinned by digest in `cmd/cortex-envoy/Dockerfile`) |
 | Traffic interception | iptables (via init container) |
 | Identity | SPIFFE/SPIRE (JWT-SVIDs) |
 | Auth provider | Keycloak (OAuth2/OIDC, token exchange RFC 8693) |
@@ -855,12 +873,12 @@ cd ../..
 
 # Sidecar images. Pick whichever you need; the operator selects the image per
 # workload from the resolved AuthBridge mode.
-podman build -f cmd/authbridge-proxy/Dockerfile -t authbridge:latest .       # proxy-sidecar (default)
-podman build -f cmd/authbridge-envoy/Dockerfile -t authbridge-envoy:latest . # envoy-sidecar
+podman build -f cmd/cortex/Dockerfile -t authbridge:latest .       # proxy-sidecar (default)
+podman build -f cmd/cortex-envoy/Dockerfile -t authbridge-envoy:latest . # envoy-sidecar
 # authbridge-lite: same proxy Dockerfile, built with the `lite` profile
 # from scripts/profile-tags. Plugins are all opt-in, so
 # GO_BUILD_TAGS is required — omitting it registers no plugins.
-podman build -f cmd/authbridge-proxy/Dockerfile \
+podman build -f cmd/cortex/Dockerfile \
   --build-arg GO_BUILD_TAGS="$(go -C scripts/profile-tags run . lite)" \
   -t authbridge-lite:latest .
 
@@ -903,7 +921,7 @@ For an interactive walkthrough see
 - Test by rebuilding the affected image. `GO_BUILD_TAGS` is required — every
   plugin is opt-in, so a build without it registers none and rejects every
   config it is handed:
-  `podman build -f cmd/authbridge-envoy/Dockerfile
+  `podman build -f cmd/cortex-envoy/Dockerfile
   --build-arg GO_BUILD_TAGS="$(go -C scripts/profile-tags run . envoy)"
   -t authbridge-envoy:latest .` then `kind load docker-image
   authbridge-envoy:latest --name rossoctl`.
@@ -955,8 +973,8 @@ resulting `/shared/client-id.txt` and `/shared/client-secret.txt`.
   `go mod tidy -diff` in every module — `ci.yaml`'s `go-tidy-check` gates on it,
   and `build`/`vet`/`test` all pass while it fails.
 - Logging with `log/slog`; the binaries log under their own name
-  (`authbridge-proxy`, `authbridge-envoy`). Note the `authbridge-lite` image runs
-  the `authbridge-proxy` binary, so it logs as `authbridge-proxy`.
+  (`cortex`, `cortex-envoy`). Note the `authbridge-lite` image runs
+  the `cortex` binary, so it logs as `cortex`.
 - gRPC ext-proc uses `envoyproxy/go-control-plane` types (in `core/listener/extproc`)
 - JWT validation uses `lestrrat-go/jwx/v2` (in `core/plugins/jwtvalidation/validation`)
 
@@ -1036,9 +1054,9 @@ resulting `/shared/client-id.txt` and `/shared/client-secret.txt`.
 
     The schemas were the last big duplicate and needed a type change to reach. `InferenceTool.Parameters` was `map[string]any`, which cost **4.1x its JSON text** to hold and could not be interned without a recursive walk that rewrites map values — a walk cannot lean on string immutability the way sharing a string can. Measured on a live session: 84KB per event, ~172MB across one 2050-event session. So the field became `pipeline.RawJSON`, a named string type that keeps the schema exactly as the client sent it, and it interns like any other string. Two consequences worth knowing: the API now shows schemas in the client's own key order (a map round-trip silently sorted them), and the type must stay a NAMED string with a `MarshalJSON` method — OPA's `ast.InterfaceToValue` treats a plain or aliased string as a JSON string, which would leave every policy indexing `input.inference.tools[_].parameters` undefined with no error (`core/plugins/opa/tool_parameters_rego_test.go` guards it). MCP `Params`/`Result` still do not intern, being `map[string]any`; they are unmeasured on this workload and the same field-type change is available if that changes.
 
-    **Retention was only half of it, and reading the store was the more expensive half.** A memory figure that keeps climbing while traffic is idle is usually not retention: `GET /v1/sessions/{id}` used to encode the whole response into a single buffer before writing a byte, so serving one snapshot cost heap proportional to the *response* — ~246MB of heap growth for a 105MB response — and Go keeps that as idle heap rather than returning it promptly. abctl requests a snapshot on every <kbd>Enter</kbd> into a session, so RSS ratcheted a couple hundred megabytes per keystroke: four requests took a live proxy from 731MB to 1447MB, still 1447MB two minutes later. Interning could not have helped there, and the two are not alternatives — interning makes stored events *share* one copy of a repeated message, and an encoder expands every share back into its own bytes on the way out. The response is now written one event at a time (`core/sessionapi/snapshot.go`, `BenchmarkSnapshotHeap`). When judging any memory change here, note that **RSS is not heap** and the proxy exposes no heap metric — there is no `pprof` endpoint anywhere in this tree — so an RSS-per-event figure mixes retention with read-path churn and cannot settle either one.
+    **Retention was only half of it, and reading the store was the more expensive half.** A memory figure that keeps climbing while traffic is idle is usually not retention: `GET /v1/sessions/{id}` used to encode the whole response into a single buffer before writing a byte, so serving one snapshot cost heap proportional to the *response* — ~246MB of heap growth for a 105MB response — and Go keeps that as idle heap rather than returning it promptly. agentop requests a snapshot on every <kbd>Enter</kbd> into a session, so RSS ratcheted a couple hundred megabytes per keystroke: four requests took a live proxy from 731MB to 1447MB, still 1447MB two minutes later. Interning could not have helped there, and the two are not alternatives — interning makes stored events *share* one copy of a repeated message, and an encoder expands every share back into its own bytes on the way out. The response is now written one event at a time (`core/sessionapi/snapshot.go`, `BenchmarkSnapshotHeap`). When judging any memory change here, note that **RSS is not heap** and the proxy exposes no heap metric — there is no `pprof` endpoint anywhere in this tree — so an RSS-per-event figure mixes retention with read-path churn and cannot settle either one.
 
-    **And the client is the other end of the same problem.** Measured on a laptop, `abctl` sat at 1.64GB against the proxy's 1.03GB — larger than the process it was watching, and the only one of the two still climbing. It made both mistakes the server had just stopped making: it decoded each snapshot as one document (`json.Decoder` only bounds its buffer between *values*, and a whole snapshot is one value), and it kept every string the server's encoder had expanded back out of the store's sharing. Both are fixed in `cmd/abctl/apiclient/snapshot.go`: the response is decoded one event at a time and fed through the same `session.Interner` the store uses, exported for the purpose rather than reimplemented. On a 23.5MB document, `+32.0MB HeapSys` and 26.49MB retained became +0.0MB and 2.31MB (`BenchmarkDecodeSessionViewHeap`). When a memory figure here looks wrong, measure **both** processes — the proxy has not been the larger one for a while.
+    **And the client is the other end of the same problem.** Measured on a laptop, `agentop` sat at 1.64GB against the proxy's 1.03GB — larger than the process it was watching, and the only one of the two still climbing. It made both mistakes the server had just stopped making: it decoded each snapshot as one document (`json.Decoder` only bounds its buffer between *values*, and a whole snapshot is one value), and it kept every string the server's encoder had expanded back out of the store's sharing. Both are fixed in `cmd/agentop/apiclient/snapshot.go`: the response is decoded one event at a time and fed through the same `session.Interner` the store uses, exported for the purpose rather than reimplemented. On a 23.5MB document, `+32.0MB HeapSys` and 26.49MB retained became +0.0MB and 2.31MB (`BenchmarkDecodeSessionViewHeap`). When a memory figure here looks wrong, measure **both** processes — the proxy has not been the larger one for a while.
 
     Two layered defenses keep the inbound A2A user intent visible to IBAC even when an agent generates dozens of outbound events per turn:
 

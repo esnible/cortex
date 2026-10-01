@@ -458,7 +458,7 @@ func TestReverseProxy_BodyNotBuffered_WhenNotNeeded(t *testing.T) {
 // TestRecordInboundReject_EmitsDeniedPhase verifies the reverse-proxy
 // listener's inbound reject-event recording. Gap: before this, an
 // inbound request denied by jwt-validation or any other gate plugin
-// produced a 401/403 on the wire but no SessionDenied event — abctl
+// produced a 401/403 on the wire but no SessionDenied event — agentop
 // and /v1/sessions showed nothing, making misconfigurations invisible.
 func TestRecordInboundReject_EmitsDeniedPhase(t *testing.T) {
 	store := session.New(5*time.Minute, 100, 0)
@@ -656,7 +656,7 @@ func (p *a2aStampPlugin) OnResponse(_ context.Context, pctx *pipeline.Context) p
 // behavior that an A2A first-turn (request without contextId, agent
 // assigns contextId in response) ends up with all the turn's events
 // merged into the contextId bucket, plus a SessionResponse event
-// recorded. Without rekey + the response-side append, abctl users see
+// recorded. Without rekey + the response-side append, agentop users see
 // orphan request rows in `default` and no inbound response row at all.
 func TestReverseProxy_ModifyResponse_RekeyAndResponseEvent(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

@@ -149,7 +149,7 @@ var tools = []Tool{
 // MCP's tool-call result shape. authbridge's mcp-parser observes this
 // JSON-RPC body on both sides and publishes MCPExtension to pctx,
 // which IBAC reads to enrich its action description (the allow row
-// for this call shows MCP_TOOL: get_emails in show-result and abctl).
+// for this call shows MCP_TOOL: get_emails in show-result and agentop).
 func execGetEmails(_ map[string]interface{}) string {
 	emailURL := os.Getenv("EMAIL_URL")
 	if emailURL == "" {
@@ -585,7 +585,7 @@ type jsonRPCResponse struct {
 // because the authbridge a2a-parser's response-side artifact
 // extraction (extractSendResponse in plugin.go) keys off
 // `result.status.state` and `result.artifacts[].parts[].text`. Without
-// the Task shape, abctl and the session-event JSON show only the
+// the Task shape, agentop and the session-event JSON show only the
 // REQUEST text on response events, which makes the agent's reply
 // invisible in the platform observability layer.
 //
@@ -718,7 +718,7 @@ func handleA2A(w http.ResponseWriter, r *http.Request) {
 		// "default" session bucket on the authbridge side (the rekey-
 		// on-response path needs a contextId on the response to
 		// migrate Default → <contextId>). Each test run / chat turn
-		// then becomes indistinguishable in abctl, which defeats the
+		// then becomes indistinguishable in agentop, which defeats the
 		// IBAC demo's per-conversation forensic view. Returning a
 		// fresh UUID restores per-conversation bucketing while staying
 		// backward-compatible: a UI that ever does start round-
@@ -743,7 +743,7 @@ func handleA2A(w http.ResponseWriter, r *http.Request) {
 // while the authbridge a2a-parser's response-side artifact extractor
 // reads from artifacts[].parts[].text (plugin.go:188-195). Carrying
 // the text in both keeps the rossoctl UI working AND gets the reply
-// into the session-event JSON for abctl / show-result.
+// into the session-event JSON for agentop / show-result.
 func writeRPCSuccess(w http.ResponseWriter, id any, sessionID, text string) {
 	taskID := newUUID()
 	parts := []a2aPart{{Kind: "text", Text: text}}

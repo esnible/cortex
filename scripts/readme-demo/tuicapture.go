@@ -1,6 +1,6 @@
 package main
 
-// tuicapture drives the real abctl TUI headlessly and captures its screens.
+// tuicapture drives the real agentop TUI headlessly and captures its screens.
 //
 // Nothing here draws a terminal. The screens in the demo are rendered by the
 // same Bubble Tea model, the same session store, the same usage aggregator and
@@ -28,8 +28,8 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
 
-	"github.com/rossoctl/cortex/cmd/abctl/apiclient"
-	"github.com/rossoctl/cortex/cmd/abctl/tui"
+	"github.com/rossoctl/cortex/cmd/agentop/apiclient"
+	"github.com/rossoctl/cortex/cmd/agentop/tui"
 	"github.com/rossoctl/cortex/core/cost/event"
 	"github.com/rossoctl/cortex/core/cost/ledger"
 	"github.com/rossoctl/cortex/core/cost/usage"
@@ -133,7 +133,7 @@ func costPlugins(t Turn) map[string]json.RawMessage {
 	return map[string]json.RawMessage{event.Key: raw}
 }
 
-// WriteTitles writes the session-title metadata abctl reads from
+// WriteTitles writes the session-title metadata agentop reads from
 // $HOME/.cortex/session-metadata.json.
 //
 // The caller must have pointed HOME at a scratch directory first. The generator
@@ -496,7 +496,7 @@ func (c *Capturer) Press(keys ...string) {
 }
 
 // localSessionPort is the port a real local cortex serves its session API on.
-// The harness binds an ephemeral port, and abctl prints whatever endpoint it is
+// The harness binds an ephemeral port, and agentop prints whatever endpoint it is
 // attached to in its header — so the raw capture would show a five-digit port
 // that changes every run. Rewriting it to the real one makes the asset both
 // deterministic and more accurate: the ephemeral port is a fact about this

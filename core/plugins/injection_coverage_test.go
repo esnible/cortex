@@ -11,7 +11,7 @@ import (
 )
 
 // TestEveryBinaryInjectsPricing guards the gap that shipped in this PR's first round:
-// only cmd/authbridge-proxy was wired, so authbridge-envoy and authbridge-cpex
+// only cmd/cortex was wired, so cortex-envoy and cortex-cpex
 // injected no resolver at all.
 //
 // That was a zero-config REGRESSION rather than a missing feature. tool-prune is
@@ -37,7 +37,7 @@ func TestEveryBinaryInjectsPricing(t *testing.T) {
 	}
 	var checked int
 	for _, e := range entries {
-		if !e.IsDir() || e.Name() == "abctl" { // abctl is a client, no pipelines
+		if !e.IsDir() || e.Name() == "agentop" { // agentop is a client, no pipelines
 			continue
 		}
 		files, err := filepath.Glob(filepath.Join(root, e.Name(), "*.go"))

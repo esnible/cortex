@@ -106,7 +106,7 @@ func TestMCPParser_OnResponseFrame_RequestEmptyStream_Skip(t *testing.T) {
 }
 
 // A notification (no id) whose stream ends with zero data frames is the
-// expected empty ack: mcp-parser records an Observe so abctl credits it
+// expected empty ack: mcp-parser records an Observe so agentop credits it
 // rather than rendering the paired response row as "—".
 func TestMCPParser_OnResponseFrame_NotificationAck_Observe(t *testing.T) {
 	p := NewMCPParser()

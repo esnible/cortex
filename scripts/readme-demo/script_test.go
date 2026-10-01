@@ -105,7 +105,7 @@ func TestShellStates_SlowLongerThanOutIsRejected(t *testing.T) {
 
 func TestShellStates_TypingCarriesATypeReveal(t *testing.T) {
 	act := Act{Name: "a", Kind: "shell", Runtime: 10 * time.Second, Steps: []Step{
-		{Cmd: "abctl", Out: []string{"hi"}},
+		{Cmd: "agentop", Out: []string{"hi"}},
 	}}
 	states, err := ShellStates(act, 0, Grid{Cols: 20, Rows: 4})
 	if err != nil {
@@ -114,7 +114,7 @@ func TestShellStates_TypingCarriesATypeReveal(t *testing.T) {
 	if got := states[0].Rows[0].Reveal.Kind; got != "type" {
 		t.Errorf("command row reveal = %q, want type", got)
 	}
-	if want := 5 * typeRate; states[0].Rows[0].Reveal.Dur != want {
+	if want := time.Duration(len(act.Steps[0].Cmd)) * typeRate; states[0].Rows[0].Reveal.Dur != want {
 		t.Errorf("typing duration = %s, want %s", states[0].Rows[0].Reveal.Dur, want)
 	}
 	if got := states[0].Rows[1].Reveal.Kind; got != "fill" {

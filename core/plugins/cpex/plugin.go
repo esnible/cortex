@@ -25,9 +25,9 @@
 // # Build tag
 //
 // The real CPEX backend uses cgo and links libcpex_ffi.a. The
-// authbridge-cpex binary is the only build target that compiles
-// this package with -tags cpex; other binaries (authbridge-proxy,
-// authbridge-envoy, authbridge-lite) do not import this package.
+// cortex-cpex binary is the only build target that compiles
+// this package with -tags cpex; other binaries (cortex,
+// cortex-envoy, authbridge-lite) do not import this package.
 //
 // The package itself compiles tag-free for unit tests: the Manager
 // interface (manager.go) is satisfied by FakeManager in tests, and
@@ -42,7 +42,7 @@
 // # Operator surface
 //
 // Plugin name: `cpex`. Config schema is in config.go and is
-// surfaced through pipeline.SchemaProvider for abctl and friends.
+// surfaced through pipeline.SchemaProvider for agentop and friends.
 package cpex
 
 import (
@@ -114,7 +114,7 @@ func (p *CPEX) Name() string { return "cpex" }
 //     populate them. Failing fast at pipeline.Build is better than
 //     silently running CPEX policies over empty content.
 //
-//   - Description is the one-line operator-facing summary abctl
+//   - Description is the one-line operator-facing summary agentop
 //     surfaces in the catalog.
 func (p *CPEX) Capabilities() pipeline.PluginCapabilities {
 	return pipeline.PluginCapabilities{
@@ -126,7 +126,7 @@ func (p *CPEX) Capabilities() pipeline.PluginCapabilities {
 	}
 }
 
-// ConfigSchema reflects cpexConfig field metadata for abctl edit
+// ConfigSchema reflects cpexConfig field metadata for agentop edit
 // templates and JSON-Schema generators.
 func (p *CPEX) ConfigSchema() []pipeline.FieldSchema {
 	return pipeline.SchemaOf(cpexConfig{})

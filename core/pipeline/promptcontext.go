@@ -88,12 +88,12 @@ import "time"
 // Read off the RESPONSE because the provider is the only party that tokenizes — the same reason
 // tokensCell looks forward from a request row to its pair.
 //
-// WHY THIS COMES FROM abctl'S OWN CACHE and not from the session summary: the summary carries no
-// per-request field, so there is nothing to read. abctl subscribes to /v1/events unfiltered and
+// WHY THIS COMES FROM agentop'S OWN CACHE and not from the session summary: the summary carries no
+// per-request field, so there is nothing to read. agentop subscribes to /v1/events unfiltered and
 // appends every event under its session id, so any session with traffic since it attached has a
 // conversation here.
 //
-// THE TIMELINE ANSWERS THROUGH THE COUNTS AND THE ROLE. abctl asks for `view=summary` on every
+// THE TIMELINE ANSWERS THROUGH THE COUNTS AND THE ROLE. agentop asks for `view=summary` on every
 // timeline fetch, tail and page alike, and that projection drops the two SLICES this rule used to
 // read — so summarizeEvent records their lengths first and toolCount/messageCount read either
 // shape. Without them a delivered row cannot be read at all: measured on one live session's
@@ -125,13 +125,13 @@ func PromptContextOf(events []SessionEvent) int {
 // happen; BenchmarkSessionContextPerEvent says what it costs.
 //
 // A REMEMBERED EXTREMUM, not a cache of a pure function over m.events — and the difference is
-// load-bearing, not a convenience. The events abctl holds for a session can stop carrying the
+// load-bearing, not a convenience. The events agentop holds for a session can stop carrying the
 // evidence the figure was read from, and a cache would be invalidated by that and come back empty.
 // Three ways it happens: a proxy that projects without stating the counts (the version window
-// between abctl's CONTEXT column and InferenceExtension.MessageCount), the picker
+// between agentop's CONTEXT column and InferenceExtension.MessageCount), the picker
 // releasing a live session's events for memory, and server-side FIFO eviction dropping the turn the
 // figure came from. What it costs is stated with the compaction trade-off above — a figure this
-// holds was read from whichever turn abctl has SEEN ranks highest under better(), and that turn may
+// holds was read from whichever turn agentop has SEEN ranks highest under better(), and that turn may
 // be one it no longer holds. Highest-ranking is not largest, and the fold is no high-water mark:
 // within the stated arm the latest turn wins, so a compaction lowers the figure.
 type PromptContextFold struct {
@@ -393,12 +393,12 @@ func (f PromptContextFold) current() candidate {
 // Tokens is the winning figure folded so far.
 func (f PromptContextFold) Tokens() int { return f.tokens }
 
-// Folded is how many events have been folded in — abctl's slice-length check reads this to decide
+// Folded is how many events have been folded in — agentop's slice-length check reads this to decide
 // whether a caller's slice has grown, shrunk, or is a wholesale replacement.
 func (f PromptContextFold) Folded() int { return f.n }
 
 // ResetFolded zeroes the slice cursor while KEEPING the figure, for a caller whose slice was
-// replaced rather than appended to. See abctl's rebaseSessionContext: dropping the figure there
+// replaced rather than appended to. See agentop's rebaseSessionContext: dropping the figure there
 // blanks a live session's gauge, because a view=summary timeline may carry no candidate at all.
 func (f *PromptContextFold) ResetFolded() { f.n = 0 }
 
@@ -546,7 +546,7 @@ func MergePromptContext(a, b *PromptContext) *PromptContext {
 // MergePromptContext(p, f.Publish()) carries, or zero where that is nil, without publishing f.
 //
 // IT EXISTS FOR THE ALLOCATION, and the measurement is the whole justification — this file does not
-// add a second entry point for tidiness. abctl's sessions row loop asks EVERY visible session for
+// add a second entry point for tidiness. agentop's sessions row loop asks EVERY visible session for
 // its gauge on every rebuild, and a rebuild is one streamed event or one poll, so anything per-row
 // here is on the same hot path the fold itself exists to protect. Going through Publish() put a
 // 48-byte *PromptContext on the heap per row per rebuild. On
@@ -583,7 +583,7 @@ func MergePromptContext(a, b *PromptContext) *PromptContext {
 //
 // THE COMPARISON IS INVERTED relative to MergePromptContext, and saying so is cheaper than leaving
 // the next reader to derive it: that function asks better(b, a) and keeps a — the SERVER figure, at
-// abctl's call site — where this asks better(p, f.current()) and keeps the FOLD. Both return the
+// agentop's call site — where this asks better(p, f.current()) and keeps the FOLD. Both return the
 // same int, for a reason narrow enough to state outright: better() is false in both directions only
 // for candidates equal on every field it compares, and it compares all four of PromptContext's, so a
 // tie means the two token counts are equal as well and which operand is kept cannot show.

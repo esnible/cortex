@@ -459,13 +459,13 @@ func setupAt(t *testing.T, cfgPath string) (*Reloader, *fakeBuilder, *pipeline.H
 	return r, b, inH, outH
 }
 
-// A symlinked config, written THROUGH the link — the shape abctl's editor
-// produces for a config pointed at a dotfiles repo, and what `abctl tools scan
-// --write` / `abctl service install`'s config migration do too.
+// A symlinked config, written THROUGH the link — the shape agentop's editor
+// produces for a config pointed at a dotfiles repo, and what `agentop tools scan
+// --write` / `agentop service install`'s config migration do too.
 //
 // Watching only filepath.Dir(configPath) misses this on Linux, where inotify
 // reports directory-entry changes and the link's directory has none: the reload
-// never fires, so abctl's editor times out and rolls a correct edit back two
+// never fires, so agentop's editor times out and rolls a correct edit back two
 // minutes later. macOS survives it by accident (kqueue watches the resolved
 // file), which is exactly why this is pinned rather than left to the platform.
 func TestReloader_SymlinkedConfigWrittenThroughTheLink(t *testing.T) {

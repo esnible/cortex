@@ -569,7 +569,7 @@ func TestRecordOutboundReject_SkipsWithoutInvocations(t *testing.T) {
 
 // TestForwardProxy_RecordsMessageWithNoPluginActivity locks the Part A
 // behavior: a request/response that no plugin acted on (empty pipeline,
-// no parser match) is still recorded as two session events so abctl can
+// no parser match) is still recorded as two session events so agentop can
 // show every network message — not just the ones a plugin touched. The
 // response event carries the upstream status even though Invocations is
 // nil.

@@ -88,7 +88,7 @@ type Counts struct {
 	// THE SUBSET RELATION IS NOT ENFORCED HERE, which is a decision rather than an
 	// omission. plausibleTokenReport screens for negatives and an implausible ceiling
 	// but not for ReasoningTokens > OutputTokens, so a provider reporting a
-	// contradictory pair is stored as it reported it — and `abctl cost`'s token line
+	// contradictory pair is stored as it reported it — and `agentop cost`'s token line
 	// and the detail pane both print it, which is the only way a reader notices the
 	// provider bug. Clamping at ingest would make every surface agree on a number
 	// nobody measured.
@@ -297,8 +297,8 @@ type Counts struct {
 // EXPORTED, AND HERE, because PresentKinds is where the layout is documented and this is the
 // package every consumer of it already imports. The authority is
 // core/plugins/internal/parsercommon.Kind, which cannot be imported from outside
-// core/plugins — so before these existed, every reader spelled the bits itself: abctl's
-// `cost` command, abctl's spend strip, and this package's own tests as a bare `1 | 8`. Three
+// core/plugins — so before these existed, every reader spelled the bits itself: agentop's
+// `cost` command, agentop's spend strip, and this package's own tests as a bare `1 | 8`. Three
 // uncoordinated copies of a wire format, with nothing comparing them.
 //
 // TestKindBits_MatchTheParserThatProducesThem, which lives with parsercommon because that is
@@ -319,7 +319,7 @@ const (
 // buckets' flags would produce a number that is not a bit set at all. Do not
 // pattern-match on the `+=` below when adding a field of that shape.
 //
-// Exported because consumers fold these too — abctl collapses low-volume series
+// Exported because consumers fold these too — agentop collapses low-volume series
 // into an "(other)" band — and an unexported version left them hand-summing the
 // fields in another module. That copy silently missed PricedRequests when it was
 // added, under a comment explaining that every field had to be carried. One
@@ -343,7 +343,7 @@ const (
 //     modelled path and pricing.MaxCostMicros for a gateway's own cost header, which puts the
 //     wrap at ~9.2e8 and 1,024 requests respectively. The second is reachable.
 //   - Requests, Errors and the three coverage counters are one per event at the source, so
-//     traffic cannot reach 2^63 of them. They are checked anyway: Add is exported, abctl folds
+//     traffic cannot reach 2^63 of them. They are checked anyway: Add is exported, agentop folds
 //     arbitrary Counts through it to build its "(other)" band, and a uniform call site is the
 //     only kind that cannot be forgotten when a field is added.
 func (c *Counts) Add(o Counts) {
@@ -1488,7 +1488,7 @@ const maxLabelLen = MaxLabelLen
 // answer for an authority that names no host: there is nothing to label it with,
 // and inventing a band for it would be worse than counting it as unattributed.
 //
-// The same reduction exists in three listeners and in abctl's events pane, each
+// The same reduction exists in three listeners and in agentop's events pane, each
 // private to its package; this is a fourth rather than a shared helper because
 // core/cost/usage must not import a listener, and hoisting one is a refactor this
 // change does not need.
@@ -1567,7 +1567,7 @@ func ringLabel(s string) string {
 //     retained for retentionDays that cannot be edited afterwards.
 //   - THIS one is primary for the RING's byMethod and byEndpoint, which reach /v1/usage
 //     without passing through either of the other two.
-//   - abctl's tui.sanitizeLabel is a render-time copy in a main module this library must not
+//   - agentop's tui.sanitizeLabel is a render-time copy in a main module this library must not
 //     import, and still filters C0 and DEL only.
 //
 // The first three no longer each carry their own copy of WHICH RUNES COUNT: that predicate is
@@ -1578,7 +1578,7 @@ func ringLabel(s string) string {
 // copies existed on the strength of that paragraph, only one of them tested for the bidi marks.
 //
 // What is still per-surface is the SHAPE of the sanitiser around it (what it replaces with, and
-// whether it caps), and abctl's is deliberately narrower and out of this module's reach.
+// whether it caps), and agentop's is deliberately narrower and out of this module's reach.
 func sanitizeLabel(s string) string {
 	if !hasControlRunes(s) {
 		// The overwhelmingly common case, and no allocation for it: this runs on the fold path,
@@ -1671,8 +1671,8 @@ func CapSeries(series map[string]Counts, n int) map[string]Counts {
 //
 // EXTRACTED FROM capSeriesAcrossWindow, which carried this loop inline to build the ranking it
 // caps by, and exported because two consumers outside this package need the same answer:
-// abctl's AGENTS pane, which renders one row per agent for the window, and
-// `abctl cost --agent`, which needs one label's total plus the set of labels to name in a
+// agentop's AGENTS pane, which renders one row per agent for the window, and
+// `agentop cost --agent`, which needs one label's total plus the set of labels to name in a
 // "no such agent" error. Either writing the loop again would be a second definition of what a
 // window total means.
 //
@@ -1680,8 +1680,8 @@ func CapSeries(series map[string]Counts, n int) map[string]Counts {
 // saturates and records it in Saturated, where a hand-written `+=` wraps negative. The
 // consumers that RANK OR COMPARE the result are the ones that argument is for: a wrapped cost
 // total sorts BELOW a ten-micro one, so in the pane that orders agents by spend it silently
-// moves the biggest spender to the bottom. rankSeriesByCost's godoc in abctl records the same
-// trap being hit for real. `abctl cost --agent` looks up a single label and does neither, and
+// moves the biggest spender to the bottom. rankSeriesByCost's godoc in agentop records the same
+// trap being hit for real. `agentop cost --agent` looks up a single label and does neither, and
 // wants the same saturating answer anyway — one definition of a window total, not two.
 //
 // Returns an empty map rather than nil for no buckets, so "no traffic" is an empty answer and
@@ -1701,8 +1701,8 @@ func FoldSeriesAcrossWindow(buckets []Bucket) map[string]Counts {
 // SortSeriesLabels orders labels IN PLACE by what they cost, descending, breaking ties on the
 // label.
 //
-// ONE DEFINITION FOR EVERY SURFACE THAT RANKS A BREAKDOWN. abctl's AGENTS pane and
-// `abctl cost --by` show the same series in the same order, and the rule lives here so the two
+// ONE DEFINITION FOR EVERY SURFACE THAT RANKS A BREAKDOWN. agentop's AGENTS pane and
+// `agentop cost --by` show the same series in the same order, and the rule lives here so the two
 // cannot drift — the spend drawer's rankSeriesByCost records what it cost the last time a
 // consumer wrote its own.
 //

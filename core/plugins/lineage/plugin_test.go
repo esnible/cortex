@@ -1200,7 +1200,7 @@ func TestSampledOutParentStillExports(t *testing.T) {
 }
 
 // The schema must track Config exactly — every operator key present, each
-// with a description — so /v1/plugins and abctl never render a blank field,
+// with a description — so /v1/plugins and agentop never render a blank field,
 // and a twelfth key added without a description goes red here.
 func TestConfigSchema_TracksConfig(t *testing.T) {
 	schema := NewLineageTelemetry().ConfigSchema()
@@ -1228,7 +1228,7 @@ func TestConfigSchema_TracksConfig(t *testing.T) {
 	if len(schema) != keys {
 		t.Errorf("schema has %d fields, Config has %d json keys", len(schema), keys)
 	}
-	// The operator-facing tooling (abctl templates, /v1/plugins) reads the
+	// The operator-facing tooling (agentop templates, /v1/plugins) reads the
 	// required tag; the one key whose absence refuses boot must carry it.
 	if f, ok := byName["namespace"]; !ok || !f.Required {
 		t.Error("namespace is not marked required in the schema")

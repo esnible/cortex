@@ -9,7 +9,7 @@ the client. If you don't need an Anthropic account in the loop, use
 
 The [README quickstart][qs] `install.sh` binary isn't compiled
 with `include_plugin_sessionbudget`, so this doc builds
-`authbridge-proxy` from source with the tag on.
+`cortex` from source with the tag on.
 
 [qs]: ../../README.md#quick-start
 
@@ -53,14 +53,14 @@ go run ./approver.go
 Proxy, from the repo root:
 
 ```bash
-./cmd/authbridge-proxy/authbridge-proxy \
+./cmd/cortex/cortex \
   -config ./demos/session-budget/local/config-https.yaml
 ```
 
 `:8082` must be free — the proxy always opens a transparent listener
-there even in `roles: [forward]`, and a stale `authbridge-proxy` from
+there even in `roles: [forward]`, and a stale `cortex` from
 a prior run will fail boot with `address already in use`. If that
-happens: `pkill -f authbridge-proxy` and relaunch.
+happens: `pkill -x cortex` and relaunch.
 
 The proxy generates `cortex-ca/ca.crt` on first launch — that's the trust
 anchor Claude Code needs. Note that this path is **relative to the
@@ -75,7 +75,7 @@ lines in the log:
 level=WARN msg="tls-bridge: generated self-signed CA ..." ca_dir=cortex-ca ...
 level=INFO msg="tls-bridge enabled" ca_dir=cortex-ca
 level=INFO msg="HTTP server listening" name=forward-proxy addr=127.0.0.1:47600
-level=INFO msg="authbridge-proxy starting" mode=proxy-sidecar
+level=INFO msg="cortex starting" mode=proxy-sidecar
 ```
 
 ### 4. Launch Claude Code through the proxy
@@ -187,6 +187,6 @@ will fail the TLS handshake against the proxy.
   Leave it off in production and rely on the inbound A2A session ID.
 - **`--local` uses `~/.cortex/config.yaml`, not this demo's config.** The
   two do not collide: this walkthrough passes `-config` explicitly, so
-  running `authbridge-proxy --local` elsewhere touches a different file and
+  running `cortex --local` elsewhere touches a different file and
   a different CA. They do share the loopback ports, so run one at a time.
   (`--demo` is the old name for `--local` and still works.)

@@ -31,7 +31,7 @@ type style struct {
 }
 
 // basicColors maps the 8+8 legacy SGR colours onto a GitHub-dark-ish palette.
-// abctl mostly emits truecolor, but a `lipgloss.Color("2")` or a reverse-video
+// agentop mostly emits truecolor, but a `lipgloss.Color("2")` or a reverse-video
 // cell still lands here, and leaving those unmapped renders them as default
 // foreground — invisible against their own background.
 var basicColors = map[int]string{

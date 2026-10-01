@@ -286,7 +286,7 @@ build_app_patch() {
 
 sidecar_container() {  # the envoy-proxy NATIVE sidecar (8-space list-item indent)
   cat <<EOF
-        # Envoy + authbridge-envoy (ext_proc + the lineage plugin). MUST run as
+        # Envoy + cortex-envoy (ext_proc + the lineage plugin). MUST run as
         # UID 1337: proxy-init exempts that uid from the outbound redirect.
         # A NATIVE sidecar: an initContainer with restartPolicy Always, so the
         # kubelet holds the app container until this one's startupProbe passes —

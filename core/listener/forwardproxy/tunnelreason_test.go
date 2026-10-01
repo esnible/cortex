@@ -47,13 +47,13 @@ func TestPassthroughReasonCoversEveryClassifyReason(t *testing.T) {
 			continue
 		}
 		if len(got) > pluginCellWidth {
-			t.Errorf("reason %q is %d chars; it truncates in abctl's %d-wide PLUGIN cell, "+
+			t.Errorf("reason %q is %d chars; it truncates in agentop's %d-wide PLUGIN cell, "+
 				"so the timeline token stops matching the log token", got, len(got), pluginCellWidth)
 		}
 	}
 }
 
-// pluginCellWidth mirrors abctl's PLUGIN column width. Duplicated deliberately:
+// pluginCellWidth mirrors agentop's PLUGIN column width. Duplicated deliberately:
 // core must not import the TUI, and a reason that does not fit is a defect in the
 // reason, not in the column.
 const pluginCellWidth = 18

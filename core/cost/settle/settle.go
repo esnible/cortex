@@ -546,7 +546,7 @@ func Settle(pctx *pipeline.Context, rates pricing.Resolver) Settled {
 	// back PRICED. Measured at 3.8 micros/token: whole refused, promptOnly $0.0038.
 	//
 	// And a lone prompt half is enough to publish: settleCost skips only when
-	// `!Priced && !HasPrompt && RejectedReason == ""`, and abctl's renderer tests PromptUSD > 0
+	// `!Priced && !HasPrompt && RejectedReason == ""`, and agentop's renderer tests PromptUSD > 0
 	// rather than Priced(). So this shipped a figure derived from a count this package had just
 	// declared impossible, on a record that said unpriced. Reachable from the wire, where these
 	// counters are provider-controlled ints with no floor.
@@ -601,7 +601,7 @@ func Settle(pctx *pipeline.Context, rates pricing.Resolver) Settled {
 	// published on a record that reads unpriced. Measured at $1/token: input 15,000 / output 5,000
 	// refuses the whole ($20,000) and the prompt half ($15,000), while the output half comes back
 	// priced at $5,000 — so the record said cost $0, RejectedReason cost-implausible, output
-	// $5,000, and abctl's renderer, which tests OutputUSD > 0 rather than Priced(), displayed
+	// $5,000, and agentop's renderer, which tests OutputUSD > 0 rather than Priced(), displayed
 	// $5,000.00 for a request this package had refused. Symmetric with the tiers swapped.
 	//
 	// So a MAGNITUDE refusal of the whole refuses both halves. What the ceiling condemns is the RATE
@@ -791,7 +791,7 @@ func Load(pctx *pipeline.Context) (Settled, bool) {
 
 // Publish writes the wire record onto the session event.
 //
-// Under event.Key, and ALSO under the legacy plugin-name key: abctl is a separate
+// Under event.Key, and ALSO under the legacy plugin-name key: agentop is a separate
 // binary that can lag the proxy, and an older one reads only the legacy key, so writing
 // just the new one would blank the cost column for anyone who has not upgraded both. The
 // legacy write comes out a release later.

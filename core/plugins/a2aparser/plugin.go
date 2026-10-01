@@ -36,7 +36,7 @@ func (p *A2AParser) OnRequest(_ context.Context, pctx *pipeline.Context) pipelin
 	// No Invocation recorded when the parser doesn't apply to this
 	// message (empty body, non-JSON-RPC body) — otherwise every
 	// unrelated HTTP call through the pipeline would show an "a2a-parser
-	// skip" row in abctl, which is noise. Operators infer "a2a-parser
+	// skip" row in agentop, which is noise. Operators infer "a2a-parser
 	// exists in this pipeline" from the pipeline config, not per-event.
 	if len(pctx.Body) == 0 {
 		slog.Debug("a2a-parser: no body, skipping")
@@ -65,7 +65,7 @@ func (p *A2AParser) OnRequest(_ context.Context, pctx *pipeline.Context) pipelin
 	// to another protocol — MCP (initialize, tools/list, notifications/*,
 	// ...) — or a non-JSON-RPC body such as an inference /v1/messages call
 	// (which unmarshals into JSONRPCRequest with an empty Method). Without
-	// it, abctl showed a phantom a2a-parser match on both MCP and inference
+	// it, agentop showed a phantom a2a-parser match on both MCP and inference
 	// traffic. mcp-parser has the mirror guard for its own namespace.
 	if !isObject || !isA2AMethod(rpc.Method) {
 		slog.Debug("a2a-parser: not an A2A-namespace method, skipping", "method", rpc.Method,
@@ -89,7 +89,7 @@ func (p *A2AParser) OnRequest(_ context.Context, pctx *pipeline.Context) pipelin
 	// an established conversation lands in the "default" session bucket
 	// instead of the real contextId — response-phase extraction later
 	// populates A2A.SessionID, but that's after the listener has already
-	// keyed the event, so abctl shows every turn under "default".
+	// keyed the event, so agentop shows every turn under "default".
 	ext.SessionID = rpc.StringParam("contextId")
 	if ext.SessionID == "" {
 		ext.SessionID = rpc.StringParam("sessionId")
@@ -202,7 +202,7 @@ func (p *A2AParser) OnResponseFrame(_ context.Context, pctx *pipeline.Context, f
 	if last {
 		// Empty stream and we never recorded anything on the request
 		// side — record a Skip so the response row is paired with the
-		// request row in abctl.
+		// request row in agentop.
 		if ext.FinalStatus == "" && ext.Artifact == "" && ext.ErrorMessage == "" {
 			pctx.Skip("no_response_body")
 			return pipeline.Action{Type: pipeline.Continue}
@@ -220,7 +220,7 @@ func (p *A2AParser) OnResponseFrame(_ context.Context, pctx *pipeline.Context, f
 // for observability. Long agent runs can stream many artifact-update
 // events; without a cap, ext.Artifact would grow unbounded across
 // frames and live on the response event for the life of the request.
-// 64 KiB keeps the most recent text usable in abctl while bounding
+// 64 KiB keeps the most recent text usable in agentop while bounding
 // per-request memory.
 const maxArtifactBytes = 64 * 1024
 

@@ -37,7 +37,7 @@ func normalize(b []byte) string {
 }
 
 // TestCommittedAssetIsCurrent fails when the committed SVG no longer matches what
-// demo.yaml and the current abctl produce.
+// demo.yaml and the current agentop produce.
 //
 // A fabricated demo is only worth having if it cannot quietly drift from the
 // product it claims to show; this converts a TUI change that would have made the

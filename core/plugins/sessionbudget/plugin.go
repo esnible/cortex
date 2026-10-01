@@ -14,7 +14,7 @@
 //     working configuration today.
 //   - Declared conditionally on the config, it breaks the documented contract that
 //     Capabilities() is static per factory (see pipeline/plugin.go). Catalog()
-//     builds a throwaway instance with no config, so /v1/plugins and abctl would
+//     builds a throwaway instance with no config, so /v1/plugins and agentop would
 //     report no ordering requirement for a plugin that then fails at boot.
 //
 // Doing this properly needs a config-dependent ordering mechanism the pipeline does

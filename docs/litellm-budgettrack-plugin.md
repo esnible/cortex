@@ -83,7 +83,7 @@ The cost is settled **once**, on the terminal frame, from one of two sources:
 | File | Purpose |
 |------|---------|
 | `core/plugins/litellm_budgettrack/plugin.go` | Plugin implementation |
-| `cmd/authbridge-proxy/plugins_litellm_budgettrack.go` | Registration (build-tag gated) |
+| `cmd/cortex/plugins_litellm_budgettrack.go` | Registration (build-tag gated) |
 
 ## Plugin Configuration
 
@@ -228,7 +228,7 @@ compile error rather than a silently blank column:
 - **The usage aggregator** (`core/cost/usage`) records `cost_usd` into
   `Counts.CostMicros` and increments `Counts.PricedRequests`, so `/v1/usage`
   reports the same figure this plugin enforces its budget against.
-- **`abctl`** renders the per-request figure in its events pane, and the window
+- **`agentop`** renders the per-request figure in its events pane, and the window
   total plus coverage in the usage footer. Its `tui.costEvent` is a type *alias*
   for `event.Event`, not a copy.
 
@@ -248,7 +248,7 @@ Every plugin is opt-in. This one is carried by the `full` and `lite` profiles;
 to link it explicitly:
 
 ```bash
-go build -tags include_plugin_litellm_budgettrack ./cmd/authbridge-proxy/
+go build -tags include_plugin_litellm_budgettrack ./cmd/cortex/
 ```
 
 The registration file uses the standard build-tag pattern:
@@ -287,9 +287,9 @@ cd core/plugins/litellm_budgettrack
 # Run the plugin in a test pipeline
 go test -v ./...
 
-# Or build authbridge-proxy with the plugin and test end-to-end, from the repo root:
-go build ./cmd/authbridge-proxy/
-./authbridge-proxy --config test-config.yaml
+# Or build cortex with the plugin and test end-to-end, from the repo root:
+go build ./cmd/cortex/
+./cortex --config test-config.yaml
 # Send requests with x-litellm-response-cost header in responses
 ```
 

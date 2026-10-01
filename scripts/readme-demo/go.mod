@@ -7,7 +7,7 @@ require (
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/charmbracelet/x/ansi v0.11.8
 	github.com/muesli/termenv v0.16.0
-	github.com/rossoctl/cortex/cmd/abctl v0.0.0
+	github.com/rossoctl/cortex/cmd/agentop v0.0.0
 	github.com/rossoctl/cortex/core v0.0.0
 	gopkg.in/yaml.v3 v3.0.1
 )
@@ -58,4 +58,4 @@ require (
 
 replace github.com/rossoctl/cortex/core => ../../core
 
-replace github.com/rossoctl/cortex/cmd/abctl => ../../cmd/abctl
+replace github.com/rossoctl/cortex/cmd/agentop => ../../cmd/agentop

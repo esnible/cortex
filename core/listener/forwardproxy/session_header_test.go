@@ -245,7 +245,7 @@ func TestForwardProxy_BucketsRejectedRequestByHeader(t *testing.T) {
 }
 
 // TestResolveOutboundSessionID_RejectsControlCharacters guards the one way a
-// client-supplied bucket key can do damage: the id is rendered in abctl's TUI,
+// client-supplied bucket key can do damage: the id is rendered in agentop's TUI,
 // written to structured logs, and echoed in /v1/sessions JSON, so a value
 // carrying a newline or an ANSI escape is a log- and terminal-injection vector.
 // Such a value must be refused outright and bucketing must degrade to the

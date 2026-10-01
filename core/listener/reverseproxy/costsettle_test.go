@@ -144,7 +144,7 @@ func (p *costProbe) snapshotBody() (string, int) {
 }
 
 // noBodySkips counts the parser's "no_response_body" Skip rows. A response that carried a
-// body must not produce one: the row pairs a response with its request in abctl, and a
+// body must not produce one: the row pairs a response with its request in agentop, and a
 // false one sends whoever is hunting missing telemetry after a body that was there.
 func noBodySkips(pctx *pipeline.Context) int {
 	if pctx.Extensions.Invocations == nil {

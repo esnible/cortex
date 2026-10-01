@@ -462,7 +462,7 @@ func (c *Context) clearCurrent() {
 // Shadow-mode denials (policy == observe, where the plugin's Reject
 // was converted to a pass-through) do not set this field — the
 // framework treats shadow rejections as "the pipeline effectively
-// allowed," which matches how abctl and the session store classify
+// allowed," which matches how agentop and the session store classify
 // them.
 func (c *Context) RejectingPlugin() string { return c.rejectingPlugin }
 
@@ -817,7 +817,7 @@ func (c *Context) emitBodyMutation(phase string, oldBody, newBody []byte) {
 
 // bodyMutationEvent is the public payload shape under the
 // body-mutation/event key. Purely observational — no raw body bytes.
-// Consumers (abctl, audit systems) can render a per-mutation timeline
+// Consumers (agentop, audit systems) can render a per-mutation timeline
 // with these fields alone.
 type bodyMutationEvent struct {
 	Phase        string `json:"phase"`  // "request" | "response"

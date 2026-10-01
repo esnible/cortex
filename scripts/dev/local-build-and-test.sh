@@ -70,17 +70,17 @@ load_image_to_kind ghcr.io/rossoctl/rossoctl/spiffe-idp-setup:local
 echo "✅ Built and loaded: spiffe-idp-setup:local"
 echo ""
 
-# Build authbridge (proxy-sidecar combined: authbridge-proxy + spiffe-helper)
+# Build authbridge (proxy-sidecar combined: cortex + spiffe-helper)
 # Default deployment shape — used when the workload's mode is proxy-sidecar.
 # After cortex#411 the unified binary was split into three
-# mode-specific binaries; each has its own Dockerfile under cmd/authbridge-*/.
+# mode-specific binaries; each has its own Dockerfile under cmd/cortex*/.
 echo "=========================================="
 echo "Building authbridge (proxy-sidecar combined)"
 echo "=========================================="
 cd "${REPO_ROOT}"
 # Every plugin is opt-in, so the plugin set must be named: a build without
 # GO_BUILD_TAGS registers none and rejects every config it is handed.
-${CONTAINER_RUNTIME} build -f cmd/authbridge-proxy/Dockerfile \
+${CONTAINER_RUNTIME} build -f cmd/cortex/Dockerfile \
   --build-arg GO_BUILD_TAGS="$(go -C scripts/profile-tags run . full)" \
   -t ghcr.io/rossoctl/cortex/authbridge:local .
 load_image_to_kind ghcr.io/rossoctl/cortex/authbridge:local
@@ -92,21 +92,21 @@ echo "=========================================="
 echo "Building authbridge-envoy (envoy-sidecar combined)"
 echo "=========================================="
 cd "${REPO_ROOT}"
-${CONTAINER_RUNTIME} build -f cmd/authbridge-envoy/Dockerfile \
+${CONTAINER_RUNTIME} build -f cmd/cortex-envoy/Dockerfile \
   --build-arg GO_BUILD_TAGS="$(go -C scripts/profile-tags run . envoy)" \
   -t ghcr.io/rossoctl/cortex/authbridge-envoy:local .
 load_image_to_kind ghcr.io/rossoctl/cortex/authbridge-envoy:local
 echo "✅ Built and loaded: authbridge-envoy:local"
 echo ""
 
-# Build authbridge-lite: the same authbridge-proxy binary/Dockerfile built with
+# Build authbridge-lite: the same cortex binary/Dockerfile built with
 # the `lite` profile (see scripts/profile-tags). A build variant, not
 # a separate binary.
 echo "=========================================="
 echo "Building authbridge-lite (proxy build variant: lite profile, see scripts/profile-tags)"
 echo "=========================================="
 cd "${REPO_ROOT}"
-${CONTAINER_RUNTIME} build -f cmd/authbridge-proxy/Dockerfile \
+${CONTAINER_RUNTIME} build -f cmd/cortex/Dockerfile \
   --build-arg GO_BUILD_TAGS="$(go -C scripts/profile-tags run . lite)" \
   -t ghcr.io/rossoctl/cortex/authbridge-lite:local .
 load_image_to_kind ghcr.io/rossoctl/cortex/authbridge-lite:local
