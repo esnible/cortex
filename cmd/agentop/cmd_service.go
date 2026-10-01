@@ -364,6 +364,16 @@ func serviceInstall(p servicePaths, yes, forceRestart bool, stdout, stderr io.Wr
 		p.healthURL = resolveHealthURL(p.configFile)
 	}
 
+	// Deliberately NOT configChanged: a running proxy hot-reloads pricing from the
+	// file, so restarting for it would cut every attached session to apply an edit
+	// that applies itself. And a failure only warns — a config without Bob's rate
+	// exposes nothing, it just leaves Bob's requests unpriced.
+	if _, bErr := migrateBobPricing(p.configFile, stdout); bErr != nil {
+		fmt.Fprintf(stderr, "agentop: could not add IBM Bob's rate to %s (%v);\n"+
+			"  Bob requests stay unpriced until it is added by hand — see docs/pricing.md, \"Billing units\"\n",
+			p.configFile, bErr)
+	}
+
 	// Nothing to do is a valid outcome, and the common one: this command is what the
 	// one-liner runs every time, including when everything is already current. Without
 	// this it went ahead with bootout + bootstrap, which restarts the proxy and cuts every
