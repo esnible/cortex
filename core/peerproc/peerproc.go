@@ -28,7 +28,9 @@ type Proc struct {
 	// Start is when the process started. PIDs are reused, so PID and Start together
 	// name one process for its whole lifetime.
 	Start time.Time
-	// Exe is the path the process was executed from, "" when the caller may not read it.
+	// Exe is the absolute, symlink-resolved path of the process's executable, or "" when
+	// it is not known: the caller may not read it, or — on macOS, where only the path
+	// handed to execve is available — the process was started through a relative path.
 	Exe string
 }
 

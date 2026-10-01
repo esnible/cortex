@@ -258,3 +258,58 @@ func BenchmarkConnOwner(b *testing.B) {
 		}
 	}
 }
+
+// Exe is something two processes can be compared by: absolute and symlink-resolved, or
+// "" when unknown — never the relative or symlinked spelling a process was started by.
+func TestConnOwner_ExeIsResolvedOrUnknown(t *testing.T) {
+	r := newResolver(t)
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	real, err := filepath.EvalSymlinks(self)
+	if err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(t.TempDir(), "via-link")
+	if err := os.Symlink(self, link); err != nil {
+		t.Fatal(err)
+	}
+	cases := map[string]struct {
+		cmd     func() *exec.Cmd
+		allowed func(exe string) bool
+	}{
+		"through a symlink": {
+			cmd:     func() *exec.Cmd { return exec.Command(link) },
+			allowed: func(exe string) bool { return exe == real },
+		},
+		"by a relative path": {
+			cmd: func() *exec.Cmd {
+				c := exec.Command("./" + filepath.Base(self))
+				c.Dir = filepath.Dir(self)
+				return c
+			},
+			allowed: func(exe string) bool { return exe == "" || exe == real },
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			ln := listen(t, "tcp", "127.0.0.1:0")
+			cmd := tc.cmd()
+			cmd.Env = append(os.Environ(), "PEERPROC_TEST_DIAL="+ln.Addr().String())
+			if err := cmd.Start(); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
+			client, server := ends(acceptOne(t, ln))
+
+			p, err := r.ConnOwner(client, server)
+			if err != nil || p.PID != int32(cmd.Process.Pid) {
+				t.Fatalf("ConnOwner = %+v, %v; want the child %d", p, err, cmd.Process.Pid)
+			}
+			if !tc.allowed(p.Exe) {
+				t.Errorf("Exe %q; want %q (or \"\" where the platform cannot know)", p.Exe, real)
+			}
+		})
+	}
+}

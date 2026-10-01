@@ -17,11 +17,11 @@ type fakePCB struct {
 	inpLen, sockLen int
 }
 
-// pcbBuffer builds a net.inet.tcp.pcblist_n buffer from the layout constants in
+// pcbBufferWithCount builds a net.inet.tcp.pcblist_n buffer from the layout constants in
 // darwin.go: an xinpgen header, each pcb's records (with an unrelated 32-byte
 // rcvbuf record after each socket, as the kernel writes more kinds than this package
-// reads), and a trailing xinpgen.
-func pcbBuffer(pcbs ...fakePCB) []byte {
+// reads), and a trailing xinpgen whose second word is count (the host's TCP socket count).
+func pcbBufferWithCount(count uint32, pcbs ...fakePCB) []byte {
 	le := binary.LittleEndian
 	gen := make([]byte, 24)
 	le.PutUint32(gen, 24)
@@ -61,7 +61,15 @@ func pcbBuffer(pcbs ...fakePCB) []byte {
 		buf = append(buf, sock...)
 		buf = append(buf, rcv...)
 	}
-	return append(buf, gen...)
+	trailer := make([]byte, 24)
+	le.PutUint32(trailer, 24)
+	le.PutUint32(trailer[4:], count) // xig_count: socket count, not a record kind
+	return append(buf, trailer...)
+}
+
+// pcbBuffer builds a pcblist_n with socket count 0 (the leading header's value).
+func pcbBuffer(pcbs ...fakePCB) []byte {
+	return pcbBufferWithCount(0, pcbs...)
 }
 
 func TestWalkPCBs_ReadsIPv4AndIPv6(t *testing.T) {
@@ -113,5 +121,18 @@ func TestWalkPCBs_RefusesAnUnknownLayout(t *testing.T) {
 func TestWalkPCBs_RejectsATruncatedBuffer(t *testing.T) {
 	if err := walkPCBs([]byte{1, 2}, func(pcb) bool { return false }); err == nil {
 		t.Error("walkPCBs accepted a 2-byte buffer")
+	}
+}
+
+// The table's trailing xinpgen carries the host's socket count where a record carries
+// its kind. Counts that collide with the two kinds read here must not be taken for them.
+func TestWalkPCBs_IgnoresTheTrailerWhateverTheSocketCount(t *testing.T) {
+	p := fakePCB{laddr: netip.MustParseAddrPort("127.0.0.1:1"), faddr: netip.MustParseAddrPort("127.0.0.1:2"), pid: 9}
+	for _, count := range []uint32{xsoSocket, xsoInpcb, 183} {
+		n := 0
+		err := walkPCBs(pcbBufferWithCount(count, p), func(pcb) bool { n++; return false })
+		if err != nil || n != 1 {
+			t.Errorf("trailer count %d: visited %d pcbs, err %v; want 1 and nil", count, n, err)
+		}
 	}
 }

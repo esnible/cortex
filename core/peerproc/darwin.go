@@ -7,6 +7,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"net/netip"
+	"path/filepath"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -58,11 +59,19 @@ func walkPCBs(buf []byte, fn func(pcb) bool) error {
 	}
 	le := binary.LittleEndian
 	var cur *pcb
-	off := int(le.Uint32(buf[0:4])) // past the leading xinpgen
+	hdr := int(le.Uint32(buf[0:4]))
+	off := hdr // past the leading xinpgen
 	for off+8 <= len(buf) {
 		l, kind := int(le.Uint32(buf[off:])), le.Uint32(buf[off+4:])
 		if l < 8 || off+l > len(buf) {
-			break // the trailing xinpgen, or the end of the buffer
+			break // the end of the buffer
+		}
+		// The kernel closes the table with a second xinpgen, the same size as the first,
+		// whose second word is the host's TCP socket count rather than a record kind. Read
+		// as a kind it would pass for an xsocket_n or an xinpcb_n whenever that count is
+		// exactly 1 or 16, and the length check below would then fail every lookup.
+		if l == hdr && off+l == len(buf) {
+			break
 		}
 		rec := buf[off : off+l]
 		switch kind {
@@ -179,5 +188,16 @@ func exePath(pid int32) string {
 	if i := bytes.IndexByte(path, 0); i >= 0 {
 		path = path[:i]
 	}
-	return string(path)
+	// procargs2 holds what the caller passed to execve, unresolved. A relative path cannot
+	// be resolved without that process's working directory at the time, so it is reported
+	// as unknown rather than compared as text; an absolute one is resolved through its
+	// symlinks, which is what Linux's /proc/<pid>/exe already gives.
+	p := string(path)
+	if !filepath.IsAbs(p) {
+		return ""
+	}
+	if r, err := filepath.EvalSymlinks(p); err == nil {
+		return r
+	}
+	return p
 }
