@@ -71,6 +71,23 @@ func TestListSessions_NamesTheSessionsAgent(t *testing.T) {
 	}
 }
 
+// An IBM Bob IDE session names its agent from the User-Agents the IDE really sends, the account
+// call included. Unrecognised, these left the session's agent absent, so no AGENTS row could
+// reach it (#1210).
+func TestListSessions_NamesTheIBMBobIDE(t *testing.T) {
+	s := New(0, 0, 0)
+	defer s.Close()
+	for _, ua := range []string{
+		"IBM Bob/2.2.1",
+		"ai-sdk/openai-compatible/3.0.36 ai-sdk/provider-utils/5.0.29 runtime/node.js/v24.15.0 IBM Bob/2.2.1",
+	} {
+		s.Append("3981fd731b31c9d1aff4e17e6556f5c6", evFrom(pipeline.ParseUserAgent(ua)))
+	}
+	if got := agentOf(t, s, "3981fd731b31c9d1aff4e17e6556f5c6"); got != "ibm-bob" {
+		t.Errorf("agent = %q, want ibm-bob", got)
+	}
+}
+
 // The agent a session names is a key the usage ring's group=agent series has for the same
 // events, so a client can match one against the other — a long version (folded away) included.
 func TestListSessions_AgentIsTheGroupAgentLabel(t *testing.T) {
