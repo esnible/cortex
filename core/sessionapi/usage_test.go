@@ -132,7 +132,7 @@ func TestHandleUsage_ParamsReachSnapshot(t *testing.T) {
 
 	// group=host: the same request, keyed by the upstream it went to. Asserted
 	// through the real handler because the bucket's series lookup returns nil for a
-	// group it does not know, and abctl falls back to ungrouped bars on an empty
+	// group it does not know, and agentop falls back to ungrouped bars on an empty
 	// series set — so a missing arm looks like "this host had no traffic" rather
 	// than like an error.
 	_, body = fetchUsage(t, ts.URL, "?group=host")
@@ -653,7 +653,7 @@ func TestHandleUsage_TodayCountsTheOpenMinuteOnceAcrossAFlush(t *testing.T) {
 }
 
 func TestHandleUsage_TodayWithoutALedgerDegradesAndSaysSo(t *testing.T) {
-	// Kubernetes has no ledger by design. A 400 would make the abctl cost view
+	// Kubernetes has no ledger by design. A 400 would make the agentop cost view
 	// fail there rather than showing what IS available, so the handler serves what
 	// the ring can cover and reports the window it actually served.
 	//

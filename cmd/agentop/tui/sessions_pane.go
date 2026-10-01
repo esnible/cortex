@@ -276,7 +276,7 @@ func (m *model) rebuildSessionsTable() {
 		row = append(row,
 			relTime(now, s.UpdatedAt),
 			// The server's count, and only ever the server's: it is the complete one.
-			// abctl's own cache holds what it snapshotted plus what it has streamed
+			// agentop's own cache holds what it snapshotted plus what it has streamed
 			// since attaching, which for a session older than the connection is a
 			// smaller number — and when handleStreamEvent also wrote this field, the
 			// cell flipped between the two on live traffic. The cached-only rows below
@@ -289,8 +289,8 @@ func (m *model) rebuildSessionsTable() {
 				padLeft(sessionMoneyCellIn(s.CostMicros, s.Saturated, costW, s.Currencies), costW),
 				padLeft(sessionMoneyCellIn(s.AvoidedMicros, s.Saturated, savedW, s.Currencies), savedW))
 		}
-		// The server's published figure is merged with abctl's own — see sessionContextFor for
-		// why neither source dominates. It is what lets a row idle since before abctl attached
+		// The server's published figure is merged with agentop's own — see sessionContextFor for
+		// why neither source dominates. It is what lets a row idle since before agentop attached
 		// draw a gauge on the first poll, with nothing opened.
 		row = append(row, padLeft(contextGauge(m.sessionContextFor(s.ID, s.PromptContext), contextW), contextW))
 		rows = append(rows, row)
@@ -298,7 +298,7 @@ func (m *model) rebuildSessionsTable() {
 		// a reader sees and this carries what the code acts on.
 		ids = append(ids, s.ID)
 	}
-	// Sessions whose events abctl still holds but the server no longer lists.
+	// Sessions whose events agentop still holds but the server no longer lists.
 	// Retaining the events (#870) is only half a fix if there is no row to
 	// select them from: after a proxy restart the server lists nothing, so
 	// without this the picker is empty and the retained history is unreachable.
@@ -334,14 +334,14 @@ func (m *model) rebuildSessionsTable() {
 			padLeft(sessionTokens(0, cached), tokensW),
 		)
 		if showMoney {
-			// No figures for a session the server no longer lists. abctl holds these
+			// No figures for a session the server no longer lists. agentop holds these
 			// events and never held their costs: the money is summed server-side from the
 			// session store, and this row exists precisely because that store has
 			// forgotten the session. An em dash says "not known here", where $0.00 would
 			// say the session was free.
 			row = append(row, emptyCell, emptyCell)
 		}
-		// These rows DO have a context, and it is the one case where abctl's cache is the only
+		// These rows DO have a context, and it is the one case where agentop's cache is the only
 		// possible source: the server has forgotten the session, so nothing else could answer.
 		// It does not list these rows at all, so there is no summary and no published figure —
 		// hence the nil, which is the merge's identity.
@@ -379,7 +379,7 @@ func (m *model) rebuildSessionsTable() {
 	setCursorVisible(&m.sessionsTbl, 0)
 }
 
-// cachedOnlySessionIDs lists sessions abctl has events for that the server's
+// cachedOnlySessionIDs lists sessions agentop has events for that the server's
 // current list omits, sorted so the picker does not reshuffle under the cursor
 // on each refresh. Empty caches are skipped: a row advertising zero events
 // helps nobody, and snapshotLoadedMsg can create the key with an empty slice.
@@ -688,7 +688,7 @@ func riBindsAtCut(r []rune, cut int) bool {
 // back off an ordinary word character. Sk (modifier SYMBOLS, U+02C7 ˇ) is out for the same reason.
 // A test fixture built on U+02B0 is what surfaced this; it was the fixture that was wrong.
 //
-// A SMALL EXPLICIT SET rather than a grapheme-segmentation library: abctl has no such dependency,
+// A SMALL EXPLICIT SET rather than a grapheme-segmentation library: agentop has no such dependency,
 // this is one cut on one display path, and being slightly conservative only moves the cut earlier by
 // a rune or two. The failure it prevents is a severed cluster; the cost of over-walking is a shorter
 // title.
@@ -724,7 +724,7 @@ const noServedTitle = ""
 // a rare shape: on a laptop where every blank harvested entry was checked, all of them belonged to
 // an agent with no Claude Code transcript tree — one that does route through the proxy, so a served
 // title existed for exactly those. A blank cell was never "this session has no name", only "no name
-// where abctl was looking".
+// where agentop was looking".
 //
 // HARVEST WINS when both exist. Deliberately a fixed precedence and not a judgement about which
 // string is better: both sides pick a title through their own ranking, both may change, and this
@@ -771,7 +771,7 @@ const noServedTitle = ""
 // against a harvested fixture — a path the served title never takes. The proxy does cap at its own
 // maxTitleLen, but that is 80 in ANOTHER MODULE, unexported on purpose (its doc: "deliberately NOT
 // that constant"), so nothing here can assert it and no client should assume it. /v1/sessions is
-// unauthenticated and operator-pointed, so a title of any length is a thing abctl can be handed.
+// unauthenticated and operator-pointed, so a title of any length is a thing agentop can be handed.
 //
 // What that costs without a cap is not a wide cell — truncLeft/truncRight bound the OUTPUT — it is
 // the SEARCH inside them. Their fast path is disabled by any zero-width rune, and a served title
@@ -1535,7 +1535,7 @@ func sessionsBaseColumns(termWidth int) []table.Column {
 //
 // Decided FIRST, and the money columns read this rather than the reverse: TITLE is the column
 // this pane gained and the only one whose absence nothing else recovers, where a session's cost
-// is also in the Usage pane, `abctl cost` and the spend strip. So COST and SAVED yield to it and
+// is also in the Usage pane, `agentop cost` and the spend strip. So COST and SAVED yield to it and
 // return at the width where the whole set holds every minimum at once.
 func sessionsShowTitle(termWidth int) bool {
 	if termWidth <= 0 {
@@ -1554,7 +1554,7 @@ func sessionsShowTitle(termWidth int) bool {
 	// minimum at once.
 	//
 	// Why in that order: TITLE is the column this pane gained and the only one whose absence
-	// nothing else recovers — a session's cost is also in the Usage pane, `abctl cost` and the
+	// nothing else recovers — a session's cost is also in the Usage pane, `agentop cost` and the
 	// spend strip, while a nameless session is nameless everywhere.
 	//
 	// VALIDATED AGAINST THE FITTED SET, the way sessionsMoneyFits validates the money cells.

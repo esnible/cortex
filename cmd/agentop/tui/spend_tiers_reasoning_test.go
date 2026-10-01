@@ -579,7 +579,7 @@ func TestRenderTierRows_ChildCellTruthTable(t *testing.T) {
 		},
 		{
 			name: "reported zero", c: reportedZero, wantMoney: zero(0), wantMarker: false,
-			why: "the provider measured the split and it was nothing. `abctl cost`'s token " +
+			why: "the provider measured the split and it was nothing. `agentop cost`'s token " +
 				"line prints 0 for the same Counts, so the not-known cell would split the " +
 				"two surfaces. No marker: a zero costs zero at any rate, so nothing here is " +
 				"modelled for a marker to qualify.",

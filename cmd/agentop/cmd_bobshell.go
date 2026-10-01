@@ -10,18 +10,18 @@ import (
 	"strings"
 )
 
-const bobShellUsage = `abctl configure bobshell — run Bob through Cortex by typing "bob"
+const bobShellUsage = `agentop configure bobshell — run Bob through Cortex by typing "bob"
 
 Usage:
-  abctl configure bobshell enable  [--yes]
-  abctl configure bobshell disable [--yes]
-  abctl configure bobshell status
+  agentop configure bobshell enable  [--yes]
+  agentop configure bobshell disable [--yes]
+  agentop configure bobshell status
 
 Flags:
   --yes           do not prompt for confirmation
 
 enable appends a block to your shell's rc file defining a "bob" shell function
-that runs "abctl exec -- bob", and exporting ` + bobShellEnvVar + `=1. Open a new
+that runs "agentop exec -- bob", and exporting ` + bobShellEnvVar + `=1. Open a new
 terminal, or source the file, for it to take effect. disable removes exactly that
 block. Neither touches anything else in the file. Both ask before writing; --yes
 skips the question, and with no terminal to ask on they write nothing, say so, and
@@ -29,7 +29,7 @@ exit 3 — so an unattended caller can tell a skipped change from an applied one
 
 Which file: the basename of $SHELL picks it — zsh gets ~/.zshrc, bash gets
 ~/.bashrc. Any other shell gets the block printed for you to place yourself,
-because where it belongs is a question about your shell that abctl does not try
+because where it belongs is a question about your shell that agentop does not try
 to answer.
 
 Note for bash on macOS: Terminal.app starts bash as a LOGIN shell, which reads
@@ -51,8 +51,8 @@ usage error.
 const (
 	// The markers delimit the block so disable can find it, and are the reason
 	// enable can be run twice without appending a second copy.
-	bobShellMarkerStart = "# >>> cortex abctl (bobshell) >>>"
-	bobShellMarkerEnd   = "# <<< cortex abctl (bobshell) <<<"
+	bobShellMarkerStart = "# >>> cortex agentop (bobshell) >>>"
+	bobShellMarkerEnd   = "# <<< cortex agentop (bobshell) <<<"
 	bobShellEnvVar      = "CORTEX_BOBSHELL"
 )
 
@@ -65,7 +65,7 @@ const (
 // non-interactive shells unless expand_aliases is set, and "$@" forwards
 // arguments explicitly rather than relying on textual substitution.
 //
-// It needs no guard against recursing into itself. "abctl exec" runs the bob
+// It needs no guard against recursing into itself. "agentop exec" runs the bob
 // binary as a child process, and that process does not read this file, so the
 // function does not exist on the other side of it — the "bob" inside the body
 // resolves to the PATH binary. Verified by hand under zsh, bash and dash: the
@@ -86,7 +86,7 @@ const (
 // behind or ate theirs. Inside the constant there is nothing to tell apart.
 const bobShellBlock = "\n" + bobShellMarkerStart + `
 bob() {
-  abctl exec -- bob "$@"
+  agentop exec -- bob "$@"
 }
 export ` + bobShellEnvVar + `=1
 ` + bobShellMarkerEnd + "\n"
@@ -134,7 +134,7 @@ func runBobShell(args []string, stdout, stderr io.Writer) int {
 	switch action {
 	case "enable", "disable", "status":
 	default:
-		fmt.Fprintf(stderr, "abctl: unknown bobshell action %q (enable, disable, status)\n", action)
+		fmt.Fprintf(stderr, "agentop: unknown bobshell action %q (enable, disable, status)\n", action)
 		return 2
 	}
 
@@ -182,7 +182,7 @@ func runBobShell(args []string, stdout, stderr io.Writer) int {
 	}
 	yes := yesFlag != nil && *yesFlag
 	if fs.NArg() > 0 {
-		fmt.Fprintf(stderr, "abctl: bobshell %s takes no arguments (got %q)\n", action, fs.Arg(0))
+		fmt.Fprintf(stderr, "agentop: bobshell %s takes no arguments (got %q)\n", action, fs.Arg(0))
 		return 2
 	}
 
@@ -195,7 +195,7 @@ func runBobShell(args []string, stdout, stderr io.Writer) int {
 
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
-		fmt.Fprintf(stderr, "abctl: cannot determine your home directory: %v\n", err)
+		fmt.Fprintf(stderr, "agentop: cannot determine your home directory: %v\n", err)
 		return 1
 	}
 
@@ -205,7 +205,7 @@ func runBobShell(args []string, stdout, stderr io.Writer) int {
 		// them how to get it. What "it" is depends on the verb, which is why the
 		// advice is a function taking the action rather than three inlined copies
 		// of enable's answer — see bobShellAdviseManual.
-		fmt.Fprintf(stdout, "abctl: %v\n\n", err)
+		fmt.Fprintf(stdout, "agentop: %v\n\n", err)
 		return bobShellAdviseManual(action, "whichever file your shell reads at startup", stdout)
 	}
 
@@ -221,9 +221,9 @@ func runBobShell(args []string, stdout, stderr io.Writer) int {
 	// through it is exactly the surprise the hop limit exists to avoid. The error
 	// value is identical in both cases; only the hop count separates them.
 	if err != nil && !(hops == 0 && errors.Is(err, os.ErrNotExist)) {
-		// A DANGLING LINK is advice-and-0: the arrangement is the user's, abctl can
+		// A DANGLING LINK is advice-and-0: the arrangement is the user's, agentop can
 		// describe it exactly, and printing the block is a useful answer. Anything
-		// else here — EACCES on the file or a directory above it, EIO — is abctl
+		// else here — EACCES on the file or a directory above it, EIO — is agentop
 		// failing to look, not a link needing sorting out. Those exit 1: a caller
 		// that cannot even stat the file has learned nothing it can act on from a
 		// success code, and "Sort the link out" is wrong advice when there is no
@@ -236,10 +236,10 @@ func runBobShell(args []string, stdout, stderr io.Writer) int {
 		// TestBobShellDeclinesExactlyTwoHops/self-referential_link, which reaches
 		// that path and not this one.
 		if !errors.Is(err, os.ErrNotExist) {
-			fmt.Fprintf(stderr, "abctl: cannot read %s: %v\n", path, err)
+			fmt.Fprintf(stderr, "agentop: cannot read %s: %v\n", path, err)
 			return 1
 		}
-		fmt.Fprintf(stdout, "abctl: cannot follow %s: %v\n\n", path, err)
+		fmt.Fprintf(stdout, "agentop: cannot follow %s: %v\n\n", path, err)
 		fmt.Fprint(stdout, "Sort the link out, or do it by hand.\n\n")
 		return bobShellAdviseManual(action, "the real file", stdout)
 	}
@@ -248,11 +248,11 @@ func runBobShell(args []string, stdout, stderr io.Writer) int {
 		// so hops is a floor and target is the link it stopped ON, not the end of
 		// the chain. Printed as exact, a 4-hop chain and a 2-hop one both claimed
 		// "is 2 symlinks deep" and named the first link as the destination. The
-		// limit is stated instead of the count, because the limit is the fact abctl
+		// limit is stated instead of the count, because the limit is the fact agentop
 		// actually knows.
-		fmt.Fprintf(stdout, "abctl: %s is a symlink chain deeper than the %d abctl will follow.\n\n",
+		fmt.Fprintf(stdout, "agentop: %s is a symlink chain deeper than the %d agentop will follow.\n\n",
 			path, maxRCSymlinkHops)
-		fmt.Fprint(stdout, "That is deliberate enough that abctl will not write through it.\n\n")
+		fmt.Fprint(stdout, "That is deliberate enough that agentop will not write through it.\n\n")
 		return bobShellAdviseManual(action, "the real file", stdout)
 	}
 
@@ -341,7 +341,7 @@ func rcTarget(path string) (string, int, error) {
 func bobShellEnable(path string, yes bool, stdout, stderr io.Writer) int {
 	content, err := os.ReadFile(path)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		fmt.Fprintf(stderr, "abctl: read %s: %v\n", path, err)
+		fmt.Fprintf(stderr, "agentop: read %s: %v\n", path, err)
 		return 1
 	}
 
@@ -353,7 +353,7 @@ func bobShellEnable(path string, yes bool, stdout, stderr io.Writer) int {
 	// written by a different version. Appending would leave two competing
 	// definitions with the last one winning, which is worse than declining.
 	if strings.Contains(string(content), bobShellMarkerStart) {
-		fmt.Fprintf(stdout, "%s already has a cortex bobshell block, but not one matching what this abctl writes.\n", path)
+		fmt.Fprintf(stdout, "%s already has a cortex bobshell block, but not one matching what this agentop writes.\n", path)
 		fmt.Fprint(stdout, "Left alone. Remove it by hand and re-run enable, or keep what you have.\n")
 		return 0
 	}
@@ -373,11 +373,11 @@ func bobShellEnable(path string, yes bool, stdout, stderr io.Writer) int {
 	// that is still honest.
 	if !yes && !bobShellConfirm(path, "Add the cortex bobshell block to", stdout) {
 		// exitDeclined, not 0, and this is the ONLY arm of this verb that returns it.
-		// The other returns above are abctl's own answers, not the user's refusal:
+		// The other returns above are agentop's own answers, not the user's refusal:
 		// "already enabled" is the requested state already holding, and "there is a
-		// block I do not recognise" is abctl declining to guess — it printed what it
+		// block I do not recognise" is agentop declining to guess — it printed what it
 		// found and why it stopped, which is the most it can honestly do. A prompt
-		// refusal is different in kind: abctl was ready and willing, and the caller
+		// refusal is different in kind: agentop was ready and willing, and the caller
 		// is the one who said no. That is exactly the distinction exitDeclined was
 		// added to carry — see its comment in cmd_claudecode.go. Returning 0 here
 		// made a script branching on 3 read a declined prompt as an applied change.
@@ -385,7 +385,7 @@ func bobShellEnable(path string, yes bool, stdout, stderr io.Writer) int {
 	}
 
 	if err := writeRCFile(path, out); err != nil {
-		fmt.Fprintf(stderr, "abctl: %v\n", err)
+		fmt.Fprintf(stderr, "agentop: %v\n", err)
 		return 1
 	}
 
@@ -397,7 +397,7 @@ func bobShellEnable(path string, yes bool, stdout, stderr io.Writer) int {
 	// to have, since the user sees "Enabled" and then a command that does not work.
 	// cmd_exec.go's helper already handles the embedded-single-quote case.
 	fmt.Fprintf(stdout, "\nOpen a new terminal, or run:\n  source %s\n", shellQuote(path))
-	fmt.Fprint(stdout, "\nThen \"bob\" runs through Cortex. \"abctl configure bobshell disable\" is the off switch.\n")
+	fmt.Fprint(stdout, "\nThen \"bob\" runs through Cortex. \"agentop configure bobshell disable\" is the off switch.\n")
 	return 0
 }
 
@@ -408,7 +408,7 @@ func bobShellDisable(path string, yes bool, stdout, stderr io.Writer) int {
 		return 0
 	}
 	if err != nil {
-		fmt.Fprintf(stderr, "abctl: read %s: %v\n", path, err)
+		fmt.Fprintf(stderr, "agentop: read %s: %v\n", path, err)
 		return 1
 	}
 
@@ -428,7 +428,7 @@ func bobShellDisable(path string, yes bool, stdout, stderr io.Writer) int {
 			return exitDeclined
 		}
 		if err := writeRCFile(path, out); err != nil {
-			fmt.Fprintf(stderr, "abctl: %v\n", err)
+			fmt.Fprintf(stderr, "agentop: %v\n", err)
 			return 1
 		}
 		fmt.Fprintf(stdout, "Disabled: removed the cortex bobshell block from %s.\n", path)
@@ -455,7 +455,7 @@ func bobShellDisable(path string, yes bool, stdout, stderr io.Writer) int {
 	}
 }
 
-// bobShellAdviseManual prints what the user has to do by hand when abctl will not
+// bobShellAdviseManual prints what the user has to do by hand when agentop will not
 // touch the file itself — an unrecognised $SHELL, a dangling rc symlink, or a chain
 // past the hop limit. Returns 0: we could not do it for them, but we answered the
 // question they asked, and that is a success.
@@ -501,7 +501,7 @@ func bobShellStatus(stdout io.Writer) int {
 		// binary and Cortex is not in the path of the call, while the variable still
 		// says 1. Claiming "bob runs through Cortex" on the strength of an inherited
 		// variable is a claim this command cannot check: the function table lives in
-		// the shell's own memory and is never exported, so abctl, as a child process,
+		// the shell's own memory and is never exported, so agentop, as a child process,
 		// cannot see it. mise reports the same split as separate `activated:` and
 		// `shims_on_path:` lines for the same reason.
 		fmt.Fprint(stdout, "configured — a shell that reads your startup file defines \"bob\"\n")
@@ -519,7 +519,7 @@ func bobShellStatus(stdout io.Writer) int {
 	}
 	fmt.Fprintf(stdout, "  %s (unset)\n", bobShellEnvVar)
 	fmt.Fprint(stdout, "not enabled in this shell\n")
-	fmt.Fprint(stdout, "\nIf you have just run enable, this shell has not read the file yet — open a new\nterminal or source it. Otherwise: abctl configure bobshell enable\n")
+	fmt.Fprint(stdout, "\nIf you have just run enable, this shell has not read the file yet — open a new\nterminal or source it. Otherwise: agentop configure bobshell enable\n")
 	return 0
 }
 
@@ -568,7 +568,7 @@ func writeRCFile(path, content string) error {
 		mode = st.Mode().Perm()
 	}
 
-	tmp, err := os.CreateTemp(dir, ".abctl-bobshell-*")
+	tmp, err := os.CreateTemp(dir, ".agentop-bobshell-*")
 	if err != nil {
 		return fmt.Errorf("create temp beside %s: %w", path, err)
 	}

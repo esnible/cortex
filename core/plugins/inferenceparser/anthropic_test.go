@@ -620,7 +620,7 @@ func TestInferenceParser_AnthropicMessages_StreamThinkingTokensOnMessageDelta(t 
 // distinction PresentKinds exists to carry: a provider that never reports a
 // reasoning split must leave the bit CLEAR, not assert a reported zero. Claude
 // with thinking off, and every pre-details gateway, land here — and a set bit
-// would make abctl print "reasoning (of output) 0", which claims the model did no
+// would make agentop print "reasoning (of output) 0", which claims the model did no
 // reasoning when the truth is that nothing said.
 func TestInferenceParser_AnthropicMessages_ThinkingTokensAbsent(t *testing.T) {
 	p := NewInferenceParser()
@@ -700,7 +700,7 @@ func TestInferenceParser_AnthropicMessages_ThinkingTokensPartiallyAbsent(t *test
 // streaming fixture above does. Nothing guarantees that: a gateway may relay it on
 // message_start instead. When the value merge lived in the message_delta branch
 // while Present was unioned for every event, this input set KindReasoning with a
-// value of 0 — and `abctl cost` would print "reasoning (of output) 0", the exact
+// value of 0 — and `agentop cost` would print "reasoning (of output) 0", the exact
 // claim ThinkingTokensAbsent forbids.
 func TestInferenceParser_AnthropicMessages_ThinkingTokensOnMessageStart(t *testing.T) {
 	p := NewInferenceParser()

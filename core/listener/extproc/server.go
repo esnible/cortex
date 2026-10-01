@@ -331,7 +331,7 @@ func (s *Server) handleInboundBody(stream extprocv3.ExternalProcessor_ProcessSer
 //
 // Auth-only events (no A2A parser match — e.g. a rejected request that
 // never reached the parser) route to DefaultSessionID. This is where
-// operators will look for unauthorized-access events in abctl.
+// operators will look for unauthorized-access events in agentop.
 func inboundSessionID(pctx *pipeline.Context) string {
 	if pctx.Extensions.A2A != nil && pctx.Extensions.A2A.SessionID != "" {
 		return pctx.Extensions.A2A.SessionID
@@ -373,7 +373,7 @@ func (s *Server) recordInboundSession(pctx *pipeline.Context) {
 // plugin rejected. Called from the Reject path BEFORE rejectFromAction
 // returns, so denied requests appear in the session stream rather than
 // silently vanishing (which was the pre-Auth-extension behavior — denials
-// only surfaced via /stats counters, invisible to abctl). Fires only when
+// only surfaced via /stats counters, invisible to agentop). Fires only when
 // at least one plugin populated Auth — otherwise we wouldn't have
 // diagnostic context worth recording and would just be logging an HTTP
 // status.
@@ -420,7 +420,7 @@ func (s *Server) recordInboundReject(pctx *pipeline.Context, action pipeline.Act
 // recordOutboundReject emits a SessionDenied event for outbound requests
 // a pipeline plugin rejected. Symmetric to recordInboundReject on the
 // inbound side. Called BEFORE rejectFromAction returns, so denied
-// outbound calls appear in /v1/sessions and abctl rather than vanishing
+// outbound calls appear in /v1/sessions and agentop rather than vanishing
 // with only a 4xx/5xx on the agent side — the observability surface
 // that guardrail plugins (rate-limit, policy, intent-based) depend on
 // to show operators what they blocked and why.
@@ -484,7 +484,7 @@ func (s *Server) recordOutboundReject(pctx *pipeline.Context, action pipeline.Ac
 // Auth, or plugin-public Custom entries all qualify. The earlier gate that
 // required A2A silently dropped response events for auth-only pipelines
 // (jwt-validation without any parser) — the request phase recorded, the
-// response phase didn't, so operators saw one-sided conversations in abctl.
+// response phase didn't, so operators saw one-sided conversations in agentop.
 func (s *Server) recordInboundResponseSession(pctx *pipeline.Context) {
 	if s.Sessions == nil {
 		return

@@ -35,13 +35,13 @@ func TestUserConfigPath_DefaultsUnderCortexDir(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := filepath.Join(home, ".cortex", "abctl-config.yaml"); got != want {
+	if want := filepath.Join(home, ".cortex", "agentop-config.yaml"); got != want {
 		t.Errorf("userConfigPath() = %q, want %q", got, want)
 	}
 }
 
 // TestUserConfigPath_NoHomeIsAnError: better to lose persistence than to drop a
-// settings file into whatever directory abctl started in, where it would be found
+// settings file into whatever directory agentop started in, where it would be found
 // again only by accident.
 func TestUserConfigPath_NoHomeIsAnError(t *testing.T) {
 	t.Setenv("HOME", "")
@@ -57,7 +57,7 @@ func TestLoadUserConfig_MissingFileIsSilent(t *testing.T) {
 	home := prefsHome(t)
 	var warn bytes.Buffer
 
-	got := loadUserConfig(filepath.Join(home, ".cortex", "abctl-config.yaml"), &warn)
+	got := loadUserConfig(filepath.Join(home, ".cortex", "agentop-config.yaml"), &warn)
 
 	if !reflectDeepEqualSettings(got, tui.UserSettings{}) {
 		t.Errorf("got %+v, want the zero value", got)
@@ -80,7 +80,7 @@ func TestLoadUserConfig_EmptyPathIsSilent(t *testing.T) {
 
 // TestLoadUserConfig_MalformedWarnsAndFallsBack: an unusable file must not stop the
 // viewer from opening, but ignoring a hand-edited file silently would look like
-// abctl disregarding the edit. So: defaults, plus one line naming the path.
+// agentop disregarding the edit. So: defaults, plus one line naming the path.
 func TestLoadUserConfig_MalformedWarnsAndFallsBack(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -94,7 +94,7 @@ func TestLoadUserConfig_MalformedWarnsAndFallsBack(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			home := prefsHome(t)
-			path := filepath.Join(home, ".cortex", "abctl-config.yaml")
+			path := filepath.Join(home, ".cortex", "agentop-config.yaml")
 			if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 				t.Fatal(err)
 			}
@@ -123,7 +123,7 @@ func TestLoadUserConfig_MalformedWarnsAndFallsBack(t *testing.T) {
 // before failing. Half a config applied silently is harder to diagnose than none.
 func TestLoadUserConfig_PartialParseIsDiscarded(t *testing.T) {
 	home := prefsHome(t)
-	path := filepath.Join(home, ".cortex", "abctl-config.yaml")
+	path := filepath.Join(home, ".cortex", "agentop-config.yaml")
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -143,13 +143,13 @@ func TestLoadUserConfig_PartialParseIsDiscarded(t *testing.T) {
 }
 
 // TestLoadUserConfig_UnknownKeysLoadQuietly is the forward-compatibility property.
-// A key written by a newer abctl must not turn the whole load into a
+// A key written by a newer agentop must not turn the whole load into a
 // warning-and-discard for an older binary — which is exactly what
 // yaml.Decoder.KnownFields(true) would do, so this test guards against that
 // refactor.
 func TestLoadUserConfig_UnknownKeysLoadQuietly(t *testing.T) {
 	home := prefsHome(t)
-	path := filepath.Join(home, ".cortex", "abctl-config.yaml")
+	path := filepath.Join(home, ".cortex", "agentop-config.yaml")
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -175,7 +175,7 @@ func TestLoadUserConfig_UnknownKeysLoadQuietly(t *testing.T) {
 // TestSaveUserConfig_RoundTrips is what makes a saved preference come back.
 func TestSaveUserConfig_RoundTrips(t *testing.T) {
 	home := prefsHome(t)
-	path := filepath.Join(home, ".cortex", "abctl-config.yaml")
+	path := filepath.Join(home, ".cortex", "agentop-config.yaml")
 	want := tui.UserSettings{
 		Events: tui.EventSettings{Columns: []tui.ColumnSetting{{Name: "COST", Visible: false}}},
 		Filter: "github",
@@ -200,7 +200,7 @@ func TestSaveUserConfig_RoundTrips(t *testing.T) {
 // contents.
 func TestSaveUserConfig_IsHandEditable(t *testing.T) {
 	home := prefsHome(t)
-	path := filepath.Join(home, ".cortex", "abctl-config.yaml")
+	path := filepath.Join(home, ".cortex", "agentop-config.yaml")
 	if err := saveUserConfig(path, tui.UserSettings{Filter: "x"}); err != nil {
 		t.Fatal(err)
 	}
@@ -221,7 +221,7 @@ func TestSaveUserConfig_CreatesCortexDirAt0700AndFileAt0600(t *testing.T) {
 		t.Skip("unix file modes")
 	}
 	home := prefsHome(t)
-	path := filepath.Join(home, ".cortex", "abctl-config.yaml")
+	path := filepath.Join(home, ".cortex", "agentop-config.yaml")
 
 	if err := saveUserConfig(path, tui.UserSettings{Filter: "x"}); err != nil {
 		t.Fatal(err)
@@ -247,7 +247,7 @@ func TestSaveUserConfig_CreatesCortexDirAt0700AndFileAt0600(t *testing.T) {
 // a directory the user is told to inspect on uninstall.
 func TestSaveUserConfig_LeavesNoTempFile(t *testing.T) {
 	home := prefsHome(t)
-	path := filepath.Join(home, ".cortex", "abctl-config.yaml")
+	path := filepath.Join(home, ".cortex", "agentop-config.yaml")
 	if err := saveUserConfig(path, tui.UserSettings{Filter: "x"}); err != nil {
 		t.Fatal(err)
 	}
@@ -260,7 +260,7 @@ func TestSaveUserConfig_LeavesNoTempFile(t *testing.T) {
 // not fail on the O_EXCL tempfile or refuse because the target exists.
 func TestSaveUserConfig_OverwritesAnExistingFile(t *testing.T) {
 	home := prefsHome(t)
-	path := filepath.Join(home, ".cortex", "abctl-config.yaml")
+	path := filepath.Join(home, ".cortex", "agentop-config.yaml")
 	if err := saveUserConfig(path, tui.UserSettings{Filter: "first"}); err != nil {
 		t.Fatal(err)
 	}
@@ -287,7 +287,7 @@ func TestSaveUserConfig_DoesNotWriteThroughAPlantedTempfile(t *testing.T) {
 		t.Skip("symlinks")
 	}
 	home := prefsHome(t)
-	path := filepath.Join(home, ".cortex", "abctl-config.yaml")
+	path := filepath.Join(home, ".cortex", "agentop-config.yaml")
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
 	}
@@ -326,12 +326,12 @@ func TestSaveUserConfig_DoesNotWriteThroughAPlantedTempfile(t *testing.T) {
 // at its pre-crash value. Verified at five consecutive failed saves before the fix.
 func TestSaveUserConfig_SurvivesTempfileDebris(t *testing.T) {
 	home := prefsHome(t)
-	path := filepath.Join(home, ".cortex", "abctl-config.yaml")
+	path := filepath.Join(home, ".cortex", "agentop-config.yaml")
 	if err := saveUserConfig(path, tui.UserSettings{Filter: "before-crash"}); err != nil {
 		t.Fatal(err)
 	}
 	// Debris at the old fixed name, and at a CreateTemp-shaped one.
-	for _, junk := range []string{path + ".tmp", filepath.Join(filepath.Dir(path), ".abctl-config.yaml.123.tmp")} {
+	for _, junk := range []string{path + ".tmp", filepath.Join(filepath.Dir(path), ".agentop-config.yaml.123.tmp")} {
 		if err := os.WriteFile(junk, []byte("debris\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
@@ -396,7 +396,7 @@ func TestSaveUserConfig_ReportsACreateFailure(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
 
-	if err := saveUserConfig(filepath.Join(dir, "abctl-config.yaml"), tui.UserSettings{Filter: "x"}); err == nil {
+	if err := saveUserConfig(filepath.Join(dir, "agentop-config.yaml"), tui.UserSettings{Filter: "x"}); err == nil {
 		t.Error("saveUserConfig reported success on an unwritable directory")
 	}
 }
@@ -408,7 +408,7 @@ func TestSaveUserConfig_ReportsACreateFailure(t *testing.T) {
 // not fail, which is precisely why the bug survived every other test here.
 func TestSaveUserConfig_AWriteFailureDoesNotClobberTheGoodFile(t *testing.T) {
 	home := prefsHome(t)
-	path := filepath.Join(home, ".cortex", "abctl-config.yaml")
+	path := filepath.Join(home, ".cortex", "agentop-config.yaml")
 	if err := saveUserConfig(path, tui.UserSettings{Filter: "good"}); err != nil {
 		t.Fatal(err)
 	}

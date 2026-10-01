@@ -225,7 +225,7 @@ func TestSpendDrawerWindows_AreExactlyTheBandsSpans(t *testing.T) {
 		}
 	}
 	// And the two spans the old cycle offered are gone: they are ring diagnostics, reachable
-	// through `abctl cost --window`, and six stops to reach four useful ones is a worse surface.
+	// through `agentop cost --window`, and six stops to reach four useful ones is a worse surface.
 	for _, gone := range []string{"15m", "6h"} {
 		for _, w := range spendDrawerWindows {
 			if w == gone {

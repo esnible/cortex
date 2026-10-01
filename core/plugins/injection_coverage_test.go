@@ -37,7 +37,7 @@ func TestEveryBinaryInjectsPricing(t *testing.T) {
 	}
 	var checked int
 	for _, e := range entries {
-		if !e.IsDir() || e.Name() == "abctl" { // abctl is a client, no pipelines
+		if !e.IsDir() || e.Name() == "agentop" { // agentop is a client, no pipelines
 			continue
 		}
 		files, err := filepath.Glob(filepath.Join(root, e.Name(), "*.go"))

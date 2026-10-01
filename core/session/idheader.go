@@ -136,7 +136,7 @@ func IDFromHeaders(h http.Header, names []string) string {
 //     substitutes U+FFFD for invalid bytes on marshal — so an id keyed on raw
 //     bytes would come back out as a DIFFERENT string, and an operator could not
 //     match what they read to the bucket it names.
-//   - No control characters, tested per RUNE. The id is rendered in abctl's TUI,
+//   - No control characters, tested per RUNE. The id is rendered in agentop's TUI,
 //     interpolated into structured log lines, and returned in that JSON. A
 //     newline forges a log line and an ESC sequence rewrites the operator's
 //     terminal. Printable characters above ASCII are deliberately left alone so a

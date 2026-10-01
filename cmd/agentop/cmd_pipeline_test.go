@@ -135,10 +135,10 @@ func TestRunPipelineGet_EmptyPipelineSaysSo(t *testing.T) {
 	}
 }
 
-// TestRunPipeline_RequiresAnAction keeps `abctl pipeline` from silently doing something.
+// TestRunPipeline_RequiresAnAction keeps `agentop pipeline` from silently doing something.
 // The usage block goes to stderr with exit 2, while an explicit --help is a successful
-// request answered on stdout — the split `abctl tools` and `abctl service` already use,
-// and the reason `abctl pipeline get --json` can be piped.
+// request answered on stdout — the split `agentop tools` and `agentop service` already use,
+// and the reason `agentop pipeline get --json` can be piped.
 func TestRunPipeline_RequiresAnAction(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -159,7 +159,7 @@ func TestRunPipeline_RequiresAnAction(t *testing.T) {
 			if tc.wantOn == "stderr" {
 				got, other = errOut.String(), out.String()
 			}
-			if !strings.Contains(got, "abctl pipeline get") {
+			if !strings.Contains(got, "agentop pipeline get") {
 				t.Errorf("usage not on %s:\n%q", tc.wantOn, got)
 			}
 			if other != "" {
@@ -181,7 +181,7 @@ func TestRunPipelineGet_UnreachableProxySaysWhatToRun(t *testing.T) {
 	if code := runPipeline([]string{"get", "--endpoint", url}, &out, &errOut); code != 1 {
 		t.Fatalf("exit = %d, want 1", code)
 	}
-	if got := errOut.String(); !strings.Contains(got, "abctl service status") {
+	if got := errOut.String(); !strings.Contains(got, "agentop service status") {
 		t.Errorf("stderr does not name the next command:\n%s", got)
 	}
 	if out.String() != "" {
@@ -207,7 +207,7 @@ func TestRunPipelineGet_MissingEndpointBlamesTheEndpointNotTheProxy(t *testing.T
 	if !strings.Contains(got, "/v1/pipeline") {
 		t.Errorf("stderr does not name the missing endpoint:\n%s", got)
 	}
-	if strings.Contains(got, "abctl service status") {
+	if strings.Contains(got, "agentop service status") {
 		t.Errorf("a reachable proxy was blamed on Cortex not running:\n%s", got)
 	}
 }

@@ -11,7 +11,7 @@ step is opt-in because it rewrites requests.
 ## Turn it on
 
 ```sh
-abctl tools scan --write ~/.cortex/config.yaml
+agentop tools scan --write ~/.cortex/config.yaml
 ```
 
 It proposes the tools you have not called in 30 days, prints them, and writes them
@@ -48,7 +48,7 @@ session. Two things move it, and neither is a defect:
 A single early turn can read ~24%, which is why a figure quoted from one request is
 not the number to plan with.
 
-Watch it live: run `abctl` (it finds the local proxy on its own), then the plugin
+Watch it live: run `agentop` (it finds the local proxy on its own), then the plugin
 pane's `tool-prune` → `Metrics`, and the per-request saving in the events
 timeline's `TOKENS / SAVED` column.
 
@@ -104,7 +104,7 @@ merely a smaller saving. So:
 - **Re-run it occasionally** (monthly, or when your work changes shape):
 
   ```sh
-  abctl tools scan --write ~/.cortex/config.yaml
+  agentop tools scan --write ~/.cortex/config.yaml
   ```
 
   The proxy hot-reloads; no restart. `--days N` / `--all` set the window (see
@@ -114,7 +114,7 @@ merely a smaller saving. So:
   `~/.cortex/config.yaml`. It comes back without a restart.
 
 - **To try a list without committing to it**, set `on_error: observe` on the
-  `tool-prune` plugin. It measures the saving and changes nothing; abctl marks
+  `tool-prune` plugin. It measures the saving and changes nothing; agentop marks
   those figures with `~` instead of `−`.
 
 ## What this does and does not change
@@ -131,17 +131,17 @@ client-side settings (`--allowedTools`, disabling unused MCP servers).
 
 - **Metrics pane empty, every event shows `tunnel`** — Claude Code is not trusting
   the bridge CA. Check what it is actually using with
-  `abctl configure claude-code status`; `NODE_EXTRA_CA_CERTS` must be the absolute
+  `agentop configure claude-code status`; `NODE_EXTRA_CA_CERTS` must be the absolute
   path to `~/.cortex/ca/ca.crt`. The proxy also warns about this in
   `~/.cortex/proxy.log` after a few requests, naming the path it expects.
-  `abctl configure claude-code enable` sets all three variables from your running
+  `agentop configure claude-code enable` sets all three variables from your running
   config, which is the reliable way to get them right.
 - **`tool-prune` shows `skip`, never `modify`** — expected until you opt in: the
   remove list ships empty. Run the scan above. If it refuses, you have no
   transcript history for it to reason from yet.
 - **The proxy won't start** — read `~/.cortex/proxy.log`; a port conflict is logged
   at `ERROR`. Every listener is pinned to loopback on 47600–47604, so a clash
-  usually means Cortex is already running (`abctl service status`).
+  usually means Cortex is already running (`agentop service status`).
 
 ## Turning it off
 

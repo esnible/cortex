@@ -7,10 +7,10 @@ import (
 	"github.com/rossoctl/cortex/core/pipeline"
 )
 
-// maxPagesHeld bounds how many pages of one session abctl keeps stitched together.
+// maxPagesHeld bounds how many pages of one session agentop keeps stitched together.
 //
 // There is a bound at all because a page is not small: one page of a real session is
-// ~175MB of JSON on the wire, and abctl reached 1.64GB — more than the proxy it was
+// ~175MB of JSON on the wire, and agentop reached 1.64GB — more than the proxy it was
 // watching — before its decode path was fixed. Unbounded paging would put that growth back
 // under a key the operator can hold down.
 //

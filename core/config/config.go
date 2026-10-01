@@ -111,7 +111,7 @@ type CostLedgerConfig struct {
 	// THE SHORTFALL IS DISCLOSED, which an earlier version of this comment denied: a pruned day
 	// file is absent rather than unreadable, so it produces no Caveats entry — but
 	// usage.Snapshot.DaysOutsideRetention counts the days a REQUEST asks for beyond this setting,
-	// and the band marks such a total as a floor while `abctl cost` prints a coverage line. What
+	// and the band marks such a total as a floor while `agentop cost` prints a coverage line. What
 	// is still silent is a day pruned INSIDE the current horizon, from a setting that used to be
 	// shorter; see that field. The default covers the longest shipped window so that the ordinary
 	// case needs no disclosure at all.
@@ -783,7 +783,7 @@ type ListenerConfig struct {
 	TransparentProxyAddr string `yaml:"transparent_proxy_addr" json:"transparent_proxy_addr"`
 
 	// SessionAPIAddr is the bind address for the session events HTTP server
-	// (JSON snapshots + SSE stream consumed by abctl or curl). Default per
+	// (JSON snapshots + SSE stream consumed by agentop or curl). Default per
 	// mode preset is ":9094". Set to empty string to disable the endpoint.
 	SessionAPIAddr string `yaml:"session_api_addr" json:"session_api_addr"`
 
@@ -989,7 +989,7 @@ func Load(path string) (*Config, error) {
 		}
 		// With the bridge on, the session API may carry decrypted request/response
 		// bodies; restrict its bind to loopback so other pods can't scrape it.
-		// kubectl port-forward (abctl) still works — it targets the pod's loopback.
+		// kubectl port-forward (agentop) still works — it targets the pod's loopback.
 		if cfg.TLSBridge.Mode == "enabled" {
 			cfg.Listener.SessionAPIAddr = forceLocalhost(cfg.Listener.SessionAPIAddr)
 		}

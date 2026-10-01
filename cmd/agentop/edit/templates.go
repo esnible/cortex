@@ -9,12 +9,12 @@ import (
 )
 
 // FenceMarker delimits the active pipeline subtree (above) from the
-// commented templates reference (below) inside the abctl edit tempfile.
+// commented templates reference (below) inside the agentop edit tempfile.
 // The save path strips everything from this line onward before applying.
 //
 // The exact bytes matter: detection is a literal line match. Keep them
 // in sync with templates_test.go and configmap.go's fence-stripping.
-const FenceMarker = "# === ABCTL TEMPLATES BELOW (stripped on save) ==="
+const FenceMarker = "# === AGENTOP TEMPLATES BELOW (stripped on save) ==="
 
 // templatesBanner is the prose shown immediately below FenceMarker,
 // telling the operator how to use the reference. The leading and
@@ -303,7 +303,7 @@ func StripTemplates(edited []byte) []byte {
 		}
 		// Exact line match: tolerate a trailing CR (CRLF endings) but
 		// reject any other extra content. A prefix match would let
-		// "# === ABCTL TEMPLATES BELOW (stripped on save) ===extra"
+		// "# === AGENTOP TEMPLATES BELOW (stripped on save) ===extra"
 		// trigger truncation, silently dropping operator edits made
 		// on a line that happens to begin with the marker.
 		lineEnd := end

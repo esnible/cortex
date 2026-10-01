@@ -184,7 +184,7 @@ listener:
 
 // TestRunExec_PassesArgvIntactAndReturnsExitCode covers the two halves of the
 // pass-through promise at once: the child sees exactly the arguments typed after
-// --, including things that look like abctl's own flags, and its exit status
+// --, including things that look like agentop's own flags, and its exit status
 // comes back out.
 func TestRunExec_PassesArgvIntactAndReturnsExitCode(t *testing.T) {
 	if runtime.GOOS == "windows" {
@@ -283,17 +283,17 @@ func TestRunExec_ChildSeesTheVariables(t *testing.T) {
 
 // TestRunExec_InheritsUnrelatedEnvironment: scoping the proxy to one child must
 // not mean handing it a stripped environment. PATH, HOME and the user's own
-// variables have to survive, or `abctl exec -- claude` loses its credentials.
+// variables have to survive, or `agentop exec -- claude` loses its credentials.
 func TestRunExec_InheritsUnrelatedEnvironment(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("uses /bin/sh")
 	}
 	cfgPath, _ := execCfg(t)
-	t.Setenv("ABCTL_EXEC_CANARY", "kept")
+	t.Setenv("AGENTOP_EXEC_CANARY", "kept")
 
 	var stdout, stderr bytes.Buffer
 	code := runExec([]string{"--cortex-stats-url", execStats(t, cfgPath), "--",
-		"/bin/sh", "-c", `printf '%s\n' "$ABCTL_EXEC_CANARY"`}, &stdout, &stderr)
+		"/bin/sh", "-c", `printf '%s\n' "$AGENTOP_EXEC_CANARY"`}, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("exit %d: %s", code, stderr.String())
 	}
@@ -355,7 +355,7 @@ func TestMergeEnv_IsCaseSensitive(t *testing.T) {
 }
 
 // TestRunExec_RequiresDelimiter. Without --, there is no syntactic boundary
-// between abctl's flags and the child's, so the command is refused rather than
+// between agentop's flags and the child's, so the command is refused rather than
 // guessed at.
 func TestRunExec_RequiresDelimiter(t *testing.T) {
 	var stdout, stderr bytes.Buffer
@@ -367,7 +367,7 @@ func TestRunExec_RequiresDelimiter(t *testing.T) {
 	}
 }
 
-// TestRunExec_RejectsArgsBeforeDelimiter. `abctl exec curl -- -sv` is a typo, and
+// TestRunExec_RejectsArgsBeforeDelimiter. `agentop exec curl -- -sv` is a typo, and
 // running `-sv` as the command is a worse answer than saying so.
 func TestRunExec_RejectsArgsBeforeDelimiter(t *testing.T) {
 	cfgPath, _ := execCfg(t)
@@ -381,7 +381,7 @@ func TestRunExec_RejectsArgsBeforeDelimiter(t *testing.T) {
 	}
 }
 
-// TestRunExec_EmptyAfterDelimiter: `abctl exec --` has nothing to run.
+// TestRunExec_EmptyAfterDelimiter: `agentop exec --` has nothing to run.
 func TestRunExec_EmptyAfterDelimiter(t *testing.T) {
 	cfgPath, _ := execCfg(t)
 	var stdout, stderr bytes.Buffer
@@ -396,7 +396,7 @@ func TestRunExec_CommandNotFound(t *testing.T) {
 	cfgPath, _ := execCfg(t)
 	var stdout, stderr bytes.Buffer
 	code := runExec([]string{"--cortex-stats-url", execStats(t, cfgPath), "--",
-		"abctl-no-such-command-xyzzy"}, &stdout, &stderr)
+		"agentop-no-such-command-xyzzy"}, &stdout, &stderr)
 	if code != execEnvNotFound {
 		t.Errorf("exit = %d, want %d", code, execEnvNotFound)
 	}
@@ -578,8 +578,8 @@ func TestRunExec_BeforeFirstStart_StillRuns(t *testing.T) {
 	}
 }
 
-// TestRunExec_RelaysSIGTERM. A signal aimed at abctl's own PID — `timeout 30
-// abctl exec -- …`, a CI runner, systemd — killed abctl under Go's default
+// TestRunExec_RelaysSIGTERM. A signal aimed at agentop's own PID — `timeout 30
+// agentop exec -- …`, a CI runner, systemd — killed agentop under Go's default
 // disposition and left the child running with the injected environment. The
 // README claims this is safe in a pipeline or a Makefile, and `timeout` is
 // exactly that case.
@@ -614,7 +614,7 @@ func TestRunExec_RelaysSIGTERM(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 
-	// Signal THIS process, the way `timeout` signals abctl. runExec's relay must
+	// Signal THIS process, the way `timeout` signals agentop. runExec's relay must
 	// pass it to the child.
 	if err := syscall.Kill(syscall.Getpid(), syscall.SIGTERM); err != nil {
 		t.Fatal(err)
@@ -697,7 +697,7 @@ func TestRunExec_PrintWithCommandIsAUsageError(t *testing.T) {
 // invocation. That filename stopped existing when the bundle moved into
 // core/tlsbridge, so the assertion watched a path nothing could ever create and
 // could not fail. The property worth pinning is the stronger one that made it
-// vacuous: Cortex owns those files now, so abctl only ever reads them.
+// vacuous: Cortex owns those files now, so agentop only ever reads them.
 func TestRunExec_NeverWritesToTheCADir(t *testing.T) {
 	cfgPath, caPath := execCfg(t)
 	caDir := filepath.Dir(caPath)
@@ -764,7 +764,7 @@ func TestRunExec_PreservesInheritedNoProxy(t *testing.T) {
 
 // TestClaudeCodeEnable_DisabledBridgeIsRefused. The tls_bridge.mode gate was
 // exec-only, so the two commands drifted on exactly the check whose comment claims
-// they cannot: `abctl exec` refused `mode: disabled` + ca_dir, while
+// they cannot: `agentop exec` refused `mode: disabled` + ca_dir, while
 // `claude-code enable` wrote it into settings.json and produced the same silent
 // break. Both now share bridgeEnabled/errBridgeDisabled.
 func TestClaudeCodeEnable_DisabledBridgeIsRefused(t *testing.T) {
@@ -869,7 +869,7 @@ func execEnvFor(t *testing.T, cfgPath string) (map[string]string, error) {
 
 // --- The three behaviours changed in this round ---
 
-// `abctl exec --print` is a complete request: it asks for the environment, and
+// `agentop exec --print` is a complete request: it asks for the environment, and
 // there is no command for a delimiter to separate. It used to print usage text,
 // answering a well-formed request with help.
 func TestRunExec_PrintNeedsNoDelimiter(t *testing.T) {
@@ -888,7 +888,7 @@ func TestRunExec_PrintNeedsNoDelimiter(t *testing.T) {
 	}
 }
 
-// `abctl exec --print --` is the opposite mistake: the delimiter promises a command
+// `agentop exec --print --` is the opposite mistake: the delimiter promises a command
 // and none follows. Refused rather than quietly read as plain --print.
 func TestRunExec_PrintWithEmptyCommandIsAUsageError(t *testing.T) {
 	cfgPath, _ := execCfg(t)
@@ -943,7 +943,7 @@ func TestExecEnv_ReadsTheRunningProxyNotAFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 51999 appears in no file abctl would default to; it can only have come from
+	// 51999 appears in no file agentop would default to; it can only have come from
 	// the served config.
 	if got := env["HTTPS_PROXY"]; got != "http://127.0.0.1:51999" {
 		t.Errorf("HTTPS_PROXY = %q, want the running proxy's address", got)
@@ -961,7 +961,7 @@ func TestExecEnv_RejectsAMalformedStatsURL(t *testing.T) {
 	}
 }
 
-// The default is the documented local address, so a plain `abctl exec` needs no
+// The default is the documented local address, so a plain `agentop exec` needs no
 // flag on a normal install.
 func TestDefaultCortexStatsURL(t *testing.T) {
 	if defaultCortexStatsURL != "http://localhost:47602/" {
@@ -1023,14 +1023,14 @@ func TestExecUsage_ListsExactlyTheInjectedVariables(t *testing.T) {
 	}
 }
 
-// abctl must SURVIVE Ctrl-C, not die on it.
+// agentop must SURVIVE Ctrl-C, not die on it.
 //
 // SIGINT and SIGQUIT are tty-generated: they reach the whole foreground process
-// group, so the child already has them and abctl must not relay. But abctl still
+// group, so the child already has them and agentop must not relay. But agentop still
 // has to CATCH them, or Go's default disposition kills the wrapper while the child
-// keeps running — for `abctl exec -- claude`, where Ctrl-C interrupts a turn rather
+// keeps running — for `agentop exec -- claude`, where Ctrl-C interrupts a turn rather
 // than quitting, that strands claude on the terminal with the shell prompt back and
-// two processes reading one stdin. Verified before the fix: abctl exited -2 while
+// two processes reading one stdin. Verified before the fix: agentop exited -2 while
 // the child survived.
 //
 // Not signal.Ignore: that sets SIG_IGN, which exec() preserves across the exec, so
@@ -1073,9 +1073,9 @@ func TestRunExec_SurvivesSIGINT(t *testing.T) {
 
 	select {
 	case code := <-done:
-		// The child's own exit status, proving abctl stayed alive to Wait on it.
+		// The child's own exit status, proving agentop stayed alive to Wait on it.
 		if code != 3 {
-			t.Errorf("exit = %d, want 3 (the child's); abctl did not survive the SIGINT", code)
+			t.Errorf("exit = %d, want 3 (the child's); agentop did not survive the SIGINT", code)
 		}
 	case <-time.After(20 * time.Second):
 		t.Fatal("runExec never returned after SIGINT")
@@ -1132,7 +1132,7 @@ func TestRunExec_BeforeFirstStartRunsAndSaysWhatIsLost(t *testing.T) {
 	}
 }
 
-// `abctl exec --` is a usage error knowable from argv, so it must not depend on
+// `agentop exec --` is a usage error knowable from argv, so it must not depend on
 // reaching Cortex. Diagnosed after the fetch, a user with Cortex down got "no Cortex
 // is running" and exit 1 for what execUsage documents as exit 2.
 func TestRunExec_EmptyCommandIsAUsageErrorWithoutCortex(t *testing.T) {

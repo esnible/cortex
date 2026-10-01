@@ -19,7 +19,7 @@ type detailEventLoadedMsg struct {
 //
 // Three conditions. The server must actually be projecting — against a proxy that
 // predates view=summary the timeline already carries whole events, and re-fetching
-// would be a round trip for bytes abctl is holding. The event must have a protocol
+// would be a round trip for bytes agentop is holding. The event must have a protocol
 // extension at all: a CONNECT tunnel or a bare denial has no message body to be
 // missing. And this event must not already have been fetched.
 //
@@ -98,7 +98,7 @@ func (m *model) applyDetailEvent(msg detailEventLoadedMsg) {
 		return
 	}
 	// Two records, and they do different jobs. The write-back puts the bodies in the
-	// slice abctl holds, so re-opening the row PAINTS complete instead of
+	// slice agentop holds, so re-opening the row PAINTS complete instead of
 	// body-less; the mark stops needsFullEvent asking for them again, so the second
 	// open costs nothing. Without the mark the first paint would still be right and
 	// the round trip would still be paid every time.
@@ -143,7 +143,7 @@ func (m *model) replaceHeldEvent(sessionID string, full *pipeline.SessionEvent) 
 			//
 			// Not a hypothetical staleness: this is the one path that puts a manifest and a
 			// message count back into a projected timeline, so it is the only thing that can
-			// give the CONTEXT(1M) column an answer for a session abctl never streamed. Held
+			// give the CONTEXT(1M) column an answer for a session agentop never streamed. Held
 			// behind a cache hit, the operator would open the very event that established the
 			// figure and watch the column go on showing a dash.
 			m.rebaseSessionContext(sessionID, held)

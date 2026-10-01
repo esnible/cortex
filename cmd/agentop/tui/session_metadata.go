@@ -46,7 +46,7 @@ func SessionMetadataPath() (string, error) { return claude.SessionMetadataPath()
 // which is the right direction and worth stating so the silence stays justified.
 //
 // Absent is not a failure at all. Nobody has this file until they run
-// `abctl experimental read-claude-sessions`, so a first run must be silent rather than
+// `agentop experimental read-claude-sessions`, so a first run must be silent rather than
 // scolded.
 //
 // Silent on a corrupt file rather than warning, unlike loadUserConfig: that one reports
@@ -81,7 +81,7 @@ func LoadSessionMetadata(path string) map[string]SessionMetadata {
 	//
 	// Still returns the empty map, because this function has nowhere to report anything and
 	// says so above — but claude.ReadMetadata applies the SAME cap and DOES distinguish it,
-	// carrying ErrMetadataTooLarge, and `abctl observe`'s pre-flight calls that before the alt
+	// carrying ErrMetadataTooLarge, and `agentop observe`'s pre-flight calls that before the alt
 	// screen goes up. So the operator gets the one line naming the remedy from there; what
 	// this bail-out buys is that the two readers agree on which files are too large, instead
 	// of one silently reading a prefix the other refuses whole.
@@ -115,7 +115,7 @@ func LoadSessionMetadata(path string) map[string]SessionMetadata {
 //
 // Its own function because BOTH constructors need it — New and newPickerModel, which
 // namespaces_pane.go's comment requires to mirror each other — and because neither can
-// handle an error usefully: a home directory abctl cannot resolve costs a label here,
+// handle an error usefully: a home directory agentop cannot resolve costs a label here,
 // nothing more, so the path error collapses into the same empty map every other failure
 // yields.
 func loadSessionMetadataForModel() map[string]SessionMetadata {

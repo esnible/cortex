@@ -1,7 +1,7 @@
 // Package sessionapi exposes AuthBridge's in-memory session store over HTTP:
 // JSON snapshots plus an SSE stream of live events. Intended for local
 // operators debugging the plugin pipeline via kubectl port-forward and for
-// the abctl TUI.
+// the agentop TUI.
 //
 // Trust model: no authentication. Bind only on in-cluster addresses, never
 // behind an ingress. The payload may contain user messages, LLM completions,
@@ -54,7 +54,7 @@ type Server struct {
 	// aggregator's 6-hour ring. nil is the EXPECTED state in Kubernetes, where
 	// writing files in a pod is the wrong sink and a central collector is the right
 	// one — handleUsage degrades to the ring's maximum rather than erroring, so an
-	// abctl cost view shows what is available there instead of failing.
+	// agentop cost view shows what is available there instead of failing.
 	ledger *ledger.Writer
 	// loggedDropped is the highest writer-drop total this server has already logged, so the write-side
 	// warning fires on a CHANGE rather than on every request. See the usage handler: the drop count is
@@ -69,7 +69,7 @@ type Server struct {
 }
 
 // CatalogEntry is the wire shape for one plugin in /v1/plugins. Mirrors
-// pipelinePluginView's metadata fields so abctl can use the same
+// pipelinePluginView's metadata fields so agentop can use the same
 // rendering paths for the active pipeline and the catalog browser.
 //
 // Uses readsBody (the modern field name) instead of pipelinePluginView's
@@ -88,7 +88,7 @@ type CatalogEntry struct {
 
 // FieldSchemaEntry is the wire shape for one config field's schema
 // metadata. Mirrors pipeline.FieldSchema; lives in the sessionapi
-// package so consumers (abctl apiclient, future rossoctl-UI clients)
+// package so consumers (agentop apiclient, future rossoctl-UI clients)
 // don't have to import core/pipeline transitively.
 type FieldSchemaEntry struct {
 	Name        string             `json:"name"`
@@ -258,7 +258,7 @@ func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 //
 // Capability fields (Requires/RequiresAny/Description) are static
 // type-level metadata: same for every instance produced by a given
-// factory. abctl uses them to render the plugin-detail pane and to
+// factory. agentop uses them to render the plugin-detail pane and to
 // compute the "deps satisfied" indicator on the Pipeline pane without
 // needing a separate /v1/plugins call.
 type pipelinePluginView struct {
@@ -271,7 +271,7 @@ type pipelinePluginView struct {
 	Description string          `json:"description,omitempty"`
 	Config      json.RawMessage `json:"config,omitempty"`
 	// Metrics is populated for plugins implementing pipeline.MetricsProvider.
-	// Omitted entirely when a plugin reports none, so abctl can distinguish
+	// Omitted entirely when a plugin reports none, so agentop can distinguish
 	// "no such channel" from "channel with nothing in it".
 	Metrics []pipeline.Metric `json:"metrics,omitempty"`
 }
@@ -293,7 +293,7 @@ func (s *Server) handlePipeline(w http.ResponseWriter, _ *http.Request) {
 }
 
 // handlePluginCatalog returns every registered plugin's metadata —
-// not just the ones in the active pipeline. abctl renders this in
+// not just the ones in the active pipeline. agentop renders this in
 // the catalog browser pane so operators can see what's available
 // before adding one to the pipeline.
 //
@@ -451,8 +451,8 @@ const summaryView = "summary"
 // for the full events.
 //
 // Exact match, and anything else — absent, empty, misspelled, differently cased —
-// means full. This is the version-skew direction that matters: abctl and the proxy
-// install separately, so a NEW abctl asking an OLD proxy for `view=summary` gets
+// means full. This is the version-skew direction that matters: agentop and the proxy
+// install separately, so a NEW agentop asking an OLD proxy for `view=summary` gets
 // full events from a server that never heard of the parameter. Making an
 // unrecognised value fall back the same way means the two skew directions behave
 // identically, and neither returns a silently emptied timeline.

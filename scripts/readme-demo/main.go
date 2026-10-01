@@ -5,7 +5,7 @@ package main
 //	go run .                 # regenerate docs/assets/cortex-demo.svg
 //	go run . -out /tmp/x.svg # write somewhere else
 //
-// The abctl screens are captured from the real TUI (tuicapture.go); the typed
+// The agentop screens are captured from the real TUI (tuicapture.go); the typed
 // terminal acts are authored in demo.yaml. Nothing reads the operator's own data:
 // HOME is redirected to a scratch directory for the whole run.
 

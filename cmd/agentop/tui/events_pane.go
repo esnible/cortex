@@ -526,7 +526,7 @@ func allInvocations(e *pipeline.SessionEvent) []pipeline.Invocation {
 // actionRank orders the five invocation verbs for at-a-glance aggregation,
 // highest wins: deny > modify > observe > allow > skip. The pipeline's own
 // outcome only distinguishes deny vs allow (pipeline/outcome.go); the rest of
-// this ordering is an abctl display choice. deny/modify rank top because they
+// this ordering is an agentop display choice. deny/modify rank top because they
 // changed the message's fate. observe ranks ABOVE allow on purpose: a parser
 // that understood the message (and supplied the METHOD shown on the row) tells
 // the operator more than a gate that merely permitted it — and surfacing the
@@ -647,7 +647,7 @@ func rowAction(er eventRow, invs []pipeline.Invocation) (action, plugin string) 
 // Reasons are already short, kebab-case and stable, so they are shown verbatim
 // rather than prettified: an operator grepping the proxy log for the same string
 // should find the same token. An unknown reason is passed through untouched — a
-// newer proxy paired with an older abctl should show the new reason, not hide it.
+// newer proxy paired with an older agentop should show the new reason, not hide it.
 func tunnelReasonCell(reason pipeline.TunnelReason) string {
 	if reason == "" {
 		return "—"

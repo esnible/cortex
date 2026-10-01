@@ -244,7 +244,7 @@ func TestEditFlow_NormalizesTrailingNewline(t *testing.T) {
 }
 
 // TestEditFlow_RollbackOnReloadFailure verifies that when the in-pod
-// reload fails (PollFailure), abctl re-applies the original ConfigMap
+// reload fails (PollFailure), agentop re-applies the original ConfigMap
 // content so the on-disk CM matches the still-running previous pipeline.
 func TestEditFlow_RollbackOnReloadFailure(t *testing.T) {
 	runner := &editFakeRunner{getResponse: []byte(editFixtureCMYAML)}

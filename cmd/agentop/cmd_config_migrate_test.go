@@ -106,7 +106,7 @@ func TestMigrateConfig_AddsThePins(t *testing.T) {
 	if !strings.Contains(readFile(t, p), "remove: [CronCreate, WebSearch]") {
 		t.Error("the prune list was lost")
 	}
-	if _, serr := os.Stat(p + ".before-abctl-migrate"); serr != nil {
+	if _, serr := os.Stat(p + ".before-agentop-migrate"); serr != nil {
 		t.Errorf("no backup kept: %v", serr)
 	}
 }

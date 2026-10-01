@@ -509,7 +509,7 @@ func (t *Table) Resolve(endpoint, model string, promptTotal int) (Rates, Provena
 	//
 	// Because "bundled" is the label that means "you have told us nothing about this
 	// endpoint, expect it to be wrong" — it is what drives WarnIfUnpinned and what
-	// abctl annotates. An operator who set a multiplier HAS told us about their
+	// agentop annotates. An operator who set a multiplier HAS told us about their
 	// gateway, so reporting bundled would send them to pin rates they have effectively
 	// already pinned. The weaker reading looks more conservative and is in fact less
 	// informative.
@@ -525,7 +525,7 @@ func (t *Table) Resolve(endpoint, model string, promptTotal int) (Rates, Provena
 	// Framed as provenance rather than as a special case for bundled: a scalar derived
 	// from list may only scale rates that are themselves list-derived. Configured rates
 	// with a configured multiplier still both apply — the operator asked for both, and
-	// `abctl pricing --host` shows the factor being applied.
+	// `agentop pricing --host` shows the factor being applied.
 	if mprov < prov {
 		f, mprov = 1, ProvNone
 	}

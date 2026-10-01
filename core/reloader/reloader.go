@@ -163,9 +163,9 @@ func (r *Reloader) Start(ctx context.Context) error {
 	// THROUGH the link — replacing the target rather than the link, which is
 	// what preserves a config symlinked into a dotfiles repo — changes nothing
 	// in this directory. On Linux, inotify reports directory-entry changes, so
-	// no event arrives and the reload never happens: abctl's editor then times
-	// out and rolls a correct edit back two minutes later, and `abctl tools scan
-	// --write` / the migration `abctl service install` runs land silently unreloaded.
+	// no event arrives and the reload never happens: agentop's editor then times
+	// out and rolls a correct edit back two minutes later, and `agentop tools scan
+	// --write` / the migration `agentop service install` runs land silently unreloaded.
 	// (macOS happens to survive this: kqueue watches the resolved file, so replacing
 	// it reports on the link. Relying on that is relying on the platform.)
 	//

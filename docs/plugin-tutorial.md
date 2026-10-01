@@ -20,7 +20,7 @@ A plugin is a Go type that implements the `pipeline.Plugin` interface and
 registers itself in the plugin registry. The pipeline invokes it on every
 request (OnRequest) and, in reverse order, on every response (OnResponse).
 Plugins can read `pctx`, mutate headers/body, reject the request, and record
-diagnostic invocations that show up in `/v1/sessions` and in `abctl`.
+diagnostic invocations that show up in `/v1/sessions` and in `agentop`.
 
 ## Step 1 — The minimal plugin
 

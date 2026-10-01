@@ -1,4 +1,4 @@
-# Per-Tier Cost Breakdown in abctl
+# Per-Tier Cost Breakdown in agentop
 
 Status: implemented · proposed 2026-09-19 · shipped in
 `core/cost/{pricing,settle,event,usage}` and
@@ -7,7 +7,7 @@ not a live proposal.
 
 ## 1. Problem
 
-abctl can say what traffic cost in total, and it can say how many tokens of each
+agentop can say what traffic cost in total, and it can say how many tokens of each
 kind that traffic used. It cannot say what each **kind** cost.
 
 That is the question an operator actually has. A cache read bills at roughly 0.1x
@@ -35,7 +35,7 @@ Verified against `fe19c8c1`, not assumed:
 | `usage.Counts` | yes, five fields | no — one `CostMicros` |
 | `ledger.Row` | via embed | via embed |
 | `/v1/usage` | yes | no |
-| `abctl cost` | yes, `tokenSplit` | no |
+| `agentop cost` | yes, `tokenSplit` | no |
 | spend drawer | no | no |
 
 Two facts shape the whole design:
@@ -101,11 +101,11 @@ is a guess rather than an approximation. That is true, but any particular floor 
 a number nobody can defend: 50% and 10% are equally arbitrary, and a constant whose
 value is unjustifiable is worse than the behaviour it guards. The mix is the only
 evidence available, `~` says it is inexact, and a reader who wants coverage has
-`abctl cost`, which reports priced-versus-priceable already.
+`agentop cost`, which reports priced-versus-priceable already.
 
 **3.5 `reasoning` is not a tier.** It is a subset of `output` — `tokenSplit`
 already labels it `reasoning (of output)` — so including it as a fifth bar would
-double-count. It stays in `abctl cost`'s token line and out of the bars.
+double-count. It stays in `agentop cost`'s token line and out of the bars.
 
 > **Superseded in part.** `reasoning` is now drawn in this panel, as an *indented
 > child of `output`* carrying its own bar and figure.
@@ -143,7 +143,7 @@ the same visual weight, and the spend figures interleave labels with values
 ### 4.1 Resting
 
 ```
- abctl · 127.0.0.1:47601                              Sessions · Pipeline
+ agentop · 127.0.0.1:47601                              Sessions · Pipeline
   TODAY       LAST 1H     SAVED       CACHE HIT   TOKENS
   $3.8402     $4.5462     ~$0.2091    93%         5.6M
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -161,7 +161,7 @@ the band is the table's own top border, not a spent row.
 ### 4.2 Expanded (`$`)
 
 ```
- abctl · 127.0.0.1:47601                              Sessions · Pipeline
+ agentop · 127.0.0.1:47601                              Sessions · Pipeline
   TODAY       LAST 1H     SAVED       CACHE HIT   TOKENS
   $3.8402     $4.5462     ~$0.2091    93%         5.6M
 
@@ -235,7 +235,7 @@ pricing.CostWithReason ──[numTiers]float64──▶ settle.Settled ──▶
                                                      │                        │
                                                      ├──▶ /v1/usage           └──▶ durable ledger
                                                      ▼
-                                    usage.ApportionTiers(Counts) ──▶ drawer · abctl cost · --json
+                                    usage.ApportionTiers(Counts) ──▶ drawer · agentop cost · --json
 ```
 
 The apportionment of 3.2 lives in **one** exported helper in `usage`, called by

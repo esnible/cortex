@@ -16,7 +16,7 @@ import (
 // #870: users reported the events they were investigating vanishing after a
 // proxy restart or a communication blip.
 //
-// The store is in-memory and per-pod, so abctl's cache is the only copy. An
+// The store is in-memory and per-pod, so agentop's cache is the only copy. An
 // empty /v1/sessions arrives as an ordinary message, not an error, so the old
 // reconcile read "the server does not list this" as "delete it" and wiped the
 // events about two seconds after the user looked away.
@@ -272,7 +272,7 @@ func newRetentionModel(t *testing.T, id string, n int) *model {
 	return m
 }
 
-// Retention is unbounded now. abctl used to cut both the snapshot and the live
+// Retention is unbounded now. agentop used to cut both the snapshot and the live
 // stream to the most recent 1000 events per session, on the stated grounds that this
 // "matches the server's default maxEvents cap so we don't hold more than the server
 // itself does" — the server's default was 500, so it held twice as much, and neither
@@ -339,9 +339,9 @@ func TestSnapshot_IsKeptWhole(t *testing.T) {
 
 // The EVENTS column has ONE source: the server's count, refreshed by the sessions
 // poll. It used to have two — the poll wrote the server's number and every streamed
-// event overwrote it with abctl's local cache length — so the cell flipped between
+// event overwrote it with agentop's local cache length — so the cell flipped between
 // them on live traffic, 500 against 1000 back when both sides capped. Uncapping
-// alone would not have fixed that: abctl's buffer holds what it snapshotted plus
+// alone would not have fixed that: agentop's buffer holds what it snapshotted plus
 // what it streamed since attaching, which for a session that predates the
 // connection is still a different number from the server's.
 func TestSessionsPane_EventCountDoesNotFlipOnAStreamedEvent(t *testing.T) {
@@ -351,7 +351,7 @@ func TestSessionsPane_EventCountDoesNotFlipOnAStreamedEvent(t *testing.T) {
 	m.sessionsTbl.SetHeight(12)
 
 	// The server's summary, as a poll delivers it: a session older than this
-	// connection, so its count exceeds anything abctl has cached.
+	// connection, so its count exceeds anything agentop has cached.
 	m.Update(sessionsLoadedMsg{{
 		ID: id, CreatedAt: time.Now(), UpdatedAt: time.Now(), EventCount: 830, Active: true,
 	}})

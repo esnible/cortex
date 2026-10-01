@@ -83,7 +83,7 @@ func TestHandleGet_ViewSummaryDropsPayloads(t *testing.T) {
 
 // An old client sends no view param, and a client from the future may send one
 // this server does not know. Both must get the full events rather than an error
-// or a silently emptied timeline — the version-skew path, since abctl and the
+// or a silently emptied timeline — the version-skew path, since agentop and the
 // proxy install separately.
 func TestHandleGet_UnknownOrAbsentViewReturnsFullEvents(t *testing.T) {
 	ts, store := newTestServer(t)

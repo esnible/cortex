@@ -20,7 +20,7 @@ import (
 // is ADDITIVE. Node's NODE_EXTRA_CA_CERTS is — the name says so — but almost
 // every other tool REPLACES its trust store with what you point it at:
 //
-//	SSL_CERT_FILE      Go (gh, abctl, any Go CLI) — Linux/CI only, see below
+//	SSL_CERT_FILE      Go (gh, agentop, any Go CLI) — Linux/CI only, see below
 //	GIT_SSL_CAINFO     git
 //	REQUESTS_CA_BUNDLE Python requests
 //	CURL_CA_BUNDLE     curl

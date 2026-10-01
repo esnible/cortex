@@ -126,7 +126,7 @@ func TestSessionEvent_MarshalJSON_OmitsEmpty(t *testing.T) {
 }
 
 // SessionDenied must serialize as "denied" on the wire so consumers
-// filtering on phase (abctl `/deny`, stats queries) see a stable string
+// filtering on phase (agentop `/deny`, stats queries) see a stable string
 // rather than the numeric enum.
 func TestSessionPhase_Denied_SerializesAsString(t *testing.T) {
 	if got := SessionDenied.String(); got != "denied" {
@@ -213,7 +213,7 @@ func TestSessionEvent_Invocations_JSONRoundTrip(t *testing.T) {
 // expected to have already marshaled each value (Extensions.Plugins uses
 // any; SessionEvent.Plugins uses json.RawMessage — it's the wire form).
 // This test verifies the consumer side: decode lands RawMessage back in
-// place so abctl (or any JSON consumer) can re-decode per plugin.
+// place so agentop (or any JSON consumer) can re-decode per plugin.
 func TestSessionEvent_PluginsMap_JSONRoundTrip(t *testing.T) {
 	orig := SessionEvent{
 		At:        time.Unix(1700000000, 0).UTC(),
@@ -349,7 +349,7 @@ func TestTunnelReasonsAreDocumented(t *testing.T) {
 // SessionEvent's JSON form is hand-maintained in four places: the struct,
 // sessionEventWire, MarshalJSON's field list and UnmarshalJSON's. A field added to
 // the struct but missed in the wire mapping compiles, passes every in-process
-// test, and silently never reaches abctl — which decodes these out of process.
+// test, and silently never reaches agentop — which decodes these out of process.
 //
 // Comparing field COUNTS rather than names on purpose: the two structs
 // deliberately differ in spelling (Duration vs DurationMs), so a name check would
@@ -366,7 +366,7 @@ func TestSessionEventWireCoversEveryField(t *testing.T) {
 	if got != want {
 		t.Fatalf("SessionEvent has %d fields, sessionEventWire has %d.\n"+
 			"Add the new field to sessionEventWire AND to both MarshalJSON and "+
-			"UnmarshalJSON, or abctl will never see it.", got, want)
+			"UnmarshalJSON, or agentop will never see it.", got, want)
 	}
 }
 
@@ -437,7 +437,7 @@ func TestSessionEvent_OldWireFormatDecodesWithNoClient(t *testing.T) {
 }
 
 // TestSessionEvent_TunnelBytesRoundTrip: a tunnel's close row carries how many bytes
-// crossed it each way. Both counts must reach abctl, which decodes these out of
+// crossed it each way. Both counts must reach agentop, which decodes these out of
 // process, and both must be absent rather than zero on every other event — an unset
 // count is not a tunnel that carried nothing.
 func TestSessionEvent_TunnelBytesRoundTrip(t *testing.T) {

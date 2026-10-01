@@ -1,14 +1,14 @@
-# abctl
+# agentop
 
 Interactive terminal UI for inspecting AuthBridge's in-memory session store.
-`abctl` connects to the session API exposed by an AuthBridge sidecar
+`agentop` connects to the session API exposed by an AuthBridge sidecar
 (default `http://localhost:9094`, typically reached via `kubectl port-forward`)
 and lets you browse active sessions, follow a session's event stream live,
 and read individual events as pretty-printed JSON.
 
 ## Install
 
-Download a prebuilt `abctl` for your platform (linux/macOS, amd64/arm64) from the
+Download a prebuilt `agentop` for your platform (linux/macOS, amd64/arm64) from the
 [Releases page](https://github.com/rossoctl/cortex/releases) — see
 [Download prebuilt binaries](../../docs/architecture.md#download-prebuilt-binaries) for the download,
 checksum-verify, and macOS quarantine steps — and drop it on your PATH.
@@ -24,19 +24,19 @@ Either way you get a single binary (~10 MB; the linux build is fully static).
 
 ## Run
 
-`abctl observe` discovers AuthBridge agents in your current `kubectl`
+`agentop observe` discovers AuthBridge agents in your current `kubectl`
 context and lets you pick one:
 
 ```sh
-./abctl observe
+./agentop observe
 ```
 
-Bare `./abctl` does the same thing, but is **deprecated** and will stop
+Bare `./agentop` does the same thing, but is **deprecated** and will stop
 opening the viewer in a future release. It printed no hint that the
 other subcommands existed, so anyone who never ran `--help` reasonably
-concluded the TUI was all abctl did — `abctl service` least visible of
+concluded the TUI was all agentop did — `agentop service` least visible of
 all, and that is what you need when Cortex is not running. Run
-`abctl --help` for the full list.
+`agentop --help` for the full list.
 
 You'll see a Namespaces pane listing each namespace that contains an
 AuthBridge agent. Enter drills into the Pods pane for that namespace;
@@ -45,7 +45,7 @@ you into the session-events view. Esc backs out. `q` (or Ctrl+C) quits
 and tears the port-forward down.
 
 The picker shells out to `kubectl` — whatever context you're in is the
-context abctl uses. There's no separate auth.
+context agentop uses. There's no separate auth.
 
 ### Connecting to an existing port-forward
 
@@ -54,10 +54,10 @@ session API on this host. Where that is depends on whether you have a Cortex
 installed: it goes to the address in `~/.cortex/config.yaml` when one answered
 there (47601 by default), and otherwise to `http://localhost:9094`, the
 in-cluster default port. The second case is the useful one when you already have
-your own `kubectl port-forward` running, when abctl runs inside the mesh, or
+your own `kubectl port-forward` running, when agentop runs inside the mesh, or
 when your kubeconfig can't list pods but a tunnel is up.
 
-abctl probes `/v1/sessions` before switching panes, so an endpoint with
+agentop probes `/v1/sessions` before switching panes, so an endpoint with
 nothing listening surfaces as a footer error and leaves you in the
 picker rather than dropping you into a silently empty session view.
 `Esc` from a session entered this way returns to the Namespaces pane
@@ -75,7 +75,7 @@ Pass `--endpoint` to skip the picker entirely:
 
 ```sh
 kubectl port-forward -n team1 pod/weather-agent-xxxx 9094:9094 &
-./abctl observe --endpoint http://localhost:9094
+./agentop observe --endpoint http://localhost:9094
 ```
 
 This preserves the pre-picker behavior for scripts, CI, or remote
@@ -83,7 +83,7 @@ session APIs that aren't in your kube context.
 
 ### Choosing between a cluster and a local Cortex (`--kubernetes`)
 
-With no `--endpoint`, abctl decides between the cluster picker and the Cortex
+With no `--endpoint`, agentop decides between the cluster picker and the Cortex
 running on this machine (read from `~/.cortex/config.yaml`, and probed first —
 a stale config from an install that is no longer running is ignored).
 
@@ -91,19 +91,19 @@ a stale config from an install that is no longer running is ignored).
 that is answering wins and the picker appears only when none is:
 
 ```sh
-./abctl observe                # the local Cortex, when one is running
-./abctl observe --kubernetes   # the picker, even with a local Cortex running
+./agentop observe                # the local Cortex, when one is running
+./agentop observe --kubernetes   # the picker, even with a local Cortex running
 ```
 
 The default favours the local one because that is the quickstart, and it should
-need no flag: install Cortex on your laptop, run `abctl observe`, watch traffic.
+need no flag: install Cortex on your laptop, run `agentop observe`, watch traffic.
 `--kubernetes` is for the machine that has both — a local install AND cluster
 work — where the probe would otherwise win every time and `--endpoint` could
 only substitute for the picker by naming a namespace, a pod and a port-forward
 by hand.
 
 A machine with no local install needs no flag either: with nothing answering,
-`abctl observe` opens the picker on its own.
+`agentop observe` opens the picker on its own.
 
 The flag is ignored when `--endpoint` is given — an explicit address always
 wins. Resolution in full:
@@ -119,7 +119,7 @@ wins. Resolution in full:
 
 Cortex buckets traffic by session id, and a session id is a UUID. Claude Code
 knows more about the same session: it writes a transcript per session carrying a
-model-generated title and the directory the session ran in. `abctl observe`
+model-generated title and the directory the session ran in. `agentop observe`
 reads those transcripts and writes what it finds to
 `~/.cortex/session-metadata.json`, so the sessions table can show a `TITLE`
 column instead of a bare id.
@@ -131,7 +131,7 @@ so the column can be populated for a session with no transcript here at all.
 Everything below concerns the harvest only — including `--skip-claude-metadata`,
 which suppresses this route and not the served fallback.
 
-The scan runs in the **background**, while the viewer is already up: `abctl observe` paints
+The scan runs in the **background**, while the viewer is already up: `agentop observe` paints
 immediately and the titles appear when the scan finishes — usually before you have
 picked a pod. The viewer opens with whatever titles the last run recorded, so a scan
 only ever adds names.
@@ -139,8 +139,8 @@ only ever adds names.
 This happens by default; `--skip-claude-metadata` turns it off:
 
 ```sh
-./abctl observe                            # open the viewer; titles arrive as they scan
-./abctl observe --skip-claude-metadata     # skip the scan; previously-recorded titles still show
+./agentop observe                            # open the viewer; titles arrive as they scan
+./agentop observe --skip-claude-metadata     # skip the scan; previously-recorded titles still show
 ```
 
 The scan is also **incremental**: a transcript whose mtime has not moved since it was
@@ -178,9 +178,9 @@ transcript — the way to repair entries that are wrong — run the harvest
 explicitly:
 
 ```sh
-./abctl experimental read-claude-sessions              # full scan, reports counts
-./abctl experimental read-claude-sessions --dir PATH   # a different config dir
-./abctl experimental read-claude-sessions --merge=false  # rebuild, dropping stale entries
+./agentop experimental read-claude-sessions              # full scan, reports counts
+./agentop experimental read-claude-sessions --dir PATH   # a different config dir
+./agentop experimental read-claude-sessions --merge=false  # rebuild, dropping stale entries
 ```
 
 Both the background scan and the default subcommand run **upsert**, so an entry stays once
@@ -194,9 +194,9 @@ session still gets whatever title was found before the stop, which may be an old
 the background scan has nowhere to say so once the viewer owns the screen — so re-run the
 subcommand if a title looks wrong.
 
-## Running one command through Cortex (`abctl exec`)
+## Running one command through Cortex (`agentop exec`)
 
-`abctl configure claude-code enable` works because Claude Code has a settings
+`agentop configure claude-code enable` works because Claude Code has a settings
 file: the variables can be written once and reach every session on the machine,
 background agents included. Nothing else has that. `curl`, `python`,
 `node`, `gh` and your test suite read the process environment and nothing
@@ -204,16 +204,16 @@ else, and the usual workaround — exporting `HTTPS_PROXY` in your shell —
 leaks into every unrelated command in that terminal until you remember to
 unset it.
 
-`abctl exec` scopes the routing to a single child process:
+`agentop exec` scopes the routing to a single child process:
 
 ```sh
-abctl exec -- curl -sv https://api.anthropic.com/v1/messages
-abctl exec -- claude --dangerously-skip-permissions
-abctl exec -- bob
+agentop exec -- curl -sv https://api.anthropic.com/v1/messages
+agentop exec -- claude --dangerously-skip-permissions
+agentop exec -- bob
 ```
 
-Everything after `--` is passed through exactly as typed. abctl never
-parses it, so the command's own flags need no escaping — even ones abctl
+Everything after `--` is passed through exactly as typed. agentop never
+parses it, so the command's own flags need no escaping — even ones agentop
 also has, like `--print`. The child inherits your whole environment plus
 these nine variables:
 
@@ -234,7 +234,7 @@ The CA names split two ways, and the difference matters. `NODE_EXTRA_CA_CERTS`
 pointing them at `ca.crt` would leave the child trusting the bridge and nothing
 else — breaking every host the bridge does not terminate. They get `bundle.crt`
 instead, which Cortex writes beside `ca.crt` on startup (bridge CA + platform
-roots). These are the same values `abctl configure claude-code enable` writes
+roots). These are the same values `agentop configure claude-code enable` writes
 into `settings.json`; `exec` reuses that derivation rather than repeating it, so
 the two commands cannot disagree.
 
@@ -255,34 +255,34 @@ points at nothing. The derivation from config to variables is still the one
 `configure claude-code enable` uses, so the two produce identical values for the
 same Cortex. Nothing is exported to your shell and no file is modified.
 
-abctl exits with the child's status (127 if the command was not found,
+agentop exits with the child's status (127 if the command was not found,
 128+signum if it was killed), so it is safe in a pipeline or a Makefile.
 Keyboard signals (Ctrl-C) reach the child directly through the shared
-process group; a signal aimed at abctl itself — `timeout 30 abctl exec
+process group; a signal aimed at agentop itself — `timeout 30 agentop exec
 -- …`, a CI runner, systemd — is relayed to the child, so it is not left
 orphaned with the injected environment.
 
 To see the variables without running anything:
 
 ```sh
-abctl exec --print                 # nine shell-quoted export lines
-eval "$(abctl exec --print)"       # or apply them to the current shell
+agentop exec --print                 # nine shell-quoted export lines
+eval "$(agentop exec --print)"       # or apply them to the current shell
 ```
 
 `--print` emits paths only — it writes nothing. `bundle.crt` and `ca.crt` are
 created by Cortex itself on first start, so the exported paths keep resolving
-long after abctl exits, which is what makes the `eval` form usable.
+long after agentop exits, which is what makes the `eval` form usable.
 
 `--print` takes no command, and no `--`: it is a complete request on its own.
-Both `abctl exec --print -- curl …` and a bare `abctl exec --print --` are usage
+Both `agentop exec --print -- curl …` and a bare `agentop exec --print --` are usage
 errors — the first asks for two different things at once, the second promises a
 command and supplies none. The paths `--print` hands out are meant to be kept,
-and are the same ones `abctl configure claude-code enable` writes into
+and are the same ones `agentop configure claude-code enable` writes into
 `settings.json`; running a command is the opposite, applying them to one process
 for its lifetime. Asking for both in one invocation is a contradiction about
-which you want, so abctl says so rather than picking one.
+which you want, so agentop says so rather than picking one.
 
-`abctl configure claude-code enable` shares this requirement as of the same
+`agentop configure claude-code enable` shares this requirement as of the same
 change: it too refuses `tls_bridge.mode: disabled` with a `ca_dir` set, a
 combination it used to
 accept and write into `settings.json`, where the CA bought nothing because the
@@ -292,7 +292,7 @@ bridge terminated no TLS. `enable` also now points its four replacing variables 
 Requires an enabled TLS bridge — both `tls_bridge.mode: enabled` and
 `tls_bridge.ca_dir`. `mode: disabled` with a `ca_dir` set is a valid config,
 but the bridge then terminates nothing, so a CA would buy the child nothing
-while breaking its https; `abctl exec` refuses rather than inject either half
+while breaking its https; `agentop exec` refuses rather than inject either half
 of a setup that cannot work.
 
 Before Cortex's first start, `ca.crt` does not exist yet. `exec` still runs the
@@ -300,31 +300,31 @@ command and says so, but leaves the four replacing variables unset — the child
 keeps its own public roots and only bridged hosts fail, rather than losing all
 trust to a bundle with no bridge CA in it.
 
-## Typing `bob` instead of `abctl exec -- bob` (`abctl configure bobshell`)
+## Typing `bob` instead of `agentop exec -- bob` (`agentop configure bobshell`)
 
-`abctl exec -- bob` routes one invocation. `abctl configure bobshell enable`
+`agentop exec -- bob` routes one invocation. `agentop configure bobshell enable`
 makes that the meaning of `bob` in every new shell, by appending a delimited
 block to your rc file:
 
 ```sh
-# >>> cortex abctl (bobshell) >>>
+# >>> cortex agentop (bobshell) >>>
 bob() {
-  abctl exec -- bob "$@"
+  agentop exec -- bob "$@"
 }
 export CORTEX_BOBSHELL=1
-# <<< cortex abctl (bobshell) <<<
+# <<< cortex agentop (bobshell) <<<
 ```
 
 ```sh
-abctl configure bobshell enable    # append the block
-abctl configure bobshell disable   # remove exactly that block
-abctl configure bobshell status    # is bob routed in THIS shell?
+agentop configure bobshell enable    # append the block
+agentop configure bobshell disable   # remove exactly that block
+agentop configure bobshell status    # is bob routed in THIS shell?
 ```
 
 Both `enable` and `disable` ask before writing, and `--yes` skips the question:
 
 ```sh
-abctl configure bobshell enable --yes    # no prompt
+agentop configure bobshell enable --yes    # no prompt
 ```
 
 With no terminal to ask on — CI, a container, a Dockerfile `RUN` — they decline
@@ -340,7 +340,7 @@ configures the IBM Bob **editor** — a VS Code fork, so the lever is `http.prox
 in its `settings.json` (below). `bobshell` configures the **shell integration** —
 a `bob` function in your rc file, so typing `bob` at a prompt runs through
 Cortex. Configuring one does not configure the other, and neither name is an
-alias of the other: `abctl configure bob --settings X` is a usage error under
+alias of the other: `agentop configure bob --settings X` is a usage error under
 `bobshell`, and vice versa.
 
 The editor agent briefly did not exist. It was removed on the reasoning that
@@ -372,7 +372,7 @@ non-interactive shells unless `expand_aliases` is set, and `"$@"` forwards
 arguments explicitly, so `bob "two words"` stays one argument.
 
 It cannot recurse into itself, which is why there is no machinery to resolve
-the real binary past the function. `abctl exec` runs the `bob` binary as a child
+the real binary past the function. `agentop exec` runs the `bob` binary as a child
 process, and that process never reads your rc file, so the `bob` inside the body
 is always the one on `PATH`.
 
@@ -386,7 +386,7 @@ The basename of `$SHELL` picks it, and only these two:
 | …`/bash` | `~/.bashrc` |
 | anything else, or unset | nothing is written — `enable` prints the block for you to place, `disable` tells you which block to delete |
 
-That is the whole rule. `abctl` does not work out whether your shell will be a
+That is the whole rule. `agentop` does not work out whether your shell will be a
 login or a non-login shell, or which of zsh's four startup files you meant,
 because being wrong about it writes a block into a file nothing reads and
 leaves you with no reason to look there.
@@ -430,7 +430,7 @@ it — including a **non-interactive** subshell or a script, which does not read
 your startup file and therefore has no `bob` function at all. There, `bob` is the
 plain binary and Cortex is not in the path of the call, while the variable still
 says `1`. `status` cannot tell the two apart: the shell's function table lives in
-that shell's memory and is never exported, so `abctl`, as a child process, cannot
+that shell's memory and is never exported, so `agentop`, as a child process, cannot
 see it. To settle it in a particular shell, ask that shell: `type bob` says
 `bob is a function` when the function is live, and names a file when it is not.
 
@@ -444,9 +444,9 @@ bash, zsh and dash alike. (`mise doctor` splits `activated:` from
 
 Both answers exit 0: "not enabled" is a report, not a failure.
 
-## Routing the IBM Bob editor through Cortex (`abctl configure bob`)
+## Routing the IBM Bob editor through Cortex (`agentop configure bob`)
 
-IBM Bob is a VS Code fork, so it reads the VS Code proxy setting. `abctl
+IBM Bob is a VS Code fork, so it reads the VS Code proxy setting. `agentop
 configure bob enable` writes exactly one flat, top-level key into Bob's user
 settings:
 
@@ -471,9 +471,9 @@ worse than the setting is worth. `disable` takes the line back out the same way,
 so enable-then-disable returns the file byte-for-byte.
 
 ```sh
-abctl configure bob enable      # write the key, print the CA trust command
-abctl configure bob disable     # remove the key, print the optional undo
-abctl configure bob status      # report, and act on nothing
+agentop configure bob enable      # write the key, print the CA trust command
+agentop configure bob disable     # remove the key, print the optional undo
+agentop configure bob status      # report, and act on nothing
 ```
 
 `enable` and `disable` show the one-line change and ask before writing, keep a
@@ -523,7 +523,7 @@ depends on the distribution.
 It is `ca.crt` — the single bridge CA — and deliberately **not** the
 `bundle.crt` in the same directory, which holds the bridge CA *plus* every
 platform root and exists for tools whose CA setting *replaces* the trust store
-(`SSL_CERT_FILE` and friends, as `abctl exec` sets). The keychain is additive,
+(`SSL_CERT_FILE` and friends, as `agentop exec` sets). The keychain is additive,
 so `-r trustRoot` on the bundle would install explicit machine-wide root trust
 for every public CA in it, and the undo above would not take that back.
 
@@ -539,7 +539,7 @@ only scheme `enable` writes. The loopback spellings are folded together
 while the settings file names `127.0.0.1`, and a hand-typed address must not be
 called someone else's proxy.
 
-That is still not a record abctl keeps — there is no state file, so ownership is
+That is still not a record agentop keeps — there is no state file, so ownership is
 re-decided from the value each time.
 
 Ownership has three answers, not two. A value that matches is **ours**; a
@@ -557,7 +557,7 @@ before it does it.
 **Whether anything is listening is a separate question**, reported on its own
 line. A stopped Cortex is the normal state of a laptop and is not a verdict on the
 setting: the setting is right either way, and the answer to "nothing is listening"
-is `abctl service start`, not an edit here.
+is `agentop service start`, not an edit here.
 
 `http.proxy` governs VS Code's core networking and its extension host. An
 extension that bundles its own HTTP client can still go around it; this is the
@@ -585,7 +585,7 @@ The UI has these panes. `Enter` drills in; `Esc` backs out.
 **Sessions is the only pane you land on.** Pipeline (`P`), Usage (`u`) and the
 plugin catalog (`C`) are each opened by a key from anywhere in the session views
 and return to the pane you pressed it on. There is no tab strip: Sessions is what
-abctl is for, and the other three are surfaces you visit and leave.
+agentop is for, and the other three are surfaces you visit and leave.
 
 - **Sessions** (default): table of active sessions in the store, most
   recently updated first. Columns: session (truncated), title, updated
@@ -645,7 +645,7 @@ abctl is for, and the other three are surfaces you visit and leave.
   window on any path the proxy sees, so a model with a smaller window reads
   lower than it really is.
 
-  The figure comes from abctl's own event cache, filled by the live stream or
+  The figure comes from agentop's own event cache, filled by the live stream or
   by drilling into a session. The timeline fetch asks for `view=summary`, and
   that projection drops the slices this rule used to read, so it records their
   **lengths** before dropping them (`messageCount` / `toolCount`) and the gauge
@@ -671,12 +671,12 @@ abctl is for, and the other three are surfaces you visit and leave.
   do not believe is `Esc` back to the Pods pane and re-enter: a different pod is
   the one thing that discards it, and re-attaching starts the column from
   whatever streams next. That reset only exists in picker mode — under
-  `--endpoint` there is no Pods pane to back out to, so restarting abctl is the
+  `--endpoint` there is no Pods pane to back out to, so restarting agentop is the
   equivalent.
 
   It replaced an `ACTIVE` column whose `●` nobody acted on — `UPDATED` already
   answers "is this live", in seconds rather than as a dot. The `cached` marker
-  that column also carried, for sessions the server has forgotten but abctl
+  that column also carried, for sessions the server has forgotten but agentop
   still holds events for, moved into `UPDATED`.
 
   **Every figure in this table is a per-session total**, summed over that
@@ -696,7 +696,7 @@ abctl is for, and the other three are surfaces you visit and leave.
   column at once:
 
   ```
-  abctl · http://localhost:9094
+  agentop · http://localhost:9094
   LAST 1H    TODAY   7 DAYS    MONTH
     $4.04   $18.80  $216.44  $703.18
   ────────────────────────────────────────────────────────────────────────────────────────────────────
@@ -755,7 +755,7 @@ abctl is for, and the other three are surfaces you visit and leave.
 
   <a id="spans-and-the-cost-ledger"></a>
   **Spans and the cost ledger.** Three of the four spans are ledger-backed, so what
-  abctl can really distinguish depends on whether the proxy keeps one:
+  agentop can really distinguish depends on whether the proxy keeps one:
 
   | | `LAST 1H` | `TODAY` | `7 DAYS` | `MONTH` |
   |---|---|---|---|---|
@@ -768,7 +768,7 @@ abctl is for, and the other three are surfaces you visit and leave.
   different captions. That is a known limitation rather than a design: the target is
   a local install, where the ledger is on by default and all four spans are real.
   `w` used to offer 15m/1h/6h, which is what a ledger-less deployment could actually
-  tell apart, and those remain reachable through `abctl cost --window` and the Usage
+  tell apart, and those remain reachable through `agentop cost --window` and the Usage
   pane.
 
   A poll chain that stops answering is dated on its own label — `TODAY 7m` — so a
@@ -919,7 +919,7 @@ abctl is for, and the other three are surfaces you visit and leave.
   with no STATUS is read as "still in flight" rather than "failed":
 
   ```
-  abctl · ctx-abc-1234…
+  agentop · ctx-abc-1234…
 
    #     TIME          DIR   PHASE    ACTION    PLUGIN              METHOD              STATUS   DURATION    TOKENS             COST                 HOST
    1     14:23:07.41   in    req      allow     jwt-validation                                                                                       weather-agent
@@ -943,7 +943,7 @@ abctl is for, and the other three are surfaces you visit and leave.
   row carry what `tool-prune` saved in parentheses — `−` for a counted saving,
   `~` for a projected one.
 - **Detail**: pretty-printed JSON of a single event. Scroll with arrow
-  keys; `y` yanks to `~/.cortex/abctl-events/<timestamp>-<rand>.json` and
+  keys; `y` yanks to `~/.cortex/agentop-events/<timestamp>-<rand>.json` and
   shows the path in the footer until you press another key. The directory is
   private to you (0700, inside `~/.cortex`) and the files are 0600 — yanked
   events carry identity subjects, raw LLM completions and tool arguments, so
@@ -958,7 +958,7 @@ abctl is for, and the other three are surfaces you visit and leave.
   `P` from Sessions, Events or Detail; `Esc` returns to whichever of those it was
   opened from. Columns: position, direction, plugin name, DEPS (✓/✗ — see "Plugin
   dependencies" below), writes, body access, event count. `e` opens
-  the editor. Outside the viewer, `abctl pipeline get` prints the same
+  the editor. Outside the viewer, `agentop pipeline get` prints the same
   composition — plus each plugin's description and config — and `--json` emits
   `/v1/pipeline`'s own shape for a script. It has no DEPS or event count:
   one is derived from the chain rather than reported by the proxy, the other
@@ -1002,7 +1002,7 @@ abctl is for, and the other three are surfaces you visit and leave.
   legend entry.
 
   ```
-  abctl · http://localhost:9094 · usage · all
+  agentop · http://localhost:9094 · usage · all
 
     USAGE — all sessions — 10m0s @ 1m0s — tokens — by model
 
@@ -1061,7 +1061,7 @@ abctl is for, and the other three are surfaces you visit and leave.
   lists what the binary can build, not what is wired up.
 
   ```
-  abctl · http://localhost:9094 · catalog
+  agentop · http://localhost:9094 · catalog
 
    NAME                    REQUIRES                      DESCRIPTION
    jwt-validation                                        Validate inbound JWTs against JWKS
@@ -1074,14 +1074,14 @@ abctl is for, and the other three are surfaces you visit and leave.
   [↑↓] nav  [↵] plugin detail  [r] refresh  [esc] back  [?] keys  [q] quit
   ```
 
-- **Kubernetes Namespaces** (optional): the way in when abctl has no endpoint
+- **Kubernetes Namespaces** (optional): the way in when agentop has no endpoint
   to connect to — one row per namespace holding an AuthBridge agent, then a
   Pods pane, then an automatic `kubectl port-forward` into the session view.
   Shown when `--endpoint` was not given and either no local Cortex is answering
   or `--kubernetes` was passed; `[l]` leaves it for the Cortex on this machine.
 
   ```
-  abctl · pick namespace
+  agentop · pick namespace
 
    NAMESPACE                       PODS
    team1                           2
@@ -1126,7 +1126,7 @@ Layered on top of all of them:
      do.
 
   While it's up it owns the keyboard — `?`, `Esc`, or `q` closes it
-  (`q` closes the overlay rather than quitting abctl). This is the
+  (`q` closes the overlay rather than quitting agentop). This is the
   discoverable home for keys the single-line footer has no room for,
   `P` among them. Two exceptions: while a pipeline edit is in flight
   that overlay is already modal and owns `y`/`N`, and while the filter
@@ -1169,7 +1169,7 @@ Layered on top of all of them:
 | `c` | events | open the column picker (`↑↓`/`jk` move, `space`/`x` toggle, `s` sort, `r` reset, `Esc`/`Enter`/`c` close); the selection and sort are saved on close |
 | `s` | column picker | sort by the column under the cursor: descending → ascending → chronological. Pressing it on a different column starts that column descending. `#` is not sortable — its order already *is* chronological |
 | `p` | any | pause/resume stream |
-| `y` | detail | yank event JSON to `~/.cortex/abctl-events` (path stays until the next keypress) |
+| `y` | detail | yank event JSON to `~/.cortex/agentop-events` (path stays until the next keypress) |
 | `g` / `G` | lists | jump to top / bottom. In the events timeline this also sets where the *next* session opens — see [Where a session opens](#where-a-session-opens) |
 | `u` | sessions, events, detail | open the usage charts (sessions: all sessions; events/detail: the selected session) |
 | `$` | every pane except the two pickers, usage and agents | expand the band into a breakdown — where the money went by rate tier, and who spent it by model, endpoint or agent — in place, so the table stays on screen. Needs 27 rows; refuses on the two pickers (nothing is connected yet), on the usage pane, which is already a breakdown with its own cycles, and on the agents pane, which is itself the per-agent breakdown |
@@ -1186,7 +1186,7 @@ Layered on top of all of them:
 | `r` | catalog | refresh the catalog from `/v1/plugins` |
 | `A` | any session-view pane (not the picker) | open the per-agent cost breakdown — what each coding agent has spent today. Capital `A` because lowercase `a` cycles the spend drawer's axis. Refetches on every press, then **refuses below two agents** and says which one it found: a one-row breakdown restates a total already on screen. Not in the footer for that reason; the `?` overlay names it |
 | `↑↓` / `jk` | agents | move the cursor |
-| `↵` | agents | scope to the agent under the cursor, and leave. Pressing it again **on the agent already scoped clears the scope** — there is no "all agents" row, so one key goes both ways and the footer's label flips to say which. It reaches the sessions list, the usage pane, and the spend band and its drawer; `abctl cost --agent` is a separate process |
+| `↵` | agents | scope to the agent under the cursor, and leave. Pressing it again **on the agent already scoped clears the scope** — there is no "all agents" row, so one key goes both ways and the footer's label flips to say which. It reaches the sessions list, the usage pane, and the spend band and its drawer; `agentop cost --agent` is a separate process |
 | `Esc` | agents | back to the pane `A` was pressed on, leaving the scope as it is |
 | `e` | pipeline | edit pipeline subtree in `$EDITOR` |
 | `y` | edit/diff | apply the edit |
@@ -1214,7 +1214,7 @@ Elsewhere, the sessions pane lists only that agent's sessions — the `default` 
 says `agent=`. Against a server that names no session's agent, the list stays whole
 and its footer says `list not scoped`. The spend band and its drawer show that
 agent's figures, asked of the server with `/v1/usage?agent=`; against a server too
-old to answer that, abctl narrows the `group=agent` series itself, as the usage pane
+old to answer that, agentop narrows the `group=agent` series itself, as the usage pane
 does. The drawer drops its agent axis, and a window the server cannot break down for
 one agent reads `BY NONE`. Unscoped, the sessions pane gains an `AGENT` column when
 two agents are listed, and the agents pane a `SESSIONS` count once sessions name
@@ -1222,8 +1222,8 @@ their agent.
 
 ## Settings
 
-abctl remembers the events-table column selection, the sort order, and the active
-filter in `~/.cortex/abctl-config.yaml`. Columns and the sort are saved when the
+agentop remembers the events-table column selection, the sort order, and the active
+filter in `~/.cortex/agentop-config.yaml`. Columns and the sort are saved when the
 column picker closes with `Esc`/`Enter`/`c` (`q` quits without saving); the filter is
 saved when you commit it with `Enter`. There is no explicit save step.
 
@@ -1238,11 +1238,11 @@ a filter surviving a pod switch reads as data loss, so the active one is cleared
 the saved one stays on disk for the next start.
 
 `--prefs PATH` reads and writes somewhere else. This is *not* the Cortex proxy
-config — that is `~/.cortex/config.yaml`, and `--config` on `abctl service` and
-`abctl configure claude-code`.
+config — that is `~/.cortex/config.yaml`, and `--config` on `agentop service` and
+`agentop configure claude-code`.
 
 ```yaml
-# abctl user settings. Written by abctl; safe to hand-edit or delete.
+# agentop user settings. Written by agentop; safe to hand-edit or delete.
 # Columns not listed under events.columns keep their default — only deviations are recorded.
 events:
   columns:
@@ -1277,7 +1277,7 @@ an unrecognised name or sort column is ignored. Inside an entry, always write
 The three `usage.*` keys are the view `[m]`, `[w]` and `[b]` choose, saved as you
 change them, so reopening the pane after a restart lands on the view you left. They
 are stored by name rather than by position, and a name this build does not have —
-a typo, or a value from a newer abctl — falls back to that field's default, so it
+a typo, or a value from a newer agentop — falls back to that field's default, so it
 costs you the setting and never a broken pane. The four extra groupings above are
 recognised, not defaulted: `[b]` does not cycle to them, but the pane renders them
 and they survive a restart.
@@ -1307,7 +1307,7 @@ Each setting comes from **this file, or the built-in default** when the file doe
 set it. A missing file is normal and silent. An unreadable or malformed one is
 reported on stderr and ignored in full — never partially applied, and never fatal.
 
-Nothing else feeds a setting: there is no environment variable (no `ABCTL_*`, and
+Nothing else feeds a setting: there is no environment variable (no `AGENTOP_*`, and
 `XDG_CONFIG_HOME` is not consulted) and no flag for an individual setting. `--prefs`
 chooses *which* file, never what is in it — so to try a layout without disturbing
 your own, point it at a throwaway file. Otherwise change the setting in the TUI,
@@ -1352,38 +1352,38 @@ has and the error goes to the footer.
 after a failed fetch — it says so in the flash rather than handing you a body-less
 event that looks complete.
 
-Because a projected event is ~1KB rather than ~200KB, abctl asks for the server's
+Because a projected event is ~1KB rather than ~200KB, agentop asks for the server's
 full 2000-event ceiling instead of the old 500. A normal session therefore arrives
 whole, and the `N older ([o] to load)` note appears only for genuinely long ones.
 
 Against a proxy that predates `?view=summary` this still works — that server
 ignores the parameter and returns full events, so the timeline is correct and as
-slow as it used to be. abctl can tell the difference from the response and does not
+slow as it used to be. agentop can tell the difference from the response and does not
 waste a per-row fetch on bytes it already holds.
 
 ## Editing the pipeline
 
 Press `e` on the Pipeline pane to edit the runtime `pipeline:` subtree in
-`$EDITOR` (or `vi` if unset). On save, abctl shows a diff and asks
+`$EDITOR` (or `vi` if unset). On save, agentop shows a diff and asks
 `apply this change? (y/N)`. Confirming writes the change back, then polls the
 framework's `/reload/status` until the reload completes (success or failure).
 
-Where it writes depends on what you are connected to, not on how abctl was
+Where it writes depends on what you are connected to, not on how agentop was
 started:
 
 | Connected to | `e` writes | Reload confirmed via |
 |---|---|---|
-| a pod, via the picker | `kubectl apply --server-side` against the per-agent ConfigMap, `--field-manager=abctl --force-conflicts=true` (taking ownership of `data.config.yaml` from the operator's webhook on first edit) | the port-forward's `:9093/reload/status` |
+| a pod, via the picker | `kubectl apply --server-side` against the per-agent ConfigMap, `--field-manager=agentop --force-conflicts=true` (taking ownership of `data.config.yaml` from the operator's webhook on first edit) | the port-forward's `:9093/reload/status` |
 | the Cortex on this machine | `~/.cortex/config.yaml` directly — the file that proxy was started with and already watches | that proxy's own stats address, `stats.address` in the same file |
 
 The local path needs neither kubectl nor a ConfigMap: the proxy watches its
-config file with fsnotify, so writing the file *is* the apply. abctl writes a
+config file with fsnotify, so writing the file *is* the apply. agentop writes a
 temporary sibling and renames it over the target, so the watcher only ever sees
 a complete file — a half-written one would book a reload failure against an
 edit you never made.
 
 Local editing is offered whenever the endpoint on screen is this machine's
-Cortex: a bare `abctl` that auto-connected to it, `[l]` from the picker, or an
+Cortex: a bare `agentop` that auto-connected to it, `[l]` from the picker, or an
 explicit `--endpoint` aimed at its session API. Loopback spellings are
 interchangeable, so `--endpoint http://localhost:47601` and
 `http://127.0.0.1:47601` both match a config bound to either. A local Cortex
@@ -1402,15 +1402,15 @@ atomicity guarantee needs: a rename across filesystems fails `EXDEV`.
 
 That relies on the proxy watching the resolved file's directory, which the
 reloader does — but the reloader ships in `authbridge-proxy`, and that installs
-separately from abctl. **A proxy started before that change still has the old
+separately from agentop. **A proxy started before that change still has the old
 single watch**, so on Linux a symlinked config will not observe the write: the
-poll times out and rolls the edit back. Run `abctl service restart` after
-upgrading the proxy. abctl cannot detect the mismatch — nothing the proxy
+poll times out and rolls the edit back. Run `agentop service restart` after
+upgrading the proxy. agentop cannot detect the mismatch — nothing the proxy
 exposes describes its watcher — so this is a note rather than a check.
 
-**A concurrent write aborts the apply.** This file has other writers — `abctl
-tools scan --write`, the config migration `abctl service install` runs, a second
-abctl session — and `$EDITOR` can be open for minutes. The apply re-reads the file
+**A concurrent write aborts the apply.** This file has other writers — `agentop
+tools scan --write`, the config migration `agentop service install` runs, a second
+agentop session — and `$EDITOR` can be open for minutes. The apply re-reads the file
 first and refuses
 if it moved, rather than renaming a whole file built from stale bytes over
 somebody else's change. The refusal names the likely culprits; re-open the edit
@@ -1442,7 +1442,7 @@ cannot finish.
 
 ### Pre-apply validation
 
-After save, abctl runs the same Requires/RequiresAny/After/Claims
+After save, agentop runs the same Requires/RequiresAny/After/Claims
 checks the framework runs at reload-time, against the cached
 `/v1/plugins` catalog. Issues land as a red banner above the diff in ~50ms
 instead of at hot-reload — which means after the kubelet sync (~60s) in a
@@ -1453,7 +1453,7 @@ cluster, or about a second later locally:
   • [outbound] ibac pos 1: Requires "mcp-parser", but it is not in the outbound chain
 ```
 
-The y/N prompt becomes "apply anyway? (y/N)" — abctl's check is
+The y/N prompt becomes "apply anyway? (y/N)" — agentop's check is
 non-blocking. The framework's own validateRelationships is the
 source of truth and will fire again at reload regardless.
 
@@ -1465,9 +1465,9 @@ populate it for the rest of the session.
 
 Cluster path only — a local edit has no agent and skips all of this.
 
-The per-agent ConfigMap is named `authbridge-config-<agent>`. abctl
+The per-agent ConfigMap is named `authbridge-config-<agent>`. agentop
 resolves `<agent>` from the selected pod's `app.kubernetes.io/name`
-label (operator sets this). If the label is absent, abctl
+label (operator sets this). If the label is absent, agentop
 falls back to stripping the last two dash-separated segments of the
 pod name (the ReplicaSet hash + pod suffix).
 
@@ -1475,7 +1475,7 @@ pod name (the ReplicaSet hash + pod suffix).
 
 If the write succeeds but the reload fails (unknown plugin name, malformed
 config, validation error), the framework keeps the previous in-memory pipeline
-serving requests — but the stored config now holds the bad YAML. abctl detects
+serving requests — but the stored config now holds the bad YAML. agentop detects
 this via `/reload/status` and re-applies the content captured at Fetch time,
 reconciling the stored state back to what is actually running.
 
@@ -1513,17 +1513,17 @@ Flashes auto-dismiss after a few seconds; if you miss one, query
 
 ### Permissions
 
-abctl shells out to `kubectl`; kubectl uses your kubeconfig. Editing
+agentop shells out to `kubectl`; kubectl uses your kubeconfig. Editing
 requires `update` on `configmaps` in the agent's namespace (in
 addition to `get pods` which the picker already needs). RBAC denial
 surfaces verbatim in the overlay.
 
 ### Tempfile lifecycle
 
-abctl writes the editable pipeline subtree to `$TMPDIR/abctl-pipeline-*.yaml`
+agentop writes the editable pipeline subtree to `$TMPDIR/agentop-pipeline-*.yaml`
 on every edit. The tempfile is **left in place on every exit path**
 (success, error, abort) so an interrupted edit is recoverable. On
-abctl launch, files older than 24h in this glob are swept
+agentop launch, files older than 24h in this glob are swept
 automatically — no manual cleanup needed.
 
 ### Hot-reload window
@@ -1532,8 +1532,8 @@ The framework reloads via a config-file watcher, so how long the wait is depends
 on how the edit reaches that file. In a cluster, kubelet syncs ConfigMap edits
 into the pod's mount within ~60s and the framework then debounces and reloads —
 typically under 90s wall-clock from apply. Locally there is nothing to sync: the
-proxy is already watching the file abctl wrote, so a reload normally lands in
-about a second. The overlay says which of the two you are waiting on. abctl shows
+proxy is already watching the file agentop wrote, so a reload normally lands in
+about a second. The overlay says which of the two you are waiting on. agentop shows
 a spinner either way.
 
 The poller terminates with one of:
@@ -1568,7 +1568,7 @@ Plugins declare dependencies in their `Capabilities()`:
 - **Claims**: exclusive ownership. Within one chain, two plugins
   cannot both declare the same claim string.
 
-abctl surfaces these in three places:
+agentop surfaces these in three places:
 
 - **Pipeline pane DEPS column**: ✓ when all declared deps satisfied,
   ✗ when any fail, blank when no deps declared. The footer hint
@@ -1581,11 +1581,11 @@ abctl surfaces these in three places:
   above.
 
 The framework's own validateRelationships is the source of truth and
-runs at every reload. abctl's checks are the fast-feedback layer.
+runs at every reload. agentop's checks are the fast-feedback layer.
 
 ## Trust model
 
-`abctl` does no authentication — same as the server. Use only against
+`agentop` does no authentication — same as the server. Use only against
 sidecars reachable via in-cluster networking or a local port-forward.
 Session events contain raw user messages, LLM completions, and tool
 results; treat the output accordingly.
@@ -1600,7 +1600,7 @@ results; treat the output accordingly.
 
 ## Deferred to later PRs
 
-- Native clipboard (currently writes a file under `~/.cortex/abctl-events`).
+- Native clipboard (currently writes a file under `~/.cortex/agentop-events`).
 - More persisted settings (#954): pane sizes, theme. Each needs the setting itself
   before there is anything to persist — pane sizes are recomputed per frame, and
   there is no theme to choose. (Sort order is done: see the column picker's `s`.)

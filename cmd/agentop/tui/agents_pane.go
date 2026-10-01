@@ -33,12 +33,12 @@ type agentRow struct {
 // detect — Bucket.Series does not record which axis produced it.
 //
 // THE FOLD ITSELF IS usage.FoldSeriesAcrossWindow, not a loop here. It saturates through
-// Counts.Add rather than wrapping, and `abctl cost --agent` needs the identical answer — two
+// Counts.Add rather than wrapping, and `agentop cost --agent` needs the identical answer — two
 // copies would be two definitions of what a window total means. The drawer's rankSeriesByCost
 // records what the alternative cost when it did write its own: a wrapped total ranks BELOW a
 // ten-micro series, which here would sort the busiest agent to the bottom of the table.
 //
-// ORDERED BY usage.SortSeriesLabels, not by a comparison written here. `abctl cost --by` ranks
+// ORDERED BY usage.SortSeriesLabels, not by a comparison written here. `agentop cost --by` ranks
 // the same series for the same reason, so the rule has one definition in core and both surfaces
 // call it — the tie-break on the label matters more than it sounds, because every unpriced agent
 // has CostMicros 0 and until billing units land the label is the entire order for all of them.
@@ -129,10 +129,10 @@ const agentsFetchTimeout = 5 * time.Second
 //
 // A SYMBOLIC WINDOW, so the figures come from the durable cost ledger rather than the
 // six-hour ring. "Which agents have spent what" is a question about a day, and the ring cannot
-// answer it — a reader comparing this against `abctl cost` (which defaults to the same window)
+// answer it — a reader comparing this against `agentop cost` (which defaults to the same window)
 // must not find two different denominators. Where the ledger is off the proxy serves the
 // longest window it holds and says so in the response, which is the same degradation
-// `abctl cost` documents.
+// `agentop cost` documents.
 const agentsWindow = usage.WindowToday
 
 // agentsOpen says what the reply to a rows fetch is allowed to do with them.

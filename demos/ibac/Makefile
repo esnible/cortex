@@ -16,7 +16,7 @@
 #   - ollama on the host with llama3.2:3b pulled
 #   - kubectl, kind, podman/docker, python3 + PyYAML
 
-.PHONY: help build-images build-abctl load-images deploy \
+.PHONY: help build-images build-agentop load-images deploy \
         patch-config demo-ibac show-result undeploy \
         logs-agent logs-evil preflight wait-pods
 
@@ -113,19 +113,19 @@ $(STAMP_DIR)/evil-server.built: $(shell find evil-server -type f) go.mod | $(STA
 
 build-images: $(STAMP_DIR)/agent.built $(STAMP_DIR)/email-server.built $(STAMP_DIR)/evil-server.built  ## Build demo images (rebuilds only when sources change)
 
-build-abctl:  ## Build abctl into /tmp (rebuilds when source is newer; used by show-result)
-	@ABCTL_SRC_DIR=../../cmd/agentop; \
-	if [ -x /tmp/abctl-ibac-demo ]; then \
-	  NEWER=$$(find $$ABCTL_SRC_DIR -name '*.go' -newer /tmp/abctl-ibac-demo -print -quit 2>/dev/null); \
+build-agentop:  ## Build agentop into /tmp (rebuilds when source is newer; used by show-result)
+	@AGENTOP_SRC_DIR=../../cmd/agentop; \
+	if [ -x /tmp/agentop-ibac-demo ]; then \
+	  NEWER=$$(find $$AGENTOP_SRC_DIR -name '*.go' -newer /tmp/agentop-ibac-demo -print -quit 2>/dev/null); \
 	  if [ -z "$$NEWER" ]; then \
-	    echo "[*] /tmp/abctl-ibac-demo is up to date with the abctl source; skipping. \`rm /tmp/abctl-ibac-demo\` to force rebuild."; \
+	    echo "[*] /tmp/agentop-ibac-demo is up to date with the agentop source; skipping. \`rm /tmp/agentop-ibac-demo\` to force rebuild."; \
 	    exit 0; \
 	  fi; \
-	  echo "[*] abctl source has been modified since /tmp/abctl-ibac-demo was built — rebuilding ..."; \
+	  echo "[*] agentop source has been modified since /tmp/agentop-ibac-demo was built — rebuilding ..."; \
 	else \
-	  echo "[*] Building abctl into /tmp/abctl-ibac-demo ..."; \
+	  echo "[*] Building agentop into /tmp/agentop-ibac-demo ..."; \
 	fi; \
-	cd $$ABCTL_SRC_DIR && go build -o /tmp/abctl-ibac-demo .
+	cd $$AGENTOP_SRC_DIR && go build -o /tmp/agentop-ibac-demo .
 
 # load-images reloads each image when EITHER:
 #   - the kind node doesn't have it under docker.io/library/<name>, OR
@@ -217,7 +217,7 @@ demo-ibac: preflight build-images load-images deploy patch-config  ## Build, loa
 	@echo "║ to see the pipeline-level forensic.                      ║"
 	@echo "╚══════════════════════════════════════════════════════════╝"
 
-show-result: build-abctl  ## Launch abctl against the agent's session API (interactive TUI)
+show-result: build-agentop  ## Launch agentop against the agent's session API (interactive TUI)
 	bash scripts/launch-agentop.sh $(NAMESPACE) $(AGENT_NAME)
 
 # ---------- Cleanup ----------

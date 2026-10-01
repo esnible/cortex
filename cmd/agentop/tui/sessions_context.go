@@ -8,18 +8,18 @@ import (
 	"github.com/rossoctl/cortex/core/pipeline"
 )
 
-// sessionContextFor is the gauge's figure for one session: abctl's own remembered fold merged
+// sessionContextFor is the gauge's figure for one session: agentop's own remembered fold merged
 // with whatever the server published for that row.
 //
 // NEITHER SOURCE DOMINATES, which is why this merges rather than preferring one. The server has
-// seen everything since the PROXY started; abctl only since IT attached, which is usually less —
-// but abctl's copy survives a proxy restart, and destroying a figure it still holds because the
+// seen everything since the PROXY started; agentop only since IT attached, which is usually less —
+// but agentop's copy survives a proxy restart, and destroying a figure it still holds because the
 // server forgot is #870's shape. pipeline.MergePromptContext resolves it by the rule rather than by
 // size: a stated figure beats an unstated one at any magnitude.
 //
 // AND MERGING MOVES THE FIGURE EITHER WAY, which "neither source dominates" must not be read as
 // denying: this is a max over a ranking, not an improvement. For an UNSTATED session the ranking
-// leads on message count and the server's fold usually has the longer memory, so a turn abctl has
+// leads on message count and the server's fold usually has the longer memory, so a turn agentop has
 // already moved past can come back:
 //
 //	local   unstated, fresh, msgs   952, 400,249   had correctly followed a compaction
@@ -28,7 +28,7 @@ import (
 //
 // That obeys the documented ordering rather than defeating it — it is the known cost of the
 // message-count fallback (see pipeline.PromptContextOf: a compaction leaves the longer
-// pre-compaction request retained and the gauge keeps showing the old context), and abctl had the
+// pre-compaction request retained and the gauge keeps showing the old context), and agentop had the
 // better answer only by the accident of having attached later, which is not something the rule can
 // prefer. TestSessionContextFor_AStaleServerFigureCanTakeTheColumnFromAFresherLocalOne pins it, as
 // the mirror of the stated-beats-unstated case.
@@ -48,7 +48,7 @@ func (m *model) sessionContextFor(id string, server *pipeline.PromptContext) int
 	return m.localContextFor(id).TokensMergedWith(server)
 }
 
-// localContextFor is the fold abctl maintains itself, unchanged from before the server published
+// localContextFor is the fold agentop maintains itself, unchanged from before the server published
 // anything — see the retention inventory on model.events for why it remembers the winning turn
 // rather than caching the slice.
 //
@@ -153,7 +153,7 @@ func contextGauge(promptTokens, width int) string {
 	return "▕" + bar + strings.Repeat(" ", budget-lipgloss.Width(bar)) + "▏"
 }
 
-// cachedMarker names a row whose events abctl holds and the server no longer lists (#870).
+// cachedMarker names a row whose events agentop holds and the server no longer lists (#870).
 //
 // A word rather than a glyph: it has to survive rendering under a colour profile, and bubbles
 // truncates each cell with runewidth.Truncate BEFORE styling — see

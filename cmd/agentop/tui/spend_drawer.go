@@ -129,12 +129,12 @@ var spendDrawerAxes = []usage.Group{usage.GroupModel, usage.GroupEndpoint, usage
 //
 // The second was really a worry about the twenty-second POLL LOOP, not about user demand. The
 // drawer has its own chain now, polled only while it is open and at the slow cadence, and
-// `abctl cost --window 7d` has always done exactly this read on demand from a shell. A
+// `agentop cost --window 7d` has always done exactly this read on demand from a shell. A
 // keypress that costs a disk walk is a keypress someone asked for.
 //
 // 15m and 6h are dropped. They are ring diagnostics rather than budget spans, and six entries
 // to cycle through to reach four useful ones is a worse surface than four. Both remain
-// reachable through `abctl cost --window` and the Usage pane.
+// reachable through `agentop cost --window` and the Usage pane.
 //
 // KNOWN LIMITATION, ON A DEPLOYMENT WITH NO COST LEDGER. Three of these four spans are
 // ledger-backed, and without a ledger — Kubernetes by default — the server answers all three

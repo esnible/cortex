@@ -94,7 +94,7 @@ type PluginCapabilities struct {
 	RequiresLater []string
 
 	// Description is operator-facing prose, one line, ≤80 chars,
-	// describing what this plugin does. Surfaces in `abctl`'s
+	// describing what this plugin does. Surfaces in `agentop`'s
 	// plugin-detail and catalog panes, and in /v1/plugins.
 	//
 	// Capabilities are static type-level metadata: Capabilities() must

@@ -13,7 +13,7 @@ import (
 
 // TestRecordTunnelOpened_SetsTunnelMarker locks the explicit producer marker:
 // a CONNECT / transparent-redirect tunnel-open is recorded with Tunnel=true so
-// consumers (abctl) fold it into the decrypted inner request without inferring
+// consumers (agentop) fold it into the decrypted inner request without inferring
 // "tunnel" from host/extension shape.
 func TestRecordTunnelOpened_SetsTunnelMarker(t *testing.T) {
 	store := session.New(5*time.Minute, 100, 0)

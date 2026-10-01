@@ -221,7 +221,7 @@ func TestCost_ThresholdMeasuredOnPromptNotOutput(t *testing.T) {
 // TestCost_PerTierInvariantCoversEveryTier extends the invariant beyond the one
 // tier it was originally tested on.
 //
-// Output matters most: tool-prune ships no output rate at all, and abctl's
+// Output matters most: tool-prune ships no output rate at all, and agentop's
 // promptCost zeroes u.Output specifically to avoid tripping this rule — so the rule
 // firing correctly for output is what makes that workaround necessary and correct.
 func TestCost_PerTierInvariantCoversEveryTier(t *testing.T) {

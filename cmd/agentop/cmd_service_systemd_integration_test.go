@@ -36,7 +36,7 @@ func isExitCode(err error, code int) bool {
 	return errors.As(err, &ee) && ee.ExitCode() == code
 }
 
-// requireRealSystemd skips (or, with ABCTL_SYSTEMD_TESTS=required, fails) unless
+// requireRealSystemd skips (or, with AGENTOP_SYSTEMD_TESTS=required, fails) unless
 // this process can actually drive a live systemd --user session — covering the same
 // ground as TestWaitBootedOut_RealLaunchd's skip guards (cmd_service_bootout_test.go),
 // deliberately in a different shape: three categories here (wrong GOOS, a binary
@@ -48,12 +48,12 @@ func isExitCode(err error, code int) bool {
 // That macOS test's env-var escape hatch exists because silent skipping is exactly
 // how the bootout-race bug (#880) shipped unexercised. Its own workflow never sets
 // the var, though, so the test has skipped in every CI run since it was written.
-// The one CI job that runs THIS test should set ABCTL_SYSTEMD_TESTS=required after
+// The one CI job that runs THIS test should set AGENTOP_SYSTEMD_TESTS=required after
 // setting up a real systemd --user session, so it can't fall into the same trap.
 func requireRealSystemd(t *testing.T) {
 	t.Helper()
 	skip := t.Skipf
-	if os.Getenv("ABCTL_SYSTEMD_TESTS") == "required" {
+	if os.Getenv("AGENTOP_SYSTEMD_TESTS") == "required" {
 		skip = t.Fatalf
 	}
 	if runtime.GOOS != "linux" {
@@ -234,7 +234,7 @@ func TestSupervisorRestartsAfterCrash_RealSystemd(t *testing.T) {
 	// already gated this on GOOS=linux, so the syscall package is always usable here,
 	// and it removes an external-binary dependency requireRealSystemd doesn't guard —
 	// on a slim image missing /bin/kill, that would surface as a failed test with
-	// ABCTL_SYSTEMD_TESTS=required set, rather than the environment-problem skip it
+	// AGENTOP_SYSTEMD_TESTS=required set, rather than the environment-problem skip it
 	// actually is.
 	if err := syscall.Kill(pid, syscall.SIGKILL); err != nil {
 		t.Fatalf("kill -9 %d: %v", pid, err)
@@ -255,7 +255,7 @@ func TestSupervisorRestartsAfterCrash_RealSystemd(t *testing.T) {
 // TestSupervisorStaysStoppedAfterDeliberateStop_RealSystemd proves the other half
 // of the same comment: "a `systemctl stop` is distinguishable from a crash, so a
 // stop stays stopped." Restart=on-failure must NOT fire for a deliberate stop, or
-// `abctl service stop` would look exactly like the "stop that does not stop" bug
+// `agentop service stop` would look exactly like the "stop that does not stop" bug
 // this whole feature exists to avoid on the launchd side.
 func TestSupervisorStaysStoppedAfterDeliberateStop_RealSystemd(t *testing.T) {
 	requireRealSystemd(t)

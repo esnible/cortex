@@ -193,7 +193,7 @@ func TestFilter_KeystrokesDoNotSave(t *testing.T) {
 }
 
 // TestFilter_EscCancelsAndPersistsNothing: Esc means cancel here as it does
-// everywhere else in abctl, so it restores the filter that was in effect when `/`
+// everywhere else in agentop, so it restores the filter that was in effect when `/`
 // was pressed and writes nothing.
 //
 // It used to clear the filter outright. Harmless while filters were per-session;

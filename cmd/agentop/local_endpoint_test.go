@@ -77,7 +77,7 @@ func TestLocalSessionEndpoint_NoConfigMeansNoLocalEndpoint(t *testing.T) {
 }
 
 // TestLocalSessionAPIUp_OnlyWhenSomethingAnswers is what keeps a stale config
-// from hijacking abctl: an install that is no longer running must not steer
+// from hijacking agentop: an install that is no longer running must not steer
 // someone away from the cluster picker.
 func TestLocalSessionAPIUp_OnlyWhenSomethingAnswers(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -105,7 +105,7 @@ func TestLocalSessionAPIUp_OnlyWhenSomethingAnswers(t *testing.T) {
 
 // TestLocalSessionAPIUp_RejectsNon2xx: only a 2xx proves the session API is
 // there. Anything else means some other service holds the port, and selecting it
-// sends abctl somewhere useless instead of to the cluster picker.
+// sends agentop somewhere useless instead of to the cluster picker.
 func TestLocalSessionAPIUp_RejectsNon2xx(t *testing.T) {
 	for _, status := range []int{
 		http.StatusInternalServerError,
@@ -125,7 +125,7 @@ func TestLocalSessionAPIUp_RejectsNon2xx(t *testing.T) {
 
 // TestLocalSessionEndpoint_RejectsMalformedAddresses: a bad address must yield no
 // endpoint rather than a URL that merely fails to connect, because the
-// consequence of the latter is abctl falling silently through to the cluster
+// consequence of the latter is agentop falling silently through to the cluster
 // picker with no explanation.
 func TestLocalSessionEndpoint_RejectsMalformedAddresses(t *testing.T) {
 	for _, addr := range []string{

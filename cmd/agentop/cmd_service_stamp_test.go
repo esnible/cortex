@@ -27,7 +27,7 @@ func TestProxyStampRoundTrip(t *testing.T) {
 //
 // The hash used to live in the unit, so recording it rewrote the unit — and systemd
 // flags a unit whose mtime moved as "changed on disk, run daemon-reload", which is
-// exactly the message `abctl service` exists so nobody has to see. Launch state now
+// exactly the message `agentop service` exists so nobody has to see. Launch state now
 // lives beside proxy.pid instead, so the unit is untouched on every platform and no
 // daemon-reload is owed.
 func TestProxyStamp_LeavesTheUnitAlone(t *testing.T) {
@@ -189,7 +189,7 @@ func TestInstallCanSkip(t *testing.T) {
 }
 
 // TestServiceUsageDocumentsRestart keeps the flag discoverable. A flag that only
-// exists in a Makefile recipe is one nobody finds from `abctl service --help`.
+// exists in a Makefile recipe is one nobody finds from `agentop service --help`.
 func TestServiceUsageDocumentsRestart(t *testing.T) {
 	if !strings.Contains(serviceUsage, "--restart") {
 		t.Error("service usage does not mention --restart")

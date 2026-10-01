@@ -51,7 +51,7 @@ func TestFooterStatusRowFitsNarrowWidth(t *testing.T) {
 		// The timed (non-sticky) flash path also appends to the status row before
 		// the feedback link, so it is the tightest case. flashUntil in the future
 		// keeps the flash live.
-		{"with timed flash", &model{width: width, pane: paneEvents, connState: connStateInfo{phase: connOpen}, flash: "yanked → ~/.cortex/abctl-events/event.json", flashUntil: time.Now().Add(time.Hour)}},
+		{"with timed flash", &model{width: width, pane: paneEvents, connState: connStateInfo{phase: connOpen}, flash: "yanked → ~/.cortex/agentop-events/event.json", flashUntil: time.Now().Add(time.Hour)}},
 	}
 
 	for _, tc := range cases {

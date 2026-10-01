@@ -61,7 +61,7 @@ func TestHelpOverlayClosesOnEscAndQ(t *testing.T) {
 			if mm.helpVisible {
 				t.Fatalf("%s should close the overlay", tc.name)
 			}
-			// Critically, `q` must not quit abctl while the overlay is up.
+			// Critically, `q` must not quit agentop while the overlay is up.
 			if cmd != nil {
 				t.Fatalf("%s on the overlay should not emit a Cmd (got quit?)", tc.name)
 			}

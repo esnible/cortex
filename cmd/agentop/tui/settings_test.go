@@ -22,7 +22,7 @@ func resetSettingsForTest(t *testing.T) {
 // TestColumnSelection_AbsentColumnsDefaultOn is the headline rule of the file
 // format: the config records deviations, so a column the file does not mention takes
 // its own default — VISIBLE for every default column. Inverting this would mean a
-// column added in a later abctl starts hidden for everyone who already has a config
+// column added in a later agentop starts hidden for everyone who already has a config
 // file; ignoring the default would switch on the opt-in BYTES for all of them.
 func TestColumnSelection_AbsentColumnsDefaultOn(t *testing.T) {
 	s := UserSettings{Events: EventSettings{Columns: []ColumnSetting{

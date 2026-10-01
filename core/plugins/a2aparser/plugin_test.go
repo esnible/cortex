@@ -90,7 +90,7 @@ func TestA2AParser_MessageStream(t *testing.T) {
 // top-level params that the earlier extraction path looked at. Without this
 // fallback, the listener's request-phase session lookup sees an empty
 // SessionID and buckets every turn under "default" instead of the real
-// contextId, leading to a single overflowing "default" session in abctl.
+// contextId, leading to a single overflowing "default" session in agentop.
 func TestA2AParser_MessageStream_ContextIDInsideMessage(t *testing.T) {
 	p := NewA2AParser()
 	pctx := &pipeline.Context{
@@ -334,7 +334,7 @@ func TestA2AParser_InvalidJSON(t *testing.T) {
 // payloads (Anthropic /v1/messages, OpenAI /v1/chat/completions) parse
 // cleanly into JSONRPCRequest with a zero-value Method, so the parser
 // must NOT attach an A2AExtension or record a "matched_" observe for
-// them — otherwise abctl shows a phantom a2a-parser match on every
+// them — otherwise agentop shows a phantom a2a-parser match on every
 // inference call. Regression for the empty-method guard.
 func TestA2AParser_NonJSONRPCBody_NoMatch(t *testing.T) {
 	cases := []struct {
@@ -365,7 +365,7 @@ func TestA2AParser_NonJSONRPCBody_NoMatch(t *testing.T) {
 				t.Errorf("Extensions.A2A should be nil for non-JSON-RPC body, got %+v", pctx.Extensions.A2A)
 			}
 			// No Invocation should be recorded — the parser didn't claim
-			// this request, so abctl shows no a2a-parser row for it.
+			// this request, so agentop shows no a2a-parser row for it.
 			if pctx.Extensions.Invocations != nil {
 				t.Errorf("expected no Invocation recorded, got %+v", pctx.Extensions.Invocations)
 			}
@@ -377,7 +377,7 @@ func TestA2AParser_NonJSONRPCBody_NoMatch(t *testing.T) {
 // methods just because they carry a non-empty JSON-RPC method. Gating on
 // the A2A namespace (message/, tasks/, agent/) makes it decline MCP
 // traffic (initialize, tools/list, notifications/*, ...) — which is why
-// an MCP request should show no a2a-parser row in abctl. Mirror of
+// an MCP request should show no a2a-parser row in agentop. Mirror of
 // mcp-parser's own-namespace guard.
 func TestA2AParser_ForeignNamespaceMethods_Declined(t *testing.T) {
 	mcpMethods := []string{
@@ -518,7 +518,7 @@ func TestA2AParser_OnResponse_NoRequestContext(t *testing.T) {
 
 // TestA2AParser_OnResponse_EmptyBody locks the regression: when the
 // request side parsed (Extensions.A2A populated) but response body is
-// empty, the parser MUST record a Skip so abctl pairs the timeline rows.
+// empty, the parser MUST record a Skip so agentop pairs the timeline rows.
 func TestA2AParser_OnResponse_EmptyBody(t *testing.T) {
 	p := NewA2AParser()
 	pctx := &pipeline.Context{

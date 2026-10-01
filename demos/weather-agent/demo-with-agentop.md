@@ -1,6 +1,6 @@
-# Weather Agent Walkthrough with `abctl`
+# Weather Agent Walkthrough with `agentop`
 
-This demo extends the standard [Weather Agent demo](./demo-ui.md) with a live view of AuthBridge's plugin pipeline using **`abctl`**, the terminal UI that reads AuthBridge's session API. You'll send chat messages from the Rossoctl UI, then watch the request flow through inbound JWT validation → protocol parsers → outbound MCP calls → LLM inference → response — all with token counts, caller identity, request/response pairing, and request-scoped pipeline state visible in real time.
+This demo extends the standard [Weather Agent demo](./demo-ui.md) with a live view of AuthBridge's plugin pipeline using **`agentop`**, the terminal UI that reads AuthBridge's session API. You'll send chat messages from the Rossoctl UI, then watch the request flow through inbound JWT validation → protocol parsers → outbound MCP calls → LLM inference → response — all with token counts, caller identity, request/response pairing, and request-scoped pipeline state visible in real time.
 
 ## Prerequisites
 
@@ -15,7 +15,7 @@ Before starting, complete these in order:
 
 Verify by sending one chat message and getting a weather response. Once that works, you're ready for this walkthrough.
 
-3. **Enable the protocol parser plugins** on the weather-service's AuthBridge. The default pipeline runs only `jwt-validation` (inbound) and `token-exchange` (outbound), which leaves abctl's Events pane without the `a2a` / `mcp` / `inf` protocol labels and without token counts. Patch the agent's runtime config to add the parsers, then restart the pod:
+3. **Enable the protocol parser plugins** on the weather-service's AuthBridge. The default pipeline runs only `jwt-validation` (inbound) and `token-exchange` (outbound), which leaves agentop's Events pane without the `a2a` / `mcp` / `inf` protocol labels and without token counts. Patch the agent's runtime config to add the parsers, then restart the pod:
 
    ```sh
    kubectl patch configmap authbridge-runtime-config -n team1 --type merge -p '
@@ -37,9 +37,9 @@ Verify by sending one chat message and getting a weather response. Once that wor
 
    Merging only the `pipeline:` key into the existing YAML is brittle across operator versions. If the patch above doesn't take effect, `kubectl edit configmap authbridge-runtime-config -n team1` and add the `pipeline:` section to the existing `config.yaml` by hand. See the [`mcp-parser` plugin reference](../../docs/plugin-catalog.md) for its config fields.
 
-## 1. Get `abctl`
+## 1. Get `agentop`
 
-Download a prebuilt `abctl` (linux/macOS, amd64/arm64) from the
+Download a prebuilt `agentop` (linux/macOS, amd64/arm64) from the
 [Releases page](https://github.com/rossoctl/cortex/releases) — see
 [Download prebuilt binaries](../../docs/architecture.md#download-prebuilt-binaries) for verify + macOS
 quarantine steps — and put it on your PATH.
@@ -52,21 +52,21 @@ cd cortex/cmd/agentop
 go build .
 ```
 
-Either way you get a single `abctl` binary. See [the abctl README](../../cmd/agentop/README.md) for full flags and keybindings.
+Either way you get a single `agentop` binary. See [the agentop README](../../cmd/agentop/README.md) for full flags and keybindings.
 
-## 2. Launch `abctl`
+## 2. Launch `agentop`
 
 ```sh
-./abctl observe
+./agentop observe
 ```
 
-`abctl` discovers AuthBridge agents in your current `kubectl` context
+`agentop` discovers AuthBridge agents in your current `kubectl` context
 and opens a **Namespaces → Pods** picker. Pick `team1`, then the
-weather-service pod — `abctl` spawns a `kubectl port-forward`
+weather-service pod — `agentop` spawns a `kubectl port-forward`
 automatically and drops you into the **Sessions** pane:
 
 ```text
-╭─ abctl · http://127.0.0.1:<port> ────────────────────────────────────────────╮
+╭─ agentop · http://127.0.0.1:<port> ────────────────────────────────────────────╮
 │  ID                                       UPDATED    EVENTS  TOKENS   ACTIVE  │
 │  (no sessions yet)                                                             │
 │                                                                                │
@@ -88,7 +88,7 @@ In a browser:
 3. Type a question: *"What's the weather in New York?"*
 4. Wait for the agent to reply.
 
-`abctl` updates in real time. A new session bucket appears with ~23 events and a token count:
+`agentop` updates in real time. A new session bucket appears with ~23 events and a token count:
 
 ```
   ID                                       UPDATED    EVENTS  TOKENS   ACTIVE
@@ -106,7 +106,7 @@ In a browser:
 Select the row with `↑`/`↓` (or `j`/`k`) and press `Enter` to open the **Events** pane:
 
 ```
-╭─ abctl · 4647e888-db99-4739-926e-8bcceeb237c6 ─────────────────────────╮
+╭─ agentop · 4647e888-db99-4739-926e-8bcceeb237c6 ─────────────────────────╮
 │ ┌─ IDENTITY ─────────────────────────────────────────────────────────┐ │
 │ │ subject  alice                                                      │ │
 │ │ client   rossoctl                                                    │ │
@@ -197,7 +197,7 @@ Select any row and press `Enter` for the **Detail** pane. It shows the event as 
 
 Note the detail view **strictly separates request and response fields** — a request row shows only request-side data, a response row shows only response-side data. The `identity` field is filtered out here because it's already shown in the banner above the table.
 
-Press `y` (yank) to write the full, unfiltered wire-format JSON to `~/.cortex/abctl-events/<timestamp>-<random>.json` (mode `0600`, in a `0700` directory). The path stays in the footer until you press another key. Useful for sharing with teammates or diffing across runs.
+Press `y` (yank) to write the full, unfiltered wire-format JSON to `~/.cortex/agentop-events/<timestamp>-<random>.json` (mode `0600`, in a `0700` directory). The path stays in the footer until you press another key. Useful for sharing with teammates or diffing across runs.
 
 Press `Esc` to go back to the events pane.
 
@@ -207,7 +207,7 @@ From Sessions, Events or Detail, press `P` to open the **Pipeline**. `Esc` retur
 you to whichever of those you pressed it on:
 
 ```
-╭─ abctl · http://localhost:9094 · pipeline ────────────────────────────────────╮
+╭─ agentop · http://localhost:9094 · pipeline ────────────────────────────────────╮
 │  #  DIRECTION  PLUGIN            WRITES          BODY  EVENTS                 │
 │  1  inbound    jwt-validation                    no                            │
 │  2  inbound    a2a-parser        a2a             yes   2                       │
@@ -269,6 +269,6 @@ Press `p` to pause stream rendering. The SSE connection stays open (events don't
 
 ## What to explore next
 
-- **GitHub-issue demo** — same idea with **outbound token exchange** and scope-based access control: [demo-ui.md](../github-issue/demo-ui.md). In `abctl` you'll see an additional outbound `exchange` plugin activity on the pipeline pane, and different `targetAudience` values on outbound events.
+- **GitHub-issue demo** — same idea with **outbound token exchange** and scope-based access control: [demo-ui.md](../github-issue/demo-ui.md). In `agentop` you'll see an additional outbound `exchange` plugin activity on the pipeline pane, and different `targetAudience` values on outbound events.
 - **Advanced weather demo** — adds **AuthBridge on the tool side** so you can inspect a second set of inbound pipeline events when the agent calls the MCP tool: [demo-ui-advanced.md](./demo-ui-advanced.md).
 - **The plugin pipeline spec** — if you want to understand the data structures (`pctx`, `Extensions`, `SessionEvent`, `GetState`/`SetState`), or integrate a custom plugin or sub-pipeline engine: [framework-architecture.md](../../docs/framework-architecture.md).

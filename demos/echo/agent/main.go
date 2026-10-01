@@ -152,7 +152,7 @@ type jsonRPCResponse struct {
 // because the authbridge a2a-parser's response-side artifact
 // extraction (extractSendResponse in plugin.go) keys off
 // `result.status.state` and `result.artifacts[].parts[].text`. Without
-// the Task shape, abctl and the session-event JSON show only the
+// the Task shape, agentop and the session-event JSON show only the
 // REQUEST text on response events, which makes the agent's reply
 // invisible in the platform observability layer.
 //
@@ -327,7 +327,7 @@ func runEcho(inboundAuth string) string {
 // while the authbridge a2a-parser's response-side artifact extractor
 // reads from artifacts[].parts[].text (plugin.go:188-195). Carrying
 // the text in both keeps the rossoctl UI working AND gets the reply
-// into the session-event JSON for abctl / show-result.
+// into the session-event JSON for agentop / show-result.
 func writeRPCSuccess(w http.ResponseWriter, id any, sessionID, text string) {
 	taskID := newUUID()
 	parts := []a2aPart{{Kind: "text", Text: text}}

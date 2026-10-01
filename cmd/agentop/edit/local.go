@@ -90,8 +90,8 @@ func (s FileStore) Describe() Target {
 // The window is not theoretical and it is not small: the operator sits in
 // $EDITOR for as long as they like, and this exact file has other writers —
 // toolscan/patch.go, which the config's own comments tell you to run
-// (`abctl tools scan --write <this file>`), plus the config migration that runs
-// from `abctl service install`, and a second abctl session. Apply renames a whole
+// (`agentop tools scan --write <this file>`), plus the config migration that runs
+// from `agentop service install`, and a second agentop session. Apply renames a whole
 // file built from the Fetch-time bytes, so without this a concurrent write is lost
 // silently and completely, including the parts outside the pipeline subtree.
 //
@@ -108,7 +108,7 @@ func (s FileStore) CheckUnchanged(ctx context.Context, orig *FetchedPipeline) er
 	}
 	if !bytes.Equal(current, orig.Original) {
 		return fmt.Errorf(
-			"%s changed since the edit began (another abctl, `abctl tools scan --write`, or an editor); "+
+			"%s changed since the edit began (another agentop, `agentop tools scan --write`, or an editor); "+
 				"re-open the edit to work from the current file", s.Path)
 	}
 	return nil
@@ -156,11 +156,11 @@ func (s FileStore) Apply(ctx context.Context, payload []byte) (time.Time, error)
 	// than being written off here as a platform caveat.
 	//
 	// VERSION DEPENDENCY, and it is a real one: that watcher fix ships in
-	// authbridge-proxy, which installs separately from abctl and is long-lived.
+	// authbridge-proxy, which installs separately from agentop and is long-lived.
 	// A proxy started before it was added still has the old single watch, so a
 	// symlinked config on Linux behaves as described above no matter how new
-	// abctl is. `abctl service restart` after upgrading the proxy is what closes
-	// it. abctl cannot detect this — nothing in /config or /reload/status
+	// agentop is. `agentop service restart` after upgrading the proxy is what closes
+	// it. agentop cannot detect this — nothing in /config or /reload/status
 	// reports the watcher's shape — so it is documented rather than guarded.
 	target := resolvedPath(s.Path)
 	dir := filepath.Dir(target)
@@ -178,7 +178,7 @@ func (s FileStore) Apply(ctx context.Context, payload []byte) (time.Time, error)
 		mode = st.Mode().Perm()
 	}
 
-	tmp, err := os.CreateTemp(dir, ".abctl-config-*.yaml")
+	tmp, err := os.CreateTemp(dir, ".agentop-config-*.yaml")
 	if err != nil {
 		return time.Time{}, fmt.Errorf("create temp beside %s: %w", target, err)
 	}

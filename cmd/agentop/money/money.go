@@ -1,6 +1,6 @@
 // Package money renders cost figures in the unit they are denominated in.
 //
-// SHARED BY `abctl cost` AND THE TUI, which used to disagree: the command learned billing units
+// SHARED BY `agentop cost` AND THE TUI, which used to disagree: the command learned billing units
 // and the TUI printed "$" over every figure, so the same Bobcoins charge read as credits in one
 // and dollars in the other. The rules live here once so the two cannot drift again.
 //
@@ -21,7 +21,7 @@ import (
 )
 
 // Mixed is what a figure spanning more than one unit renders as: there is no amount to print,
-// since credits summed into dollars is a number that is neither. The same marker `abctl cost --by`
+// since credits summed into dollars is a number that is neither. The same marker `agentop cost --by`
 // prints for a mixed row.
 const Mixed = "(mixed)"
 
@@ -31,7 +31,7 @@ const unknownUnit = "¤"
 
 // IsDefault reports whether a unit off the wire means the default, USD.
 //
-// FOLDED, though core canonicalises before it serialises: abctl is a client of whatever server it
+// FOLDED, though core canonicalises before it serialises: agentop is a client of whatever server it
 // is pointed at, including one older than itself, and a server sending "usd" must not have every
 // surface call dollars a foreign unit.
 func IsDefault(unit string) bool {
@@ -136,7 +136,7 @@ func UnitName(unit string, budget int) string {
 
 // printable is unit restricted to the characters a configured unit may contain — letters, digits,
 // '-' and '_', the rule core's config enforces — because the name reaches a terminal from a
-// server abctl does not control. Nothing left means "¤".
+// server agentop does not control. Nothing left means "¤".
 func printable(unit string) string {
 	var b strings.Builder
 	for _, r := range unit {

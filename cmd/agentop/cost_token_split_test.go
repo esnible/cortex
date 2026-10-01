@@ -12,7 +12,7 @@ import (
 // learned to read usage.output_tokens_details.thinking_tokens: the line was
 // written, gated on KindReasoning, and no producer ever set that bit. These tests
 // pin the behaviour now that it can fire, so the next parser regression shows up
-// here instead of as a silently missing line in `abctl cost`.
+// here instead of as a silently missing line in `agentop cost`.
 func TestTokenSplit_RendersReasoningAsSubsetOfOutput(t *testing.T) {
 	// Captured from a live claude-opus-5 turn at effort "max".
 	got := tokenSplit(usage.Counts{
@@ -80,7 +80,7 @@ func TestTokenSplit_BitAndValueAreBothConsulted(t *testing.T) {
 	}
 }
 
-// `abctl cost --json` must publish the reasoning figure the TUI's drawer draws.
+// `agentop cost --json` must publish the reasoning figure the TUI's drawer draws.
 // Without it a scripted consumer can only get that number by reimplementing
 // usage.ApportionReasoning, which is the drift costJSON.Tiers exists to prevent.
 func TestTiersJSON_PublishesReasoningAndKeepsTheFourTiersSumming(t *testing.T) {

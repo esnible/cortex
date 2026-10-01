@@ -213,7 +213,7 @@ func (s *Server) handleUsage(w http.ResponseWriter, r *http.Request) {
 	case s.ledger == nil:
 		// No ledger: Kubernetes by design, where files in a pod are the wrong sink
 		// and the central collector is the right one. Serve what the ring HAS rather
-		// than 400 — an abctl cost view must degrade to a shorter window, not fail —
+		// than 400 — an agentop cost view must degrade to a shorter window, not fail —
 		// and Snapshot reports the window actually served, so the client never
 		// mislabels a 6-hour figure as a day's.
 		//

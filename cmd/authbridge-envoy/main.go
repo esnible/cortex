@@ -48,7 +48,7 @@ import (
 	"github.com/rossoctl/cortex/core/listener/extproc"
 	"github.com/rossoctl/cortex/core/listener/skiphost"
 	// Plugins. Auth gates first, then the protocol parsers that
-	// supply session-event context for abctl.
+	// supply session-event context for agentop.
 )
 
 // warnCostLedgerInert says out loud that a cost_ledger block in this binary's config

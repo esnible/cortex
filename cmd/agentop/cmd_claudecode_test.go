@@ -580,7 +580,7 @@ func TestClaudeCodeEnable_StateRecordedOnlyOnce(t *testing.T) {
 	}
 }
 
-// TestClaudeCodeDisable_NoStateFallsBackToRemoval: enabled by an older abctl, or
+// TestClaudeCodeDisable_NoStateFallsBackToRemoval: enabled by an older agentop, or
 // the record was lost. Removing is what this always did, and is better than
 // leaving the proxy pointed at a Cortex the user is trying to turn off.
 func TestClaudeCodeDisable_NoStateFallsBackToRemoval(t *testing.T) {
@@ -634,7 +634,7 @@ func TestClaudeCodeDisable_WarnsOnCorruptState(t *testing.T) {
 }
 
 // TestReadState_AbsentIsNotAnError: the silent fallback is correct for a machine
-// that enabled with an older abctl, and must stay silent — a warning on every
+// that enabled with an older agentop, and must stay silent — a warning on every
 // disable would be noise that trains people to ignore it.
 func TestReadState_AbsentIsNotAnError(t *testing.T) {
 	st, err := readState(filepath.Join(t.TempDir(), "nope.json"))

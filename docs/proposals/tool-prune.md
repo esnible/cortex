@@ -17,8 +17,8 @@ operator what that saved:
    rewrites requests no longer forfeits incremental server-sent events (SSE).
 2. **`tool-prune`**, an outbound plugin that deletes named entries from the `tools`
    array of an inference request. The list is static, produced at setup time by a
-   new `abctl tools scan` subcommand that analyses local Claude Code transcripts.
-3. **A plugin metrics channel**, surfaced in the existing `abctl` plugin detail
+   new `agentop tools scan` subcommand that analyses local Claude Code transcripts.
+3. **A plugin metrics channel**, surfaced in the existing `agentop` plugin detail
    pane. Claude Code's `/cost` reports a session total, which is too coarse to
    attribute a saving to the plugin, so the plugin reports its own counters.
 
@@ -283,7 +283,7 @@ is the single deliberate act that enables the plugin. `on_error: observe` remain
 available as a projection mode, but is not the shipped default — two guards where
 one suffices only added a step operators skipped.
 
-### Where the list comes from: `abctl tools scan`
+### Where the list comes from: `agentop tools scan`
 
 A new subcommand ports the discovery core of `claude-tool-audit.py` (about 40 of
 its 814 lines) into Go:
@@ -293,12 +293,12 @@ its 814 lines) into Go:
 - Deduplicate tool calls by the unique `tool_use` block id.
 - Window to the last `--days` (default 30).
 
-`abctl` currently has no subcommand dispatch — `main.go` parses two flags and
+`agentop` currently has no subcommand dispatch — `main.go` parses two flags and
 launches the terminal UI. The change checks for a non-flag first argument before
 `flag.Parse()` and dispatches, falling through to the UI otherwise.
 
 ```sh
-abctl tools scan [--days 30] [--keep Name,Name] [--write <config.yaml>]
+agentop tools scan [--days 30] [--keep Name,Name] [--write <config.yaml>]
 ```
 
 Without `--write` it prints the YAML block. With `--write` it patches the
@@ -337,7 +337,7 @@ says so — so the list can be filled in without a restart.
 
 - `demoConfigYAML()` gains the `tool-prune` entry with `on_error: observe` and an
   empty `remove: []`.
-- `install-demo.sh` runs `abctl tools scan --write` when the config already
+- `install-demo.sh` runs `agentop tools scan --write` when the config already
   exists, and otherwise prints the block in its next-steps output alongside the
   existing "Watch traffic" hint.
 
@@ -365,7 +365,7 @@ configuration (`--allowedTools`, disabling unused MCP servers). AuthBridge's
 advantage is the complement — it applies to every agent behind it with no
 per-client change, and it measures.
 
-## Part 3: Plugin metrics in `abctl`
+## Part 3: Plugin metrics in `agentop`
 
 ### What the plugin counts
 
@@ -503,10 +503,10 @@ Four commits, sequenced so the regression argument survives review.
    point both listener branches at `Pipeline.WritesResponseBody()`; convert
    `cloneCatalog` to a struct copy; correct the `SetBody` godoc; add tests.
 3. **The metrics channel.** `Metric` and `MetricsProvider` in `core/pipeline`;
-   the `describePipeline` type assertion and wire field; the `abctl` pane section.
+   the `describePipeline` type assertion and wire field; the `agentop` pane section.
    Lands before the plugin so the plugin arrives already visible, and so this
    generic addition is reviewed on its own merits rather than as plugin scaffolding.
-4. **`tool-prune`.** Plugin and its counters, `abctl tools scan`,
+4. **`tool-prune`.** Plugin and its counters, `agentop tools scan`,
    `demoConfigYAML()` entry, `install-demo.sh` wiring, and documentation.
 
 ### Testing

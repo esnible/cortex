@@ -11,10 +11,10 @@ go test ./...               # includes the staleness check
 ## What it is
 
 A ~50s animated SVG, in four narrative beats: the install one-liner, the Claude
-Code consent prompt, three Claude Code sessions, then `abctl` answering "where did
+Code consent prompt, three Claude Code sessions, then `agentop` answering "where did
 the money go?".
 
-**The abctl screens are rendered by the real abctl.** `tuicapture.go` starts a real
+**The agentop screens are rendered by the real agentop.** `tuicapture.go` starts a real
 `session.Store`, `usage.Aggregator` and `ledger.Writer`, attaches the
 production Bubble Tea model to them through the real HTTP API, feeds synthetic
 events, and captures `View()`. So every column heading, gauge and money figure in

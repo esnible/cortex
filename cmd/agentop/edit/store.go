@@ -44,7 +44,7 @@ type Target struct {
 // Store is where a pipeline lives: the editor fetches the runtime YAML from
 // one, splices the user's edit into it, and applies it back.
 //
-// Two implementations, one per deployment shape abctl can be pointed at:
+// Two implementations, one per deployment shape agentop can be pointed at:
 // ConfigMapStore (a pod's ConfigMap, reached through kubectl) and FileStore
 // (the config file of a Cortex running on this machine). Both are driven by
 // the same tea.Cmds in edit.go, so the diff prompt, the templates, the

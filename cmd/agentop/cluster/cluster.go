@@ -1,4 +1,4 @@
-// Package cluster talks to a Kubernetes cluster on behalf of abctl's
+// Package cluster talks to a Kubernetes cluster on behalf of agentop's
 // picker UI. The production implementation shells out to `kubectl`;
 // tests inject a stub command runner.
 package cluster

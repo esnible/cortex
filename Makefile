@@ -1,7 +1,7 @@
 # Root Makefile for cortex monorepo
 # Orchestrates linting and formatting across all sub-projects
 
-.PHONY: lint fmt pre-commit build-proxy-init pricing-table abctl authbridge-proxy dev-install help
+.PHONY: lint fmt pre-commit build-proxy-init pricing-table agentop authbridge-proxy dev-install help
 
 BIN_DIR := $(CURDIR)/bin
 
@@ -59,12 +59,12 @@ endif
 
 # authbridge-proxy's plugin set is resolved from a named profile via
 # scripts/profile-tags — the same helper CI uses — so the tag
-# list stays in sync without hand-maintenance. abctl links no plugins.
+# list stays in sync without hand-maintenance. agentop links no plugins.
 
-abctl: ## Build abctl to ./bin/abctl
+agentop: ## Build agentop to ./bin/agentop
 	@mkdir -p $(BIN_DIR)
-	@echo "→ building abctl"
-	@cd cmd/agentop && GOWORK=off go build -o $(BIN_DIR)/abctl .
+	@echo "→ building agentop"
+	@cd cmd/agentop && GOWORK=off go build -o $(BIN_DIR)/agentop .
 
 authbridge-proxy: ## Build authbridge-proxy to ./bin/authbridge-proxy (PROFILE=full|lite|local, default full)
 	@mkdir -p $(BIN_DIR)
@@ -91,15 +91,15 @@ authbridge-proxy: ## Build authbridge-proxy to ./bin/authbridge-proxy (PROFILE=f
 # steps between a build and a running proxy. This is that bridge, and nothing else here
 # is a substitute for it.
 
-dev-install: authbridge-proxy abctl ## Build from this tree, install to ~/.local/bin, restart the service (PROFILE=full|lite|local)
+dev-install: authbridge-proxy agentop ## Build from this tree, install to ~/.local/bin, restart the service (PROFILE=full|lite|local)
 	@mkdir -p $(DEV_BIN_DIR)
 	@# Copy to a sibling name and rename, rather than writing over the target.
 	@# Replacing a RUNNING executable in place fails with ETXTBSY on macOS, and both
-	@# of these are usually running: the proxy under the supervisor, abctl in a TUI.
+	@# of these are usually running: the proxy under the supervisor, agentop in a TUI.
 	@# rename swaps the directory entry and leaves the live process on its own inode.
 	@# The .new file is removed on any failure: this directory is meant to be on PATH,
 	@# so a half-copied executable left behind is worse than the failure itself.
-	@for b in authbridge-proxy abctl; do \
+	@for b in authbridge-proxy agentop; do \
 		cp $(BIN_DIR)/$$b $(DEV_BIN_DIR)/$$b.new && \
 		mv -f $(DEV_BIN_DIR)/$$b.new $(DEV_BIN_DIR)/$$b || \
 		{ rm -f $(DEV_BIN_DIR)/$$b.new; exit 1; }; \
@@ -111,7 +111,7 @@ dev-install: authbridge-proxy abctl ## Build from this tree, install to ~/.local
 	@# dotfiles, so it says so and stops there.
 	@case ":$$PATH:" in \
 		*":$(DEV_BIN_DIR):"*) ;; \
-		*) echo >&2; echo "!  $(DEV_BIN_DIR) is not on PATH — \`abctl\` will not resolve until you add it" >&2; echo >&2;; \
+		*) echo >&2; echo "!  $(DEV_BIN_DIR) is not on PATH — \`agentop\` will not resolve until you add it" >&2; echo >&2;; \
 	esac
 	@# A machine that has never run Cortex has no config, and `service install` refuses
 	@# without one. Minting it here is what makes this work on a clean checkout rather
@@ -120,8 +120,8 @@ dev-install: authbridge-proxy abctl ## Build from this tree, install to ~/.local
 		echo "→ no config at ~/.cortex/config.yaml; writing the built-in one"; \
 		$(DEV_BIN_DIR)/authbridge-proxy --local --write-config || exit 1; \
 	fi
-	@# Absolute path, not bare `abctl`: PATH may resolve to a different copy, and the
-	@# unit records which abctl wrote it. --yes because a build command that stops to
+	@# Absolute path, not bare `agentop`: PATH may resolve to a different copy, and the
+	@# unit records which agentop wrote it. --yes because a build command that stops to
 	@# ask is not a one-liner; --restart because install is otherwise free to re-run and
 	@# would skip the restart whenever the rebuild happened to be byte-identical.
 	@# Quiet: make would otherwise echo an absolute path and a flag list immediately
@@ -129,10 +129,10 @@ dev-install: authbridge-proxy abctl ## Build from this tree, install to ~/.local
 	@#
 	@# "installing and starting" rather than "restarting": serviceInstall is also the
 	@# first-install path, where there is nothing to restart and no captured history to
-	@# clear. Both consequences are abctl's to report — it can tell whether anything was
+	@# clear. Both consequences are agentop's to report — it can tell whether anything was
 	@# running, and a Makefile echo cannot — so the session-store line moved there and
 	@# this says only what is true on both paths.
 	@echo "→ installing and starting the service"
-	@$(DEV_BIN_DIR)/abctl service install --yes --restart
+	@$(DEV_BIN_DIR)/agentop service install --yes --restart
 	@echo
-	@$(DEV_BIN_DIR)/abctl service status
+	@$(DEV_BIN_DIR)/agentop service status

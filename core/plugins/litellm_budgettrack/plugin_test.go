@@ -579,7 +579,7 @@ func getCostEvent(t *testing.T, pctx *pipeline.Context) *event.Event {
 }
 
 // TestPluginNameMatchesCostEventKey pins the plugin name to the constant the
-// aggregator and abctl look the event up by. A rename on one side only would
+// aggregator and agentop look the event up by. A rename on one side only would
 // make every consumer silently stop seeing costs.
 func TestPluginNameMatchesCostEventKey(t *testing.T) {
 	if got := New().Name(); got != event.PluginName {
@@ -591,7 +591,7 @@ func TestPluginNameMatchesCostEventKey(t *testing.T) {
 // provenance was added.
 //
 // The four original tags must serialize with the same names and values, and a
-// consumer that knows only those four must still decode correctly. abctl decodes
+// consumer that knows only those four must still decode correctly. agentop decodes
 // these tags from a separate module that this change does not rebuild, so a
 // breaking drift here would silently blank its COST column rather than fail a
 // build.

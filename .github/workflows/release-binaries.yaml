@@ -1,6 +1,6 @@
 name: Release binaries
 
-# Cross-compiles the standalone `abctl` and `authbridge-proxy` binaries and
+# Cross-compiles the standalone `agentop` and `authbridge-proxy` binaries and
 # attaches them (with SHA-256 checksums) to the GitHub Release for a `v*` tag.
 # Both are pure-Go (CGO_ENABLED=0); each cmd module resolves core via its
 # `replace => ../../core`, so builds run per-module with GOWORK=off — no
@@ -49,7 +49,7 @@ jobs:
     # since it resolves a v-tag and re-execs the released copy, and that copy then hits
     # `case "${SCRIPT_REF}" in v*)` and never calls newest_release at all. What needs a
     # filtered release is anyone invoking a RELEASED copy as the parent — including the
-    # pinned one-liner this script prints in its own abctl-too-old message. An
+    # pinned one-liner this script prints in its own agentop-too-old message. An
     # unfiltered parent resolves the rolling release as its version and installs
     # unreleased binaries.
     #
@@ -94,7 +94,7 @@ jobs:
           elif [ "${GITHUB_REF_NAME}" = "main" ] && [ "${GITHUB_EVENT_NAME}" = "push" ]; then
             # TAG names the rolling release and the assets, so the download URL is
             # predictable. VERSION identifies the build, and the two must differ:
-            # abctl's serviceIsCurrent compares the stamp recorded in the installed
+            # agentop's serviceIsCurrent compares the stamp recorded in the installed
             # launchd unit against the running binary to decide whether `service
             # install` is a no-op. A constant stamp would report "Already current"
             # while the old binary kept running — hiding upgrades on the one channel
@@ -156,14 +156,14 @@ jobs:
           for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
             os="${target%/*}"; arch="${target#*/}"
 
-            echo "==> abctl ${os}/${arch}"
+            echo "==> agentop ${os}/${arch}"
             ( cd cmd/agentop && \
               GOWORK=off CGO_ENABLED=0 GOOS="${os}" GOARCH="${arch}" \
               go build -trimpath \
                 -ldflags "-s -w -X main.version=${VERSION}" \
-                -o "${GITHUB_WORKSPACE}/dist/abctl" . )
-            tar -C dist -czf "dist/abctl_${TAG}_${os}_${arch}.tar.gz" abctl
-            rm -f dist/abctl
+                -o "${GITHUB_WORKSPACE}/dist/agentop" . )
+            tar -C dist -czf "dist/agentop_${TAG}_${os}_${arch}.tar.gz" agentop
+            rm -f dist/agentop
 
             for entry in "${proxy_variants[@]}"; do
               build_proxy "${entry%%:*}" "${entry#*:}" "${os}" "${arch}"
@@ -193,7 +193,7 @@ jobs:
           # backticks literal (no shell expansion).
           notes=""
           add() { notes="${notes}${1}"$'\n'; }
-          add 'Prebuilt `abctl` and `authbridge-proxy` binaries for linux and macOS (amd64/arm64).'
+          add 'Prebuilt `agentop` and `authbridge-proxy` binaries for linux and macOS (amd64/arm64).'
           add ''
           add '`authbridge-proxy` ships in variants matching the container images:'
           add 'unqualified (default plugin set, matches the `authbridge` image),'
@@ -202,7 +202,7 @@ jobs:
           add 'Variants track opt-in plugins one-for-one; arbitrary combinations are not published.'
           add ''
           add 'Verify downloads with `sha256sum -c checksums.txt`. On macOS, clear the'
-          add 'Gatekeeper quarantine after extracting: `xattr -dr com.apple.quarantine ./abctl`.'
+          add 'Gatekeeper quarantine after extracting: `xattr -dr com.apple.quarantine ./agentop`.'
           # The rolling release is not a release, and its notes should not read like
           # one — someone landing on it from a search result needs to know that
           # before they install it.
@@ -213,7 +213,7 @@ jobs:
             add 'Install with:'
             add '    curl -fsSL https://raw.githubusercontent.com/rossoctl/cortex/main/scripts/install.sh | sh -s -- --ref=main'
             add ''
-            add 'Each binary reports its own build (`abctl --version` -> `main-<sha>`). For a'
+            add 'Each binary reports its own build (`agentop --version` -> `main-<sha>`). For a'
             add 'supported install, use the newest `v*` release instead.'
           fi
           if gh release view "${TAG}" >/dev/null 2>&1; then

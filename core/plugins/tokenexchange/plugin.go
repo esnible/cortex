@@ -362,7 +362,7 @@ func (p *TokenExchange) Capabilities() pipeline.PluginCapabilities {
 }
 
 // ConfigSchema implements pipeline.SchemaProvider; surfaces field
-// metadata to abctl edit templates and other config-aware tooling.
+// metadata to agentop edit templates and other config-aware tooling.
 func (p *TokenExchange) ConfigSchema() []pipeline.FieldSchema {
 	return pipeline.SchemaOf(tokenExchangeConfig{})
 }
@@ -680,7 +680,7 @@ func (p *TokenExchange) OnRequest(ctx context.Context, pctx *pipeline.Context) p
 	// PLUGIN column that every event is attributable to a plugin.
 	// Passthrough is the "no route matched, default policy allowed"
 	// branch and is the noisiest; operators who find it too loud can
-	// either tighten routes or filter on action=passthrough in abctl.
+	// either tighten routes or filter on action=passthrough in agentop.
 	switch result.Action {
 	case auth.ActionDeny:
 		pctx.Record(pipeline.Invocation{
@@ -757,7 +757,7 @@ func resolvePlaceholder(pctx *pipeline.Context, handle string) (string, bool) {
 
 // boolStr renders a boolean as "true" / "false" for Invocation.Details.
 // Kept as a small helper rather than inlining so both the deny and
-// modify branches use the same string form and abctl's filter
+// modify branches use the same string form and agentop's filter
 // matching is predictable.
 func boolStr(b bool) string {
 	if b {

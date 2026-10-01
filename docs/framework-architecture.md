@@ -9,7 +9,7 @@ Framework-level reference for AuthBridge's plugin pipeline: types, composition, 
 **Audience:**
 - Framework maintainers editing `core/pipeline/`.
 - Plugin authors who need to understand pipeline composition, lifecycle hooks, the shared state shape, or the observability contract in depth.
-- Anyone debugging the plugin flow via `abctl` or the `:9094` session API.
+- Anyone debugging the plugin flow via `agentop` or the `:9094` session API.
 
 **Scope:**
 - The Go surface in `core/pipeline/` and `core/session/`.
@@ -209,7 +209,7 @@ Three categories of cross-plugin / cross-phase state:
 
 ### Invocations — per-plugin action record (always recorded)
 
-Every plugin that runs on a pipeline pass appends at least one `Invocation` to this slot via the `pctx.Record` family of helpers. The listener snapshots it onto `SessionEvent.Invocations` so `abctl` and `/v1/sessions` see a per-plugin timeline.
+Every plugin that runs on a pipeline pass appends at least one `Invocation` to this slot via the `pctx.Record` family of helpers. The listener snapshots it onto `SessionEvent.Invocations` so `agentop` and `/v1/sessions` see a per-plugin timeline.
 
 ```go
 type Invocation struct {
@@ -220,7 +220,7 @@ type Invocation struct {
     Path    string           // request path; framework-filled
 
     // Plugin-specific diagnostic context. Opaque to the framework;
-    // rendered as key=value rows by abctl. Built-in plugins populate
+    // rendered as key=value rows by agentop. Built-in plugins populate
     // expected_issuer, token_subject, route_host, target_audience,
     // cache_hit (snake_case). Third-party plugins define their own
     // key space. Stringify booleans as "true"/"false" and []string
@@ -238,13 +238,13 @@ Every plugin is expected to call one of `pctx.Allow` / `Skip` / `Observe` / `Mod
 
 ### Named protocol slots (telemetry-worthy, optional per plugin)
 MCP, A2A, Inference, plus Security and Delegation. These are:
-- Part of the **published schema** carried on `SessionEvent` to `:9094` / `abctl`.
+- Part of the **published schema** carried on `SessionEvent` to `:9094` / `agentop`.
 - Consumable by multiple downstream plugins.
 - Added to the core struct only when the data has a public contract.
 
 A parser populates its slot AND records an Invocation with `ActionObserve`. The slot carries the structured payload (method, token counts, etc.); the Invocation carries the attribution.
 
-Adding a named slot is a `core` change: edit `Extensions`, add a wire field on `sessionEventWire`, update `snapshotXXX` helpers in the listener, and add filtering rules in `abctl`.
+Adding a named slot is a `core` change: edit `Extensions`, add a wire field on `sessionEventWire`, update `snapshotXXX` helpers in the listener, and add filtering rules in `agentop`.
 
 **Capability interfaces on the slot types.** Named-slot extensions may implement optional capability interfaces declared in [`core/capabilities/`](../core/capabilities/) so consumer plugins can interact with them without importing any specific parser package. The current capability is [`ContentSource`](../core/capabilities/content.go) — implemented by `A2AExtension`, `MCPExtension`, and `InferenceExtension` — which lets guardrail plugins iterate inspectable text fragments via `pctx.ContentSources()`. Parser authors opt in by adding one method (`Fragments() []capabilities.Fragment`); consumers see a uniform view across every protocol that implements the contract. See [`plugin-reference.md` "Exposing content to guardrails"](./plugin-reference.md#exposing-content-to-guardrails) for the pattern.
 
@@ -635,7 +635,7 @@ Every mutation path also **clears `Content-Encoding`**: the framework can't know
 
 ## 7. `Session` + `SessionEvent` — the observability side-channel
 
-The pipeline itself is **in-band** (plugins alter request handling). Alongside it runs an **out-of-band** observability layer: the listener snapshots `pctx` into a `SessionEvent` after each phase and appends it to a per-session bucket in the `session.Store`. This store is what powers the `:9094` HTTP API and `abctl`.
+The pipeline itself is **in-band** (plugins alter request handling). Alongside it runs an **out-of-band** observability layer: the listener snapshots `pctx` into a `SessionEvent` after each phase and appends it to a per-session bucket in the `session.Store`. This store is what powers the `:9094` HTTP API and `agentop`.
 
 ```go
 type SessionEvent struct {
@@ -677,7 +677,7 @@ The pipeline **does not own**:
 | Body buffering negotiation (`ProcessingMode: BUFFERED`) | Listener reads `Pipeline.NeedsBody()` | Only listener can respond to the ext_proc handshake |
 | JWT issuance, client registration, Keycloak admin calls | Outside the pipeline (agent sidecars / operator) | Async concerns happening before/after any request flow |
 | Session store writes (`Store.Append`) | Listener, called after each phase | Plugins see only the read-only `SessionView` |
-| SSE streaming of events to abctl | `core/sessionapi` | Observability API, not a plugin concern |
+| SSE streaming of events to agentop | `core/sessionapi` | Observability API, not a plugin concern |
 | **mTLS handshake + peer-cert verification** | **`core/listener/...` (proxy-sidecar) using `core/tlsconfig` + `core/spiffe`** | **Transport-level concern; happens before any plugin sees a decrypted HTTP message** |
 
 ### 8a. mTLS layer
@@ -697,7 +697,7 @@ identity:
   that want per-caller policy use `core/tlsconfig.PeerSPIFFEID` to extract
   the URI SAN. Most plugins ignore it.
 - `SessionEvent.TLS *EventTLS` — version, cipher, peer SPIFFE ID per
-  event. Listeners populate it; abctl renders it in the events
+  event. Listeners populate it; agentop renders it in the events
   detail pane. Pure observability.
 
 The mTLS code lives in `core/tlsconfig` + `core/spiffe` (framework-

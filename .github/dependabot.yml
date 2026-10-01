@@ -73,7 +73,7 @@ updates:
       # v1.8+ is gated on the Go 1.27 move.
       - dependency-name: "github.com/maximhq/bifrost/core"
         versions: [">=1.8.0"]
-  # Go - abctl TUI
+  # Go - agentop TUI
   - package-ecosystem: gomod
     directory: /cmd/agentop
     schedule:

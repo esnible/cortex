@@ -515,9 +515,9 @@ func TestPromptContextFold_PublishIsNilWhenNothingIsKnown(t *testing.T) {
 
 // THE HOLE A BARE max LEFT OPEN, and the reason PromptContext carries Stated at all.
 //
-// abctl attaches to a proxy predating agentRole, folds unstated turns, and lands on the
+// agentop attaches to a proxy predating agentRole, folds unstated turns, and lands on the
 // documented stale-fallback figure — 700k held from before a compaction. The proxy is then
-// upgraded; abctl keeps running, because contextRun outlives everything but a pod switch. The
+// upgraded; agentop keeps running, because contextRun outlives everything but a pod switch. The
 // new proxy publishes a STATED 200k, the correct latest main-agent turn. max(700k, 200k) pins
 // the unsound figure permanently.
 func TestMergePromptContext_StatedBeatsUnstatedHoweverLarge(t *testing.T) {
@@ -927,7 +927,7 @@ func TestMergePromptContext_IsTheSameOrderAsTheFold(t *testing.T) {
 // second entry point and the drift this file rejects everywhere else.
 //
 // TokensMergedWith exists because publishing the local fold to merge it allocated per row per
-// rebuild in abctl's sessions loop (see its doc for the numbers). It defers to better() exactly as
+// rebuild in agentop's sessions loop (see its doc for the numbers). It defers to better() exactly as
 // MergePromptContext does, so it cannot disagree about the ORDER — but it restates the identity
 // handling, and that is the part a reader has to take on trust. This takes it on evidence instead:
 // for every fold and every published figure, including the absent one, the two must agree on the
@@ -1132,7 +1132,7 @@ func TestMergePromptContext_AZeroTokenFigureIsTheIdentity(t *testing.T) {
 
 // THE CURSOR CONTRACT, pinned in the package that owns it: AddAll advances n, Add does not.
 //
-// n is a cursor into a CALLER's slice — abctl reads it through Folded() to decide whether a slice
+// n is a cursor into a CALLER's slice — agentop reads it through Folded() to decide whether a slice
 // grew, shrank or was replaced wholesale — and a per-event caller has no slice, so the session store
 // folds thousands of events and leaves n at zero forever. Until this test, adding `f.n++` to Add left
 // `go test ./core/pipeline/` entirely green: the only thing guarding the contract stated at AddAll

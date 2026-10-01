@@ -107,8 +107,8 @@ func SPIFFEConsumerPlugins() []string {
 
 // CatalogEntry pairs a registered plugin's name with the capabilities
 // it advertises and the field-level schema of its config (if it
-// implements pipeline.SchemaProvider). Surfaces in `abctl`'s catalog
-// pane, in the /v1/plugins endpoint, and in `abctl edit`'s template
+// implements pipeline.SchemaProvider). Surfaces in `agentop`'s catalog
+// pane, in the /v1/plugins endpoint, and in `agentop edit`'s template
 // renderer so operators can see what plugins exist, what each one
 // needs, and what each field means without reading source.
 //

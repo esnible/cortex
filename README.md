@@ -3,14 +3,14 @@
 **See what your coding agent actually sends — and pay less for it.**
 
 <img src="./docs/assets/cortex-demo.svg" width="100%"
-     alt="A terminal installs Cortex with one command and points Claude Code at it. Three Claude Code sessions run in separate directories, and abctl then lists all three with their token counts, cost and remaining context. Pressing $ breaks the spend down by tier, where cache reads dominate. Drilling into the busiest session shows the whole conversation and the fifteen-tool manifest it re-sends on every turn.">
+     alt="A terminal installs Cortex with one command and points Claude Code at it. Three Claude Code sessions run in separate directories, and agentop then lists all three with their token counts, cost and remaining context. Pressing $ breaks the spend down by tier, where cache reads dominate. Drilling into the busiest session shows the whole conversation and the fifteen-tool manifest it re-sends on every turn.">
 
 Cortex sits in your agent's request path, decrypts its traffic, and shows you the model
 calls, tool calls and agent-to-agent messages as they happen. It can also strip the
 tool definitions your agent never calls, which is 4–20% of the prompt on every turn.
 
 **Think `top`, for your coding agent.** Where `top` shows which processes are eating
-your CPU, `abctl observe` shows which agent sessions are eating your tokens, your
+your CPU, `agentop observe` shows which agent sessions are eating your tokens, your
 context window and your money — live, as they run.
 
 One binary, no Kubernetes. macOS or Linux, amd64 or arm64.
@@ -32,14 +32,14 @@ service that survives crashes and logins.
 Then open two terminals:
 
 ```sh
-abctl observe   # the viewer
+agentop observe   # the viewer
 claude          # as usual — no environment variables to set
 ```
 
-Your agent's calls stream into `abctl`. Cortex only reads them; nothing is rewritten.
+Your agent's calls stream into `agentop`. Cortex only reads them; nothing is rewritten.
 
 - **[Cut token cost](./docs/laptop-token-savings.md)** — one more command
-- **[Start, stop, remove](./docs/laptop-service.md)** — `abctl service status | start | stop`
+- **[Start, stop, remove](./docs/laptop-service.md)** — `agentop service status | start | stop`
 - **[Run it in Kubernetes](./docs/kubernetes.md)** — sidecars, Keycloak, SPIFFE/SPIRE
 
 **Any agent works**, not only Claude Code: point it at `localhost:47600` and trust

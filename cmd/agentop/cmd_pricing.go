@@ -29,18 +29,18 @@ import (
 // provenance precedence and the multiplier together, which is not something a reader
 // can carry out by eye over a rate table.
 func runPricing(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("abctl pricing", flag.ContinueOnError)
+	fs := flag.NewFlagSet("agentop pricing", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	host := fs.String("host", "", "show the rates this endpoint is actually charged, discount applied")
 	asJSON := fs.Bool("json", false, "emit the raw JSON from the proxy")
 	statsURL := fs.String("stats-url", defaultCortexStatsURL, "base URL of the proxy's stat server")
 	fs.Usage = func() {
-		fmt.Fprint(stderr, `abctl pricing — show the model rates Cortex is using
+		fmt.Fprint(stderr, `agentop pricing — show the model rates Cortex is using
 
 Usage:
-  abctl pricing                     every row in the table, unscaled
-  abctl pricing --host <gateway>    what that endpoint is charged, discount applied
-  abctl pricing --json              raw JSON
+  agentop pricing                     every row in the table, unscaled
+  agentop pricing --host <gateway>    what that endpoint is charged, discount applied
+  agentop pricing --json              raw JSON
 
 The rates come from a table built into the binary (vendor list, refreshed per release),
 your `+"`pricing:`"+` config, and any gateway discount Cortex ships. --host is the useful
@@ -63,8 +63,8 @@ Flags:
 	}
 	body, err := fetchPricing(u)
 	if err != nil {
-		fmt.Fprintf(stderr, "abctl pricing: %v\n", err)
-		fmt.Fprintf(stderr, "  is Cortex running? `abctl service status`\n")
+		fmt.Fprintf(stderr, "agentop pricing: %v\n", err)
+		fmt.Fprintf(stderr, "  is Cortex running? `agentop service status`\n")
 		return 1
 	}
 	if *asJSON {
@@ -80,7 +80,7 @@ Flags:
 func fetchPricing(url string) ([]byte, error) {
 	c := &http.Client{Timeout: 10 * time.Second}
 	// Request carries a context even though the client bounds the deadline: it is what
-	// lets a caller cancel, and it keeps this call the same shape as the rest of abctl.
+	// lets a caller cancel, and it keeps this call the same shape as the rest of agentop.
 	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("cannot build a request for %s: %w", url, err)
@@ -99,7 +99,7 @@ func fetchPricing(url string) ([]byte, error) {
 	return io.ReadAll(io.LimitReader(resp.Body, 8<<20))
 }
 
-// effective mirrors pricing.Effective. Declared here rather than imported so abctl
+// effective mirrors pricing.Effective. Declared here rather than imported so agentop
 // keeps decoding a wire shape rather than linking the pricing package's internals; the
 // field names are what the JSON contract pins.
 type effective struct {
@@ -126,7 +126,7 @@ type effective struct {
 func renderEffective(body []byte, stdout, stderr io.Writer) int {
 	var e effective
 	if err := json.Unmarshal(body, &e); err != nil {
-		fmt.Fprintf(stderr, "abctl pricing: unreadable response: %v\n", err)
+		fmt.Fprintf(stderr, "agentop pricing: unreadable response: %v\n", err)
 		return 1
 	}
 	fmt.Fprintf(stdout, "Rates in effect for %s\n\n", e.Host)
@@ -230,7 +230,7 @@ type describeBody struct {
 func renderTable(body []byte, stdout, stderr io.Writer) int {
 	var d describeBody
 	if err := json.Unmarshal(body, &d); err != nil {
-		fmt.Fprintf(stderr, "abctl pricing: unreadable response: %v\n", err)
+		fmt.Fprintf(stderr, "agentop pricing: unreadable response: %v\n", err)
 		return 1
 	}
 	fmt.Fprintf(stdout, "Pricing table (%d rows)\n", len(d.Rows))
@@ -364,7 +364,7 @@ func perMtokLabel(anyNonUSD bool) string {
 // are two renderings of one question, and an exact comparison makes them disagree: a server
 // sending "usd" would have both of them call dollars a foreign unit.
 //
-// FOLDED ON THIS SIDE TOO, though core now canonicalises before it serialises. abctl is a client of
+// FOLDED ON THIS SIDE TOO, though core now canonicalises before it serialises. agentop is a client of
 // whatever server it is pointed at, including one older than itself, and a rate label is exactly
 // the kind of cosmetic disagreement nobody would think to look for after a partial upgrade.
 func isDefaultUnit(unit string) bool { return money.IsDefault(unit) }

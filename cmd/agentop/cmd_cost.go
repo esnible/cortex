@@ -41,7 +41,7 @@ const costFetchTimeout = 15 * time.Second
 // its own FlagSet writing to stderr, an exit code returned rather than os.Exit,
 // so main owns process exit and a test can call this directly.
 func runCost(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("abctl cost", flag.ContinueOnError)
+	fs := flag.NewFlagSet("agentop cost", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	asJSON := fs.Bool("json", false,
 		"emit the totals, their provenance, the coverage gaps, which way any inexact "+
@@ -52,23 +52,23 @@ func runCost(args []string, stdout, stderr io.Writer) int {
 	endpoint := fs.String("endpoint", "",
 		"session API URL of the proxy (default: the Cortex installed on this machine)")
 	agent := fs.String("agent", "",
-		"report only this `agent`, spelled as the AGENTS pane in \"abctl observe\" shows it "+
+		"report only this `agent`, spelled as the AGENTS pane in \"agentop observe\" shows it "+
 			"(e.g. bob-shell); omit for every agent together")
 	by := fs.String("by", "",
 		"break the total down by this `axis` and print a row each — "+costByAxes+
 			"; omit for a single total")
 	fs.Usage = func() {
-		fmt.Fprint(stderr, `abctl cost — what your agents have spent
+		fmt.Fprint(stderr, `agentop cost — what your agents have spent
 
 Usage:
-  abctl cost                     today's spend, from local midnight
-  abctl cost --window month      this month's spend, from the 1st — where a budget resets
-  abctl cost --window 7d         the last seven days
-  abctl cost --window 1h         a rolling hour, from the in-memory ring
-  abctl cost --json              the totals as JSON, for a script
-  abctl cost --endpoint URL      ask a specific proxy rather than the local one
-  abctl cost --agent NAME        only this coding agent, e.g. bob-shell
-  abctl cost --by agent          a row per agent, costliest first
+  agentop cost                     today's spend, from local midnight
+  agentop cost --window month      this month's spend, from the 1st — where a budget resets
+  agentop cost --window 7d         the last seven days
+  agentop cost --window 1h         a rolling hour, from the in-memory ring
+  agentop cost --json              the totals as JSON, for a script
+  agentop cost --endpoint URL      ask a specific proxy rather than the local one
+  agentop cost --agent NAME        only this coding agent, e.g. bob-shell
+  agentop cost --by agent          a row per agent, costliest first
 
 --by breaks the total into a row per label. A row nothing could price shows "—" and
 never "$0.00": an unpriced figure is not a free one. A ledger-served window ("today",
@@ -77,7 +77,7 @@ duration window, and asking for one the window cannot serve prints what the serv
 answered with instead of a table pretending to be a breakdown.
 
 --agent reports ONE agent's figures, every version of it together. The name is the
-agent the User-Agent names, as the AGENTS pane in "abctl observe" spells it; an
+agent the User-Agent names, as the AGENTS pane in "agentop observe" spells it; an
 unknown name fails and lists the ones seen in the window. Per-agent figures need not
 sum to the window total — some cost is attributed to no agent at all, and a scoped
 run says how much when there is any.
@@ -120,7 +120,7 @@ Flags:
 	// either win silently would answer a question the operator did not ask, and which one won
 	// would be an implementation detail rather than a documented rule.
 	if *by != "" && *agent != "" {
-		fmt.Fprintln(stderr, "abctl cost: --by and --agent ask different questions; use one")
+		fmt.Fprintln(stderr, "agentop cost: --by and --agent ask different questions; use one")
 		fmt.Fprintln(stderr, "  --by AXIS      a row per label")
 		fmt.Fprintln(stderr, "  --agent NAME   one agent's figures")
 		return 2
@@ -135,7 +135,7 @@ Flags:
 	if *by != "" {
 		g, err := usage.ParseGroup(*by)
 		if err != nil || g == usage.GroupNone {
-			fmt.Fprintf(stderr, "abctl cost: --by %q is not an axis; use one of %s\n", *by, costByAxes)
+			fmt.Fprintf(stderr, "agentop cost: --by %q is not an axis; use one of %s\n", *by, costByAxes)
 			return 2
 		}
 		requested = g
@@ -146,8 +146,8 @@ Flags:
 		target = localSessionEndpoint()
 	}
 	if target == "" {
-		fmt.Fprintln(stderr, "abctl cost: no --endpoint given and no local Cortex is configured")
-		fmt.Fprintln(stderr, "  is Cortex installed and running? `abctl service status`")
+		fmt.Fprintln(stderr, "agentop cost: no --endpoint given and no local Cortex is configured")
+		fmt.Fprintln(stderr, "  is Cortex installed and running? `agentop service status`")
 		return 1
 	}
 
@@ -187,12 +187,12 @@ Flags:
 	}
 	snap, err := apiclient.New(target).GetUsageWindow(ctx, *window, 0, "", group)
 	if err != nil {
-		fmt.Fprintf(stderr, "abctl cost: %v\n", err)
+		fmt.Fprintf(stderr, "agentop cost: %v\n", err)
 		switch {
 		case errors.Is(err, apiclient.ErrNotFound):
 			// A reachable proxy with no aggregator. Different problem, different fix.
 			fmt.Fprintln(stderr, "  this proxy has no usage aggregation — is session tracking enabled?")
-			fmt.Fprintln(stderr, "  is Cortex running? `abctl service status`")
+			fmt.Fprintln(stderr, "  is Cortex running? `agentop service status`")
 		case errors.Is(err, apiclient.ErrBadRequest):
 			// The proxy answered. It understood the request and refused it, so telling a
 			// user to go and check whether Cortex is running sends them to the one place
@@ -202,7 +202,7 @@ Flags:
 			fmt.Fprintln(stderr, "  it may predate the today/month/7d windows; try --window 1h, or a duration it does hold")
 		default:
 			// A user whose proxy is down needs the next command, not a bare dial error.
-			fmt.Fprintln(stderr, "  is Cortex running? `abctl service status`")
+			fmt.Fprintln(stderr, "  is Cortex running? `agentop service status`")
 		}
 		return 1
 	}
@@ -212,12 +212,12 @@ Flags:
 	if *agent != "" {
 		// KeepBuckets, not NarrowBuckets: on this path the command prints window totals, so it
 		// needs no per-bucket narrowing and pays for none. (Under --by it does read buckets —
-		// hence "on this path" rather than a claim about the command.) abctl's usage pane passes the other value
+		// hence "on this path" rather than a claim about the command.) agentop's usage pane passes the other value
 		// because it renders a chart from the buckets themselves. See usage.BucketScope for why
 		// this is a parameter rather than a default.
 		scoped, err := usage.ScopeToAgent(snap, *agent, usage.KeepBuckets)
 		if err != nil {
-			fmt.Fprintf(stderr, "abctl cost: %v\n", err)
+			fmt.Fprintf(stderr, "agentop cost: %v\n", err)
 			return 1
 		}
 		snap = scoped
@@ -529,7 +529,7 @@ func writeCostJSON(snap *usage.Snapshot, stdout, stderr io.Writer, agent, by str
 		SeriesAvoidedOvershootMicros: snap.SeriesAvoidedOvershootMicros,
 	}
 	if err := enc.Encode(out); err != nil {
-		fmt.Fprintf(stderr, "abctl cost: writing JSON: %v\n", err)
+		fmt.Fprintf(stderr, "agentop cost: writing JSON: %v\n", err)
 		return 1
 	}
 	return 0
@@ -645,7 +645,7 @@ func writeCostSummary(snap *usage.Snapshot, stdout io.Writer, agent string, ownU
 	// reconcilable grouping — so on the default axis the field can never arrive (see the
 	// GROUP NONE note in runCost), and there is nothing to say. With --agent it can, and
 	// without a word about it a reader who runs --agent for every agent and compares the sum
-	// against plain `abctl cost` finds a shortfall with nothing to explain it.
+	// against plain `agentop cost` finds a shortfall with nothing to explain it.
 	//
 	// It is NOT subtracted from or added to the figure above: this agent's total is this
 	// agent's, and the residual is neither. Stated beside it, not folded into it.
@@ -803,7 +803,7 @@ func writeCostSummary(snap *usage.Snapshot, stdout io.Writer, agent string, ownU
 //
 // usage.Snapshot.Degraded means the answer is known to be MISSING ROWS: a day file that
 // lost lines, or one whose scan was abandoned part-way. The server populates it and logs a
-// warning; until now nothing in abctl read it, so a damaged read printed a total
+// warning; until now nothing in agentop read it, so a damaged read printed a total
 // byte-identical to a clean one — a short figure with no caveat anywhere in it, which is
 // precisely what the field exists to prevent.
 //

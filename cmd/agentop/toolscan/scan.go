@@ -204,7 +204,7 @@ func (r *Result) Summary(days int) string {
 	if len(r.Kept) > 0 {
 		fmt.Fprintf(&b, "Withheld by --keep / implied-by-usage (%d): %s\n", len(r.Kept), joinOrNone(r.Kept))
 	}
-	b.WriteString("\nNames not in abctl's known-tool table are never proposed: removing a tool\n")
+	b.WriteString("\nNames not in agentop's known-tool table are never proposed: removing a tool\n")
 	b.WriteString("the model needs is the harmful failure, carrying extra definitions is not.\n")
 	return b.String()
 }

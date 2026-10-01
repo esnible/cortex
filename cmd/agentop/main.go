@@ -1,14 +1,14 @@
-// Command abctl inspects and runs Cortex: a terminal UI over AuthBridge's
+// Command agentop inspects and runs Cortex: a terminal UI over AuthBridge's
 // in-memory session store, plus subcommands for running Cortex as a service,
 // pointing Claude Code at it, and costing tool definitions.
 //
-// `abctl observe` opens the viewer — a Namespaces → Pods picker, then the
+// `agentop observe` opens the viewer — a Namespaces → Pods picker, then the
 // session-events view for the pod it port-forwards. Pass --endpoint to skip the
 // picker and connect directly.
 //
-// Bare `abctl` still opens the viewer for compatibility, but is deprecated: with
+// Bare `agentop` still opens the viewer for compatibility, but is deprecated: with
 // subcommands reachable only by name, it left users thinking the TUI was all
-// abctl did.
+// agentop did.
 package main
 
 import (
@@ -30,7 +30,7 @@ import (
 	"github.com/rossoctl/cortex/core/observe/claude"
 )
 
-// version is the abctl build version, overridden at release time via
+// version is the agentop build version, overridden at release time via
 // -ldflags "-X main.version=<tag>". Defaults to "dev" for local builds.
 var version = "dev"
 
@@ -44,7 +44,7 @@ var dispatchableSubcommands = []string{"observe", "service", "configure", "claud
 
 // unknownSubcommandMessage is the error for an unrecognised first argument.
 func unknownSubcommandMessage(name string) string {
-	return fmt.Sprintf("abctl: unknown subcommand %q (known: %s)",
+	return fmt.Sprintf("agentop: unknown subcommand %q (known: %s)",
 		name, strings.Join(dispatchableSubcommands, ", "))
 }
 
@@ -53,33 +53,33 @@ func unknownSubcommandMessage(name string) string {
 // Takes the FlagSet so the flag list underneath comes from the same set that
 // parsed the arguments, and so a test can render it into a buffer.
 func writeRootUsage(fs *flag.FlagSet) {
-	fmt.Fprint(fs.Output(), `abctl — inspect and run Cortex
+	fmt.Fprint(fs.Output(), `agentop — inspect and run Cortex
 
 Usage:
-  abctl observe              open the traffic viewer (TUI)
-  abctl service <action>     run Cortex as a service: install, uninstall,
+  agentop observe              open the traffic viewer (TUI)
+  agentop service <action>     run Cortex as a service: install, uninstall,
                              status, stop, start, restart
-  abctl configure <agent>    point a coding agent at Cortex: claude-code, bob,
+  agentop configure <agent>    point a coding agent at Cortex: claude-code, bob,
                              bobshell, codex, opencode
-  abctl exec -- CMD [ARG...] run CMD with Cortex's proxy and CA in its
+  agentop exec -- CMD [ARG...] run CMD with Cortex's proxy and CA in its
                              environment, for tools with no settings file
-  abctl tools <action>       tool-definition costs: scan
-  abctl pipeline <action>    the plugin pipeline in effect: get
-  abctl pricing              show the model rates in effect (--host <gateway>)
-  abctl cost                 what your agents have spent (--window today|month|7d|1h)
-  abctl experimental <action>
+  agentop tools <action>       tool-definition costs: scan
+  agentop pipeline <action>    the plugin pipeline in effect: get
+  agentop pricing              show the model rates in effect (--host <gateway>)
+  agentop cost                 what your agents have spent (--window today|month|7d|1h)
+  agentop experimental <action>
                              unstable helpers: read-claude-sessions
 
-  abctl claude-code <action> deprecated: same as "abctl configure claude-code".
+  agentop claude-code <action> deprecated: same as "agentop configure claude-code".
                              Still works; prefer the new spelling.
-  abctl                      deprecated: same as "abctl observe". Bare abctl
+  agentop                      deprecated: same as "agentop observe". Bare agentop
                              will stop opening the viewer in a future release.
 
-  abctl --version            print the version and exit
+  agentop --version            print the version and exit
 
 Run a subcommand with no action, or with --help, for its own usage.
 
-Viewer flags (abctl observe):
+Viewer flags (agentop observe):
 `)
 	fs.PrintDefaults()
 }
@@ -104,18 +104,18 @@ func main() {
 			os.Exit(runConfigure(os.Args[2:], os.Stdout, os.Stderr))
 		case "claude-code":
 			// The old spelling, kept working and kept discoverable. Same spirit as the
-			// bare-`abctl` notice below: on stderr and not fatal, because anyone with
+			// bare-`agentop` notice below: on stderr and not fatal, because anyone with
 			// this in a script or in muscle memory must not have it break under them —
 			// install.sh --claude-code still runs it, and the laptop docs still print it.
 			//
 			// Printed HERE rather than inside runClaudeCode, which is what keeps the
-			// notice in exactly one place: `abctl configure claude-code` reaches
+			// notice in exactly one place: `agentop configure claude-code` reaches
 			// the same function through runConfigure, and a notice inside it would
 			// fire for the new spelling too — telling a user who already typed the right
 			// thing to type something else.
-			fmt.Fprintln(os.Stderr, "abctl: `abctl claude-code` is now "+
-				"`abctl configure claude-code`; the old spelling still works. "+
-				"See `abctl --help`.")
+			fmt.Fprintln(os.Stderr, "agentop: `agentop claude-code` is now "+
+				"`agentop configure claude-code`; the old spelling still works. "+
+				"See `agentop --help`.")
 			os.Exit(runClaudeCode(os.Args[2:], os.Stdout, os.Stderr))
 		case "exec":
 			os.Exit(runExec(os.Args[2:], os.Stdout, os.Stderr))
@@ -131,17 +131,17 @@ func main() {
 
 	// --version belongs to the binary, not to any subcommand, so it is answered
 	// here rather than inside runObserve. Handled before the flag set exists
-	// because a bare `abctl --version` must not carry the viewer's flags into its
-	// output, and `abctl observe --version` must be rejected as the unknown flag it
+	// because a bare `agentop --version` must not carry the viewer's flags into its
+	// output, and `agentop observe --version` must be rejected as the unknown flag it
 	// now is.
 	if isVersionFlag(os.Args[1:]) {
-		fmt.Println("abctl", version)
+		fmt.Println("agentop", version)
 		return
 	}
 
-	// Bare `abctl` still opens the viewer, but is no longer the documented way in.
+	// Bare `agentop` still opens the viewer, but is no longer the documented way in.
 	// Subcommands were reachable only by name, so a user who never typed --help saw
-	// a TUI and reasonably concluded that was all abctl did — the service commands
+	// a TUI and reasonably concluded that was all agentop did — the service commands
 	// least discoverable of all, and those are what you need when Cortex is down.
 	//
 	// Warned on stderr rather than stdout, and not fatal: this path has to keep
@@ -149,15 +149,15 @@ func main() {
 	// the caller only wants --help or --version, where a deprecation notice would
 	// be noise ahead of the very text that explains the replacement.
 	if !wantsInfoFlagOnly(os.Args[1:]) {
-		fmt.Fprintln(os.Stderr, "abctl: opening the traffic viewer — use `abctl observe` instead; "+
-			"bare `abctl` will stop doing this in a future release. See `abctl --help`.")
+		fmt.Fprintln(os.Stderr, "agentop: opening the traffic viewer — use `agentop observe` instead; "+
+			"bare `agentop` will stop doing this in a future release. See `agentop --help`.")
 	}
 	os.Exit(runObserve(os.Args[1:]))
 }
 
 // isVersionFlag reports whether args are exactly a request for the version.
 //
-// Exactly, not merely containing one: `abctl --endpoint x --version` is a
+// Exactly, not merely containing one: `agentop --endpoint x --version` is a
 // confused invocation, and printing a version while silently discarding the rest
 // would hide that. Anything else falls through to the viewer, whose flag set
 // rejects what it does not know.
@@ -210,7 +210,7 @@ func observeHarvester(f observeFlags, warn io.Writer) tui.HarvestFunc {
 	return claudeHarvester(warn)
 }
 
-// claudeHarvester returns the background harvest `abctl observe` runs, or nil when the user
+// claudeHarvester returns the background harvest `agentop observe` runs, or nil when the user
 // asked for none.
 //
 // Returns a closure rather than harvesting here, because WHEN it runs is the point. It used to
@@ -242,7 +242,7 @@ func claudeHarvester(warn io.Writer) tui.HarvestFunc {
 	// Checked here so the repair can actually be printed. Harvest would hit the same error on
 	// the background goroutine, where there is nowhere to say so.
 	if path, err := claude.SessionMetadataPath(); err != nil {
-		fmt.Fprintf(warn, "abctl: not naming sessions from Claude Code: %v\n", err)
+		fmt.Fprintf(warn, "agentop: not naming sessions from Claude Code: %v\n", err)
 		return nil
 	} else if _, err := claude.ReadMetadata(path); err != nil {
 		// A FILE THAT DOES NOT PARSE IS NO LONGER CHECKED FOR HERE, because Harvest rebuilds it
@@ -255,7 +255,7 @@ func claudeHarvester(warn io.Writer) tui.HarvestFunc {
 		// and Harvest's own read is the one that decides. Not a wasted read either way — it was
 		// already here, and what changed is only which of its errors is fatal.
 		if errors.Is(err, fs.ErrPermission) {
-			fmt.Fprintf(warn, "abctl: not naming sessions from Claude Code: %v\n"+
+			fmt.Fprintf(warn, "agentop: not naming sessions from Claude Code: %v\n"+
 				"  Fix the file's permissions, or move it aside:\n"+
 				"    mv %s %s.bad\n", err, path, path)
 			return nil
@@ -264,7 +264,7 @@ func claudeHarvester(warn io.Writer) tui.HarvestFunc {
 		// and needs a human. Different remedy — the file is intact and readable, just over the
 		// cap — so it gets its own line rather than the permission advice.
 		if errors.Is(err, claude.ErrMetadataTooLarge) {
-			fmt.Fprintf(warn, "abctl: not naming sessions from Claude Code: %v\n"+
+			fmt.Fprintf(warn, "agentop: not naming sessions from Claude Code: %v\n"+
 				"  Move it aside to start a fresh file:\n"+
 				"    mv %s %s.bak\n", err, path, path)
 			return nil
@@ -293,7 +293,7 @@ func claudeHarvester(warn io.Writer) tui.HarvestFunc {
 		// parse and the wedged lock.
 	}
 	return func() (map[string]tui.SessionMetadata, error) {
-		// Incremental, unlike `abctl experimental read-claude-sessions`: that command's subject
+		// Incremental, unlike `agentop experimental read-claude-sessions`: that command's subject
 		// IS the harvest, so it re-reads everything. This one runs on every launch, and a full
 		// scan measured 0.74s against 0.002s for an incremental pass over the same tree.
 		res, err := claude.Harvest(claude.Options{Merge: true, Incremental: true})
@@ -303,11 +303,11 @@ func claudeHarvester(warn io.Writer) tui.HarvestFunc {
 		// res.Partial IS DISCARDED HERE, and that is a real gap rather than an oversight: a
 		// transcript whose read ended early still yields whatever title was found before the stop,
 		// so the affected session shows a confidently-wrong — possibly stale — name with nothing
-		// marking it. `abctl experimental read-claude-sessions` prints a bounded summary of exactly
+		// marking it. `agentop experimental read-claude-sessions` prints a bounded summary of exactly
 		// this; the background path cannot.
 		//
 		// Why not: by the time this returns, tea.NewProgram owns the screen, and there is no log
-		// sink in abctl to divert to — anything written to the terminal corrupts the frame. Marking
+		// sink in agentop to divert to — anything written to the terminal corrupts the frame. Marking
 		// the rows would be the right answer instead of reporting, but Partial carries formatted
 		// "path: err" strings rather than session ids, so the ids are not recoverable here without
 		// widening the type and threading a per-entry flag into SessionMetadata and the TITLE cell.
@@ -322,7 +322,7 @@ func claudeHarvester(warn io.Writer) tui.HarvestFunc {
 	}
 }
 
-// chooseEndpoint decides which session API abctl connects to, or "" for the
+// chooseEndpoint decides which session API agentop connects to, or "" for the
 // Namespaces → Pods picker.
 //
 // Split out of runObserve as the one part of that function testable without a
@@ -334,7 +334,7 @@ func claudeHarvester(warn io.Writer) tui.HarvestFunc {
 // taken only when it is ANSWERING and --kubernetes was not passed.
 //
 // kubernetes defaults false: a live local Cortex is taken, which keeps a bare
-// `abctl observe` on a laptop working with no flag at all. Passing --kubernetes is
+// `agentop observe` on a laptop working with no flag at all. Passing --kubernetes is
 // how someone who runs one locally AND works against a cluster reaches the picker,
 // which the probe would otherwise win every time — and which --endpoint could only
 // substitute for by naming a namespace, a pod and a port-forward by hand.
@@ -375,30 +375,30 @@ type observeFlags struct {
 func registerObserveFlags(fs *flag.FlagSet) observeFlags {
 	return observeFlags{
 		endpoint: fs.String("endpoint", "",
-			"AuthBridge session API URL (e.g. http://localhost:9094). When omitted, abctl connects to the Cortex on this machine if one is running, otherwise it opens a Namespaces → Pods picker; --kubernetes forces the picker either way."),
-		// Named --prefs rather than --config: `abctl service` and `abctl claude-code`
+			"AuthBridge session API URL (e.g. http://localhost:9094). When omitted, agentop connects to the Cortex on this machine if one is running, otherwise it opens a Namespaces → Pods picker; --kubernetes forces the picker either way."),
+		// Named --prefs rather than --config: `agentop service` and `agentop claude-code`
 		// already spell the PROXY's config that way, and one flag name meaning two
 		// different files in one binary is worse than a second word.
 		//
 		// No backticks in the usage string: flag.PrintDefaults reads the first
-		// backquoted word as the value's NAME, so "`abctl service`" rendered the flag as
-		// "-prefs abctl service" instead of "-prefs string".
+		// backquoted word as the value's NAME, so "`agentop service`" rendered the flag as
+		// "-prefs agentop service" instead of "-prefs string".
 		prefs: fs.String("prefs", "",
-			"abctl's own settings file — events-table columns and the active filter, saved as you change them (default ~/.cortex/abctl-config.yaml). Not the Cortex proxy config, which is --config on 'abctl service' and 'abctl configure claude-code'."),
+			"agentop's own settings file — events-table columns and the active filter, saved as you change them (default ~/.cortex/agentop-config.yaml). Not the Cortex proxy config, which is --config on 'agentop service' and 'agentop configure claude-code'."),
 		// --kubernetes exists because "is a local Cortex answering?" is a poor proxy for
 		// "which Cortex did you mean". Someone who runs Cortex on their laptop AND works
 		// against a cluster otherwise has no way to reach the picker: the local probe
 		// wins, every time, and --endpoint demands a namespace, a pod and a port-forward
-		// they were using abctl to avoid setting up by hand. --kubernetes is that way.
+		// they were using agentop to avoid setting up by hand. --kubernetes is that way.
 		//
 		// Default FALSE, so the common case is unchanged: a laptop Cortex that is up is
-		// what a bare `abctl observe` connects to, which is the whole quickstart and
+		// what a bare `agentop observe` connects to, which is the whole quickstart and
 		// wants no flag. Reaching a cluster is the deliberate act, so it is the one that
 		// gets spelled out — and the cluster stays reachable without the flag too, since
 		// a local Cortex that is down still falls through to the picker.
 		kubernetes: fs.Bool("kubernetes", false,
 			"open the Namespaces → Pods picker even when a Cortex is running on this machine. Without it, a running local Cortex is connected to directly and the picker appears only if none is answering. Ignored when --endpoint is given."),
-		// Default FALSE, so a bare `abctl observe` names its sessions with no flag at
+		// Default FALSE, so a bare `agentop observe` names its sessions with no flag at
 		// all: a viewer showing bare UUIDs is the problem the metadata file exists to
 		// solve, and nobody will run a separate subcommand first to get titles.
 		//
@@ -409,7 +409,7 @@ func registerObserveFlags(fs *flag.FlagSet) observeFlags {
 		// flag to decline is narrower, and it is the reason to keep it: a machine where
 		// ~/.claude should simply not be touched.
 		skipClaudeMetadata: fs.Bool("skip-claude-metadata", false,
-			"do not harvest session titles from Claude Code's transcripts. By default abctl observe scans CLAUDE_CONFIG_DIR / ~/.claude in the background once the viewer is up and records titles in ~/.cortex/session-metadata.json, so sessions show a name instead of a bare UUID. This skips the scan; titles already recorded by earlier runs are still shown, and a session the harvest has not named falls back to the title the proxy serves, so a bare id usually means neither source named it — except for a session the proxy has stopped listing, whose served title is not retained and so goes away with the listing."),
+			"do not harvest session titles from Claude Code's transcripts. By default agentop observe scans CLAUDE_CONFIG_DIR / ~/.claude in the background once the viewer is up and records titles in ~/.cortex/session-metadata.json, so sessions show a name instead of a bare UUID. This skips the scan; titles already recorded by earlier runs are still shown, and a session the harvest has not named falls back to the title the proxy serves, so a bare id usually means neither source named it — except for a session the proxy has stopped listing, whose served title is not retained and so goes away with the listing."),
 	}
 }
 
@@ -417,13 +417,13 @@ func registerObserveFlags(fs *flag.FlagSet) observeFlags {
 // one, or when a local Cortex is answering and --kubernetes was not passed;
 // otherwise the Namespaces → Pods picker. See chooseEndpoint for the precedence.
 //
-// This is the behaviour bare `abctl` has always had, extracted so the subcommand
+// This is the behaviour bare `agentop` has always had, extracted so the subcommand
 // and the deprecated bare invocation cannot drift apart.
 func runObserve(args []string) int {
-	// Without this, `abctl --help` printed only -endpoint and -version, so the
+	// Without this, `agentop --help` printed only -endpoint and -version, so the
 	// subcommands were invisible to anyone who asked the tool what it could do — the
 	// service commands most of all, since those are what you need when Cortex is down.
-	fs := flag.NewFlagSet("abctl", flag.ExitOnError)
+	fs := flag.NewFlagSet("agentop", flag.ExitOnError)
 	fs.Usage = func() { writeRootUsage(fs) }
 	f := registerObserveFlags(fs)
 	endpoint, prefs, kubernetes := f.endpoint, f.prefs, f.kubernetes
@@ -449,7 +449,7 @@ func runObserve(args []string) int {
 	if prefsPath == "" {
 		var perr error
 		if prefsPath, perr = userConfigPath(); perr != nil {
-			fmt.Fprintf(os.Stderr, "abctl: not loading or saving settings: %v\n", perr)
+			fmt.Fprintf(os.Stderr, "agentop: not loading or saving settings: %v\n", perr)
 			prefsPath = ""
 		}
 	}
@@ -458,7 +458,7 @@ func runObserve(args []string) int {
 	// Locate the Cortex on this machine, if any, and find out whether it is up.
 	//
 	// Probed rather than assumed from the config: a stale ~/.cortex/config.yaml left
-	// by an install that is no longer running must not hijack abctl away from the
+	// by an install that is no longer running must not hijack agentop away from the
 	// picker, and localUp is also what decides whether [l] gets the configured
 	// address or the in-cluster 9094 default.
 	//
@@ -475,15 +475,15 @@ func runObserve(args []string) int {
 	// clear message instead of a stack trace later.
 	if *endpoint == "" {
 		if _, err := exec.LookPath("kubectl"); err != nil {
-			msg := "abctl: kubectl not found on PATH; install it or pass --endpoint http://..."
+			msg := "agentop: kubectl not found on PATH; install it or pass --endpoint http://..."
 			// Name the more likely cause first when there is a local install that
 			// simply is not running — "install kubectl" is unhelpful advice to
 			// someone who has never wanted a cluster. Not under --kubernetes,
 			// though: there the user asked for the cluster, and kubectl really is
 			// what is missing.
 			if local != "" && !dialable(local) && !*kubernetes {
-				msg = "abctl: nothing is listening on " + local + " (from ~/.cortex/config.yaml).\n" +
-					"  Start it:  abctl service start   (or: abctl service install)\n" +
+				msg = "agentop: nothing is listening on " + local + " (from ~/.cortex/config.yaml).\n" +
+					"  Start it:  agentop service start   (or: agentop service install)\n" +
 					"  Or pass --endpoint http://... , or install kubectl to browse a cluster."
 			}
 			fmt.Fprintln(os.Stderr, msg)
@@ -521,7 +521,7 @@ func runObserve(args []string) int {
 		opts.PortForwarder = cluster.NewPortForwarder()
 	}
 	if err := tui.Run(ctx, opts); err != nil {
-		fmt.Fprintf(os.Stderr, "abctl: %v\n", err)
+		fmt.Fprintf(os.Stderr, "agentop: %v\n", err)
 		return 1
 	}
 	return 0

@@ -228,7 +228,7 @@ compile error rather than a silently blank column:
 - **The usage aggregator** (`core/cost/usage`) records `cost_usd` into
   `Counts.CostMicros` and increments `Counts.PricedRequests`, so `/v1/usage`
   reports the same figure this plugin enforces its budget against.
-- **`abctl`** renders the per-request figure in its events pane, and the window
+- **`agentop`** renders the per-request figure in its events pane, and the window
   total plus coverage in the usage footer. Its `tui.costEvent` is a type *alias*
   for `event.Event`, not a copy.
 

@@ -2,7 +2,7 @@ package tui
 
 import "github.com/rossoctl/cortex/core/cost/usage"
 
-// Settings is abctl's live user settings, global to the process.
+// Settings is agentop's live user settings, global to the process.
 //
 // One struct rather than the fields it replaces (eventColumns, filter) scattered
 // across the model: persisting a new setting then means adding a field here and a
@@ -10,7 +10,7 @@ import "github.com/rossoctl/cortex/core/cost/usage"
 // value is read. It is also what gets marshalled, so the file's shape and the
 // in-memory shape cannot drift.
 //
-// Package-level because there is exactly one abctl TUI per process — bubbletea
+// Package-level because there is exactly one agentop TUI per process — bubbletea
 // owns the terminal, so a second model in the same process has nowhere to render.
 // Threading this through both constructors and every handler would buy testability
 // the callback in RunOptions already provides.
@@ -22,7 +22,7 @@ import "github.com/rossoctl/cortex/core/cost/usage"
 var Settings UserSettings
 
 // UserSettings is the persisted shape. Every field is optional: a file written by
-// an older abctl must not disable a setting it never knew about, so the zero value
+// an older agentop must not disable a setting it never knew about, so the zero value
 // has to mean "use the default" for each one.
 type UserSettings struct {
 	Events EventSettings `yaml:"events,omitempty"`
@@ -64,7 +64,7 @@ type EventSettings struct {
 	// back, and it opened where you were.
 	//
 	// False is the default, and what every file written before this carries, which is
-	// the behaviour abctl has always had: a session opens at the newest event and
+	// the behaviour agentop has always had: a session opens at the newest event and
 	// follows the tail from there.
 	//
 	// The ENTRY point only. Once open, tail-follow is still governed by whether the

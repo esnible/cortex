@@ -23,12 +23,12 @@ import (
 // TestCallerBudgets_FitUnderTheHeaderBackstop.
 const pipelineFetchTimeout = 10 * time.Second
 
-const pipelineUsage = `abctl pipeline — the plugin pipeline this proxy is running
+const pipelineUsage = `agentop pipeline — the plugin pipeline this proxy is running
 
 Usage:
-  abctl pipeline get             the active pipeline, as a table
-  abctl pipeline get --json      the same, as JSON for a script
-  abctl pipeline get --endpoint URL
+  agentop pipeline get             the active pipeline, as a table
+  agentop pipeline get --json      the same, as JSON for a script
+  agentop pipeline get --endpoint URL
                                  ask a specific proxy rather than the local one
 
 Shows the same composition as the viewer's Pipeline pane: every plugin in order,
@@ -46,11 +46,11 @@ requires/requiresAny for anything that wants to compute the latter.
 Flags:
 `
 
-// runPipeline implements `abctl pipeline <action>`.
+// runPipeline implements `agentop pipeline <action>`.
 func runPipeline(args []string, stdout, stderr io.Writer) int {
 	// An explicit request for help is a successful answer, so it goes to stdout and
 	// exits 0; a missing or wrong action is an error on stderr. Same split as
-	// `abctl tools` and `abctl service`.
+	// `agentop tools` and `agentop service`.
 	if len(args) > 0 {
 		switch args[0] {
 		case "-h", "--help", "help":
@@ -93,8 +93,8 @@ func runPipeline(args []string, stdout, stderr io.Writer) int {
 	// exited 0 with nothing on stderr. Silently reporting the wrong proxy's pipeline is
 	// not a thing to do quietly.
 	if fs.NArg() > 0 {
-		fmt.Fprintf(stderr, "abctl pipeline get: unexpected argument %q\n", fs.Arg(0))
-		fmt.Fprintln(stderr, "  flags must come before any other argument; see `abctl pipeline --help`")
+		fmt.Fprintf(stderr, "agentop pipeline get: unexpected argument %q\n", fs.Arg(0))
+		fmt.Fprintln(stderr, "  flags must come before any other argument; see `agentop pipeline --help`")
 		return 2
 	}
 
@@ -103,8 +103,8 @@ func runPipeline(args []string, stdout, stderr io.Writer) int {
 		target = localSessionEndpoint()
 	}
 	if target == "" {
-		fmt.Fprintln(stderr, "abctl pipeline get: no --endpoint given and no local Cortex is configured")
-		fmt.Fprintln(stderr, "  is Cortex installed and running? `abctl service status`")
+		fmt.Fprintln(stderr, "agentop pipeline get: no --endpoint given and no local Cortex is configured")
+		fmt.Fprintln(stderr, "  is Cortex installed and running? `agentop service status`")
 		return 1
 	}
 
@@ -112,7 +112,7 @@ func runPipeline(args []string, stdout, stderr io.Writer) int {
 	defer cancel()
 	view, err := apiclient.New(target).GetPipeline(ctx)
 	if err != nil {
-		fmt.Fprintf(stderr, "abctl pipeline get: %v\n", err)
+		fmt.Fprintf(stderr, "agentop pipeline get: %v\n", err)
 		switch {
 		case errors.Is(err, apiclient.ErrNotFound):
 			// A reachable proxy whose session API was built without the pipeline
@@ -121,7 +121,7 @@ func runPipeline(args []string, stdout, stderr io.Writer) int {
 			// to the one thing that is working.
 			fmt.Fprintln(stderr, "  this proxy does not serve /v1/pipeline — it may predate the endpoint")
 		default:
-			fmt.Fprintln(stderr, "  is Cortex running? `abctl service status`")
+			fmt.Fprintln(stderr, "  is Cortex running? `agentop service status`")
 		}
 		return 1
 	}
@@ -169,7 +169,7 @@ func writePipelineJSON(view *apiclient.PipelineView, stdout, stderr io.Writer) i
 	enc := json.NewEncoder(stdout)
 	enc.SetIndent("", "  ")
 	if err := enc.Encode(&out); err != nil {
-		fmt.Fprintf(stderr, "abctl pipeline get: writing JSON: %v\n", err)
+		fmt.Fprintf(stderr, "agentop pipeline get: writing JSON: %v\n", err)
 		return 1
 	}
 	return 0

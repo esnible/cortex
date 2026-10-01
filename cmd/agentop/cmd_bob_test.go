@@ -701,7 +701,7 @@ func TestBobDisable_RemovesOnlyOurs(t *testing.T) {
 			t.Fatal(err)
 		}
 		if !bytes.Equal(before, after) {
-			t.Error("a value abctl cannot have written was deleted anyway")
+			t.Error("a value agentop cannot have written was deleted anyway")
 		}
 	})
 }
@@ -848,7 +848,7 @@ func TestBobStatus_ThreeStates(t *testing.T) {
 // Liveness is a SEPARATE axis from ownership, and the WARNING line must track only the
 // first. The distinction is not cosmetic: the naive version of this warned that a
 // foreign proxy was down, which is both untrue (a corporate proxy is reachable from
-// somewhere, just not from here) and none of abctl's business — it reads as a complaint
+// somewhere, just not from here) and none of agentop's business — it reads as a complaint
 // about a setting this command deliberately leaves alone.
 //
 // Nothing listens on any of these ports in a test, so "nothing is listening" is the
@@ -858,7 +858,7 @@ func TestBobStatus_WarnsOnlyForAProxyItClaims(t *testing.T) {
 	// 47600 is NOT usable for the dead-proxy case: on a developer machine the real
 	// Cortex proxy is listening on it, so the fixture's hardcoded port would make
 	// "ours and nothing listening" quietly depend on whether the author had run
-	// `abctl service stop`. It passed on CI and failed here, which is the wrong way
+	// `agentop service stop`. It passed on CI and failed here, which is the wrong way
 	// round for a test about liveness. So the whole table moves to a port the OS just
 	// confirmed is free, in both the config and the settings value — ownership is a
 	// whole host+port match, so the two must move together or the case stops being
@@ -926,7 +926,7 @@ func TestBobStatus_ReportsPortDrift(t *testing.T) {
 		t.Errorf("drift report names neither the stale value nor the current one:\n%s", out.String())
 	}
 
-	// And the advice must be followable. This arm used to say "run `abctl configure
+	// And the advice must be followable. This arm used to say "run `agentop configure
 	// bob enable` to move it" full stop, which enable answers with exit 1: a drifted
 	// PORT is bobNotOurs, and the arm that falls through to the write is a differing
 	// spelling of the same address, not a different one. So status was sending the
@@ -942,7 +942,7 @@ func TestBobStatus_ReportsPortDrift(t *testing.T) {
 	if code := bobEnable(settings, cfg, true, &enableOut, &enableErr); code != 0 {
 		// enable refuses, so the detail lines must not present it as the whole fix.
 		// The bare sentence is the exact shape that was wrong.
-		if strings.Contains(out.String(), "run `abctl configure bob enable` to move it") {
+		if strings.Contains(out.String(), "run `agentop configure bob enable` to move it") {
 			t.Errorf("status sends the user to enable, which exits %d on that value:\nstatus:\n%s\nenable stderr:\n%s",
 				code, out.String(), enableErr.String())
 		}
@@ -1226,7 +1226,7 @@ func TestBobOwns(t *testing.T) {
 		{"no config, trailing slash", "http://127.0.0.1:47600/", "", bobUnknown},
 
 		// No config to compare against: the third state. A loopback http proxy is
-		// the shape abctl writes, so it is removable; anything else is not.
+		// the shape agentop writes, so it is removable; anything else is not.
 		{"no config, loopback", "http://127.0.0.1:47600", "", bobUnknown},
 		{"no config, localhost", "http://localhost:1234", "", bobUnknown},
 		{"no config, ipv6", "http://[::1]:47600", "", bobUnknown},
@@ -1507,7 +1507,7 @@ func TestBobSameLoopback(t *testing.T) {
 
 		{"127.0.0.1", "192.168.1.5", false},
 		{"localhost", "proxy.corp.example.com", false},
-		// Not a loopback spelling abctl recognises, so it is only equal to itself.
+		// Not a loopback spelling agentop recognises, so it is only equal to itself.
 		{"127.0.0.2", "127.0.0.1", false},
 		{"127.0.0.2", "127.0.0.2", true},
 		{"", "", true},
@@ -1603,7 +1603,7 @@ func TestBobTrustNoteAndUndoCoverTheSameDomain(t *testing.T) {
 // The backup promise must match what writeSettings actually does. It writes <path>.bak
 // from the file's current contents only when the file EXISTS and no .bak is there
 // already — so a single unconditional "a copy is kept as <path>.bak" was false twice:
-// once for a settings file abctl is creating, and once on a second run, where the
+// once for a settings file agentop is creating, and once on a second run, where the
 // existing .bak is deliberately not overwritten and therefore holds the file as first
 // found rather than as it is now.
 //

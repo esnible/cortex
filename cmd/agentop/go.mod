@@ -4,7 +4,7 @@ go 1.26.5
 
 // Workspace-only: this replace is satisfied by go.work during
 // local development. Standalone `go get` / `go install` outside the
-// workspace will not resolve this path — if abctl is ever distributed as
+// workspace will not resolve this path — if agentop is ever distributed as
 // a standalone binary, drop the replace and version core as a proper
 // dependency once it has a tagged release.
 replace github.com/rossoctl/cortex/core => ../../core

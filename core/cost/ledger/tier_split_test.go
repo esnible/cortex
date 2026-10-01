@@ -36,7 +36,7 @@ func setTiers(t *testing.T, e *pipeline.SessionEvent, input, cacheWrite, cacheRe
 // Record settled CostMicros off the published record and dropped its Tiers on the floor, so
 // every row on disk carried a total with no breakdown. The consumer is
 // usage.Counts.ApportionTiers, which returns ok=false when the mix is empty — and the four
-// surfaces that read it (abctl's spend drawer, `abctl cost`, its JSON, the /v1/usage
+// surfaces that read it (agentop's spend drawer, `agentop cost`, its JSON, the /v1/usage
 // response) all render "not known here" rather than a breakdown. Measured before the fix:
 // window=1h served the ring's split while window=today, 7d and month served none, which is
 // the split being populated on one of two paths that the mix's own doc warns about.

@@ -43,8 +43,8 @@ func TestGetSessionPage_AsksForTheSummaryView(t *testing.T) {
 	}
 }
 
-// The echo is how abctl knows whether it actually got a summary. Absent means the
-// proxy predates the projection — a state abctl must be able to report rather
+// The echo is how agentop knows whether it actually got a summary. Absent means the
+// proxy predates the projection — a state agentop must be able to report rather
 // than silently be slow in.
 func TestGetSessionPage_ReadsTheViewEcho(t *testing.T) {
 	for _, tc := range []struct {

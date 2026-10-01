@@ -55,10 +55,10 @@ This file provides context for Claude (AI assistant) when working with the `cort
     name, do not force past it.
   - **Worktrees do not isolate the running Cortex.** One `~/.cortex/config.yaml`, one
     launchd label, one proxy on `:47600`, and every session's `HTTPS_PROXY` points at
-    it. `abctl service restart` always replaces that instance and cuts every attached
-    session. `abctl service install` only does so when it has something to change or a
+    it. `agentop service restart` always replaces that instance and cuts every attached
+    session. `agentop service install` only does so when it has something to change or a
     running proxy to adopt — with nothing to do it prints `Already current` and leaves
-    the proxy alone. `--ref=main` is an `install.sh` flag, not an `abctl` one; it picks
+    the proxy alone. `--ref=main` is an `install.sh` flag, not an `agentop` one; it picks
     which installer script runs, so whether it interrupts anything depends on what that
     install then finds. Coordinate before any of it.
 
@@ -189,7 +189,7 @@ cortex/
 │                                     #   not an inert archive.
 │
 ├── scripts/
-│   ├── install.sh                    # Laptop installer (abctl + the local proxy service)
+│   ├── install.sh                    # Laptop installer (agentop + the local proxy service)
 │   ├── keycloak_sync.py              # Declarative Keycloak sync tool (routes.yaml driven)
 │   ├── dev/                          # Loose dev-only shell scripts
 │   │   ├── local-build-and-test.sh   #   Build every image and load it into Kind
@@ -209,7 +209,7 @@ cortex/
 │   └── lineage-attach/               #   OTel shim + scripts for lineage propagation
 │
 ├── demos/                            # 10 scenarios — see demos/README.md for the order
-│   ├── weather-agent/                #   Getting started (+ advanced, + abctl walkthrough)
+│   ├── weather-agent/                #   Getting started (+ advanced, + agentop walkthrough)
 │   ├── github-issue/                 #   Token exchange + scope-based access (largest)
 │   ├── token-exchange-routes/        #   Routes config reference
 │   ├── ibac/, hr-cpex/,              #   Guardrail / policy demos
@@ -322,7 +322,7 @@ shipped artifact.
 ### Release binaries
 
 `v*` tag pushes trigger `.github/workflows/release-binaries.yaml`, which
-cross-compiles `authbridge-proxy` and `abctl` for linux/darwin ×
+cross-compiles `authbridge-proxy` and `agentop` for linux/darwin ×
 amd64/arm64 and attaches tarballs to the GitHub Release. `authbridge-proxy`
 ships in variants that mirror the container images:
 
@@ -409,7 +409,7 @@ direction, and no mutator of either direction may precede a `ReadsBody`-only
 plugin. See [`docs/plugin-reference.md`](docs/plugin-reference.md#capability-fields).
 
 **Plugin metrics.** Plugins that implement `pipeline.MetricsProvider` have their
-counters surfaced on `GET /v1/pipeline` and rendered in abctl's plugin pane.
+counters surfaced on `GET /v1/pipeline` and rendered in agentop's plugin pane.
 Optional interfaces are not promoted through `configuredPlugin`'s embedded
 `Plugin`, so a new one must be forwarded there explicitly or it is invisible for
 every plugin that has config. Counters are per-process and reset on restart
@@ -469,7 +469,7 @@ Envoy config lives in the `envoy-config` ConfigMap rendered by the [rossoctl Hel
 
 ## Session Events API (`:9094`)
 
-When `session.enabled` is true (default) and `listener.session_api_addr` is non-empty (default `:9094`), the authbridge binary exposes the captured session store over HTTP. Intended for operators debugging the plugin pipeline via `kubectl port-forward` and for the `abctl` TUI.
+When `session.enabled` is true (default) and `listener.session_api_addr` is non-empty (default `:9094`), the authbridge binary exposes the captured session store over HTTP. Intended for operators debugging the plugin pipeline via `kubectl port-forward` and for the `agentop` TUI.
 
 **Trust model:** no authentication. Bind only on in-cluster addresses, never behind ingress. Payloads may contain raw user messages, LLM completions, and tool results.
 
@@ -478,16 +478,16 @@ When `session.enabled` is true (default) and `listener.session_api_addr` is non-
 | Method & Path | Format | Purpose |
 |---|---|---|
 | `GET /` | text | One-line-per-endpoint index. Answers "is this the session API, and on the right port?" — the reason a 404 here was worth replacing. |
-| `GET /v1/sessions` | `application/json` | List active sessions: `{sessions: [{id, createdAt, updatedAt, eventCount, title, agent, adopted, totalTokens, costMicros, avoidedMicros, saturated, active, promptContext}]}`. `id`, `createdAt`, `updatedAt`, `eventCount` and `active` are always present; every other field is `omitempty` — absent rather than zero, on the standing rule that an unknown value must not render as a real one. (Do not read that off the position of `active`: it sits second-to-last, between two `omitempty` fields.) **`title` is a suggestion, not an identifier:** the proxy derives it from the session's own events (a `/rename`, else a `<user_query>`, else ordinary user prose, with `<system-reminder>` blocks excised), so it is a display convenience and nothing addresses a session by it. Absent when nothing in the events named it. **Folded at append time and FIRST-WINS, except that a `/rename` always overrides** — so ordinary conversation does not re-title a session on every turn, and a `/rename` survives eviction of the event that carried it. abctl reads this field as a FALLBACK: its TITLE column prefers a harvested Claude Code transcript title and uses the served title only for a session the harvest cannot name. That precedence is fixed rather than a judgement about which string is better — both sides rank candidates their own way and do not agree on every session. That is the case worth having: an agent with no transcript tree on the operator's disk still routes through the proxy, so a row that used to render blank now has a name. abctl deliberately still treats such a row as unnamed for its own re-harvest backoff, so a served title does not stop it looking for a harvested one. |
+| `GET /v1/sessions` | `application/json` | List active sessions: `{sessions: [{id, createdAt, updatedAt, eventCount, title, agent, adopted, totalTokens, costMicros, avoidedMicros, saturated, active, promptContext}]}`. `id`, `createdAt`, `updatedAt`, `eventCount` and `active` are always present; every other field is `omitempty` — absent rather than zero, on the standing rule that an unknown value must not render as a real one. (Do not read that off the position of `active`: it sits second-to-last, between two `omitempty` fields.) **`title` is a suggestion, not an identifier:** the proxy derives it from the session's own events (a `/rename`, else a `<user_query>`, else ordinary user prose, with `<system-reminder>` blocks excised), so it is a display convenience and nothing addresses a session by it. Absent when nothing in the events named it. **Folded at append time and FIRST-WINS, except that a `/rename` always overrides** — so ordinary conversation does not re-title a session on every turn, and a `/rename` survives eviction of the event that carried it. agentop reads this field as a FALLBACK: its TITLE column prefers a harvested Claude Code transcript title and uses the served title only for a session the harvest cannot name. That precedence is fixed rather than a judgement about which string is better — both sides rank candidates their own way and do not agree on every session. That is the case worth having: an agent with no transcript tree on the operator's disk still routes through the proxy, so a row that used to render blank now has a name. agentop deliberately still treats such a row as unnamed for its own re-harvest backoff, so a served title does not stop it looking for a harvested one. |
 | `GET /v1/sessions/{id}` | `application/json` | The session's most recent events. `?limit=N` (default 500, max 2000) sets the window; `?before=<seq>` returns the page ending just before that event, so the whole session is reachable by paging backward from the tail. `totalEvents` is the session's true length and `oldestSeq` the oldest event the store still holds — both present only when this response is not the whole session, so a client can tell "this is the beginning" from "there is more behind me" without a second request. 404 if unknown/expired. **One response is still not a full snapshot:** with `session.max_events` unset a session can hold thousands of events, and one real session's whole history encoded to 1.1GB — 17s to write, against clients that time out in 10. That cap is why `before` exists — until it did, a session past 2000 events had a beginning no request could reach at any limit, while still costing memory. The response is written one event at a time rather than encoded whole, so serving it costs the proxy heap proportional to one event; see the chatty-traffic gotcha below. |
 | `GET /v1/events` | `text/event-stream` | SSE stream of new events. Optional `?session=<id>` filters to one session. Heartbeat every 30s. |
-| `GET /v1/pipeline` | `application/json` | Active pipeline composition: `{inbound: [...], outbound: [...]}`. Each plugin entry carries `name`, `direction`, `position`, `readsBody`, plus the static metadata (`requires`, `requiresAny`, `description`) and runtime `config` when present. abctl renders this as the Pipeline pane. |
-| `GET /v1/plugins` | `application/json` | Catalog of every registered plugin (whether or not in the active pipeline): `{plugins: [{name, requires, requiresAny, description, ...}]}`. abctl renders this as the Catalog pane (`P` key). 404s when the binary's session API was constructed without `WithCatalog`. |
+| `GET /v1/pipeline` | `application/json` | Active pipeline composition: `{inbound: [...], outbound: [...]}`. Each plugin entry carries `name`, `direction`, `position`, `readsBody`, plus the static metadata (`requires`, `requiresAny`, `description`) and runtime `config` when present. agentop renders this as the Pipeline pane. |
+| `GET /v1/plugins` | `application/json` | Catalog of every registered plugin (whether or not in the active pipeline): `{plugins: [{name, requires, requiresAny, description, ...}]}`. agentop renders this as the Catalog pane (`P` key). 404s when the binary's session API was constructed without `WithCatalog`. |
 | `GET /healthz` | text | Liveness probe. |
 
 ### Quick examples
 
-The `abctl` TUI handles port-forward + connection automatically — pick a
+The `agentop` TUI handles port-forward + connection automatically — pick a
 pod from the Namespaces → Pods picker. For raw HTTP exploration, set up
 your own port-forward first:
 
@@ -521,10 +521,10 @@ curl -N "http://localhost:9094/v1/events?session=$SID"
 Every event on `/v1/sessions/{id}` and `/v1/events` carries:
 
 - `at`, `direction`, `phase` — when, which side, what stage. `phase` is one of `"request"`, `"response"`, or `"denied"` (terminal denial from a pipeline plugin — typically a jwt-validation failure).
-- `seq` — the event's position in its session, counting from 1, and the cursor `?before=` takes. Gaps are normal: FIFO eviction drops a prefix, and the pinned intent can sit far ahead of the retained tail. Absent (zero) from a proxy that predates paging, which is how a client tells it cannot page there. **Unique within one incarnation of a session, not forever:** trimming events never reuses their numbers, but the counter lives on the store entry, and whole-session eviction (`session.ttl`, `max_sessions`) deletes that entry — so a session re-created under the same id restarts at 1. A cursor from before that point is above everything held, and the endpoint answers with the tail, since every event it holds does precede the cursor. A paging client must therefore order pages by `at`, not by `seq` (abctl does); the store cannot tell a re-created session from a trimmed one.
+- `seq` — the event's position in its session, counting from 1, and the cursor `?before=` takes. Gaps are normal: FIFO eviction drops a prefix, and the pinned intent can sit far ahead of the retained tail. Absent (zero) from a proxy that predates paging, which is how a client tells it cannot page there. **Unique within one incarnation of a session, not forever:** trimming events never reuses their numbers, but the counter lives on the store entry, and whole-session eviction (`session.ttl`, `max_sessions`) deletes that entry — so a session re-created under the same id restarts at 1. A cursor from before that point is above everything held, and the endpoint answers with the tail, since every event it holds does precede the cursor. A paging client must therefore order pages by `at`, not by `seq` (agentop does); the store cannot tell a re-created session from a trimmed one.
 - `a2a` / `mcp` / `inference` — protocol parser payloads (one at most).
-- `invocations` — per-plugin invocation records for every plugin that ran on the pipeline pass. Structured as `{inbound: [...], outbound: [...]}`; each entry carries `plugin`, `action` (one of 5 values — see below), `reason` (machine-stable code), and optional plugin-specific context (expected issuer, target audience, cache-hit flag, path, etc.). abctl renders one row per invocation, so operators see an explicit per-plugin timeline.
-- `plugins` — escape-hatch map for plugin-specific observability. Keys are plugin names; values are the raw JSON each plugin emitted. Unknown plugins render as opaque JSON in abctl. See [`docs/plugin-reference.md`](docs/plugin-reference.md#emitting-session-events) for the producer contract.
+- `invocations` — per-plugin invocation records for every plugin that ran on the pipeline pass. Structured as `{inbound: [...], outbound: [...]}`; each entry carries `plugin`, `action` (one of 5 values — see below), `reason` (machine-stable code), and optional plugin-specific context (expected issuer, target audience, cache-hit flag, path, etc.). agentop renders one row per invocation, so operators see an explicit per-plugin timeline.
+- `plugins` — escape-hatch map for plugin-specific observability. Keys are plugin names; values are the raw JSON each plugin emitted. Unknown plugins render as opaque JSON in agentop. See [`docs/plugin-reference.md`](docs/plugin-reference.md#emitting-session-events) for the producer contract.
 - `identity`, `host`, `statusCode`, `error`, `durationMs` — request-level context.
 - `tunnel`, `tunnelReason`, `bytesUp`, `bytesDown` — an opaque CONNECT (or transparent-redirect) tunnel records two rows sharing a `requestId`: the open (`phase: "request"`, `tunnelReason` saying why the bytes stayed opaque) and, when the tunnel ends, the close (`phase: "response"`). The close carries the CONNECT's own `statusCode` — 200, or 502 with the dial error in `error` when the destination could not be reached (`tunnelReason: "dial-failed"`) — plus `durationMs` for how long the tunnel stayed open and the bytes it carried each way (up = client to destination). It is not the destination's status: that travels inside the client's end-to-end TLS. A bridged tunnel records no close, because its open folds into the first decrypted request, which carries its own response — unless it carried no request at all. Tunnel rows are kept out of `/v1/usage`: a tunnel's lifetime is not a request latency.
 - `httpMethod`, `httpPath` — the HTTP verb and path, so a request no parser recognized is still identifiable rather than showing only a host. Distinct from the `method` inside `a2a` / `mcp`, which is a protocol method name. On an opaque tunnel `httpMethod` is `CONNECT` and `httpPath` is absent — opaque bytes carry no request line. The path is query-stripped and percent-decoded, so query-borne credentials never reach the timeline, but a secret in a path *segment* (a bot token, a webhook path) does survive on this unauthenticated surface — worth knowing before exporting events off-box.
@@ -543,7 +543,7 @@ Every plugin emits one of these 5 action values per invocation, so operators can
 
 Use `reason` to discriminate within an action — e.g. `skip/path_bypass` vs `skip/no_matching_route` tell different stories at the detail-pane level but both scan as "skip" in the at-a-glance timeline.
 
-**abctl's ACTION column is not only this vocabulary.** Two of its values are rendering, not plugin output: `—` when nothing acted, and `tunnel` for an opaque CONNECT — a row where no plugin ran and no protocol was parsed, so METHOD is blank and the label is the only thing identifying it. The open row has no STATUS either; the close row recorded when the tunnel ends does, and pairs with the open on the `#` column. Neither is ever emitted by a plugin, and neither is a verdict on the request.
+**agentop's ACTION column is not only this vocabulary.** Two of its values are rendering, not plugin output: `—` when nothing acted, and `tunnel` for an opaque CONNECT — a row where no plugin ran and no protocol was parsed, so METHOD is blank and the label is the only thing identifying it. The open row has no STATUS either; the close row recorded when the tunnel ends does, and pairs with the open on the `#` column. Neither is ever emitted by a plugin, and neither is a verdict on the request.
 
 > **Producer-side contract:** the authoritative definition of the 5-value vocabulary, the `Invocation` struct fields, and which diagnostic fields each plugin type populates lives in [`docs/plugin-reference.md`](docs/plugin-reference.md#emitting-session-events). Edit that file when the vocabulary changes; this table is the consumer-side summary.
 
@@ -748,7 +748,7 @@ Hooks:
 `ci.yaml` both run, but only one of them can fail:
 
 - `go vet ./...` **is** a gate, on 7 of the 12 modules: `core`, both
-  `scripts/*`, and the `cmd/{authbridge-proxy,authbridge-envoy,abctl,authbridge-praxis}`
+  `scripts/*`, and the `cmd/{authbridge-proxy,authbridge-envoy,agentop,authbridge-praxis}`
   matrix. Not vetted anywhere: `cmd/authbridge-cpex` (deliberately excluded — it
   needs CGO and a pinned `libcpex_ffi.a`, so `build.yaml` covers it via the image
   build), `core/storage/redis`, and the three `demos/*` modules.
@@ -765,7 +765,7 @@ touched one of the five unvetted modules.
 | Area | Technology |
 |------|------------|
 | AuthBridge sidecar binaries | Go 1.26.5, envoy-control-plane, lestrrat-go/jwx |
-| abctl (TUI) | Go 1.26.5, bubbletea |
+| agentop (TUI) | Go 1.26.5, bubbletea |
 | keycloak_sync.py / setup scripts | Python 3.12, python-keycloak (`>=7.1.1,<8`) |
 | sparc-service | Python 3.10+, FastAPI, agent-lifecycle-toolkit |
 | Proxy | Envoy v1.37.1 (pinned by digest in `cmd/authbridge-envoy/Dockerfile`) |
@@ -1036,9 +1036,9 @@ resulting `/shared/client-id.txt` and `/shared/client-secret.txt`.
 
     The schemas were the last big duplicate and needed a type change to reach. `InferenceTool.Parameters` was `map[string]any`, which cost **4.1x its JSON text** to hold and could not be interned without a recursive walk that rewrites map values — a walk cannot lean on string immutability the way sharing a string can. Measured on a live session: 84KB per event, ~172MB across one 2050-event session. So the field became `pipeline.RawJSON`, a named string type that keeps the schema exactly as the client sent it, and it interns like any other string. Two consequences worth knowing: the API now shows schemas in the client's own key order (a map round-trip silently sorted them), and the type must stay a NAMED string with a `MarshalJSON` method — OPA's `ast.InterfaceToValue` treats a plain or aliased string as a JSON string, which would leave every policy indexing `input.inference.tools[_].parameters` undefined with no error (`core/plugins/opa/tool_parameters_rego_test.go` guards it). MCP `Params`/`Result` still do not intern, being `map[string]any`; they are unmeasured on this workload and the same field-type change is available if that changes.
 
-    **Retention was only half of it, and reading the store was the more expensive half.** A memory figure that keeps climbing while traffic is idle is usually not retention: `GET /v1/sessions/{id}` used to encode the whole response into a single buffer before writing a byte, so serving one snapshot cost heap proportional to the *response* — ~246MB of heap growth for a 105MB response — and Go keeps that as idle heap rather than returning it promptly. abctl requests a snapshot on every <kbd>Enter</kbd> into a session, so RSS ratcheted a couple hundred megabytes per keystroke: four requests took a live proxy from 731MB to 1447MB, still 1447MB two minutes later. Interning could not have helped there, and the two are not alternatives — interning makes stored events *share* one copy of a repeated message, and an encoder expands every share back into its own bytes on the way out. The response is now written one event at a time (`core/sessionapi/snapshot.go`, `BenchmarkSnapshotHeap`). When judging any memory change here, note that **RSS is not heap** and the proxy exposes no heap metric — there is no `pprof` endpoint anywhere in this tree — so an RSS-per-event figure mixes retention with read-path churn and cannot settle either one.
+    **Retention was only half of it, and reading the store was the more expensive half.** A memory figure that keeps climbing while traffic is idle is usually not retention: `GET /v1/sessions/{id}` used to encode the whole response into a single buffer before writing a byte, so serving one snapshot cost heap proportional to the *response* — ~246MB of heap growth for a 105MB response — and Go keeps that as idle heap rather than returning it promptly. agentop requests a snapshot on every <kbd>Enter</kbd> into a session, so RSS ratcheted a couple hundred megabytes per keystroke: four requests took a live proxy from 731MB to 1447MB, still 1447MB two minutes later. Interning could not have helped there, and the two are not alternatives — interning makes stored events *share* one copy of a repeated message, and an encoder expands every share back into its own bytes on the way out. The response is now written one event at a time (`core/sessionapi/snapshot.go`, `BenchmarkSnapshotHeap`). When judging any memory change here, note that **RSS is not heap** and the proxy exposes no heap metric — there is no `pprof` endpoint anywhere in this tree — so an RSS-per-event figure mixes retention with read-path churn and cannot settle either one.
 
-    **And the client is the other end of the same problem.** Measured on a laptop, `abctl` sat at 1.64GB against the proxy's 1.03GB — larger than the process it was watching, and the only one of the two still climbing. It made both mistakes the server had just stopped making: it decoded each snapshot as one document (`json.Decoder` only bounds its buffer between *values*, and a whole snapshot is one value), and it kept every string the server's encoder had expanded back out of the store's sharing. Both are fixed in `cmd/agentop/apiclient/snapshot.go`: the response is decoded one event at a time and fed through the same `session.Interner` the store uses, exported for the purpose rather than reimplemented. On a 23.5MB document, `+32.0MB HeapSys` and 26.49MB retained became +0.0MB and 2.31MB (`BenchmarkDecodeSessionViewHeap`). When a memory figure here looks wrong, measure **both** processes — the proxy has not been the larger one for a while.
+    **And the client is the other end of the same problem.** Measured on a laptop, `agentop` sat at 1.64GB against the proxy's 1.03GB — larger than the process it was watching, and the only one of the two still climbing. It made both mistakes the server had just stopped making: it decoded each snapshot as one document (`json.Decoder` only bounds its buffer between *values*, and a whole snapshot is one value), and it kept every string the server's encoder had expanded back out of the store's sharing. Both are fixed in `cmd/agentop/apiclient/snapshot.go`: the response is decoded one event at a time and fed through the same `session.Interner` the store uses, exported for the purpose rather than reimplemented. On a 23.5MB document, `+32.0MB HeapSys` and 26.49MB retained became +0.0MB and 2.31MB (`BenchmarkDecodeSessionViewHeap`). When a memory figure here looks wrong, measure **both** processes — the proxy has not been the larger one for a while.
 
     Two layered defenses keep the inbound A2A user intent visible to IBAC even when an agent generates dozens of outbound events per turn:
 

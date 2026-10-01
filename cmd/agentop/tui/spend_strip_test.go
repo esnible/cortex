@@ -451,7 +451,7 @@ func TestMoneyFigure_OneMarkerForBothWaysAFigureCanBeShort(t *testing.T) {
 		}
 	}
 	// The clamp leads: it is short in every column of the aggregate, where a damaged read is
-	// short in the dollars. Same order as the Cost pane and `abctl cost`.
+	// short in the dollars. Same order as the Cost pane and `agentop cost`.
 	if clamp, damaged := strings.Index(fig.full, saturatedNote), strings.Index(fig.full, "3 lines lost"); clamp > damaged {
 		t.Errorf("the damaged-read note outranks the clamp in %q", fig.full)
 	}

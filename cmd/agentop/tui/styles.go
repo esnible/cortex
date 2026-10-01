@@ -1,4 +1,4 @@
-// Package tui implements the abctl Bubble Tea interactive terminal UI.
+// Package tui implements the agentop Bubble Tea interactive terminal UI.
 package tui
 
 import (
@@ -53,7 +53,7 @@ var (
 	// pane wants colour again.
 )
 
-// tableStyles returns the standard abctl table palette — layered on top of
+// tableStyles returns the standard agentop table palette — layered on top of
 // bubbles' DefaultStyles so cell padding, borders, and other layout rules
 // come through unchanged.
 //

@@ -34,7 +34,7 @@ import (
 // would add a minute to the package for no extra coverage, and a test that asserts the logic at
 // 40ms asserts exactly the same logic. Nothing outside the tests assigns it.
 //
-// 30s is deliberately far past any queue this file can produce. `abctl observe` harvests one
+// 30s is deliberately far past any queue this file can produce. `agentop observe` harvests one
 // tree per tick, `read-claude-sessions` is one process, and the realistic worst case is a
 // handful of viewers plus a manual run — a queue of seconds, not minutes, even derated for a
 // loaded runner. What 30s buys is that reaching it means no wait would have worked.
@@ -56,7 +56,7 @@ const lockPoll = 20 * time.Millisecond
 // does not hold: measured, two concurrent Harvests over distinct config dirs finish with 2 of 6
 // sessions on disk, and six with the same. The pass is explicitly a SINGLE re-read, so it cannot
 // converge when more than one rename lands inside its own window — os.Rename makes the last
-// writer total, and `abctl observe` harvesting by default means two viewers at once is ordinary
+// writer total, and `agentop observe` harvesting by default means two viewers at once is ordinary
 // rather than exotic.
 //
 // syscall.Flock rather than a dependency: it is stdlib, and the alternative was promoting a
@@ -68,7 +68,7 @@ const lockPoll = 20 * time.Millisecond
 // BOUNDED BY lockTimeout, then it gives up and lets the caller proceed unlocked. This used to
 // block indefinitely, on the reasoning that a caller who cannot wait should not be harvesting.
 // The case that reasoning did not cover is a holder that never releases — not a crash, which the
-// kernel cleans up on process exit, but a process still alive and stuck. `abctl observe` harvests
+// kernel cleans up on process exit, but a process still alive and stuck. `agentop observe` harvests
 // on a timer, so every later attempt queued behind the same lock and the viewer showed no titles
 // at all, indefinitely, with nothing on screen to say why.
 //
@@ -123,7 +123,7 @@ func lockMetadata(path string) (func(), error) {
 		}
 		if !time.Now().Before(deadline) {
 			// Closed here too. The caller proceeds unlocked and never sees this descriptor, so
-			// leaking it would leak one per harvest — and `abctl observe` harvests on a timer.
+			// leaking it would leak one per harvest — and `agentop observe` harvests on a timer.
 			_ = f.Close()
 			return nil, fmt.Errorf("%w after %s", ErrLockTimeout, lockTimeout)
 		}

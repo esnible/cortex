@@ -12,9 +12,9 @@ import (
 // window-level figures.
 //
 // AN EXPLICIT PARAMETER RATHER THAN A DEFAULT, because the two callers want different things
-// and the cheaper one is not the safe one. abctl's usage pane renders a CHART from Buckets, so
+// and the cheaper one is not the safe one. agentop's usage pane renders a CHART from Buckets, so
 // leaving them whole-window would draw every agent's traffic under a title naming one — silent,
-// and wrong in the direction a reader cannot detect. `abctl cost` reads only window totals on
+// and wrong in the direction a reader cannot detect. `agentop cost` reads only window totals on
 // its scoped path, so it asks for no narrowing and pays for none.
 //
 // NEITHER VALUE IS A SAFE DEFAULT, which is why there is no zero-argument form. Defaulting to
@@ -36,12 +36,12 @@ const (
 //
 // IT REWRITES Totals AND HANDS BACK A SNAPSHOT, rather than rendering the agent itself, so
 // callers apply their existing writers to it with no second implementation and no chance of the
-// two drifting: `abctl cost`'s negative-total refusal, coverage-gap disclosure and
+// two drifting: `agentop cost`'s negative-total refusal, coverage-gap disclosure and
 // incomplete-read admission each read one agent's numbers, and the TUI's chart reads the same
 // narrowing. Which fields do NOT survive, and why, is stated at each narrowing below. A COPY,
 // never the caller's snapshot mutated in place.
 //
-// The fold is FoldSeriesAcrossWindow, the same one abctl's AGENTS pane uses, so the figure
+// The fold is FoldSeriesAcrossWindow, the same one agentop's AGENTS pane uses, so the figure
 // printed by the CLI and the row shown in the pane cannot disagree.
 //
 // AN UNKNOWN AGENT IS AN ERROR THAT NAMES THE KNOWN ONES. The labels are User-Agents, so they
@@ -81,7 +81,7 @@ func ScopeToAgent(snap *Snapshot, agent string, buckets BucketScope) (*Snapshot,
 	// The three by-model maps are DROPPED, not narrowed, because nothing here can narrow them: a
 	// bucket's series is keyed by agent and carries no per-model breakdown, so the only available
 	// readings are the window's maps — which describe other agents' traffic — or none. They are
-	// omitempty on the wire, and `abctl cost`'s costIncompleteReasonLines already treats an
+	// omitempty on the wire, and `agentop cost`'s costIncompleteReasonLines already treats an
 	// absent map as nothing to say, which is its common case for a ledger-backed window anyway.
 	scoped.PricedBy = nil
 	scoped.UnpricedBy = nil
@@ -106,15 +106,15 @@ func ScopeToAgent(snap *Snapshot, agent string, buckets BucketScope) (*Snapshot,
 	// KEPT rather than dropped, because unlike the by-model maps above there IS a correct
 	// reading available: a residual is a fact about the WINDOW, true whichever agent is scoped
 	// to, which is the same argument that keeps DaysOutsideRetention. Dropping them would also
-	// retract a disclosure already being made — `abctl cost` reads UngroupedCostMicros off the
+	// retract a disclosure already being made — `agentop cost` reads UngroupedCostMicros off the
 	// snapshot this function returns, at writeCostSummary's --agent note.
 	//
 	// THE DISCLOSURE ITSELF IS THE CALLER'S DUTY, and it is the one thing this function cannot
 	// discharge for it: rewriting Totals is what creates the obligation, and only the caller
 	// knows whether it renders a money figure at all. A surface that renders one under a scope
 	// has to say what it leaves out, or a reader who scopes to each agent in turn and sums the
-	// figures finds a shortfall with nothing to explain it. `abctl cost` does this in
-	// writeCostSummary; abctl's usage pane does it in tui.costUngroupedRow.
+	// figures finds a shortfall with nothing to explain it. `agentop cost` does this in
+	// writeCostSummary; agentop's usage pane does it in tui.costUngroupedRow.
 	//
 	// THE SURVIVAL IS PINNED IN THIS PACKAGE because every guard it had was a module away, in
 	// the consumer: dropping UngroupedCostMicros here fails two cmd/agentop tests, and dropping
@@ -127,7 +127,7 @@ func ScopeToAgent(snap *Snapshot, agent string, buckets BucketScope) (*Snapshot,
 	// cross-tabulation and dropping the list is worse — an absent list reads as "single unit", and
 	// this agent's own traffic may be the mixed part. THAT FALLBACK OVER-REFUSES, deliberately: a
 	// per-agent figure is withheld in a mixed window even when the agent billed in one unit.
-	// `abctl cost`'s writeCostSummary says which of the two a refusal is, because "no figure for
+	// `agentop cost`'s writeCostSummary says which of the two a refusal is, because "no figure for
 	// this agent" and "no figure for this window" have different fixes. SeriesCurrencies itself is
 	// dropped with the series it described.
 	if snap.SeriesCurrencies != nil {

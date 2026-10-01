@@ -117,7 +117,7 @@ func TestSessionRowIDs_MatchTheRowsOneForOne(t *testing.T) {
 	for _, width := range []int{60, 72, 100, 200} {
 		for _, filter := range []string{"", "ecb", "zzz"} {
 			m := uuidPicker(t, width, uuidOpened, uuidOther)
-			// A cached-only session: held by abctl, absent from the server's list.
+			// A cached-only session: held by agentop, absent from the server's list.
 			m.events["cached-only-session-1234"] = []pipeline.SessionEvent{
 				{Phase: pipeline.SessionRequest},
 			}

@@ -19,7 +19,7 @@ import (
 // usage.plausibleTokenReport refuses a whole report where any counter exceeds
 // pricing.MaxPlausibleTokens and counts it in Counts.RefusedTokenRequests. tokenCount bounded
 // only the NEGATIVE side, so the same response was refused by the six-hour ring and written
-// to the thirty-day file — and abctl renders both, so one endpoint reported two different
+// to the thirty-day file — and agentop renders both, so one endpoint reported two different
 // token totals for identical traffic with nothing to say which was which.
 //
 // It is the inverse of the argument tokenCount's own comment makes about negatives: the

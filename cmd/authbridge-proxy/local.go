@@ -66,10 +66,10 @@ func defaultCortexDir() (string, error) {
 // what makes two of them indistinguishable from each other.
 const bridgeCACommonName = "authbridge-tls-bridge-ca"
 
-// clientCAFromState returns the CA file the abctl-managed client is configured with
+// clientCAFromState returns the CA file the agentop-managed client is configured with
 // right now, or "" when that cannot be established. The record's name and shape, and
 // the reason `prior` is the wrong field to read, live in core/clientstate — shared
-// with abctl, which writes the file.
+// with agentop, which writes the file.
 func clientCAFromState(statePath string) string {
 	st, err := clientstate.Load(statePath)
 	if err != nil || st == nil {
@@ -92,7 +92,7 @@ func clientCAFromState(statePath string) string {
 //
 // Two properties make this safe to print on every boot, and both are load-bearing:
 //
-//   - It reads the client's CURRENT CA (clientCAFromState), not abctl's record of
+//   - It reads the client's CURRENT CA (clientCAFromState), not agentop's record of
 //     what it displaced. The displaced value is a different CA by construction on
 //     every enable, so comparing it warns about clients that are already correct.
 //   - It compares the CERTIFICATES, not their paths. The configured file is often
@@ -142,7 +142,7 @@ func staleClientCAWarning(currentCADir, clientCAPath string, currentCAPEM []byte
 // searched — our generated ca.crt holds exactly one, so a bundle here means the
 // client was pointed at something else.
 func parseBridgeCA(path string) *x509.Certificate {
-	b, err := os.ReadFile(path) //nolint:gosec // path comes from abctl's own record
+	b, err := os.ReadFile(path) //nolint:gosec // path comes from agentop's own record
 	if err != nil {
 		return nil
 	}
@@ -228,7 +228,7 @@ tls_bridge:
 # release -- scaled by any gateway discount Cortex knows about. To see what is
 # actually in effect, including where each figure came from:
 #
-#   abctl pricing --host <your-gateway>
+#   agentop pricing --host <your-gateway>
 #
 # Gateways matching a shipped rule already have their discount applied and need
 # nothing here. If yours is not one of them and it bills a fraction of list, say
@@ -246,7 +246,7 @@ tls_bridge:
 # IBM Bob bills in Bobcoins, not dollars, at a flat rate no vendor list carries:
 # its models (premium-ide, router, openai/gpt-oss-20b) are in no bundled table,
 # so without this entry every Bob request is unpriced. "unit" keeps its figures
-# out of the dollar totals -- abctl shows them in Bobcoins and never adds the
+# out of the dollar totals -- agentop shows them in Bobcoins and never adds the
 # two. Edit the rate here if IBM changes it; nothing else will.
 pricing:
   endpoints:
@@ -268,7 +268,7 @@ pricing:
 #
 # WRITTEN OUT RATHER THAN LEFT TO THE DEFAULT, which is belt-and-braces now
 # rather than the mechanism. The default used to be "on for --local, off
-# otherwise", and since "abctl service install" runs this file with --config
+# otherwise", and since "agentop service install" runs this file with --config
 # and never --local, every INSTALLED laptop had the ledger off while the docs
 # promised it was on. The default is no longer keyed on the flag at all: it is
 # on wherever the ledger can survive a restart, which means an explicit
@@ -279,7 +279,7 @@ pricing:
 #
 # Set enabled: false to turn it off. Restart-only, not hot-reloaded: the ledger
 # is opened once at startup, so an edit here is REFUSED by the reloader (the
-# whole save with it) rather than accepted and ignored. "abctl service restart"
+# whole save with it) rather than accepted and ignored. "agentop service restart"
 # applies it, and cuts attached Claude Code sessions.
 cost_ledger:
   enabled: true
@@ -287,10 +287,10 @@ cost_ledger:
   # retention_days: 31         # minimum 9; 31 is the default and what window=month needs
   #                             # -- a month-to-date total on the 31st of a 31-day month
   #                             # opens 31 day files. A shorter setting is disclosed: the
-  #                             # band marks such a total as a floor and abctl cost
+  #                             # band marks such a total as a floor and agentop cost
   #                             # prints a coverage line. window=7d can open nine.
 # Session bucketing: which request headers are used to group traffic into
-# sessions visible in abctl. Each listed header is tried in order; the first
+# sessions visible in agentop. Each listed header is tried in order; the first
 # non-empty value wins.
 #
 # X-Claude-Code-Session-Id is set by Claude Code on every inference request.
@@ -319,10 +319,10 @@ pipeline:
       # tool-prune drops unused tool definitions from the outbound manifest.
       # The empty remove list is the off switch: with nothing named it does
       # nothing at all. Fill it in and it takes effect immediately --
-      #   abctl tools scan --write <this file>
+      #   agentop tools scan --write <this file>
       # -- and the config is hot-reloaded, so no restart.
       #
-      # Watch the Metrics section of abctl's plugin pane for what it saved. If
+      # Watch the Metrics section of agentop's plugin pane for what it saved. If
       # you ever suspect the plugin of breaking a request, set
       # on_error: observe here: it then counts what it *would* remove while
       # leaving every byte on the wire untouched, which settles the question
@@ -343,7 +343,7 @@ pipeline:
 // --ca-dir); no absolute path is baked into the binary.
 //
 // An existing file is KEPT, not overwritten. The config's own header invites
-// editing it, and `abctl tools scan --write` writes a prune list into it — and
+// editing it, and `agentop tools scan --write` writes a prune list into it — and
 // this function runs before any port is bound, so an unconditional write meant
 // that even a --local start which then failed on a port clash silently destroyed
 // those edits. Delete the file to regenerate the preset.
@@ -386,7 +386,7 @@ func writeBuiltinConfig(cortexDir, caDir string) (string, error) {
 		return "", err
 	}
 	// 0600, not 0644: it names the CA's location and the whole listener layout, and
-	// abctl's migration already rewrites it 0600 — a fresh install should not be the
+	// agentop's migration already rewrites it 0600 — a fresh install should not be the
 	// looser of the two.
 	if err := os.WriteFile(path, []byte(builtinConfigYAML(caDir)), 0o600); err != nil {
 		return "", err

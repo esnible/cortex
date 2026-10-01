@@ -182,7 +182,7 @@ func TestGetPluginCatalog(t *testing.T) {
 // between server-side FieldSchemaEntry (core/sessionapi/server.go)
 // and client-side PluginFieldEntry (here in apiclient). Every JSON
 // key the server emits must decode into the matching Go field, or the
-// abctl edit templates renderer silently loses metadata. Covers
+// agentop edit templates renderer silently loses metadata. Covers
 // nested fields too — token-exchange's identity sub-schema is the
 // real-world use case.
 func TestGetPluginCatalog_DecodesFieldSchemas(t *testing.T) {
@@ -315,7 +315,7 @@ func shortenHeaderTimeout(t *testing.T, d time.Duration) {
 // twice over: a bound the CLIENT imposes must never cut a call short of the budget
 // its CALLER set.
 //
-// The shape is `abctl cost` scaled down. That command allows 15s, because a symbolic
+// The shape is `agentop cost` scaled down. That command allows 15s, because a symbolic
 // window is answered by reading day files off disk, and the client carried a fixed 10s
 // http.Client.Timeout, so every call died at 10s and the 15s could not be reached.
 // Both are hard stops and the shorter always wins, which made the comment stating the
@@ -573,7 +573,7 @@ func TestNew_NeitherClientCarriesAWholeRequestTimeout(t *testing.T) {
 }
 
 // A caller's budget must survive the server THINKING for longer than the deadline-less
-// default, which is the shape `abctl cost` is built around: /v1/usage computes its snapshot
+// default, which is the shape `agentop cost` is built around: /v1/usage computes its snapshot
 // before writing any header, so a symbolic window's day-file walk happens entirely inside the
 // wait for headers.
 //
@@ -701,7 +701,7 @@ func TestGetBody_ASlowBodyInsideTheCallersBudgetSurvives(t *testing.T) {
 // The endpoint is unauthenticated and this client cannot verify what answered, which is why the
 // read is already capped at 512 bytes — that bound stops a flood, and this one stops a payload
 // that fits inside it. An escape sequence in the message can reposition the cursor, recolour the
-// rest of the session or hide what follows it, and `abctl cost` prints this straight to stderr
+// rest of the session or hide what follows it, and `agentop cost` prints this straight to stderr
 // while the TUI puts it in a flash line.
 //
 // pipeline.IsControlRune is the predicate the ledger and the aggregate already sanitise labels

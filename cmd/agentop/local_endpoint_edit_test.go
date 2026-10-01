@@ -42,7 +42,7 @@ func TestLocalStatsUp(t *testing.T) {
 
 	t.Run("something else holds the port", func(t *testing.T) {
 		// The exact shape of the bug: config.Load defaults an absent
-		// stats.address to :9093, so abctl can be pointed at a port owned by an
+		// stats.address to :9093, so agentop can be pointed at a port owned by an
 		// unrelated service. A 200 from it must not count.
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("Content-Type", "text/html")

@@ -514,7 +514,7 @@ func TestOnRequest_NoClassification_PassesThrough(t *testing.T) {
 		t.Errorf("judge calls = %d, want 0 (no classification, pass through)", fj.calls)
 	}
 	// Pass-through deliberately records NO Invocation — IBAC has no
-	// opinion to surface, so abctl would otherwise show a phantom
+	// opinion to surface, so agentop would otherwise show a phantom
 	// "ibac: continue" row on every unrelated request.
 	if pctx.Extensions.Invocations != nil &&
 		(len(pctx.Extensions.Invocations.Inbound)+len(pctx.Extensions.Invocations.Outbound)) > 0 {

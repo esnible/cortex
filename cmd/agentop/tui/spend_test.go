@@ -1331,7 +1331,7 @@ func TestSpendSummary_AFailedWindowPollStillCarriesTheDayFigure(t *testing.T) {
 	// renderSpendStrip this half vouched for a renderer paneView no longer called.
 	band := strings.Join(renderSpendBand(got, 200), "\n")
 	// $30.94, not $30.93: 30_935_000 micros is exactly half a cent over $30.93, and money now
-	// rounds HALF-UP FROM MICROS so that this cell and `abctl cost`'s headline answer identically.
+	// rounds HALF-UP FROM MICROS so that this cell and `agentop cost`'s headline answer identically.
 	// %.2f gave $30.93 here, because 30.935 has no exact binary form and lands a shade below the
 	// half — which is the disagreement that rounding from the integer removes.
 	if !strings.Contains(band, "$30.94") {

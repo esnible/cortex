@@ -8,9 +8,9 @@ import (
 	"github.com/rossoctl/cortex/core/pipeline"
 )
 
-// These tests used to cover abctl's own byte-to-token-to-dollar arithmetic. That arithmetic
+// These tests used to cover agentop's own byte-to-token-to-dollar arithmetic. That arithmetic
 // moved to the proxy (core/cost/settle, core/cost/pricing), where it is tested against the real
-// parser, and abctl's remaining job is reading a figure off the record. So these now cover
+// parser, and agentop's remaining job is reading a figure off the record. So these now cover
 // the reading — including the cases where there is nothing to read, which must render as
 // "not reported" rather than as zero.
 

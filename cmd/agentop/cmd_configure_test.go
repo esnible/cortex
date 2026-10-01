@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-// `abctl claude-code --help` printed `unknown claude-code action "--help"` and
+// `agentop claude-code --help` printed `unknown claude-code action "--help"` and
 // exited 2, sending someone looking for the command list to the one place that
 // refused to print it. All three spellings are pinned, not just the one in the
 // report: -h is what a habit produces and `help` is what someone copies from
@@ -20,7 +20,7 @@ func TestClaudeCodeHelp_PrintsUsageOnStdout(t *testing.T) {
 			if code := runClaudeCode([]string{arg}, &out, &errb); code != 0 {
 				t.Errorf("exit = %d, want 0", code)
 			}
-			if !strings.Contains(out.String(), "abctl configure claude-code —") {
+			if !strings.Contains(out.String(), "agentop configure claude-code —") {
 				t.Errorf("usage not on stdout:\n%s", out.String())
 			}
 			// The bug's signature. Asserted directly so a regression names itself.
@@ -72,7 +72,7 @@ func TestConfigure_ComingSoonAgents(t *testing.T) {
 			}
 			// Backticks included: they are part of the message, and losing them is the
 			// silent half of a rewrite.
-			if want := "`abctl exec -- " + tc.agent + "`"; !strings.Contains(got, want) {
+			if want := "`agentop exec -- " + tc.agent + "`"; !strings.Contains(got, want) {
 				t.Errorf("missing %q:\n%s", want, got)
 			}
 			if want := "to run " + tc.product + " under Cortex."; !strings.Contains(got, want) {
@@ -129,7 +129,7 @@ func TestConfigure_UsageErrors(t *testing.T) {
 		if code := runConfigure(nil, &out, &errb); code != 2 {
 			t.Errorf("exit = %d, want 2", code)
 		}
-		if !strings.Contains(errb.String(), "abctl configure —") {
+		if !strings.Contains(errb.String(), "agentop configure —") {
 			t.Errorf("usage not on stderr:\n%s", errb.String())
 		}
 		if out.Len() != 0 {
@@ -142,7 +142,7 @@ func TestConfigure_UsageErrors(t *testing.T) {
 		if code := runConfigure([]string{"--help"}, &out, &errb); code != 0 {
 			t.Errorf("exit = %d, want 0", code)
 		}
-		if !strings.Contains(out.String(), "abctl configure —") {
+		if !strings.Contains(out.String(), "agentop configure —") {
 			t.Errorf("usage not on stdout:\n%s", out.String())
 		}
 		if errb.Len() != 0 {
@@ -285,7 +285,7 @@ func TestComingSoonPlacesEachNameInItsOwnSlot(t *testing.T) {
 		"Persistent DisplayName configuration coming soon.",
 		// binary: what the user types, in backticks. The backticks are asserted
 		// because losing them is the silent half of a rewrite.
-		"`abctl exec -- binaryname`",
+		"`agentop exec -- binaryname`",
 		// display again, in the closing clause.
 		"to run DisplayName under Cortex.",
 	} {

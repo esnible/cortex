@@ -73,7 +73,7 @@ const spendResolution = time.Hour
 //
 // Deliberately NOT m.usage. That state is pane-scoped: openUsage sets it, and it
 // carries a user-chosen window and an optional single-session scope. The strip
-// needs all-sessions data whenever abctl is running, whatever pane is showing —
+// needs all-sessions data whenever agentop is running, whatever pane is showing —
 // driving both from one chain would blank the strip the moment a user scoped the
 // Usage pane to one session, which is exactly when they are looking at cost.
 //
@@ -134,7 +134,7 @@ type spendState struct {
 // FOUR, AND THESE FOUR, because they are the spans a budget is actually read against: the
 // live hour (is something running away right now), the day, the week, and the month — which
 // is when the budget resets. Anything shorter is a diagnostic rather than a budget, and
-// belongs behind the drawer's own span cycle or `abctl cost --window`.
+// belongs behind the drawer's own span cycle or `agentop cost --window`.
 type spendSpan int
 
 const (
@@ -492,7 +492,7 @@ type spendSummary struct {
 	//
 	// Set only alongside HasToday, so an unpriced or ring-served day leaves it nil: those
 	// paths publish no figure, so there is no total for it to qualify. A damaged read of a
-	// day that priced nothing is therefore disclosed by the Cost pane and `abctl cost` and
+	// day that priced nothing is therefore disclosed by the Cost pane and `agentop cost` and
 	// not by the strip — the strip has no reading to attach it to, and an unattached caveat
 	// on this line is the misattribution moneyFigure exists to end.
 	TodayDegraded *usage.Degraded
@@ -825,7 +825,7 @@ func (m *model) spendTickIsCurrent(span spendSpan, gen uint64) bool {
 //
 // THE COST OF THAT RULE ROSE WITH THE FOUR CADENCES, and it is worth stating rather than
 // leaving to be rediscovered. The month polls every five minutes, so one dropped reply blanks
-// the cell an operator opened abctl to read for five minutes, discarding a figure that was
+// the cell an operator opened agentop to read for five minutes, discarding a figure that was
 // good thirty seconds ago. Under the single twenty-second cadence this branch replaced, the
 // same rule cost twenty seconds.
 //
@@ -876,7 +876,7 @@ func unitCosts(snap *usage.Snapshot) map[string]int64 {
 // startSpendPolling begins (or restarts) every span's chain on a clean slate. Fetching
 // immediately as well means the band is current on arrival rather than blank for up to the
 // slowest interval — five minutes, which for the month figure would be five minutes of empty
-// cell on the reading an operator opened abctl to see.
+// cell on the reading an operator opened agentop to see.
 //
 // invalidate() rather than a bare tickGen++ so that entering a session view can never inherit
 // a figure from a previous one. backToPodsPane already invalidates on the way OUT, which is

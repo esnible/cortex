@@ -53,7 +53,7 @@ const (
 	//
 	// The other three are unaffected: git, curl and Python read their bundles
 	// through OpenSSL/LibreSSL, which honours these variables on macOS too.
-	envSSLCert    = "SSL_CERT_FILE"      // Go: gh, abctl, any Go CLI — Linux only, see above
+	envSSLCert    = "SSL_CERT_FILE"      // Go: gh, agentop, any Go CLI — Linux only, see above
 	envGitCA      = "GIT_SSL_CAINFO"     // git (incl. the fetches `go mod` makes)
 	envRequestsCA = "REQUESTS_CA_BUNDLE" // Python requests: keycloak_sync, setup scripts
 	envCurlCA     = "CURL_CA_BUNDLE"     // curl
@@ -80,7 +80,7 @@ type managedState = clientstate.State
 // readState distinguishes "no record" from "record unreadable".
 //
 // Collapsing them was a silent hole: disable treats a missing record as
-// "enabled by an older abctl" and falls back to deleting every managed key, so a
+// "enabled by an older agentop" and falls back to deleting every managed key, so a
 // truncated or hand-mangled state file re-opened exactly the data loss the record
 // exists to prevent — a corrupt record looked identical to no record. A nil
 // state with a nil error means genuinely absent; a non-nil error means the record
@@ -165,12 +165,12 @@ func darwinGoNote(caPath string) string {
 		"    ~/Library/Keychains/login.keychain-db\n\n"
 }
 
-const claudeCodeUsage = `abctl configure claude-code — route Claude Code through Cortex without shell env vars
+const claudeCodeUsage = `agentop configure claude-code — route Claude Code through Cortex without shell env vars
 
 Usage:
-  abctl configure claude-code enable  [--yes] [--settings PATH] [--config PATH]
-  abctl configure claude-code disable [--yes] [--settings PATH]
-  abctl configure claude-code status  [--settings PATH]
+  agentop configure claude-code enable  [--yes] [--settings PATH] [--config PATH]
+  agentop configure claude-code disable [--yes] [--settings PATH]
+  agentop configure claude-code status  [--settings PATH]
 
 enable writes HTTPS_PROXY, CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC and a set of
 CA variables into the "env" block of ~/.claude/settings.json, reading the
@@ -196,7 +196,7 @@ survives later runs. disable removes only the keys it added, restoring any
 prior value it recorded.
 
 Note: while enabled, Claude Code needs Cortex running — its requests go to the
-proxy address. "abctl configure claude-code disable" is the off switch.
+proxy address. "agentop configure claude-code disable" is the off switch.
 
 Exit status: 0 applied or already correct, 3 declined (or no terminal to ask
 on), 1 something went wrong.
@@ -213,10 +213,10 @@ func runClaudeCode(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	action := args[0]
-	// `abctl claude-code --help` used to be read as an action name and fall through to
+	// `agentop claude-code --help` used to be read as an action name and fall through to
 	// the unknown-action branch below, which sends someone looking for the command
 	// list to the one place that refuses to print it. Same fix, and same reason, as
-	// `abctl service --help`.
+	// `agentop service --help`.
 	//
 	// Answered before the flag set is built rather than through fs.Usage: --help asks
 	// for the whole command's usage, and a flag set named "claude-code --help" would
@@ -241,7 +241,7 @@ func runClaudeCode(args []string, stdout, stderr io.Writer) int {
 
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
-		fmt.Fprintf(stderr, "abctl: cannot determine your home directory: %v\n", err)
+		fmt.Fprintf(stderr, "agentop: cannot determine your home directory: %v\n", err)
 		return 1
 	}
 	if *settingsPath == "" {
@@ -260,7 +260,7 @@ func runClaudeCode(args []string, stdout, stderr io.Writer) int {
 	case "status":
 		return claudeCodeStatus(*settingsPath, stdout)
 	default:
-		fmt.Fprintf(stderr, "abctl: unknown claude-code action %q (enable, disable, status)\n", action)
+		fmt.Fprintf(stderr, "agentop: unknown claude-code action %q (enable, disable, status)\n", action)
 		return 2
 	}
 }
@@ -283,7 +283,7 @@ func bridgeEnabled(cfg *config.Config) bool {
 
 // errBridgeDisabled is the shared refusal for a config whose bridge is off.
 //
-// Shared, because `abctl exec` and `abctl claude-code enable` must agree about the
+// Shared, because `agentop exec` and `agentop claude-code enable` must agree about the
 // bridge posture as well as the addresses. ca_dir is only *required* when
 // mode is "enabled" (config.Validate), so `mode: disabled` with a ca_dir set is
 // valid config that both commands used to accept — writing a CA for a bridge that
@@ -291,7 +291,7 @@ func bridgeEnabled(cfg *config.Config) bool {
 // upstream certificate. exec grew the check first; hoisting it here is what makes
 // "the two cannot drift" true of the posture too, not only the proxy and CA paths.
 // source names where the config came from — a file path for `claude-code enable`,
-// a stats URL for `abctl exec` — so the message points at the thing the reader can
+// a stats URL for `agentop exec` — so the message points at the thing the reader can
 // actually go and change.
 func errBridgeDisabled(source string) error {
 	return fmt.Errorf("%s has no enabled TLS bridge (tls_bridge.mode must be \"enabled\");\n"+
@@ -313,7 +313,7 @@ func wantedFromConfig(cortexCfgPath string) (map[string]string, *config.Config, 
 
 // wantedFromLoaded is the derivation itself, over a config that is already in hand.
 //
-// Split out so `abctl exec` can feed it the config it fetched from the RUNNING
+// Split out so `agentop exec` can feed it the config it fetched from the RUNNING
 // proxy while `claude-code enable` feeds it one read from disk. One derivation, two
 // sources: the values the two commands produce for the same Cortex cannot drift,
 // which is the property both rely on.
@@ -350,7 +350,7 @@ func wantedFromLoaded(cfg *config.Config, source string) (map[string]string, err
 		envNoTelem: "1",
 	}
 	// Nil-checked: tls_bridge is an omitempty pointer, so a config without the
-	// block at all leaves it nil and dereferencing it segfaulted — `abctl
+	// block at all leaves it nil and dereferencing it segfaulted — `agentop
 	// claude-code enable` crashed with a stack trace on a perfectly valid config
 	// whose only fault was having no TLS bridge, which is exactly the case the
 	// caller below is written to report cleanly.
@@ -375,25 +375,25 @@ func wantedFromLoaded(cfg *config.Config, source string) (map[string]string, err
 func claudeCodeEnable2(settingsPath, cortexCfgPath, statePath string, yes bool, stdout, stderr io.Writer) int {
 	want, cfg, err := wantedFromConfig(cortexCfgPath)
 	if err != nil {
-		fmt.Fprintf(stderr, "abctl: %v\n", err)
+		fmt.Fprintf(stderr, "agentop: %v\n", err)
 		return 1
 	}
-	// Same bridge-posture gate `abctl exec` applies. Without it, `mode: disabled`
+	// Same bridge-posture gate `agentop exec` applies. Without it, `mode: disabled`
 	// with a ca_dir set was written into settings.json and produced exactly the
 	// silent break the ca_dir check below exists to prevent.
 	if !bridgeEnabled(cfg) {
-		fmt.Fprintf(stderr, "abctl: %v\n", errBridgeDisabled(cortexCfgPath))
+		fmt.Fprintf(stderr, "agentop: %v\n", errBridgeDisabled(cortexCfgPath))
 		return 1
 	}
 	if _, ok := want[envCACerts]; !ok {
-		fmt.Fprintf(stderr, "abctl: %s has no tls_bridge.ca_dir, so Claude Code has no CA to trust;\n"+
+		fmt.Fprintf(stderr, "agentop: %s has no tls_bridge.ca_dir, so Claude Code has no CA to trust;\n"+
 			"  requests would fail certificate verification. Enable the TLS bridge first.\n", cortexCfgPath)
 		return 1
 	}
 
 	doc, err := readSettings(settingsPath)
 	if err != nil {
-		fmt.Fprintf(stderr, "abctl: %v\n", err)
+		fmt.Fprintf(stderr, "agentop: %v\n", err)
 		return 1
 	}
 	env := envStrings(doc)
@@ -403,7 +403,7 @@ func claudeCodeEnable2(settingsPath, cortexCfgPath, statePath string, yes bool, 
 	// give no clue why.
 	for _, k := range managedKeys {
 		if cur, ok := env[k]; ok && cur != want[k] && !isCortexValue(k, cur) {
-			fmt.Fprintf(stderr, "abctl: %s is already set to %q in %s.\n"+
+			fmt.Fprintf(stderr, "agentop: %s is already set to %q in %s.\n"+
 				"  Refusing to overwrite a value you set. Remove it first, or edit the file by hand.\n",
 				k, cur, settingsPath)
 			return 1
@@ -424,7 +424,7 @@ func claudeCodeEnable2(settingsPath, cortexCfgPath, statePath string, yes bool, 
 			fmt.Fprintf(stdout, "Note: %s does not exist yet.\n"+
 				"  Cortex creates it on first start. Until then Claude Code cannot verify the\n"+
 				"  bridge and every request tunnels through unparsed — which looks like nothing\n"+
-				"  is wrong. Start Cortex, then check with: abctl configure claude-code status\n\n",
+				"  is wrong. Start Cortex, then check with: agentop configure claude-code status\n\n",
 				want[envCACerts])
 		}
 		// The bundle is checked separately: it is written by a LATER step than
@@ -479,7 +479,7 @@ func claudeCodeEnable2(settingsPath, cortexCfgPath, statePath string, yes bool, 
 			}
 		}
 		if werr := writeState(statePath, st); werr != nil {
-			fmt.Fprintf(stderr, "abctl: could not record prior settings (%v); disable will delete\n"+
+			fmt.Fprintf(stderr, "agentop: could not record prior settings (%v); disable will delete\n"+
 				"  these keys rather than restore any you had set yourself\n", werr)
 		}
 	}
@@ -489,7 +489,7 @@ func claudeCodeEnable2(settingsPath, cortexCfgPath, statePath string, yes bool, 
 		raw[k] = want[k]
 	}
 	if err := writeSettings(settingsPath, doc); err != nil {
-		fmt.Fprintf(stderr, "abctl: %v\n", err)
+		fmt.Fprintf(stderr, "agentop: %v\n", err)
 		return 1
 	}
 	fmt.Fprintln(stdout, "Enabled — run `claude` as usual.")
@@ -499,7 +499,7 @@ func claudeCodeEnable2(settingsPath, cortexCfgPath, statePath string, yes bool, 
 func claudeCodeDisable2(settingsPath, statePath string, yes bool, stdout, stderr io.Writer) int {
 	doc, err := readSettings(settingsPath)
 	if err != nil {
-		fmt.Fprintf(stderr, "abctl: %v\n", err)
+		fmt.Fprintf(stderr, "agentop: %v\n", err)
 		return 1
 	}
 	env := envStrings(doc)
@@ -522,7 +522,7 @@ func claudeCodeDisable2(settingsPath, statePath string, yes bool, stdout, stderr
 	if sterr != nil {
 		// Proceed — the user asked for this off — but say what is about to be lost.
 		// Silence here would repeat the bug the record was added to fix.
-		fmt.Fprintf(stderr, "abctl: cannot read the record of what you had before enabling (%v).\n"+
+		fmt.Fprintf(stderr, "agentop: cannot read the record of what you had before enabling (%v).\n"+
 			"  Falling back to removing these keys outright. If you had set any of them\n"+
 			"  yourself before running enable, that value is not recoverable from here —\n"+
 			"  check %s afterwards.\n\n", sterr, settingsPath)
@@ -542,7 +542,7 @@ func claudeCodeDisable2(settingsPath, statePath string, yes bool, stdout, stderr
 				continue
 			}
 		}
-		// No ownership record (enabled by an older abctl, or state lost): fall back
+		// No ownership record (enabled by an older agentop, or state lost): fall back
 		// to removing it, which is what this always did.
 		delete(raw, k)
 	}
@@ -551,7 +551,7 @@ func claudeCodeDisable2(settingsPath, statePath string, yes bool, stdout, stderr
 		delete(doc, "env")
 	}
 	if err := writeSettings(settingsPath, doc); err != nil {
-		fmt.Fprintf(stderr, "abctl: %v\n", err)
+		fmt.Fprintf(stderr, "agentop: %v\n", err)
 		return 1
 	}
 	if len(restored) > 0 {
@@ -607,7 +607,7 @@ func isCortexValue(key, val string) bool {
 }
 
 // readSettings decodes into a generic map so every key the file already has
-// survives the round trip, including ones this version of abctl knows nothing
+// survives the round trip, including ones this version of agentop knows nothing
 // about. A missing file is an empty document, not an error.
 func readSettings(path string) (map[string]any, error) {
 	b, err := os.ReadFile(path) //nolint:gosec // operator-supplied path

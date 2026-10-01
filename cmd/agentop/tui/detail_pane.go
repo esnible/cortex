@@ -158,7 +158,7 @@ func filterForDetail(data []byte, phase pipeline.SessionPhase) []byte {
 	// ONE cost record, not two.
 	//
 	// The proxy publishes the record under the current key AND the legacy plugin-name
-	// key, so an abctl older than the rename keeps showing cost at all. This abctl reads
+	// key, so an agentop older than the rename keeps showing cost at all. This agentop reads
 	// the current one, so rendering both would show an operator the same object twice
 	// under two names and give them no way to tell which is authoritative.
 	//

@@ -466,7 +466,7 @@ func TestRenderTierRows_NegativeTotalIsRefused(t *testing.T) {
 // tiers, so every assertion above was blind to a partial mix — and a partial mix is the
 // normal case, since a window of cache-heavy traffic may report no cache WRITES at all.
 // "$0.0000" in a money column asserts the tier was free, which is the lie this package
-// refuses in sessionMoneyCell and in `abctl cost`'s headline.
+// refuses in sessionMoneyCell and in `agentop cost`'s headline.
 func TestRenderTierRows_ATierAbsentFromTheMixIsUnknownNotFree(t *testing.T) {
 	c := usage.Counts{
 		Requests: 35, CostMicros: 4_546_200,

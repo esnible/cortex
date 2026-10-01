@@ -9,35 +9,35 @@ import (
 	"github.com/rossoctl/cortex/core/observe/claude"
 )
 
-const experimentalUsage = `abctl experimental — unstable helpers, no compatibility promise
+const experimentalUsage = `agentop experimental — unstable helpers, no compatibility promise
 
 Usage:
-  abctl experimental read-claude-sessions [--dir PATH]
+  agentop experimental read-claude-sessions [--dir PATH]
 
 Actions:
   read-claude-sessions   harvest session titles from Claude Code's own transcripts
                          into ~/.cortex/session-metadata.json. Run
-                         "abctl experimental read-claude-sessions --help" for the detail.
+                         "agentop experimental read-claude-sessions --help" for the detail.
 
 Everything under this verb may change or disappear in any release, including the
 shape of any file it writes. The namespace exists so a half-built idea can ship and
-be used without the rest of abctl having to promise it forever — if something here
+be used without the rest of agentop having to promise it forever — if something here
 proves itself, it graduates to its own subcommand and this spelling goes away.
 
 Exit status: 0 done, 1 something went wrong, 2 a usage error.
 `
 
-const readClaudeSessionsUsage = `abctl experimental read-claude-sessions — name Cortex's sessions from Claude Code's transcripts
+const readClaudeSessionsUsage = `agentop experimental read-claude-sessions — name Cortex's sessions from Claude Code's transcripts
 
 Usage:
-  abctl experimental read-claude-sessions [--dir PATH]
+  agentop experimental read-claude-sessions [--dir PATH]
 
 Cortex buckets traffic by session id, and a session id is a UUID. Claude Code knows
 more about the same session: it writes a transcript per session under its config
 directory, carrying a model-generated title and the directory the session ran in.
 This reads those transcripts and writes what it finds to
 ~/.cortex/session-metadata.json, keyed by the same UUID Cortex uses — so a reader can
-put a name next to a row. "abctl observe" is that reader, and does this by default.
+put a name next to a row. "agentop observe" is that reader, and does this by default.
 
 Each entry carries a title, the agent type ("Claude Code"), the config directory it
 came from, and the transcript it was read from. The title is the transcript's
@@ -62,8 +62,8 @@ harvest sees it again to notice it is gone, so the file grows with sessions-ever
 entries harvested from a different --dir, so running it with a narrower --dir than the one
 that built the file discards the difference.
 
-abctl observe reads this file to name sessions in the sessions table; see
-"abctl observe --help".
+agentop observe reads this file to name sessions in the sessions table; see
+"agentop observe --help".
 
 Flags:
   --dir PATH     config directory to read instead of ` + claude.ConfigDirEnv + ` / ~/.claude
@@ -80,7 +80,7 @@ func runExperimental(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	action := args[0]
-	// Same shape as `abctl configure` and `abctl service`: an explicit --help is a
+	// Same shape as `agentop configure` and `agentop service`: an explicit --help is a
 	// request for the list, so it must not be read as the name of an action that does
 	// not exist. Explicit help goes to stdout at exit 0, which is what makes it
 	// pipeable; a missing or wrong action stays an error on stderr at exit 2.
@@ -96,7 +96,7 @@ func runExperimental(args []string, stdout, stderr io.Writer) int {
 	default:
 		// The named list answers a typo; the usage block after it answers "what else
 		// can this do", which is what someone who guessed wrong most likely wanted.
-		fmt.Fprintf(stderr, "abctl: unknown experimental action %q (read-claude-sessions)\n", action)
+		fmt.Fprintf(stderr, "agentop: unknown experimental action %q (read-claude-sessions)\n", action)
 		fmt.Fprint(stderr, experimentalUsage)
 		return 2
 	}
@@ -133,7 +133,7 @@ func runReadClaudeSessions(args []string, stdout, stderr io.Writer) int {
 	// none, so `read-claude-sessions ~/.claude` most likely means the user meant --dir
 	// and silently reading the default instead is a worse answer than saying so.
 	if fs.NArg() > 0 {
-		fmt.Fprintf(stderr, "abctl: unexpected argument %q (did you mean --dir %s?)\n", fs.Arg(0), fs.Arg(0))
+		fmt.Fprintf(stderr, "agentop: unexpected argument %q (did you mean --dir %s?)\n", fs.Arg(0), fs.Arg(0))
 		return 2
 	}
 
@@ -141,7 +141,7 @@ func runReadClaudeSessions(args []string, stdout, stderr io.Writer) int {
 	// is reporting it. NOT incremental: this command's whole subject IS the harvest, so it
 	// re-reads every transcript — that is what makes it the way to recover a file whose
 	// entries are wrong, and what --merge=false needs in order to rebuild from scratch.
-	// `abctl observe` is the incremental caller.
+	// `agentop observe` is the incremental caller.
 	res, err := claude.Harvest(claude.Options{ConfigDir: *dir, Merge: *merge})
 	if err != nil {
 		// Two refusals, two remedies. Checked narrowest first: the oversized file also wraps
@@ -155,7 +155,7 @@ func runReadClaudeSessions(args []string, stdout, stderr io.Writer) int {
 		// clean up — so it goes first, with mv kept for whoever wants the old bytes preserved.
 		if errors.Is(err, claude.ErrMetadataTooLarge) {
 			// The path is already in the error text, so it is not repeated here.
-			fmt.Fprintf(stderr, "abctl: %v\n"+
+			fmt.Fprintf(stderr, "agentop: %v\n"+
 				"  Re-run with --merge=false to rebuild it, or move the file aside first\n"+
 				"  to keep the old entries.\n", err)
 			return 1
@@ -163,12 +163,12 @@ func runReadClaudeSessions(args []string, stdout, stderr io.Writer) int {
 		if errors.Is(err, claude.ErrCorruptMetadata) {
 			// A file that does not parse is rebuilt by Harvest itself, so what reaches here
 			// could not be read at all. Name what a human can do.
-			fmt.Fprintf(stderr, "abctl: %v\n"+
+			fmt.Fprintf(stderr, "agentop: %v\n"+
 				"  Re-run with --merge=false to rebuild it, or fix the file's permissions\n"+
 				"  to keep the old entries.\n", err)
 			return 1
 		}
-		fmt.Fprintf(stderr, "abctl: %v\n", err)
+		fmt.Fprintf(stderr, "agentop: %v\n", err)
 		return 1
 	}
 
@@ -176,7 +176,7 @@ func runReadClaudeSessions(args []string, stdout, stderr io.Writer) int {
 	// than the transcript's last claim. Capped at three names plus a count, so a systemic
 	// problem is as visible as a single bad file without burying the result.
 	if len(res.Partial) > 0 {
-		fmt.Fprintf(stderr, "abctl: %d transcript(s) read incompletely; their titles may be stale:\n", len(res.Partial))
+		fmt.Fprintf(stderr, "agentop: %d transcript(s) read incompletely; their titles may be stale:\n", len(res.Partial))
 		for i, msg := range res.Partial {
 			if i == 3 {
 				fmt.Fprintf(stderr, "  ... and %d more\n", len(res.Partial)-3)
@@ -187,27 +187,27 @@ func runReadClaudeSessions(args []string, stdout, stderr io.Writer) int {
 	}
 
 	if res.Recovered > 0 {
-		fmt.Fprintf(stderr, "abctl: merged %d entry(s) written concurrently by another run\n", res.Recovered)
+		fmt.Fprintf(stderr, "agentop: merged %d entry(s) written concurrently by another run\n", res.Recovered)
 	}
 
 	// Said out loud because the entries it may have lost are gone without a trace: an unlocked
 	// harvest can have its whole contribution erased by a concurrent run's rename.
 	if res.LockTimedOut {
-		fmt.Fprintf(stderr, "abctl: timed out waiting for the lock on %s; harvested anyway, so a concurrent run may have overwritten this one\n", res.Path)
+		fmt.Fprintf(stderr, "agentop: timed out waiting for the lock on %s; harvested anyway, so a concurrent run may have overwritten this one\n", res.Path)
 	}
 
 	// Same risk, different cause, so different words: a timeout means another run holds the lock,
 	// this means locking did not work at all. Reported for the same reason — the harvest ran
 	// unlocked either way.
 	if res.LockFailed != "" {
-		fmt.Fprintf(stderr, "abctl: could not lock %s (%s); harvested anyway, so a concurrent run may have overwritten this one\n", res.Path, res.LockFailed)
+		fmt.Fprintf(stderr, "agentop: could not lock %s (%s); harvested anyway, so a concurrent run may have overwritten this one\n", res.Path, res.LockFailed)
 	}
 
 	// Said out loud because the counts cannot show it: a rebuild reports everything harvested
 	// and nothing kept, which is exactly what a first run reports. The entries it dropped —
 	// sessions whose transcripts are gone — leave no trace for the operator to notice.
 	if res.Rebuilt {
-		fmt.Fprintf(stderr, "abctl: the existing file could not be parsed; rebuilt it from %s\n", res.ConfigDir)
+		fmt.Fprintf(stderr, "agentop: the existing file could not be parsed; rebuilt it from %s\n", res.ConfigDir)
 	}
 
 	// Reported rather than silent: the count is the only way to notice that a wrong

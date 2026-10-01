@@ -10,7 +10,7 @@ import (
 )
 
 // Inputs are built with lipgloss itself rather than hand-written escapes, so the
-// test tracks the encoder abctl actually renders with instead of a guess about it.
+// test tracks the encoder agentop actually renders with instead of a guess about it.
 func styled() {
 	lipgloss.SetColorProfile(termenv.TrueColor)
 	lipgloss.SetHasDarkBackground(true)
@@ -70,7 +70,7 @@ func TestDecodeLine_StyledThenPlainSplits(t *testing.T) {
 func TestDecodeLine_TextMatchesStrippedInput(t *testing.T) {
 	styled()
 	for _, in := range []string{
-		lipgloss.NewStyle().Foreground(lipgloss.Color("#58a6ff")).Render("abctl · http://x"),
+		lipgloss.NewStyle().Foreground(lipgloss.Color("#58a6ff")).Render("agentop · http://x"),
 		lipgloss.NewStyle().Bold(true).Render("SESSION") + "   " +
 			lipgloss.NewStyle().Faint(true).Render("TITLE"),
 		"▕█▎       ▏ gauge glyphs",

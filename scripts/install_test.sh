@@ -702,11 +702,11 @@ check "ensure_tmpdir: an already-set TMPDIR keeps its trailing slash (not clobbe
 # A set-but-unwritable TMPDIR still falls back rather than failing.
 check "ensure_tmpdir: set-but-unwritable TMPDIR falls back under CORTEX_DIR" "${TMP}/cortexhome/tmp" "$(with_ensure_tmpdir deny /nope)"
 
-# --- service_install_action: classify `abctl service install` -> what to do ---
+# --- service_install_action: classify `agentop service install` -> what to do ---
 #
-# The reported bug: `abctl service install` failed with `launchctl bootstrap failed:
+# The reported bug: `agentop service install` failed with `launchctl bootstrap failed:
 # ... Input/output error` (exit 1), but the installer died with "could not set up the
-# service" instead of running the proxy directly. Root cause: abctl prints that on
+# service" instead of running the proxy directly. Root cause: agentop prints that on
 # STDOUT, and the decision matched a signature in STDERR only. The rule is now
 # exit + `refus` + ports, so the failure text's stream no longer matters, and any
 # unrecognised failure falls back (Cortex runs) rather than dying. demo_ports_busy is
@@ -732,14 +732,14 @@ check "svc action: exit 0 -> supervised" "supervised" \
 	"$(with_service_install_action 0 ok no)"
 check "svc action: launchd EIO (exit 1), ports free -> fallback [the reported bug]" "fallback" \
 	"$(with_service_install_action 1 'launchctl bootstrap failed: exit status 5: Input/output error' no)"
-check "svc action: an abctl refusal -> refused (never fall back past a safety decision)" "refused" \
-	"$(with_service_install_action 1 'abctl: refusing to expose listener' no)"
+check "svc action: an agentop refusal -> refused (never fall back past a safety decision)" "refused" \
+	"$(with_service_install_action 1 'agentop: refusing to expose listener' no)"
 check "svc action: non-zero with ports held -> ports-busy (upgrade race)" "ports-busy" \
 	"$(with_service_install_action 1 'bootstrap failed' yes)"
 check "svc action: unknown non-zero, ports free -> fallback (default; Cortex still runs)" "fallback" \
 	"$(with_service_install_action 7 'some unrecognised error' no)"
 # A safety refusal must win over a busy-port race — never downgraded to "wait and
-# re-run", which would eventually run the config abctl refused.
+# re-run", which would eventually run the config agentop refused.
 check "svc action: refusal wins over ports-busy" "refused" \
 	"$(with_service_install_action 1 'refused: unsafe config' yes)"
 

@@ -1439,7 +1439,7 @@ func TestRecord_HostGroupingStripsThePort(t *testing.T) {
 }
 
 // An event the listener left host-less must not invent a band. It stays out of
-// the series and abctl renders the difference as "(unlabelled)", which is what
+// the series and agentop renders the difference as "(unlabelled)", which is what
 // the other groupings already do for events they skip.
 func TestRecord_HostGroupingSkipsEmptyHost(t *testing.T) {
 	now := time.Date(2026, 9, 17, 14, 0, 0, 0, time.UTC)

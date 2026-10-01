@@ -8,7 +8,7 @@ import (
 )
 
 // ReloadStatus is the wire shape of the framework's /reload/status endpoint.
-// Only the fields abctl uses are decoded. Keys must match
+// Only the fields agentop uses are decoded. Keys must match
 // core/reloader/status.go exactly.
 type ReloadStatus struct {
 	LastSuccess   time.Time `json:"last_success"`

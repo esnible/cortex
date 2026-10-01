@@ -40,17 +40,17 @@ const (
 	// Longer than the supervisor's own teardown: it SIGTERMs the proxy, allows its 15s
 	// graceful shutdown, then insists at 20s.
 	serviceBootoutTimeout = 30 * time.Second
-	serviceUsage          = `abctl service — keep Cortex running across crashes and logins
+	serviceUsage          = `agentop service — keep Cortex running across crashes and logins
 
 Usage:
-  abctl service install   [--yes] [--restart] [--config PATH]
-  abctl service uninstall [--yes]
-  abctl service status
-  abctl service stop | start | restart
+  agentop service install   [--yes] [--restart] [--config PATH]
+  agentop service uninstall [--yes]
+  agentop service status
+  agentop service stop | start | restart
 
 install hands the proxy to the OS supervisor — a launchd user agent on macOS, a
 systemd user unit on Linux — so it restarts on failure and comes back at login.
-Claude Code depends on the proxy being up once "abctl configure claude-code enable"
+Claude Code depends on the proxy being up once "agentop configure claude-code enable"
 has run,
 and nothing else keeps it up.
 
@@ -88,8 +88,8 @@ type servicePaths struct {
 	// stampFile records the SHA-256 of the proxy binary the supervisor last launched.
 	//
 	// A sidecar beside proxy.pid rather than a field in the unit, and for the same
-	// reason: it is LAUNCH state, not unit content. The unit's AbctlVersion says which
-	// abctl wrote it, which is a fact about the file; this says which bytes are running,
+	// reason: it is LAUNCH state, not unit content. The unit's AgentopVersion says which
+	// agentop wrote it, which is a fact about the file; this says which bytes are running,
 	// which changes without the file changing. Writing it into the unit also meant
 	// touching the unit on every restart, and systemd reports a unit whose mtime moved
 	// as "changed on disk, run daemon-reload" — a message this whole command exists so
@@ -111,7 +111,7 @@ func runService(args []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 	action := args[0]
-	// `abctl service --help` used to fail with "unknown service action", which sends
+	// `agentop service --help` used to fail with "unknown service action", which sends
 	// someone looking for the command list to the one place that refuses to print it.
 	switch action {
 	case "-h", "--help", "help":
@@ -123,7 +123,7 @@ func runService(args []string, stdout, stderr io.Writer) int {
 	yes := fs.Bool("yes", false, "do not prompt for confirmation")
 	cortexCfg := fs.String("config", "", "Cortex config file")
 	unitOverride := fs.String("unit-file", "", "unit file path (testing)")
-	proxyPath := fs.String("proxy", "", "authbridge-proxy binary to supervise (default: the one installed beside abctl)")
+	proxyPath := fs.String("proxy", "", "authbridge-proxy binary to supervise (default: the one installed beside agentop)")
 	printUnit := fs.Bool("print-unit", false, "print the unit file and exit, installing nothing")
 	forceRestart := fs.Bool("restart", false, "with install: restart even when nothing changed")
 	if err := fs.Parse(args[1:]); err != nil {
@@ -132,7 +132,7 @@ func runService(args []string, stdout, stderr io.Writer) int {
 
 	p, err := resolveServicePaths(*cortexCfg, *unitOverride, *proxyPath)
 	if err != nil {
-		fmt.Fprintf(stderr, "abctl: %v\n", err)
+		fmt.Fprintf(stderr, "agentop: %v\n", err)
 		return 1
 	}
 
@@ -153,7 +153,7 @@ func runService(args []string, stdout, stderr io.Writer) int {
 	case "stop", "start", "restart":
 		return serviceControl(action, p, stdout, stderr)
 	default:
-		fmt.Fprintf(stderr, "abctl: unknown service action %q "+
+		fmt.Fprintf(stderr, "agentop: unknown service action %q "+
 			"(install, uninstall, status, stop, start, restart)\n", action)
 		return 2
 	}
@@ -181,7 +181,7 @@ func resolveServicePaths(cortexCfg, unitOverride, proxyOverride string) (service
 	// Resolution order matters. PATH first was wrong: an end-to-end run found the
 	// plist pointing at an OLDER authbridge-proxy that happened to sit earlier on
 	// PATH, which then rejected --supervise and exited, so the service never came up.
-	// abctl and the proxy are installed together, so the sibling of the running abctl
+	// agentop and the proxy are installed together, so the sibling of the running agentop
 	// is the one that matches it; PATH is only a fallback. An explicit --proxy wins
 	// over both, which is what install.sh passes so the service uses the binary it
 	// just installed.
@@ -266,7 +266,7 @@ func serviceInstall(p servicePaths, yes, forceRestart bool, stdout, stderr io.Wr
 	if _, err := os.Stat(p.configFile); err != nil {
 		// Not "run the installer first": the installer is what calls this, so that
 		// advice sent people in a circle. Name the command that creates the file.
-		fmt.Fprintf(stderr, "abctl: no config at %s. Create it with:\n"+
+		fmt.Fprintf(stderr, "agentop: no config at %s. Create it with:\n"+
 			"  authbridge-proxy --local --write-config\n", p.configFile)
 		return 1
 	}
@@ -293,7 +293,7 @@ func serviceInstall(p servicePaths, yes, forceRestart bool, stdout, stderr io.Wr
 			"so the supervised one can take the ports.\n\n", adopt)
 	}
 	if !yes {
-		fmt.Fprintf(stdout, "Undo with: abctl service uninstall\n\n")
+		fmt.Fprintf(stdout, "Undo with: agentop service uninstall\n\n")
 	}
 	if !yes && !confirm(stdout) {
 		fmt.Fprintln(stdout, "Not changed.")
@@ -305,7 +305,7 @@ func serviceInstall(p servicePaths, yes, forceRestart bool, stdout, stderr io.Wr
 	// disk — a message that names neither the cause nor a way forward. Reported from a
 	// restricted sandbox environment.
 	if ok, why := serviceManagerUsable(runtime.GOOS); !ok {
-		fmt.Fprintf(stderr, "abctl: this environment cannot manage %ss (%s).\n\n"+
+		fmt.Fprintf(stderr, "agentop: this environment cannot manage %ss (%s).\n\n"+
 			"  Cortex still runs, just not supervised — start it yourself:\n"+
 			"    %s --local\n\n"+
 			"  It will not restart after a crash or come back at login while running that\n"+
@@ -314,7 +314,7 @@ func serviceInstall(p servicePaths, yes, forceRestart bool, stdout, stderr io.Wr
 	}
 
 	if _, serr := os.Stat(p.binary); serr != nil {
-		fmt.Fprintf(stderr, "abctl: authbridge-proxy not found at %s; install it first\n", p.binary)
+		fmt.Fprintf(stderr, "agentop: authbridge-proxy not found at %s; install it first\n", p.binary)
 		return 1
 	}
 	// launchd loads the LOGIN home's ~/Library/LaunchAgents, taken from the user
@@ -323,14 +323,14 @@ func serviceInstall(p servicePaths, yes, forceRestart bool, stdout, stderr io.Wr
 	// "comes back at login" is quietly false. Warn rather than refuse: it is a real way
 	// to run, just not a persistent one.
 	if lh := loginHome(); lh != "" && lh != p.home {
-		fmt.Fprintf(stderr, "abctl: $HOME is %s but your login home is %s.\n"+
+		fmt.Fprintf(stderr, "agentop: $HOME is %s but your login home is %s.\n"+
 			"  The unit goes to $HOME/Library/LaunchAgents, which launchd does not scan at\n"+
 			"  login, so Cortex will NOT come back after a logout. Crash recovery still\n"+
 			"  works while you are logged in.\n\n", p.home, lh)
 	}
 
 	if p.configErr != nil {
-		fmt.Fprintf(stderr, "abctl: %s will not load, so a supervised proxy could not start:\n  %v\n"+
+		fmt.Fprintf(stderr, "agentop: %s will not load, so a supervised proxy could not start:\n  %v\n"+
 			"  Fix it (or delete it and run: authbridge-proxy --local --write-config), then re-run.\n",
 			p.configFile, p.configErr)
 		return 1
@@ -347,14 +347,14 @@ func serviceInstall(p servicePaths, yes, forceRestart bool, stdout, stderr io.Wr
 		// fails on a config with wildcard listeners would supervise a proxy publishing
 		// on every interface, which is not a thing to do quietly.
 		if exposed := wildcardListeners(p.configFile); len(exposed) > 0 {
-			fmt.Fprintf(stderr, "abctl: could not update %s (%v),\n"+
+			fmt.Fprintf(stderr, "agentop: could not update %s (%v),\n"+
 				"  and as it stands it binds %s on every interface.\n"+
 				"  Refusing to supervise that. Add `bind_loopback_only: true` under listener:,\n"+
 				"  or delete the file and run: authbridge-proxy --local --write-config\n",
 				p.configFile, mErr, strings.Join(exposed, ", "))
 			return 1
 		}
-		fmt.Fprintf(stderr, "abctl: could not update %s (%v); it already binds loopback only, continuing\n",
+		fmt.Fprintf(stderr, "agentop: could not update %s (%v); it already binds loopback only, continuing\n",
 			p.configFile, mErr)
 	} else if changed {
 		configChanged = true
@@ -381,7 +381,7 @@ func serviceInstall(p servicePaths, yes, forceRestart bool, stdout, stderr io.Wr
 	// deterministic that day.
 	if installCanSkip(configChanged, forceRestart, func() bool { return serviceIsCurrent(p) }) {
 		fmt.Fprintf(stdout, "Already current: %s is running under %s and healthy.\n"+
-			"  Nothing to change. Use `abctl service restart` to restart it anyway.\n",
+			"  Nothing to change. Use `agentop service restart` to restart it anyway.\n",
 			filepath.Base(p.binary), supervisorName(runtime.GOOS))
 		return 0
 	}
@@ -409,7 +409,7 @@ func serviceInstall(p servicePaths, yes, forceRestart bool, stdout, stderr io.Wr
 	if adopt > 0 {
 		fmt.Fprintf(stdout, "Stopping pid %d...\n", adopt)
 		if err := stopPID(adopt); err != nil {
-			fmt.Fprintf(stderr, "abctl: could not stop pid %d (%v); stop it yourself and re-run\n", adopt, err)
+			fmt.Fprintf(stderr, "agentop: could not stop pid %d (%v); stop it yourself and re-run\n", adopt, err)
 			return 1
 		}
 		_ = os.Remove(p.pidFile)
@@ -419,11 +419,11 @@ func serviceInstall(p servicePaths, yes, forceRestart bool, stdout, stderr io.Wr
 	tightenLog(p.logFile, stderr)
 
 	if err := os.MkdirAll(filepath.Dir(p.unitFile), 0o755); err != nil {
-		fmt.Fprintf(stderr, "abctl: %v\n", err)
+		fmt.Fprintf(stderr, "agentop: %v\n", err)
 		return 1
 	}
 	if err := os.WriteFile(p.unitFile, []byte(renderUnit(p)), 0o644); err != nil {
-		fmt.Fprintf(stderr, "abctl: writing %s: %v\n", p.unitFile, err)
+		fmt.Fprintf(stderr, "agentop: writing %s: %v\n", p.unitFile, err)
 		return 1
 	}
 	// Recorded here as well as on start/restart. loadService below may fail after this
@@ -431,7 +431,7 @@ func serviceInstall(p servicePaths, yes, forceRestart bool, stdout, stderr io.Wr
 	// answer for the next install: it reflects the unit that was just written.
 	writeProxyStamp(p)
 	// The path is not printed on the happy path: it is one more line of output on an
-	// install that already says what happened, and `abctl service status` reports it
+	// install that already says what happened, and `agentop service status` reports it
 	// whenever someone actually needs it.
 	if !yes {
 		fmt.Fprintf(stdout, "Wrote %s\n", p.unitFile)
@@ -440,15 +440,15 @@ func serviceInstall(p servicePaths, yes, forceRestart bool, stdout, stderr io.Wr
 	if err := loadService(runtime.GOOS, p, stdout); errors.Is(err, errLingerUnavailable) {
 		// The unit IS loaded, so this is a caveat rather than a failure: keep going,
 		// but never claim it survives a logout.
-		fmt.Fprintf(stderr, "abctl: %v\n", err)
+		fmt.Fprintf(stderr, "agentop: %v\n", err)
 	} else if err != nil {
 		// Leaving the unit behind would make serviceInstalled() true for something
 		// that never loaded, so `service status` would report it installed and
 		// `service stop` would act on a job the supervisor does not have.
 		if rmErr := os.Remove(p.unitFile); rmErr != nil && !os.IsNotExist(rmErr) {
-			fmt.Fprintf(stderr, "abctl: also could not remove %s: %v\n", p.unitFile, rmErr)
+			fmt.Fprintf(stderr, "agentop: also could not remove %s: %v\n", p.unitFile, rmErr)
 		}
-		fmt.Fprintf(stderr, "abctl: %v\n", err)
+		fmt.Fprintf(stderr, "agentop: %v\n", err)
 		return 1
 	}
 
@@ -460,7 +460,7 @@ func serviceInstall(p servicePaths, yes, forceRestart bool, stdout, stderr io.Wr
 	// the probe cheerfully succeeds against the survivor. Ask the supervisor whether
 	// OUR job is actually up before believing the probe.
 	if running, why := supervisorRunning(runtime.GOOS, p); !running {
-		fmt.Fprintf(stderr, "abctl: the unit loaded but the supervisor does not report it running (%s).\n"+
+		fmt.Fprintf(stderr, "agentop: the unit loaded but the supervisor does not report it running (%s).\n"+
 			"  Something else may hold the ports — check for a Cortex you started by hand:\n"+
 			"    pgrep -fl authbridge-prox\n"+
 			"  Last log lines:\n", why)
@@ -476,9 +476,9 @@ func serviceInstall(p servicePaths, yes, forceRestart bool, stdout, stderr io.Wr
 			reportHistoryCleared(wasServing, stdout)
 			return 0
 		}
-		fmt.Fprintf(stderr, "\nabctl: installed, but nothing answered %s within %s.\n"+
+		fmt.Fprintf(stderr, "\nagentop: installed, but nothing answered %s within %s.\n"+
 			"  Check %s — a config error is fatal at startup and the supervisor will keep retrying.\n"+
-			"  abctl service status shows the current state.\n", p.healthURL, serviceReadyTimeout, p.logFile)
+			"  agentop service status shows the current state.\n", p.healthURL, serviceReadyTimeout, p.logFile)
 		return 1
 	}
 	reportInstallSuccess(false, stdout)
@@ -519,7 +519,7 @@ func serviceUninstall(p servicePaths, yes bool, stdout, stderr io.Writer) int {
 	}
 	fmt.Fprintf(stdout, "This will stop and remove the %s at:\n  %s\n\n", supervisorName(runtime.GOOS), p.unitFile)
 	fmt.Fprintf(stdout, "Cortex will no longer start at login. Claude Code stops working whenever\n"+
-		"the proxy is not running — `abctl configure claude-code disable` removes that\n"+
+		"the proxy is not running — `agentop configure claude-code disable` removes that\n"+
 		"dependency.\n\n")
 	if !yes && !confirm(stdout) {
 		fmt.Fprintln(stdout, "Not changed.")
@@ -528,24 +528,24 @@ func serviceUninstall(p servicePaths, yes bool, stdout, stderr io.Writer) int {
 	if err := unloadService(runtime.GOOS, p); err != nil {
 		// Report but keep going: leaving the unit file behind would make a
 		// reinstall look installed-but-dead.
-		fmt.Fprintf(stderr, "abctl: %v\n", err)
+		fmt.Fprintf(stderr, "agentop: %v\n", err)
 	}
 	if err := os.Remove(p.unitFile); err != nil {
-		fmt.Fprintf(stderr, "abctl: removing %s: %v\n", p.unitFile, err)
+		fmt.Fprintf(stderr, "agentop: removing %s: %v\n", p.unitFile, err)
 		return 1
 	}
 	// Launch state, so it goes with the unit rather than surviving in ~/.cortex beside
 	// the config and CA the message below promises are untouched. Left behind, it would
 	// describe a service that no longer exists.
 	if err := os.Remove(p.stampFile); err != nil && !os.IsNotExist(err) {
-		fmt.Fprintf(stderr, "abctl: could not remove %s: %v\n", p.stampFile, err)
+		fmt.Fprintf(stderr, "agentop: could not remove %s: %v\n", p.stampFile, err)
 	}
 	// Not "start it yourself with a backgrounded proxy": running unsupervised is no
 	// longer a mode this tool offers, and on macOS a hand-started proxy gets no crash
 	// recovery at all. Point back at the supported path.
 	fmt.Fprintf(stdout, "\nRemoved. Cortex is stopped; Claude Code will fail until it runs again.\n"+
-		"  Set it up again with:  abctl service install\n"+
-		"  Or unwire Claude Code: abctl configure claude-code disable\n"+
+		"  Set it up again with:  agentop service install\n"+
+		"  Or unwire Claude Code: agentop configure claude-code disable\n"+
 		"  The config and CA are untouched in %s\n", filepath.Dir(p.configFile))
 	return 0
 }
@@ -560,12 +560,12 @@ func serviceStatus(p servicePaths, stdout io.Writer) int {
 	}
 	fmt.Fprintf(stdout, "installed: %s\n", p.unitFile)
 	// Skew is worth naming before anything else: if the unit was written by a
-	// different abctl, the rest of this output describes a job this binary may not be
+	// different agentop, the rest of this output describes a job this binary may not be
 	// able to manage.
 	if w := unitWriterVersion(p.unitFile); w != "" && w != version {
-		fmt.Fprintf(stdout, "WARNING: this unit was written by abctl %s; you are running %s.\n"+
-			"  The unit also pins a fixed authbridge-proxy path, which that abctl chose.\n"+
-			"  Reinstall with this build to bring them back in step:  abctl service install\n",
+		fmt.Fprintf(stdout, "WARNING: this unit was written by agentop %s; you are running %s.\n"+
+			"  The unit also pins a fixed authbridge-proxy path, which that agentop chose.\n"+
+			"  Reinstall with this build to bring them back in step:  agentop service install\n",
 			w, version)
 	}
 
@@ -614,8 +614,8 @@ func serviceStatus(p servicePaths, stdout io.Writer) int {
 // process refusing to die.
 func serviceControl(action string, p servicePaths, stdout, stderr io.Writer) int {
 	if !serviceInstalled(p) {
-		fmt.Fprintf(stderr, "abctl: no service installed (%s). Install it with:\n"+
-			"  abctl service install\n", p.unitFile)
+		fmt.Fprintf(stderr, "agentop: no service installed (%s). Install it with:\n"+
+			"  agentop service install\n", p.unitFile)
 		return 1
 	}
 	// Counted BEFORE the stop, while the connections still exist.
@@ -631,7 +631,7 @@ func serviceControl(action string, p servicePaths, stdout, stderr io.Writer) int
 		tightenLog(p.logFile, stderr)
 	}
 	if err := controlService(runtime.GOOS, action, p, stdout); err != nil {
-		fmt.Fprintf(stderr, "abctl: %v\n", err)
+		fmt.Fprintf(stderr, "agentop: %v\n", err)
 		return 1
 	}
 	if action == "start" || action == "restart" {
@@ -644,13 +644,13 @@ func serviceControl(action string, p servicePaths, stdout, stderr io.Writer) int
 	switch action {
 	case "stop":
 		fmt.Fprintln(stdout, "Stopped, and it will stay stopped across logins.")
-		fmt.Fprintln(stdout, "  abctl service start")
+		fmt.Fprintln(stdout, "  agentop service start")
 		if n > 0 {
 			fmt.Fprintf(stdout, "\n  %d connection(s) were attached to %s and have just been cut.\n",
 				n, p.forwardAddr)
 			fmt.Fprintln(stdout, "  Clients cannot fall back to a direct connection — HTTPS_PROXY is fixed")
 			fmt.Fprintln(stdout, "  in their environment at startup — so they will keep failing until you run")
-			fmt.Fprintln(stdout, "  abctl service start. They reconnect on their own once it is back;")
+			fmt.Fprintln(stdout, "  agentop service start. They reconnect on their own once it is back;")
 			fmt.Fprintln(stdout, "  restarting the sessions themselves is not necessary.")
 		}
 		return 0
@@ -659,7 +659,7 @@ func serviceControl(action string, p servicePaths, stdout, stderr io.Writer) int
 		// probe while OUR job crash-loops on the bind, so health alone would report a
 		// restart that did not happen.
 		if running, why := supervisorRunning(runtime.GOOS, p); !running {
-			fmt.Fprintf(stderr, "abctl: %sed, but the supervisor does not report it running (%s).\n"+
+			fmt.Fprintf(stderr, "agentop: %sed, but the supervisor does not report it running (%s).\n"+
 				"  Check for a Cortex started by hand holding the ports: pgrep -fl authbridge-prox\n", action, why)
 			for _, line := range lastLines(p.logFile, 5) {
 				fmt.Fprintf(stderr, "    %s\n", line)
@@ -667,7 +667,7 @@ func serviceControl(action string, p servicePaths, stdout, stderr io.Writer) int
 			return 1
 		}
 		if p.healthURL != "" && !waitHealthy(p.healthURL, serviceReadyTimeout) {
-			fmt.Fprintf(stderr, "abctl: %sed, but nothing answered %s. Last log lines:\n", action, p.healthURL)
+			fmt.Fprintf(stderr, "agentop: %sed, but nothing answered %s. Last log lines:\n", action, p.healthURL)
 			for _, line := range lastLines(p.logFile, 5) {
 				fmt.Fprintf(stderr, "    %s\n", line)
 			}
@@ -689,7 +689,7 @@ func tightenLog(path string, stderr io.Writer) {
 		_ = f.Close()
 	}
 	if err := os.Chmod(path, 0o600); err != nil && !os.IsNotExist(err) {
-		fmt.Fprintf(stderr, "abctl: could not tighten %s (%v); continuing\n", path, err)
+		fmt.Fprintf(stderr, "agentop: could not tighten %s (%v); continuing\n", path, err)
 	}
 }
 
@@ -812,14 +812,14 @@ func reportHistoryCleared(wasServing bool, stdout io.Writer) {
 		return
 	}
 	fmt.Fprintln(stdout, "  Captured session history is cleared: the store is in memory, so any")
-	fmt.Fprintln(stdout, "  timeline you were reading in abctl starts over.")
+	fmt.Fprintln(stdout, "  timeline you were reading in agentop starts over.")
 }
 
 // serviceIsCurrent reports whether the installed service already matches what
 // serviceInstall would write, and is actually serving.
 //
 // Every clause is necessary, because each one is a way for "installed" to be a lie:
-// a unit written by a different abctl pins whatever binary THAT one chose; a unit naming
+// a unit written by a different agentop pins whatever binary THAT one chose; a unit naming
 // a different binary or config is stale; a job the supervisor does not report running is
 // the installed-but-dead state; and "loaded" is not "serving", which is where a bad
 // config hides.

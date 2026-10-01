@@ -219,7 +219,7 @@ func TestPaneKeys_TheTwoAgentPanesAreDistinguishable(t *testing.T) {
 // spend drawer summed with a raw accumulator, and rankSeriesByCost's godoc records that a
 // wrapped total ranks BELOW a ten-micro series, which silently drops the window's most
 // expensive row out of the table. Here the same wrap would put the busiest agent at the
-// bottom of the picker. Add is exported precisely so abctl folds arbitrary Counts the one
+// bottom of the picker. Add is exported precisely so agentop folds arbitrary Counts the one
 // way, and this asserts this pane took it.
 func TestAgentRowsFromBuckets_MoneySaturatesRatherThanWrapping(t *testing.T) {
 	buckets := []usage.Bucket{
@@ -378,7 +378,7 @@ func TestAgentsPane_RecordsTheCallerAtPressTimeNotAtReplyTime(t *testing.T) {
 // separates the two readings, so without it both a CostMicros key and no guard at all pass.
 //
 // Bob is the live instance of the unpriced row — it bills in credits, which the cost model
-// cannot represent — and `abctl cost --agent` makes the same call through snapshot.Priced, which
+// cannot represent — and `agentop cost --agent` makes the same call through snapshot.Priced, which
 // is why TestRunCost_AgentReportsThatAgentOnly asserts "cost unavailable" on the same shape.
 func TestAgentCostCell_UnpricedIsADashAndAZeroRateIsAFigure(t *testing.T) {
 	for _, tc := range []struct {

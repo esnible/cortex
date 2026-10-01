@@ -150,7 +150,7 @@ func (p *BudgetTrack) checkDrift(pctx *pipeline.Context, settled settle.Settled)
 			// stopped" — the opposite of what happened.
 			log.Warn("pricing: no longer reporting rate-table drift",
 				"reason", fmt.Sprintf("hit the %d endpoint/model limit", maxDriftKeys),
-				"fix", "`abctl pricing --host <endpoint>` still shows the rates in effect")
+				"fix", "`agentop pricing --host <endpoint>` still shows the rates in effect")
 		}
 		return
 	}
@@ -170,7 +170,7 @@ func (p *BudgetTrack) checkDrift(pctx *pipeline.Context, settled settle.Settled)
 		"ratio", fmt.Sprintf("%.3fx", ratio),
 		"effect", direction+"stating every request this table prices, including streamed ones where no gateway figure exists",
 		"rates_from", prov.String(),
-		"fix", "set pricing.endpoints[].multiplier for this endpoint (a fraction of list), or per-model rates; `abctl pricing --host <endpoint>` shows what is in effect")
+		"fix", "set pricing.endpoints[].multiplier for this endpoint (a fraction of list), or per-model rates; `agentop pricing --host <endpoint>` shows what is in effect")
 }
 
 // resetDrift clears the dedup set and the cap.

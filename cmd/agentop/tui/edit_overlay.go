@@ -48,7 +48,7 @@ type editState struct {
 	diff      string // colorized output from edit.Diff
 	err       string // single-line message in editPhaseError
 	applyTime time.Time
-	// validationErrs are dependency/claim issues abctl detected before
+	// validationErrs are dependency/claim issues agentop detected before
 	// apply by checking the proposed pipeline against the plugin
 	// catalog. Empty when validation passed or the catalog isn't loaded.
 	// Rendered above the diff in the editPhaseDiff overlay so operators

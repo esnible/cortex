@@ -209,7 +209,7 @@ func TestMCPParser_TopLevelArray_NoMatch(t *testing.T) {
 // MCP and A2A both ride JSON-RPC 2.0, so mcp-parser must NOT claim A2A
 // methods just because they carry a non-empty JSON-RPC method. Gating on
 // the MCP namespace makes it decline A2A traffic (message/*, tasks/*,
-// agent/*) — so an A2A request shows no mcp-parser row in abctl. Mirror
+// agent/*) — so an A2A request shows no mcp-parser row in agentop. Mirror
 // of a2a-parser's own-namespace guard.
 func TestMCPParser_ForeignNamespaceMethods_Declined(t *testing.T) {
 	a2aMethods := []string{
@@ -308,7 +308,7 @@ func TestMCPParser_OnResponse_NoRequestContext(t *testing.T) {
 
 // A JSON-RPC notification (no request id) is acked by the transport with an
 // empty HTTP 202 and gets no response object to parse — that's the expected,
-// complete end of the exchange. mcp-parser records an Observe so abctl credits
+// complete end of the exchange. mcp-parser records an Observe so agentop credits
 // it (and pairs the response row with the request row) instead of rendering
 // the paired row as "—". Regression for the notification-ack observability
 // fix; supersedes the older skip-based pairing test.
@@ -343,7 +343,7 @@ func TestMCPParser_OnResponse_NotificationAck_Observe(t *testing.T) {
 
 // A request that carried an id but came back with an empty body is anomalous
 // (truncated / failed upstream response). mcp-parser keeps a Skip there — a
-// skip never credits the plugin in abctl, which is the correct signal for a
+// skip never credits the plugin in agentop, which is the correct signal for a
 // broken response, and it still pairs the response row with the request row.
 func TestMCPParser_OnResponse_RequestEmptyBody_Skip(t *testing.T) {
 	p := NewMCPParser()

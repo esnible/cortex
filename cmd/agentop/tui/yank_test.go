@@ -31,8 +31,8 @@ func TestYankEventToFileUsesPrivatePerUserDir(t *testing.T) {
 		t.Errorf("yanked into %q, want %q", got, want)
 	}
 	base := filepath.Base(p)
-	if strings.HasPrefix(base, "abctl-event-") {
-		t.Errorf("filename %q still carries the abctl-event- prefix, which is "+
+	if strings.HasPrefix(base, "agentop-event-") {
+		t.Errorf("filename %q still carries the agentop-event- prefix, which is "+
 			"redundant inside %s", base, want)
 	}
 	if !strings.HasSuffix(base, ".json") {
@@ -145,7 +145,7 @@ func TestNonYankFlashStillExpires(t *testing.T) {
 func TestTimedFlashClearsStickiness(t *testing.T) {
 	yankHome(t)
 	m := newTestDetailModel(t)
-	m.setStickyFlash("yanked → /home/u/.cortex/abctl-events/x.json")
+	m.setStickyFlash("yanked → /home/u/.cortex/agentop-events/x.json")
 	m.setFlash("catalog fetch failed: boom")
 
 	if m.flashSticky {
@@ -227,9 +227,9 @@ func TestYankDir_UnsetHomeGivesAReadableError(t *testing.T) {
 	}
 }
 
-// The must-fix: ~/.cortex is not guaranteed to be 0700 — abctl never creates it,
+// The must-fix: ~/.cortex is not guaranteed to be 0700 — agentop never creates it,
 // so its mode is whatever an installer or the user left. At 0755, MkdirAll neither
-// tightens the mode nor refuses to follow an abctl-events symlink, and the event —
+// tightens the mode nor refuses to follow an agentop-events symlink, and the event —
 // identity subjects, raw LLM completions, tool arguments — lands in whichever
 // directory the symlink points at.
 func TestYankRefusesASymlinkedDir(t *testing.T) {
@@ -238,7 +238,7 @@ func TestYankRefusesASymlinkedDir(t *testing.T) {
 		t.Fatal(err)
 	}
 	elsewhere := t.TempDir()
-	if err := os.Symlink(elsewhere, filepath.Join(home, ".cortex", "abctl-events")); err != nil {
+	if err := os.Symlink(elsewhere, filepath.Join(home, ".cortex", "agentop-events")); err != nil {
 		t.Fatal(err)
 	}
 
@@ -250,14 +250,14 @@ func TestYankRefusesASymlinkedDir(t *testing.T) {
 	}
 }
 
-// A pre-existing world-readable directory abctl owns is TIGHTENED, not refused.
+// A pre-existing world-readable directory agentop owns is TIGHTENED, not refused.
 // That matches writeBuiltinConfig in cmd/authbridge-proxy/local.go, which chmods
 // ~/.cortex to 0700 after MkdirAll for this same reason — self-healing beats
 // handing the user a chmod to run by hand.
 func TestYankTightensALooseModeDir(t *testing.T) {
 	home := yankHome(t)
 	cortex := filepath.Join(home, ".cortex")
-	events := filepath.Join(cortex, "abctl-events")
+	events := filepath.Join(cortex, "agentop-events")
 	if err := os.MkdirAll(events, 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -294,7 +294,7 @@ func TestYankAcceptsACleanDir(t *testing.T) {
 
 // The reported symptom: on a ~72-column terminal the footer read
 //
-//	● connected  0.0 events/sec   yanked → /Users/person/.cortex/abctl-
+//	● connected  0.0 events/sec   yanked → /Users/person/.cortex/agentop-
 //
 // and the filename — the part you retype — was off the right edge. A sticky flash
 // now gets the whole line from column 0, and truncates from the LEFT so the tail
@@ -303,7 +303,7 @@ func TestYankAcceptsACleanDir(t *testing.T) {
 // Widths are measured with lipgloss.Width, not len: "…" and "→" are multi-byte, so
 // a byte count overstates the columns used.
 func TestStickyFlash_FitsANarrowFooter(t *testing.T) {
-	const path = "/Users/someone/.cortex/abctl-events/20260910-223650-80907711.json"
+	const path = "/Users/someone/.cortex/agentop-events/20260910-223650-80907711.json"
 
 	for _, width := range []int{40, 60, 72, 80, 120} {
 		m := newTestDetailModel(t)
@@ -352,9 +352,9 @@ func TestYankFailure_IsAlsoSticky(t *testing.T) {
 // CJK path asked to fit 40 columns render 55, since each kept rune was 2 wide.
 func TestStickyFlash_FitsWithWideRunes(t *testing.T) {
 	paths := map[string]string{
-		"cjk":   "yanked → /Users/u/.cortex/abctl-events/日本語日本語日本語日本語-1234567890.json",
-		"emoji": "yanked → /Users/u/.cortex/abctl-events/🎉🎉🎉🎉🎉-1234567890.json",
-		"mixed": "yanked → /Users/u/.cortex/abctl-events/日本語-🎉-20260910-80907711.json",
+		"cjk":   "yanked → /Users/u/.cortex/agentop-events/日本語日本語日本語日本語-1234567890.json",
+		"emoji": "yanked → /Users/u/.cortex/agentop-events/🎉🎉🎉🎉🎉-1234567890.json",
+		"mixed": "yanked → /Users/u/.cortex/agentop-events/日本語-🎉-20260910-80907711.json",
 	}
 	for name, path := range paths {
 		// Includes degenerate widths: the ellipsis alone is already 1 column.
@@ -394,7 +394,7 @@ func TestTimedFlash_KeepsTheStatusPrefix(t *testing.T) {
 //
 // This is not tidiness. yankDir() resolves os.UserHomeDir(), so without it every
 // test here wrote into the real home — and TestYankEventToFileWithPreExistingDir
-// created ~/.cortex/abctl-events at 0755 on a machine where it did not yet exist.
+// created ~/.cortex/agentop-events at 0755 on a machine where it did not yet exist.
 // os.MkdirAll does not tighten an existing directory, so every subsequent REAL
 // yank then wrote into a 0755 directory, silently voiding the 0700 guarantee the
 // README, yankDir's doc comment and that test's own name all assert. Permanent,

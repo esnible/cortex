@@ -176,7 +176,7 @@ func TestParseResolution(t *testing.T) {
 		{"", time.Hour, BucketWidth, true},
 		{"1m", time.Hour, time.Minute, true},
 		{"5m", time.Hour, 5 * time.Minute, true},
-		// Every pair abctl actually sends, so the divisibility rule below cannot
+		// Every pair agentop actually sends, so the divisibility rule below cannot
 		// break a live client: usageWindows is {10m,1m}, {1h,5m}, {6h,30m}, and a
 		// symbolic window omits the parameter entirely and validates 1m against
 		// MaxWindow.
@@ -230,8 +230,8 @@ func TestParseResolution_DivisibilityErrorIsAFixedLiteral(t *testing.T) {
 //
 // EXTRACTED, NOT ADDED. capSeriesAcrossWindow already carried this loop inline to build the
 // ranking it caps by; it is exported here because two clients outside this package need the
-// same answer — abctl's AGENTS pane, which shows one row per agent for the window, and
-// `abctl cost --agent`, which needs one label's total plus the set of labels to name in a
+// same answer — agentop's AGENTS pane, which shows one row per agent for the window, and
+// `agentop cost --agent`, which needs one label's total plus the set of labels to name in a
 // "no such agent" error. A second copy in either would be a second definition of what a
 // window total means.
 //
@@ -311,7 +311,7 @@ func TestFoldSeriesAcrossWindow_SaturatesRatherThanWrapping(t *testing.T) {
 
 // SortSeriesLabels orders labels by what they cost, descending, breaking ties on the label.
 //
-// ONE DEFINITION FOR TWO SURFACES. abctl's AGENTS pane and `abctl cost --by` both rank the same
+// ONE DEFINITION FOR TWO SURFACES. agentop's AGENTS pane and `agentop cost --by` both rank the same
 // series the same way, and they used to do it in two places: this is the rule, and both call it.
 //
 // A SLICE IN, NOT A MAP, and that signature is the whole reason this is testable. Ranking

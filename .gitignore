@@ -79,7 +79,7 @@ __pycache__/
 # pattern that is safe, so the list below is exhaustive for `cmd/` and for the
 # two `scripts/` helpers further down. The `demos/*` mains are deliberately not
 # listed. Keep adding to it.
-cmd/agentop/abctl
+cmd/agentop/agentop
 cmd/authbridge-proxy/authbridge-proxy
 cmd/authbridge-envoy/authbridge-envoy
 cmd/authbridge-cpex/authbridge-cpex
@@ -95,9 +95,9 @@ cmd/authbridge-praxis/authbridge-praxis
 # defensive, against someone passing `-o authbridge-lite` by hand.
 #
 # Leading slash is load-bearing now that the repo root IS the module root: a bare
-# `abctl` has no separator, so git would match it at any depth — including the
+# `agentop` has no separator, so git would match it at any depth — including the
 # package directory `cmd/agentop`, silently ignoring new source files under it.
-/abctl
+/agentop
 /authbridge-proxy
 /authbridge-envoy
 /authbridge-cpex
@@ -129,5 +129,5 @@ cortex-ca/
 /profile-tags
 /readme-demo
 
-# Output dir for `make abctl` / `make authbridge-proxy`.
+# Output dir for `make agentop` / `make authbridge-proxy`.
 /bin/

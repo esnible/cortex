@@ -11,7 +11,7 @@ import (
 // The predicate decides whether Enter costs a round trip. Every arm matters: not
 // fetching when the bodies are missing leaves the detail pane permanently
 // incomplete, and fetching when they are already here spends a request per
-// keystroke for bytes abctl is holding.
+// keystroke for bytes agentop is holding.
 func TestNeedsFullEvent(t *testing.T) {
 	withInference := &pipeline.SessionEvent{Seq: 1, Inference: &pipeline.InferenceExtension{}}
 	withA2A := &pipeline.SessionEvent{Seq: 2, A2A: &pipeline.A2AExtension{}}
@@ -167,7 +167,7 @@ func TestApplyDetailEvent_FailureKeepsTheRenderedSummary(t *testing.T) {
 	}
 }
 
-// serverProjects is learned from the echo, never assumed — it is what stops abctl
+// serverProjects is learned from the echo, never assumed — it is what stops agentop
 // fetching against a proxy that already sent whole events.
 func TestSnapshotLoaded_LearnsWhetherTheServerProjects(t *testing.T) {
 	for _, projected := range []bool{true, false} {
@@ -180,7 +180,7 @@ func TestSnapshotLoaded_LearnsWhetherTheServerProjects(t *testing.T) {
 	}
 }
 
-// The full event has to land in the slice abctl holds, not just on detailRow, or
+// The full event has to land in the slice agentop holds, not just on detailRow, or
 // ↵ → Esc → ↵ on the same row pays the round trip every time.
 func TestApplyDetailEvent_WritesBackToTheHeldSlice(t *testing.T) {
 	summary := &pipeline.SessionEvent{

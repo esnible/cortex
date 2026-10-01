@@ -17,12 +17,12 @@ import (
 // directory grow without bound.
 const tempFileMaxAge = 24 * time.Hour
 
-// SweepStaleTempfiles deletes abctl-pipeline-*.yaml tempfiles older
+// SweepStaleTempfiles deletes agentop-pipeline-*.yaml tempfiles older
 // than tempFileMaxAge from os.TempDir(). Errors are non-fatal — a
 // best-effort cleanup at startup; the editor still works without it.
 // Returns the number of files removed (for diagnostics).
 func SweepStaleTempfiles() int {
-	matches, err := filepath.Glob(filepath.Join(os.TempDir(), "abctl-pipeline-*.yaml"))
+	matches, err := filepath.Glob(filepath.Join(os.TempDir(), "agentop-pipeline-*.yaml"))
 	if err != nil {
 		return 0
 	}
@@ -57,7 +57,7 @@ type FetchedMsg struct {
 
 // FetchCmd returns a tea.Cmd that fetches the runtime YAML from store,
 // locates the pipeline subtree, writes the subtree to a tempfile (ready for
-// $EDITOR), and emits FetchedMsg. The tempfile lives in $TMPDIR; abctl
+// $EDITOR), and emits FetchedMsg. The tempfile lives in $TMPDIR; agentop
 // leaves it in place on every exit path (success, error, abort) so users
 // can recover an in-progress edit.
 //
@@ -95,7 +95,7 @@ func FetchCmd(
 			}
 		}
 
-		tmp, err := os.CreateTemp("", "abctl-pipeline-*.yaml")
+		tmp, err := os.CreateTemp("", "agentop-pipeline-*.yaml")
 		if err != nil {
 			return FetchedMsg{Err: err}
 		}

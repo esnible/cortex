@@ -42,7 +42,7 @@
 // # Operator surface
 //
 // Plugin name: `cpex`. Config schema is in config.go and is
-// surfaced through pipeline.SchemaProvider for abctl and friends.
+// surfaced through pipeline.SchemaProvider for agentop and friends.
 package cpex
 
 import (
@@ -114,7 +114,7 @@ func (p *CPEX) Name() string { return "cpex" }
 //     populate them. Failing fast at pipeline.Build is better than
 //     silently running CPEX policies over empty content.
 //
-//   - Description is the one-line operator-facing summary abctl
+//   - Description is the one-line operator-facing summary agentop
 //     surfaces in the catalog.
 func (p *CPEX) Capabilities() pipeline.PluginCapabilities {
 	return pipeline.PluginCapabilities{
@@ -126,7 +126,7 @@ func (p *CPEX) Capabilities() pipeline.PluginCapabilities {
 	}
 }
 
-// ConfigSchema reflects cpexConfig field metadata for abctl edit
+// ConfigSchema reflects cpexConfig field metadata for agentop edit
 // templates and JSON-Schema generators.
 func (p *CPEX) ConfigSchema() []pipeline.FieldSchema {
 	return pipeline.SchemaOf(cpexConfig{})

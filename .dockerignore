@@ -33,7 +33,7 @@ dist
 # authbridge-proxy and friends) without touching the package DIRECTORIES, which
 # are one path segment shorter, nor any source file — no tracked file under
 # cmd/*/ begins with "authbridge-".
-abctl
+agentop
 authbridge-proxy
 authbridge-envoy
 authbridge-cpex
@@ -41,7 +41,7 @@ authbridge-lite
 authbridge-praxis
 profile-tags
 readme-demo
-cmd/agentop/abctl
+cmd/agentop/agentop
 cmd/*/authbridge-*
 scripts/profile-tags/profile-tags
 scripts/readme-demo/readme-demo

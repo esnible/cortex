@@ -105,7 +105,7 @@ func TestShellStates_SlowLongerThanOutIsRejected(t *testing.T) {
 
 func TestShellStates_TypingCarriesATypeReveal(t *testing.T) {
 	act := Act{Name: "a", Kind: "shell", Runtime: 10 * time.Second, Steps: []Step{
-		{Cmd: "abctl", Out: []string{"hi"}},
+		{Cmd: "agentop", Out: []string{"hi"}},
 	}}
 	states, err := ShellStates(act, 0, Grid{Cols: 20, Rows: 4})
 	if err != nil {

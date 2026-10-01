@@ -84,7 +84,7 @@ Framework, not here:
 | `memstore/` | A generic, process-scoped, TTL key→value store, intentionally semantics-free. Contrast `storage/`, which is the cross-pod persistent one |
 | `llmclient/` | Small helper for calling OpenAI-compatible endpoints |
 | `placeholder/` | The convention for opaque credential handles. Named accurately despite reading like a TODO, and tied to the `abph_` wire prefix, which cannot change |
-| `clientstate/` | The on-disk record `abctl` writes when it points an agent at a local proxy |
+| `clientstate/` | The on-disk record `agentop` writes when it points an agent at a local proxy |
 | `praxis/` | Converts a `config.Config` into a Praxis proxy config. **Paused** — ships in no image and registers no plugins, but deliberately kept compiling |
 
 **Plugin internals** worth knowing about:

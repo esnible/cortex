@@ -344,7 +344,7 @@ func dayNoon(y int, m time.Month, d int, loc *time.Location) time.Time {
 // Returns usage.Counts and a Group-keyed map so an HTTP handler need not branch on
 // whether the data came from the ring or from disk. Summation is Counts.Add, so a
 // field added there is carried here with no edit — the same property that keeps
-// fold() and abctl's (other)-band collapse correct.
+// fold() and agentop's (other)-band collapse correct.
 //
 // The THIRD return is the dollars of every row this grouping had to skip, for
 // usage.Snapshot.UngroupedCostMicros. A row with no value for the requested axis counts
@@ -469,7 +469,7 @@ func Groupable(group usage.Group) bool {
 //
 // DEFINED BY pipeline rather than duplicated here, so that agreement is the
 // compiler's to keep rather than a comment's to assert. It was a matching literal in
-// both packages until the axis was wired into abctl, which would have made a third.
+// both packages until the axis was wired into agentop, which would have made a third.
 //
 // NOT an agent name, and a consumer must not present it as one — the row is
 // unattributed traffic, not a program that spent money.

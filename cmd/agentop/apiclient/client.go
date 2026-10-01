@@ -63,7 +63,7 @@ var restDefaultTimeout = 10 * time.Second
 // a path an operator configured and possibly a slow mount.
 //
 // So a 10s value reinstated exactly the pre-emption removing http.Client.Timeout was meant to
-// end: `abctl cost` budgets 15s BECAUSE the ledger scan is slow, and a scan over 10s died at
+// end: `agentop cost` budgets 15s BECAUSE the ledger scan is slow, and a scan over 10s died at
 // 10s with "timeout awaiting response headers". Measured, not reasoned about: with the bound
 // at 200ms and a caller budget of 2s, a server that spent 500ms scanning failed at 202ms.
 //
@@ -178,7 +178,7 @@ const SummaryView = "summary"
 // client-wide timeout, and the whole request failed with an empty timeline to show for
 // it. That timeout is GONE — the bound is on response HEADERS now and does not cap the
 // body read, so the 17s transfer would succeed today; see New. The limit is about what
-// abctl HOLDS IN MEMORY, which was always the better reason for it. With
+// agentop HOLDS IN MEMORY, which was always the better reason for it. With
 // view=summary an event is ~1KB rather than ~209KB, so 2000 events is about 2MB —
 // less than half of what 500 full events cost, fetched in a fraction of the time.
 //
@@ -281,7 +281,7 @@ type PluginCatalogEntry struct {
 }
 
 // PluginFieldEntry mirrors sessionapi.FieldSchemaEntry — per-field
-// schema metadata for a plugin's config. Used by abctl edit's
+// schema metadata for a plugin's config. Used by agentop edit's
 // templates renderer; nil for plugins without configs.
 type PluginFieldEntry struct {
 	Name        string             `json:"name"`
@@ -336,7 +336,7 @@ func (c *Client) getBody(ctx context.Context, path string) (body io.ReadCloser, 
 	}
 	if resp.StatusCode == http.StatusNotFound {
 		// Drained before closing so the connection returns to the pool rather than
-		// being torn down — abctl polls this API.
+		// being torn down — agentop polls this API.
 		io.Copy(io.Discard, resp.Body) //nolint:errcheck // draining a discarded body
 		_ = resp.Body.Close()
 		return nil, fmt.Errorf("%s: %w", path, ErrNotFound)
@@ -368,7 +368,7 @@ func (c *Client) getBody(ctx context.Context, path string) (body io.ReadCloser, 
 // caller already closes the body (snapshot.go defers it), so Close is the honest hook.
 //
 // CLOSE FIRST, THEN CANCEL. Cancelling a live request tears the connection down; closing a
-// fully-read body returns it to the pool, and abctl polls this API. Reversing the two costs a
+// fully-read body returns it to the pool, and agentop polls this API. Reversing the two costs a
 // connection per page.
 //
 // A caller that never closes leaks nothing but the timer, until the deadline fires. That is

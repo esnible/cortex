@@ -63,7 +63,7 @@ func pipelineJSON(t *testing.T, outbound []pipeline.Plugin) (string, []pipelineP
 }
 
 // TestPipelineView_OmitsMetricsForNonProviders: a plugin that does not
-// implement MetricsProvider must not emit a metrics key at all. abctl relies
+// implement MetricsProvider must not emit a metrics key at all. agentop relies
 // on absence-vs-empty to render "(none)" rather than an empty table, and an
 // always-present null would also churn every existing golden payload.
 func TestPipelineView_OmitsMetricsForNonProviders(t *testing.T) {

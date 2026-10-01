@@ -272,7 +272,7 @@ func TestServiceIsCurrent(t *testing.T) {
 		}
 	})
 
-	t.Run("a unit from a different abctl is not current", func(t *testing.T) {
+	t.Run("a unit from a different agentop is not current", func(t *testing.T) {
 		p := base(t)
 		body, err := os.ReadFile(p.unitFile)
 		if err != nil {
@@ -283,7 +283,7 @@ func TestServiceIsCurrent(t *testing.T) {
 			t.Fatal(err)
 		}
 		if serviceIsCurrent(p) {
-			t.Error("claimed current for a unit another abctl wrote; it pins that abctl's binary")
+			t.Error("claimed current for a unit another agentop wrote; it pins that agentop's binary")
 		}
 	})
 

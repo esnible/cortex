@@ -16,8 +16,8 @@ and almost everything else follows from that difference.
   audience.
 - **Configuration is ConfigMaps**, not `~/.cortex/config.yaml`, and it hot-reloads.
 
-The plugin pipeline, the session API, and `abctl` are the same in both places. If you
-learned them on your laptop, they behave identically in a pod — point `abctl` at one
+The plugin pipeline, the session API, and `agentop` are the same in both places. If you
+learned them on your laptop, they behave identically in a pod — point `agentop` at one
 with `kubectl port-forward`, or let it pick a pod from its own Namespaces → Pods
 picker.
 
@@ -33,7 +33,7 @@ them by hand.
 
 The **[Weather Agent walkthrough](../demos/weather-agent/demo-ui.md)** is the shortest
 end-to-end path: a cluster, an agent, inbound validation, and traffic you can watch.
-There is also an [`abctl` version](../demos/weather-agent/demo-with-agentop.md) that
+There is also an [`agentop` version](../demos/weather-agent/demo-with-agentop.md) that
 focuses on the plugin pipeline.
 
 For the full deployment architecture — sidecar shapes, container inventory, the

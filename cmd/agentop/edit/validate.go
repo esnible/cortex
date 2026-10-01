@@ -9,7 +9,7 @@ import (
 )
 
 // ValidationError describes one problem with a proposed pipeline,
-// detected by abctl before kubectl apply. The framework's own
+// detected by agentop before kubectl apply. The framework's own
 // validateRelationships is the source of truth (and runs again after
 // reload); this is the fast-feedback layer.
 type ValidationError struct {
@@ -88,7 +88,7 @@ func validateChain(direction string, chain pipelineChain, byName map[string]apic
 		pos := i + 1
 		entry, known := byName[p.Name]
 		if !known {
-			// abctl caches /v1/plugins for the session; a freshly-installed
+			// agentop caches /v1/plugins for the session; a freshly-installed
 			// plugin in-cluster won't appear until refresh. Hint at the
 			// staleness path so operators don't get stuck in confusion when
 			// the framework would actually accept the edit.

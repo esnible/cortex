@@ -117,7 +117,7 @@ const damagedMarker = "!"
 //
 // A function rather than the disjunction written at each site, for the reason negativeCost is
 // one: the same test is made by the strip's today figure, the Cost pane's TOTAL, the pane's
-// caveat block and `abctl cost`, and a predicate written four times is a predicate that drifts.
+// caveat block and `agentop cost`, and a predicate written four times is a predicate that drifts.
 // usage.Counts.Saturated arrived after usage.Snapshot.Degraded and only one surface picked it
 // up; the next disclosure of this class should have one place to be added.
 func figureIsShort(degraded *usage.Degraded, saturated bool) bool {

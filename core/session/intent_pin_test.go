@@ -150,7 +150,7 @@ func TestStore_IntentInKeepWindow_TrivialFifo(t *testing.T) {
 
 // TestStore_PinnedIntentChronologicalOrder: with the intent pinned
 // from the eviction prefix, the surviving slice must still be
-// chronologically ordered (At ascending). Consumers like abctl
+// chronologically ordered (At ascending). Consumers like agentop
 // render events in slice order assuming monotonic time; a
 // non-monotonic result here would break the timeline UI.
 func TestStore_PinnedIntentChronologicalOrder(t *testing.T) {

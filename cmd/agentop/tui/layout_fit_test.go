@@ -333,7 +333,7 @@ func TestLayout_StateRichFooterFitsTheTerminal(t *testing.T) {
 			// The longest header, so the indicator itself is at its widest.
 			{name: "widest sort column", sortCol: colDuration, filter: "api.anthropic.com", paused: true},
 			{name: "everything plus a flash", sortCol: colCost, filter: "github-tool", paused: true,
-				flash: "yanked → ~/.cortex/abctl-events/evt-20260916-103000.json"},
+				flash: "yanked → ~/.cortex/agentop-events/evt-20260916-103000.json"},
 		} {
 			m := fitModel(t, paneEvents, dim[0], dim[1], cursorRowsFixture(60))
 			m.sortCol, m.sortDesc = tc.sortCol, true

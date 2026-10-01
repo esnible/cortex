@@ -21,7 +21,7 @@ func TestEndToEnd_SettingsSurviveARestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := filepath.Join(home, ".cortex", "abctl-config.yaml"); path != want {
+	if want := filepath.Join(home, ".cortex", "agentop-config.yaml"); path != want {
 		t.Fatalf("path = %q, want %q", path, want)
 	}
 

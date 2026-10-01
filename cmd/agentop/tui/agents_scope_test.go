@@ -169,7 +169,7 @@ func TestFetchUsage_UnscopedAsksForThePanesOwnAxis(t *testing.T) {
 
 // A scope that no longer matches any agent in the window is REPORTED, not silently ignored.
 //
-// The window moves while abctl runs — "today" is a boundary, and an agent that stopped sending
+// The window moves while agentop runs — "today" is a boundary, and an agent that stopped sending
 // falls out of it — so this is reachable without anyone doing anything wrong. The error names
 // the agents that ARE in the window, which is what the operator needs in order to pick a
 // different one.
@@ -270,7 +270,7 @@ func TestUsagePane_LatencyUnderAScopeSaysItIsUnavailable(t *testing.T) {
 //
 // usage.Snapshot.UngroupedCostMicros is a whole-window figure and survives usage.ScopeToAgent, so
 // under a scope the pane holds a COST cell describing one agent beside a residual describing no
-// agent. `abctl cost` has disclosed this at writeCostSummary's --agent note for as long as --agent
+// agent. `agentop cost` has disclosed this at writeCostSummary's --agent note for as long as --agent
 // has existed; the usage pane is the surface that gained the same duty when it gained a scope, and
 // it had nothing to say about it.
 //

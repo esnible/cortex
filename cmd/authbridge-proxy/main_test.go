@@ -136,7 +136,7 @@ func captureWarns(t *testing.T, fn func(*slog.Logger)) []map[string]any {
 // say so. This is the residue of the same defect config.Validate now refuses in its
 // explicit form: the whole ledger block in main is nested inside
 // `if cfg.Session.SessionEnabled()`, so with sessions off the operator got no error,
-// no warning, and no log line naming the ledger at all — an empty `abctl usage`
+// no warning, and no log line naming the ledger at all — an empty `agentop usage`
 // history with nothing anywhere to explain it.
 //
 // Local mode is the case that matters: --local turns the ledger on without anyone
@@ -197,7 +197,7 @@ func TestWarnCostLedgerNeedsSessions_SilentWhenLedgerIsOff(t *testing.T) {
 //
 // It used to be localMode: true under --local, false otherwise. That is a property of the
 // command line, not of whether the ledger can do its job, and the consequence was measured —
-// `abctl service install` runs `--config`, never `--local`, so the documented "on by default"
+// `agentop service install` runs `--config`, never `--local`, so the documented "on by default"
 // was false for every installed laptop and cost history was silently never written.
 //
 // The rule now asks whether anything survives a restart. The third row is the one that has to

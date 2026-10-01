@@ -195,7 +195,7 @@ def main():
         requested = set(args.sessions)
         wanted = [s for s in wanted if s["id"] in requested]
         # Naming an id is a claim that it exists, so a miss is a failure and not an
-        # empty result: a typo, or a session evicted between abctl showing it and
+        # empty result: a typo, or a session evicted between agentop showing it and
         # this running, would otherwise be indistinguishable from success. `--active`
         # matching nothing is different -- that is a legitimate empty answer.
         missing = sorted(requested - {s["id"] for s in wanted})

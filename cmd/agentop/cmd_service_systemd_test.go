@@ -265,7 +265,7 @@ exit 0
 			t.Fatalf("unexpected error: %v", err)
 		}
 		if _, err := os.Stat(lingerMarker(p)); err != nil {
-			t.Error("no marker written after abctl enabled linger itself")
+			t.Error("no marker written after agentop enabled linger itself")
 		}
 		// The marker alone doesn't prove the right command ran — a typo'd verb, the
 		// wrong uid, or a bare `enable-linger` with no argument would each still exit 0
@@ -323,7 +323,7 @@ func TestUnloadService_Linux(t *testing.T) {
 
 	t.Run("marker present: disable-linger runs and marker is removed", func(t *testing.T) {
 		p := servicePathsFixture(t)
-		if err := os.WriteFile(lingerMarker(p), []byte("enabled by abctl\n"), 0o600); err != nil {
+		if err := os.WriteFile(lingerMarker(p), []byte("enabled by agentop\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		logPath, logLine := callLog(t)

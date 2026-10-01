@@ -264,7 +264,7 @@ var paneKeys = map[paneID]keyGroup{
 		// TestPaneKeys_TheTwoAgentPanesAreDistinguishable. These are workloads; AGENTS is the
 		// pane about coding agents, and one word is what keeps the two apart in an overlay
 		// that shows both.
-		purpose: "Kubernetes agent workloads grouped by namespace; where abctl starts",
+		purpose: "Kubernetes agent workloads grouped by namespace; where agentop starts",
 		bindings: []keyBinding{
 			{"↑↓ / jk", "navigate"},
 			{"↵", "open namespace"},
@@ -318,7 +318,7 @@ var paneKeys = map[paneID]keyGroup{
 		purpose: "one event in full, as the proxy recorded it",
 		bindings: []keyBinding{
 			{"↑↓", "scroll"},
-			{"y", "yank event JSON to ~/.cortex/abctl-events"},
+			{"y", "yank event JSON to ~/.cortex/agentop-events"},
 			{"esc / ← / h", "back to events"},
 		},
 	},
@@ -386,7 +386,7 @@ var paneKeys = map[paneID]keyGroup{
 		//
 		// IT NO LONGER SAYS "READ-ONLY". It did, on the true-at-the-time grounds that /v1/usage
 		// filters by session and nothing else — so the scope is computed client-side instead,
-		// the same narrowing `abctl cost --agent` uses, and the endpoint's limit now bounds WHICH
+		// the same narrowing `agentop cost --agent` uses, and the endpoint's limit now bounds WHICH
 		// views can honour it rather than whether any can.
 		notes: []string{
 			"Opens only when two or more agents have been seen. It scopes the sessions " +

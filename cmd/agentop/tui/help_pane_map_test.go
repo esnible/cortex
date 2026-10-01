@@ -159,7 +159,7 @@ func TestHelpBody_JumpSectionMatchesTheKeysThatActuallyWork(t *testing.T) {
 				//
 				// It refetches the per-agent breakdown on every press and decides from the
 				// reply, because the refusal depends on how many agents have been seen and
-				// that changes while abctl runs. Deciding from a cache instead would make the
+				// that changes while agentop runs. Deciding from a cache instead would make the
 				// FIRST press answer "no agent traffic seen yet" — a lie, since nothing had
 				// looked yet.
 				//

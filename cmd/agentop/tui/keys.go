@@ -41,7 +41,7 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 	if m.helpVisible {
 		switch msg.String() {
 		case "?", "esc", "q", "ctrl+c":
-			// `q`/ctrl+c close the overlay rather than quitting abctl:
+			// `q`/ctrl+c close the overlay rather than quitting agentop:
 			// dismissing a help panel is the overwhelmingly likely intent,
 			// and the overlay itself advertises how to quit.
 			m.helpVisible = false
@@ -232,7 +232,7 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 		case "q", "ctrl+c":
 			// Quit stays live. A modal that traps the user until they find its exit
 			// is worse than one that closes on the key they already reach for, and
-			// `q` means quit everywhere else in abctl. Falls through to the global
+			// `q` means quit everywhere else in agentop. Falls through to the global
 			// handler rather than being reimplemented here.
 		case "c", "esc", "enter":
 			m.colPicker = false
@@ -353,7 +353,7 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 		case "l":
 			// Skip the cluster entirely and talk to whatever session API
 			// is already listening locally — an existing port-forward, an
-			// in-mesh abctl, or a tunnel from a kubeconfig that can't list
+			// in-mesh agentop, or a tunnel from a kubeconfig that can't list
 			// pods. Probes before switching panes so a dead endpoint stays
 			// an error in the picker rather than an empty session view.
 			if m.loading {
@@ -628,13 +628,13 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 			//
 			// Released only for sessions the server still LISTS: those are
 			// recoverable, because snapshotCmd can fetch them again. A
-			// cached-only session is kept — abctl's copy is the only copy, so
+			// cached-only session is kept — agentop's copy is the only copy, so
 			// dropping it would be the same unrecoverable loss this PR exists to
 			// stop. After a restart every previously-visited session is
 			// cached-only, so opening one must not destroy the rest.
 			//
 			// The honest consequence: cached-only sessions are never released
-			// while abctl runs, so the cache grows by one entry per restart the
+			// while agentop runs, so the cache grows by one entry per restart the
 			// user visited a session across. Measured, that is ~165 bytes per
 			// event and 1000 events per session, so ~161 KB per session and a
 			// few MB for a long debugging afternoon — worth it, given the
@@ -747,10 +747,10 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 		if store == nil {
 			// Name what is missing and how to get it. The old text said
 			// "requires the picker (no --endpoint)", which described neither:
-			// a bare `abctl` that auto-connected to a local Cortex passes no
+			// a bare `agentop` that auto-connected to a local Cortex passes no
 			// --endpoint at all, so it accused the operator of a flag they had
 			// not used and omitted the one that would have helped.
-			m.setFlash("no pipeline to edit here — run `abctl --kubernetes` to pick a pod, or point abctl at a Cortex running on this machine")
+			m.setFlash("no pipeline to edit here — run `agentop --kubernetes` to pick a pod, or point agentop at a Cortex running on this machine")
 			return nil
 		}
 		if m.editState.phase != editPhaseDone {
@@ -851,7 +851,7 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 		// one-row breakdown restates a total the reader already has.
 		//
 		// ALWAYS REFETCHED, never decided from cached rows. How many agents have been seen
-		// changes while abctl runs, and a second agent starting up is exactly the event that
+		// changes while agentop runs, and a second agent starting up is exactly the event that
 		// makes this pane worth opening — so deciding from a stale count would refuse a pane
 		// that had just become useful. The reply carries open:true and decides there, through
 		// the one enterAgentsOrRefuse both paths share.
@@ -881,7 +881,7 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 		// Open the registered-plugin catalog. Available from any
 		// session-view pane; in --endpoint mode the picker fields
 		// don't matter — the catalog comes via the same /v1/* endpoint
-		// abctl is already pointed at.
+		// agentop is already pointed at.
 		//
 		// `C` for Catalog, moved off `P` when the pipeline took that letter. See
 		// the `P` case above for why this side of the swap is the cheap one — and

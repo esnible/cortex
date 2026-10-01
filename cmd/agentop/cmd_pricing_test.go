@@ -144,7 +144,7 @@ func TestRunPricing_ProxyDownIsActionable(t *testing.T) {
 	if code == 0 {
 		t.Fatal("expected a non-zero exit when the proxy is unreachable")
 	}
-	if !strings.Contains(errb.String(), "abctl service status") {
+	if !strings.Contains(errb.String(), "agentop service status") {
 		t.Errorf("error does not tell the operator what to check: %s", errb.String())
 	}
 }
@@ -283,7 +283,7 @@ func TestRunPricing_StillSaysDollarsForAUSDEndpoint(t *testing.T) {
 // A server that spells the default "usd" still gets the dollar label, on both readers.
 //
 // THE CLIENT SIDE OF THE CASE-FOLDING FIX. core canonicalises before it serialises, so a matched
-// pair never sends this — but abctl is a client of whatever proxy it is pointed at, including one
+// pair never sends this — but agentop is a client of whatever proxy it is pointed at, including one
 // older than itself, and both readers here compared against pricing.CurrencyUSD case-sensitively.
 // The symptom is not a wrong figure: it is "per Mtok" over a table of dollars and a provenance cell
 // reading "bundled · usd", which is the same false claim as the one this change removes, inverted.

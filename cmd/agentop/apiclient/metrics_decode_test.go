@@ -10,7 +10,7 @@ import (
 // TestGetPipeline_DecodesPluginMetrics guards against tag drift between
 // server-side pipelinePluginView.Metrics (core/sessionapi/server.go) and
 // client-side PluginMetric here. The payload below is the exact shape the
-// server emits; if a key stops decoding, the abctl metrics pane silently
+// server emits; if a key stops decoding, the agentop metrics pane silently
 // renders zeros, which is worse than rendering nothing.
 func TestGetPipeline_DecodesPluginMetrics(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

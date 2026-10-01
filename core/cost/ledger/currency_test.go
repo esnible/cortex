@@ -161,7 +161,7 @@ func TestCurrenciesIn_SingleUnitAndEmpty(t *testing.T) {
 
 // group=currency is served by the ledger, and folds every row including the legacy ones.
 //
-// It is the axis the cross-unit refusal POINTS AT, so it has to work — `abctl cost` tells a reader
+// It is the axis the cross-unit refusal POINTS AT, so it has to work — `agentop cost` tells a reader
 // to use --by currency when it withholds a combined total, and a key that does nothing is the
 // failure this repo has been bitten by more than once.
 //

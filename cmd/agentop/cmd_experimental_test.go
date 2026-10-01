@@ -135,7 +135,7 @@ func TestExperimental_HelpOnStdout(t *testing.T) {
 			if code := runExperimental([]string{arg}, &out, &errb); code != 0 {
 				t.Errorf("exit = %d, want 0", code)
 			}
-			if !strings.Contains(out.String(), "abctl experimental —") {
+			if !strings.Contains(out.String(), "agentop experimental —") {
 				t.Errorf("usage not on stdout:\n%s", out.String())
 			}
 			if errb.Len() != 0 {

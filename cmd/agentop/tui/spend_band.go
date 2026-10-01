@@ -22,7 +22,7 @@ import (
 const spendBandLines = 1
 
 // bandSeparator divides cells. A middle dot with a space either side, which is how this package
-// already separates peer readings on one line — the title bar's "abctl · <url> · [Sessions]" and
+// already separates peer readings on one line — the title bar's "agentop · <url> · [Sessions]" and
 // the drawer's "model · endpoint · agent" hint. Two spaces was enough when the cells were
 // columns; on one line a label follows a figure directly, and "…$18.80  THIS MONTH…" runs the two
 // readings together where "…$18.80 · THIS MONTH…" does not.
@@ -119,7 +119,7 @@ var bandDropOrder = [numSpendSpans]spendSpan{span7d, spanHour, spanToday, spanMo
 //
 // MARKERS, NOT PROSE. Each money value comes from moneyAmount, so the three disclosure glyphs
 // ride on the figures; moneyFigure's parenthesised caveats do not fit one line beside four
-// readings. The marker is the fact and the words are the explanation, and `abctl cost` is the
+// readings. The marker is the fact and the words are the explanation, and `agentop cost` is the
 // surface with room for both.
 //
 // PAIRED BY ADJACENCY, which is what replaced the uniform-width stride when the band folded to one
@@ -316,7 +316,7 @@ func bandSpanCell(label string, r spanReading) bandCell {
 		// span", "the poll failed" and "nothing here was priced" differ in WHY and not at all
 		// in what a reader may conclude: the figure is not known. A cell seven columns wide has
 		// no room to distinguish them, and the only alternative to an em dash is a number that
-		// is not one. The drawer and `abctl cost` are the surfaces with room to say which.
+		// is not one. The drawer and `agentop cost` are the surfaces with room to say which.
 		return bandCell{label: label, value: emptyCell}
 	}
 	return bandCell{

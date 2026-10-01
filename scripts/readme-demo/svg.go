@@ -72,7 +72,7 @@ func EmitSVG(w io.Writer, states []State, total time.Duration, g Grid) error {
 		body.WriteString(e.stateBody(i, st))
 	}
 
-	fmt.Fprintf(w, `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 %.0f %.0f" width="%.0f" height="%.0f" font-size="%.0f" role="img" aria-label="Cortex: install, point Claude Code at it, run several sessions, then read what they cost in abctl">`+"\n",
+	fmt.Fprintf(w, `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 %.0f %.0f" width="%.0f" height="%.0f" font-size="%.0f" role="img" aria-label="Cortex: install, point Claude Code at it, run several sessions, then read what they cost in agentop">`+"\n",
 		width, height, width, height, fontSize)
 
 	fmt.Fprintf(w, "<style>\n%s</style>\n", e.styleSheet())

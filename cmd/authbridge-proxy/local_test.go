@@ -121,7 +121,7 @@ func TestDemoConfig_WriteLoadsAndValidates(t *testing.T) {
 }
 
 // TestWriteDemoConfig_PreservesAnExistingFile: the config's own header invites
-// editing it, and `abctl tools scan --write` writes a prune list into it. This
+// editing it, and `agentop tools scan --write` writes a prune list into it. This
 // function also runs before any port is bound, so an unconditional overwrite
 // meant a --local start that then failed on a port clash silently destroyed those
 // edits — which is exactly how a populated remove list was lost in practice.
@@ -161,8 +161,8 @@ func TestWriteDemoConfig_PreservesAnExistingFile(t *testing.T) {
 //
 // The comparison is on CERTIFICATES, not paths, and these tests pin why. Comparing
 // directories looked equivalent and was not: `prior` holds whatever the user's
-// settings had before `abctl claude-code enable`, which is often not a Cortex CA at
-// all, and abctl freezes that record on first write — so a path comparison both
+// settings had before `agentop claude-code enable`, which is often not a Cortex CA at
+// all, and agentop freezes that record on first write — so a path comparison both
 // fired on innocent setups and could never go quiet again.
 
 // writeTestCA persists a self-signed CA at path with the given CN and returns its
@@ -220,7 +220,7 @@ func TestStaleClientCAWarning_FiresOnADifferentBridgeCA(t *testing.T) {
 }
 
 // TestStaleClientCAWarning_SilentWhenClientHoldsTheCAInForce is the case a path
-// comparison could never reach. abctl records `prior` on the FIRST enable only and
+// comparison could never reach. agentop records `prior` on the FIRST enable only and
 // refuses to overwrite it, so the recorded path stays pointing at the old location
 // forever. Once the client actually trusts the current CA the warning must stop,
 // or it fires on every boot for the rest of the install's life and teaches the user
@@ -286,12 +286,12 @@ func TestStaleClientCAWarning_SilentWithoutInputs(t *testing.T) {
 
 // clientCAFromState reads the CA the client is configured with RIGHT NOW, which is
 // the only value that can justify this warning. These tests pin why `prior` cannot:
-// abctl snapshots `prior` from the settings env block BEFORE overwriting it in the
-// same run (cmd_claudecode.go:468-478), so it is what abctl displaced, never what
+// agentop snapshots `prior` from the settings env block BEFORE overwriting it in the
+// same run (cmd_claudecode.go:468-478), so it is what agentop displaced, never what
 // the client holds. In the actual #1033 repro that makes it doubly wrong — the run
 // that put a foreign CA into `prior` also pointed the client at the correct one.
 
-// writeStateAndSettings lays down abctl's two files: the state record naming a
+// writeStateAndSettings lays down agentop's two files: the state record naming a
 // settings path, and that settings file with the given current CA value. Passing
 // currentCA == "" writes an env block with no NODE_EXTRA_CA_CERTS at all.
 func writeStateAndSettings(t *testing.T, dir, priorCA, currentCA string) string {
@@ -331,13 +331,13 @@ func writeStateAndSettings(t *testing.T, dir, priorCA, currentCA string) string 
 func TestClientCAFromState_ReadsTheCurrentValueNotPrior(t *testing.T) {
 	dir := t.TempDir()
 	statePath := writeStateAndSettings(t, dir,
-		"/old/sandbox/.cortex/ca/ca.crt", // what abctl displaced
+		"/old/sandbox/.cortex/ca/ca.crt", // what agentop displaced
 		"/current/.cortex/ca/ca.crt")     // what the client actually loads now
 
 	got := clientCAFromState(statePath)
 
 	if got == "/old/sandbox/.cortex/ca/ca.crt" {
-		t.Fatal("read `prior` — abctl's record of what it DISPLACED. The same enable that " +
+		t.Fatal("read `prior` — agentop's record of what it DISPLACED. The same enable that " +
 			"wrote that also pointed the client at the current CA, so this warns about a " +
 			"client that is already correct, and can never go quiet")
 	}
@@ -359,7 +359,7 @@ func TestClientCAFromState_ToleratesEveryFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Settings present, but no NODE_EXTRA_CA_CERTS in it (abctl not enabled here).
+	// Settings present, but no NODE_EXTRA_CA_CERTS in it (agentop not enabled here).
 	noKey := writeStateAndSettings(t, t.TempDir(), "", "")
 
 	cases := map[string]string{
@@ -410,7 +410,7 @@ func TestClientCAFromState_ToleratesEveryFailure(t *testing.T) {
 // TestStaleClientCAWarning_GoesQuietAfterTheClientIsFixed is the reflex-training
 // failure, end to end through the real files. A client pointed at another $HOME's CA
 // warns; once its settings name the CA in force, the warning stops — even though
-// abctl's frozen `prior` still names the old path forever.
+// agentop's frozen `prior` still names the old path forever.
 func TestStaleClientCAWarning_GoesQuietAfterTheClientIsFixed(t *testing.T) {
 	dir := t.TempDir()
 	otherCA := filepath.Join(dir, "other-ca.crt")
@@ -502,7 +502,7 @@ func TestCostLedgerDir_DefaultsUnderCortexDirAndIsAbsolute(t *testing.T) {
 }
 
 // THE LEDGER MUST BE ON FOR A CONFIG LAUNCHED WITH --config, because that is how every
-// INSTALLED laptop launches: `abctl service install` writes a plist/unit whose ExecStart is
+// INSTALLED laptop launches: `agentop service install` writes a plist/unit whose ExecStart is
 // `authbridge-proxy --config ~/.cortex/config.yaml`, never --local.
 //
 // The default alone could not deliver that WHEN THIS WAS WRITTEN, and that is now the weaker

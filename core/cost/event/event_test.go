@@ -93,7 +93,7 @@ func TestDecode(t *testing.T) {
 	}
 }
 
-// TestEventJSONTagsArePinned guards the wire format. abctl decodes these exact
+// TestEventJSONTagsArePinned guards the wire format. agentop decodes these exact
 // tags from a separate module that this phase does not rebuild, so a rename here
 // would silently blank its COST column.
 func TestEventJSONTagsArePinned(t *testing.T) {
@@ -114,7 +114,7 @@ func TestEventJSONTagsArePinned(t *testing.T) {
 
 // EVERY FIELD, INCLUDING THE omitempty ONES, because the marshal above cannot see them.
 //
-// abctl decodes this struct out of process, so a tag that changes — or a new field whose tag
+// agentop decodes this struct out of process, so a tag that changes — or a new field whose tag
 // nobody pinned — is a field that silently stops arriving. The four fields set above are the
 // ones with no omitempty; every other tag is absent from that expectation precisely because
 // its field was zero, which is how the three this change adds — and three that predate it —
@@ -213,7 +213,7 @@ func TestEventWireCoversEveryField(t *testing.T) {
 	if got := reflect.TypeOf(Event{}).NumField(); got != pinned {
 		t.Fatalf("Event has %d fields, %d are pinned on the wire.\n"+
 			"Add the new field to TestEventJSONTagsArePinned_EveryField's marshal AND its "+
-			"expected string, or abctl will never see it.", got, pinned)
+			"expected string, or agentop will never see it.", got, pinned)
 	}
 }
 

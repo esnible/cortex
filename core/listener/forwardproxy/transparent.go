@@ -240,7 +240,7 @@ func (s *Server) recordTunnelOpened(pctx *pipeline.Context, reason pipeline.Tunn
 		// path on this row is the accurate answer, not a gap.
 		HTTPMethod: pctx.Method,
 		HTTPPath:   pctx.Path,
-		// Explicit opaque-tunnel marker so abctl can fold this CONNECT into
+		// Explicit opaque-tunnel marker so agentop can fold this CONNECT into
 		// the decrypted inner request without inferring "tunnel" from shape.
 		Tunnel: true,
 		// Why the bytes stayed opaque. The caller knows; this function does
@@ -250,14 +250,14 @@ func (s *Server) recordTunnelOpened(pctx *pipeline.Context, reason pipeline.Tunn
 		Client:       pctx.ClientInfo(),
 	}
 	// Always record the tunnel-open so passthrough/non-bridged tunnels (no
-	// plugin activity) are still visible. For a TLS-bridged call abctl folds
+	// plugin activity) are still visible. For a TLS-bridged call agentop folds
 	// this CONNECT event into the decrypted inner-request row.
 	return s.Sessions.AppendBucket(sid, ev)
 }
 
 // recordTunnelClosed emits the SessionResponse row for a tunnel that ended, or that
 // never opened because the destination could not be dialed. It shares the open's
-// RequestID, which is how abctl pairs the two into one exchange with a STATUS and a
+// RequestID, which is how agentop pairs the two into one exchange with a STATUS and a
 // DURATION.
 //
 // b is the bucket the open was recorded under, reused rather than re-resolved: a long

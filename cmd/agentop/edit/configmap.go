@@ -1,4 +1,4 @@
-// Package edit implements abctl's in-place pipeline editor. The flow is:
+// Package edit implements agentop's in-place pipeline editor. The flow is:
 // fetch the runtime YAML from a Store, locate the pipeline: subtree, open
 // just that subtree in the user's $EDITOR, splice the edit back in, apply it
 // through the same Store, then poll /reload/status until the framework
@@ -310,7 +310,7 @@ func extractInnerYAML(cmYAML []byte) ([]byte, error) {
 }
 
 // Apply writes manifest to a tempfile and runs kubectl apply --server-side
-// with --force-conflicts=true and a dedicated abctl field-manager. The
+// with --force-conflicts=true and a dedicated agentop field-manager. The
 // operator's webhook owns data.config.yaml on initial creation;
 // the user has explicitly confirmed this edit by pressing "y" at the
 // diff prompt, so taking field-manager ownership is the intended outcome.
@@ -319,7 +319,7 @@ func extractInnerYAML(cmYAML []byte) ([]byte, error) {
 // uses this to compare against /reload/status's last_success_unix to know
 // whether the framework has picked up the change yet.
 func Apply(ctx context.Context, run Runner, manifest []byte) (time.Time, error) {
-	tmp, err := os.CreateTemp("", "abctl-cm-*.yaml")
+	tmp, err := os.CreateTemp("", "agentop-cm-*.yaml")
 	if err != nil {
 		return time.Time{}, fmt.Errorf("create temp manifest: %w", err)
 	}
@@ -333,7 +333,7 @@ func Apply(ctx context.Context, run Runner, manifest []byte) (time.Time, error) 
 	}
 	applyTime := time.Now()
 	if _, err := run(ctx, "apply", "--server-side",
-		"--field-manager=abctl",
+		"--field-manager=agentop",
 		"--force-conflicts=true",
 		"-f", tmp.Name()); err != nil {
 		return time.Time{}, err

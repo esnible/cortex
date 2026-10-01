@@ -122,14 +122,14 @@ func TestSplitColumnsRender(t *testing.T) {
 }
 
 // TestLocalPreview is a manual affordance, not a CI test: it serves seeded
-// traffic on a fixed port so `abctl observe --endpoint` can render it without a
-// cluster, Keycloak, or a live LLM. Skipped unless ABCTL_PREVIEW is set.
+// traffic on a fixed port so `agentop observe --endpoint` can render it without a
+// cluster, Keycloak, or a live LLM. Skipped unless AGENTOP_PREVIEW is set.
 //
-//	ABCTL_PREVIEW=1 go test ./tui/ -run TestLocalPreview -v -timeout 0
+//	AGENTOP_PREVIEW=1 go test ./tui/ -run TestLocalPreview -v -timeout 0
 //	go run . observe --endpoint http://127.0.0.1:47699
 func TestLocalPreview(t *testing.T) {
-	if os.Getenv("ABCTL_PREVIEW") == "" {
-		t.Skip("manual preview; set ABCTL_PREVIEW=1 to serve seeded traffic")
+	if os.Getenv("AGENTOP_PREVIEW") == "" {
+		t.Skip("manual preview; set AGENTOP_PREVIEW=1 to serve seeded traffic")
 	}
 	const addr = "127.0.0.1:47699"
 	store := session.New(30*time.Minute, 100, 0)
@@ -140,7 +140,7 @@ func TestLocalPreview(t *testing.T) {
 	// address to ListenAndServe and only logging its error makes a bind failure
 	// — a stale server still holding the port is the common one — look identical
 	// to a healthy start: the test blocks below either way, and the operator
-	// sees "connection refused" from abctl with no hint why.
+	// sees "connection refused" from agentop with no hint why.
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
 		t.Fatalf("cannot bind %s: %v\n"+

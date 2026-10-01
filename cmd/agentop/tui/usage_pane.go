@@ -418,7 +418,7 @@ func (m *model) renderUsage(width, height int) string {
 	return b.String()
 }
 
-// costUngroupedRow is the pane's form of the disclosure `abctl cost` prints at writeCostSummary:
+// costUngroupedRow is the pane's form of the disclosure `agentop cost` prints at writeCostSummary:
 // the part of the window's spend that NO agent carries.
 //
 // usage.Snapshot.UngroupedCostMicros is a WHOLE-WINDOW residual and survives usage.ScopeToAgent

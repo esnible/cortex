@@ -153,7 +153,7 @@ func TestSummarizeEvent_DropsPayloadsKeepsTimelineFields(t *testing.T) {
 	if got.Inference.Model != "opus" || got.Inference.FinishReason != "stop" {
 		t.Error("model/finishReason did not survive")
 	}
-	// Invocations is timeline data, not detail data: abctl renders one row per
+	// Invocations is timeline data, not detail data: agentop renders one row per
 	// invocation, and the ACTION column comes from it.
 	if got.Invocations == nil || len(got.Invocations.Outbound) != 1 {
 		t.Fatal("Invocations did not survive — the timeline renders a row per invocation")
@@ -257,7 +257,7 @@ func TestSummarizeEvent_IsOrdersOfMagnitudeSmaller(t *testing.T) {
 // projected, so the same query matched newly arrived rows and missed everything a
 // snapshot had replaced.
 //
-// Each field below is named by abctl's eventHaystack / matchEventRow
+// Each field below is named by agentop's eventHaystack / matchEventRow
 // (cmd/agentop/tui/events_pane.go). Keeping them costs 299x → 163x, which is 1.12 MiB
 // against 0.61 for a 1000-event session — both instant.
 func TestSummarizeEvent_KeepsEverythingTheFilterSearches(t *testing.T) {
@@ -305,10 +305,10 @@ func TestSummarizeEvent_ShapeIsGuarded(t *testing.T) {
 		typ  reflect.Type
 		want int
 	}{
-		// 24 since BytesUp/BytesDown, which are TIMELINE data: abctl's BYTES column
+		// 24 since BytesUp/BytesDown, which are TIMELINE data: agentop's BYTES column
 		// renders them. Scalars, so the struct copy keeps them; asserted above.
 		{"SessionEvent", reflect.TypeOf(pipeline.SessionEvent{}), 24},
-		// 25 since AgentRole, which is TIMELINE data: abctl's CONTEXT gauge reads it on every
+		// 25 since AgentRole, which is TIMELINE data: agentop's CONTEXT gauge reads it on every
 		// row the timeline serves. It needs no assertion of its own in the projection test
 		// beyond the equality one there — a scalar survives the struct copy, unlike the two
 		// slices whose lengths had to be recorded before they were dropped.
@@ -320,7 +320,7 @@ func TestSummarizeEvent_ShapeIsGuarded(t *testing.T) {
 			if got := g.typ.NumField(); got != g.want {
 				t.Errorf("%s has %d fields, this guard was written against %d.\n"+
 					"A field was added or removed. Decide which it is:\n"+
-					"  TIMELINE data — rendered in the events table, or searched by abctl's\n"+
+					"  TIMELINE data — rendered in the events table, or searched by agentop's\n"+
 					"    eventHaystack/matchEventRow — then it MUST survive summarizeEvent, and\n"+
 					"    belongs in one of the assertions above.\n"+
 					"  DETAIL data — read only by the detail pane — then drop it in summarizeEvent.\n"+
@@ -343,7 +343,7 @@ func bigConversation(n, size int) []pipeline.InferenceMessage {
 // THE COUNTS ARE THE ONLY THING LEFT THAT DESCRIBES THE CONVERSATION, so they are pinned on their
 // own rather than only inside the big projection test.
 //
-// abctl's CONTEXT gauge asks two questions of a response — did the request carry a tool manifest,
+// agentop's CONTEXT gauge asks two questions of a response — did the request carry a tool manifest,
 // and how long is the conversation — to tell an agentic turn from the one-shot completions Claude
 // Code interleaves under the same session id. It asked them of Messages and Tools, which this
 // projection drops, so the column read a dash for every row the timeline served while the

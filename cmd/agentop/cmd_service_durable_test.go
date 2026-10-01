@@ -49,7 +49,7 @@ func TestStopIsDurable(t *testing.T) {
 }
 
 // TestUnitCarriesItsWriter covers the skew that made a live launchd job
-// unmanageable on a real machine: a newer build wrote the plist, an older abctl on
+// unmanageable on a real machine: a newer build wrote the plist, an older agentop on
 // PATH could not even parse `service`.
 func TestUnitCarriesItsWriter(t *testing.T) {
 	p := servicePaths{

@@ -235,7 +235,7 @@ func TestToolsScan_WarnsOnThinEvidence(t *testing.T) {
 	}
 }
 
-// `abctl tools --help` was read as an action name and answered with "unknown
+// `agentop tools --help` was read as an action name and answered with "unknown
 // subcommand" — the one place that refuses to say what the command does (#1001).
 // All three spellings are pinned: -h is what a habit produces, `help` what someone
 // copies from another tool.
@@ -246,7 +246,7 @@ func TestToolsHelp_PrintsUsageOnStdout(t *testing.T) {
 			if code := runTools([]string{arg}, &out, &errb); code != 0 {
 				t.Errorf("exit = %d, want 0", code)
 			}
-			if !strings.Contains(out.String(), "abctl tools — read agent logs to measure tool use") {
+			if !strings.Contains(out.String(), "agentop tools — read agent logs to measure tool use") {
 				t.Errorf("summary line missing from stdout:\n%s", out.String())
 			}
 			// It must name its one action, or the reader learns nothing actionable.
@@ -261,7 +261,7 @@ func TestToolsHelp_PrintsUsageOnStdout(t *testing.T) {
 	}
 }
 
-// `abctl tools scan --help` printed flag.PrintDefaults' bare "Usage of tools scan:"
+// `agentop tools scan --help` printed flag.PrintDefaults' bare "Usage of tools scan:"
 // flag list with no prose — the second half of #1001. The rationale is asserted in
 // pieces rather than whole so a rewording does not fail the test, but the two facts
 // a reader needs (only Claude Code today; why pruning saves tokens) must survive.
@@ -274,7 +274,7 @@ func TestToolsScanHelp_PrintsRationaleOnStdout(t *testing.T) {
 			}
 			got := out.String()
 			for _, want := range []string{
-				"abctl tools scan — consult local coding agent logs",
+				"agentop tools scan — consult local coding agent logs",
 				"only consults Claude Code logs",
 				"resends its entire tool manifest on every turn",
 				"saving token cost",

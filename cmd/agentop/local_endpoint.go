@@ -17,7 +17,7 @@ import (
 )
 
 // localProbeTimeout bounds the "is a local Cortex actually up?" check. It runs
-// before the TUI starts, on the happy path of every bare `abctl`, so it has to be
+// before the TUI starts, on the happy path of every bare `agentop`, so it has to be
 // short enough not to feel like a hang.
 const localProbeTimeout = 400 * time.Millisecond
 
@@ -119,7 +119,7 @@ func dialURL(addr string) string {
 	}
 	// SplitHostPort rather than strings.Cut, which splits at the first colon and
 	// mangles "[::1]:9094" into host="[" — producing a URL that simply fails to
-	// connect, after which abctl falls silently through to the cluster picker.
+	// connect, after which agentop falls silently through to the cluster picker.
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil || port == "" {
 		return ""
@@ -135,7 +135,7 @@ func dialURL(addr string) string {
 // localSessionAPIUp reports whether something is listening and answering there.
 //
 // Checked before choosing it over the cluster picker: a stale ~/.cortex/config.yaml
-// left by an install that is no longer running must not hijack `abctl` away from
+// left by an install that is no longer running must not hijack `agentop` away from
 // the picker for someone working against a cluster.
 func localSessionAPIUp(endpoint string) bool {
 	if endpoint == "" {
@@ -149,7 +149,7 @@ func localSessionAPIUp(endpoint string) bool {
 	defer resp.Body.Close()
 	// Only 2xx. The session API answers GET /v1/sessions with 200, so anything
 	// else — a 404 from an unrelated service that happens to hold the port — is
-	// not ours, and selecting it would send abctl somewhere useless instead of to
+	// not ours, and selecting it would send agentop somewhere useless instead of to
 	// the cluster picker.
 	return resp.StatusCode >= 200 && resp.StatusCode < 300
 }
@@ -177,7 +177,7 @@ const runningConfigTimeout = 2 * time.Second
 // A fixed default rather than a value read from ~/.cortex/config.yaml. The file
 // would only ever tell us where to ask, and reading it for that reintroduces the
 // staleness the live fetch exists to avoid: an edited stats address would send
-// abctl to the wrong port and have it report "nothing running" about a proxy that
+// agentop to the wrong port and have it report "nothing running" about a proxy that
 // is running fine. One well-known port, with --cortex-stats-url for a non-default
 // install.
 const defaultCortexStatsURL = "http://localhost:47602/"
@@ -189,7 +189,7 @@ var errNoRunningCortex = errors.New("no Cortex is running on this machine")
 // the stats server's /config endpoint under base.
 //
 // Read from the running process rather than from ~/.cortex/config.yaml on purpose.
-// `abctl exec` hands its child the addresses of a proxy that must be up for the
+// `agentop exec` hands its child the addresses of a proxy that must be up for the
 // child to work at all, so the file is the wrong source of truth twice over: it can
 // have been edited since the proxy started (listener addresses are not hot-reloaded
 // at all), and it says nothing about whether anything is listening. Asking the
@@ -207,8 +207,8 @@ var errNoRunningCortex = errors.New("no Cortex is running on this machine")
 // Not hardened further here: on a single-user workstation a local process that can
 // squat a port can generally also write ~/.cortex, so the file path is not much
 // stronger, and requiring the response to "look like Cortex" is a speed bump rather
-// than a boundary. Worth revisiting if abctl ever runs somewhere multi-tenant —
-// checking that ca_dir is where abctl expects Cortex's own to be would be the
+// than a boundary. Worth revisiting if agentop ever runs somewhere multi-tenant —
+// checking that ca_dir is where agentop expects Cortex's own to be would be the
 // cheapest first step.
 func runningConfig(base string) (*config.Config, error) {
 	u, perr := url.Parse(base)
@@ -230,7 +230,7 @@ func runningConfig(base string) (*config.Config, error) {
 	}
 
 	// Capped read: a local endpoint, but a wrong service holding the port should not
-	// stream unbounded JSON into abctl.
+	// stream unbounded JSON into agentop.
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
 		return nil, fmt.Errorf("reading %s: %w", cfgURL, err)

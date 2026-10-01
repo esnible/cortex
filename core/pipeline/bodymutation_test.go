@@ -193,7 +193,7 @@ func TestContext_SetBody_EmitsCustomEvent(t *testing.T) {
 // TestContext_SetResponseBody_PhaseLabel: response-side mutation
 // reports Phase "response" in the custom event so operators can tell
 // request-side redactions (prompt sanitization) from response-side
-// redactions (LLM output filtering) in abctl.
+// redactions (LLM output filtering) in agentop.
 func TestContext_SetResponseBody_PhaseLabel(t *testing.T) {
 	c := &Context{
 		Direction:    Outbound,

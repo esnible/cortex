@@ -84,7 +84,7 @@ const flashDuration = 3 * time.Second
 
 // defaultLocalEndpoint is where `[l]` connects when nothing better is known:
 // the session API's in-cluster default port, reached through an existing
-// `kubectl port-forward`. Useful when abctl runs inside the mesh, or when the
+// `kubectl port-forward`. Useful when agentop runs inside the mesh, or when the
 // cluster's pod list isn't visible to their kubeconfig but a tunnel is.
 //
 // A local install listens somewhere else entirely (47601 by default), so
@@ -113,9 +113,9 @@ func (m *model) localEndpointOr() string {
 // reverse — would report success for an edit that never took effect.
 //
 // Local wins when the endpoint on screen IS the local Cortex. Deliberately a
-// question about the connection rather than about how abctl was started, so
+// question about the connection rather than about how agentop was started, so
 // `--endpoint http://127.0.0.1:47601` aimed at your own proxy edits it just
-// like a bare `abctl` does, and `[l]` gains the same ability mid-session.
+// like a bare `agentop` does, and `[l]` gains the same ability mid-session.
 // Compared against localEndpoint rather than localEndpointOr(): the fallback
 // is the in-cluster 9094, and matching that would claim a hand-run
 // port-forward to a POD is this machine's config file.
@@ -139,7 +139,7 @@ func (m *model) pipelineStore() (edit.Store, string) {
 // Not a string compare. localEndpoint is built by dialURL, which emits
 // "http://127.0.0.1:47601" for the built-in config, while `--endpoint
 // http://localhost:47601` is the same proxy spelled the way a human types it.
-// An exact compare rejected that and flashed "…or point abctl at a Cortex
+// An exact compare rejected that and flashed "…or point agentop at a Cortex
 // running on this machine" at an operator who had just done exactly that —
 // the same misleading refusal this whole change exists to remove.
 //
@@ -182,7 +182,7 @@ func isLoopbackHost(h string) bool {
 // error and stay in the picker.
 const localProbeTimeout = 2 * time.Second
 
-// refreshInterval is how often abctl re-fetches /v1/sessions from the
+// refreshInterval is how often agentop re-fetches /v1/sessions from the
 // server to reconcile its local list. Cheap, and the only mechanism by
 // which rekeys (default → contextId) propagate to the client UI — the
 // server itself doesn't emit a rekey signal on the stream, so short-lived
@@ -409,7 +409,7 @@ type model struct {
 	//	paging   older-page merge     replaces        rebaseSessionContext — projected, and
 	//	                                             the page cap can drop newer events too
 	//	detail   replaceHeldEvent     same length!    rebaseSessionContext — swaps in the one
-	//	                                             UNPROJECTED copy abctl ever gets
+	//	                                             UNPROJECTED copy agentop ever gets
 	//	app.go   backToPodsPane       whole map       m.contextRun = nil: a different pod is a
 	//	                                             different workload behind the same id
 	//	keys.go  picker release       deletes one     nothing: the figure outlives the events,
@@ -422,7 +422,7 @@ type model struct {
 	// obligation and not a restatement of the first. Updating contextRun makes the figure right;
 	// the sessions table holds the gauge as a BAKED string, so nothing on screen changes until
 	// the rows are rebuilt. The streamed append had that call all along and the other three did
-	// not, so a session abctl streamed showed a gauge while a session it merely opened showed a
+	// not, so a session agentop streamed showed a gauge while a session it merely opened showed a
 	// dash — corrected in contextRun, and only visible when the next /v1/sessions poll happened
 	// to repaint. See TestSessionsTable_ASnapshotRepaintsTheGaugeItFilled.
 	events map[string][]pipeline.SessionEvent // sessionID → every event held for it
@@ -436,7 +436,7 @@ type model struct {
 	contextRun map[string]pipeline.PromptContextFold
 	// sessionsData is what the HARVEST knows about an agent's sessions — a title, mostly.
 	// Read once at startup from ~/.cortex/session-metadata.json, which
-	// `abctl experimental read-claude-sessions` writes; empty when that has never run,
+	// `agentop experimental read-claude-sessions` writes; empty when that has never run,
 	// which is not a failure.
 	//
 	// NO LONGER THE ONLY THING THAT NAMES A SESSION, and this doc claimed both halves of
@@ -525,7 +525,7 @@ type model struct {
 	//
 	// REBUILT AT EACH SCORING RATHER THAN ADDED TO, so ids drop out when their session leaves the
 	// list or gains a title. An append-only set would grow for the life of the process and, worse,
-	// would remember a session that went away and came back as "already counted" — abctl's own
+	// would remember a session that went away and came back as "already counted" — agentop's own
 	// docs note a session id can be re-created after eviction, and a returning id is a new row to
 	// an operator watching the pane.
 	untitledCounted map[string]bool
@@ -584,7 +584,7 @@ type model struct {
 	filtering bool
 	// filterBeforeEdit is the committed filter as it stood when `/` was pressed, so
 	// Esc can restore it. Esc is documented as cancelling and means cancel everywhere
-	// else in abctl, but it used to clear the filter outright — and once the filter
+	// else in agentop, but it used to clear the filter outright — and once the filter
 	// began persisting, that turned a mis-keyed Esc into the permanent loss of a
 	// committed filter. Clearing is still one action: empty the box and press Enter.
 	filterBeforeEdit string
@@ -732,17 +732,17 @@ type model struct {
 	// agents is the per-agent cost breakdown behind paneAgents, newest fetch wins.
 	//
 	// NOT named clients despite being keyed on pipeline.EventClient.Label: the pane, the
-	// /v1/usage grouping and `abctl cost --agent` all say "agent", and a fourth word for the
+	// /v1/usage grouping and `agentop cost --agent` all say "agent", and a fourth word for the
 	// same thing would be the confusion this feature already had to untangle once. The
 	// Kubernetes sense lives one field up as `namespaces []cluster.AgentNamespace`.
 	agents []agentRow
 	// agentScope is the agent the sessions list, the usage pane and the spend band are narrowed
-	// to, or "" for all of them. `abctl cost --agent` is a separate process.
+	// to, or "" for all of them. `agentop cost --agent` is a separate process.
 	//
 	// A LABEL, not an index into m.agents: the rows are refetched on every `A` press and on the
 	// startup gate, and their order is by cost, so an index would silently come to mean a
 	// different agent the moment spending changed. The label is also what usage.ScopeToAgent
-	// takes and what `abctl cost --agent` accepts, so the TUI's scope and the CLI's flag are the
+	// takes and what `agentop cost --agent` accepts, so the TUI's scope and the CLI's flag are the
 	// same string — an operator can copy one into the other.
 	//
 	// NOT PERSISTED across runs. Every other view choice here is (see Settings), and this one
@@ -804,7 +804,7 @@ type model struct {
 	// serverProjects records that this proxy honours view=summary, learned from its
 	// echo on any snapshot. It decides whether the detail pane has to fetch the row
 	// it opens: a proxy that predates the projection already sent whole events, and
-	// asking it for one again would be a round trip for bytes abctl is holding.
+	// asking it for one again would be a round trip for bytes agentop is holding.
 	//
 	// A server capability, so one flag rather than one per session.
 	serverProjects bool
@@ -1248,7 +1248,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		//
 		// This used to drop cached events for every session the list omitted, and
 		// bounce the user back to the sessions pane. The session store is
-		// in-memory and per-pod, so abctl's copy is the only copy: a proxy restart
+		// in-memory and per-pod, so agentop's copy is the only copy: a proxy restart
 		// (or any blip that empties /v1/sessions, which arrives as a normal
 		// message, not an error) destroyed the events someone was mid-investigation
 		// on, about two seconds after they looked away. That is #870.
@@ -1600,7 +1600,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// gone, and entries are only ever released wholesale — on a pod or endpoint
 		// switch (backToPodsPane resets the whole map) or an explicit operator prune — while
 		// cachedOnlySessionIDs deliberately keeps sessions the server has stopped
-		// listing. abctl holds the same full prompt and completion strings the proxy
+		// listing. agentop holds the same full prompt and completion strings the proxy
 		// does, so resident size tracks the traffic it has watched.
 		//
 		// Learned from the echo, not assumed: see model.serverProjects.
@@ -1963,7 +1963,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// has their change silently reverted too. This is not a true undo.
 			// In a cluster that third party is an operator reconcile, a
 			// kubectl edit or a kustomize apply, and Apply's
-			// --force-conflicts=true and field-manager=abctl let us win; on a
+			// --force-conflicts=true and field-manager=agentop let us win; on a
 			// local file it is another editor holding the same path. Either
 			// way the framework's running pipeline is unaffected (build
 			// failure → keeps the previous in-memory pipeline), but the stored
@@ -2093,7 +2093,7 @@ func (m *model) handleStreamEvent(ev apiclient.StreamEvent) {
 	// UpdatedAt only. This used to also write EventCount = len(buf), which made the
 	// EVENTS column mean two different things depending on which code path last
 	// touched the row: the local cache length here, the server's own count on the
-	// two-second poll. The two disagreed by construction — abctl's buffer holds what
+	// two-second poll. The two disagreed by construction — agentop's buffer holds what
 	// it snapshotted plus what it has streamed since attaching, the server's count is
 	// every event the session produced — so the cell visibly flipped between them, 500
 	// against 1000 back when both sides capped. The server's count is the one that is
@@ -2163,7 +2163,7 @@ func (m *model) paneView() string {
 	}
 
 	if m.pane == paneNamespaces {
-		title := "abctl · pick namespace"
+		title := "agentop · pick namespace"
 		// m.namespaces == nil → still loading (don't flash the empty-state
 		// hint mid-load); non-nil empty slice → loaded, no agents found.
 		var body string
@@ -2171,7 +2171,7 @@ func (m *model) paneView() string {
 			body = styleHint.Render(
 				"No AuthBridge agents found in this cluster.\n" +
 					"Press [l] to connect to " + m.localEndpointOr() + " (an existing\n" +
-					"port-forward), or use `abctl --endpoint http://...`.")
+					"port-forward), or use `agentop --endpoint http://...`.")
 		} else {
 			body = m.namespacesTbl.View()
 		}
@@ -2194,7 +2194,7 @@ func (m *model) paneView() string {
 		)
 	}
 	if m.pane == panePods {
-		title := "abctl · " + m.selectedNamespace + " · pick pod"
+		title := "agentop · " + m.selectedNamespace + " · pick pod"
 		body := m.podsTbl.View()
 		footer := m.helpView()
 		if m.pickerErr != "" {
@@ -2236,7 +2236,7 @@ func (m *model) paneView() string {
 		// The contrast carries it instead: every band cell names its own span, and the table is
 		// the only thing on screen with a SESSION column. The [?] overlay still states it in full
 		// for a reader who wants it spelled out.
-		title = fmt.Sprintf("abctl · %s", m.endpoint)
+		title = fmt.Sprintf("agentop · %s", m.endpoint)
 		body = m.sessionsTbl.View()
 		if m.sessionsScope() != "" && len(m.sessionRowIDs) == 0 {
 			body = styleHint.Render("(no session belongs to " + sanitizeLabel(m.agentScope) + ")")
@@ -2257,9 +2257,9 @@ func (m *model) paneView() string {
 	case panePipeline:
 		// Names itself, because nothing else does any more. While the tab strip
 		// was in the title it said which of the two top-level views was showing;
-		// with the strip gone, a pane whose title read only "abctl · <endpoint>"
+		// with the strip gone, a pane whose title read only "agentop · <endpoint>"
 		// would be indistinguishable from Sessions in a screenshot.
-		title = fmt.Sprintf("abctl · %s · pipeline", m.endpoint)
+		title = fmt.Sprintf("agentop · %s · pipeline", m.endpoint)
 		if m.pipeline == nil {
 			body = styleHint.Render("(loading pipeline…)")
 		} else {
@@ -2270,14 +2270,14 @@ func (m *model) paneView() string {
 		if m.detailPlugin != nil {
 			name = m.detailPlugin.Name
 		}
-		title = fmt.Sprintf("abctl · pipeline · %s", name)
+		title = fmt.Sprintf("agentop · pipeline · %s", name)
 		body = m.detailVp.View()
 	case paneUsage:
 		scope := "all"
 		if m.usage.session != "" {
 			scope = m.usage.session
 		}
-		title = fmt.Sprintf("abctl · %s · usage · %s", m.endpoint, scope)
+		title = fmt.Sprintf("agentop · %s · usage · %s", m.endpoint, scope)
 		// The agent scope goes in the TITLE because it changes what every figure on the pane
 		// means.
 		if m.agentScope != "" {
@@ -2287,7 +2287,7 @@ func (m *model) paneView() string {
 	case paneAgents:
 		// The window is in the title because the figures are a day's, not a lifetime's, and
 		// this pane has no window cycle of its own to make that discoverable.
-		title = fmt.Sprintf("abctl · %s · agents · %s", m.endpoint, agentsWindow)
+		title = fmt.Sprintf("agentop · %s · agents · %s", m.endpoint, agentsWindow)
 		// Which agent is currently scoped, so returning to the picker shows the state rather
 		// than only the choices. The footer's Enter label says what the key will do to the row
 		// under the cursor; this says what is set, whatever the cursor is on.
@@ -2307,7 +2307,7 @@ func (m *model) paneView() string {
 			body = m.agentsTbl.View()
 		}
 	case paneCatalog:
-		title = fmt.Sprintf("abctl · %s · catalog", m.endpoint)
+		title = fmt.Sprintf("agentop · %s · catalog", m.endpoint)
 		if m.catalog == nil {
 			body = styleHint.Render("(loading catalog…)")
 		} else if len(m.catalog.Plugins) == 0 {
@@ -2407,7 +2407,7 @@ func (m *model) paneView() string {
 	return lipgloss.JoinVertical(lipgloss.Left, rows...)
 }
 
-// sessionHeader renders a session-scoped title bar: "abctl · <label>" plus an optional
+// sessionHeader renders a session-scoped title bar: "agentop · <label>" plus an optional
 // suffix ("event"), clipped only if the terminal genuinely cannot hold it.
 //
 // Clipping against m.width rather than a per-pane constant. The constants it replaced were 36
@@ -2416,12 +2416,12 @@ func (m *model) paneView() string {
 // terminal of any size. Neither number was a fact about the screen.
 //
 // The label is clipped from the LEFT, so what survives a narrow terminal is the id and the end
-// of the title, not the "abctl · " that is on every screen anyway. Same reasoning as
+// of the title, not the "agentop · " that is on every screen anyway. Same reasoning as
 // sessionTitleCell: the distinguishing end of both a path and a UUID-suffixed label is the
 // right one.
 func (m *model) sessionHeader(id, suffix string) string {
 	label := m.sessionLabel(id)
-	head := "abctl · "
+	head := "agentop · "
 	tail := ""
 	if suffix != "" {
 		tail = " · " + suffix
@@ -2435,7 +2435,7 @@ func (m *model) sessionHeader(id, suffix string) string {
 	// The floor can exceed what is left, and deliberately does: a 12-column stub on a
 	// 20-column terminal is worth one wrapped line, where a label cut to 3 columns is worth
 	// nothing. What is NOT deliberate is skipping the truncation entirely — the guard was
-	// `room > 0`, and "abctl · " is 8 columns, so a width of 8 or less emitted the label at
+	// `room > 0`, and "agentop · " is 8 columns, so a width of 8 or less emitted the label at
 	// full length rather than as a stub. Not reachable on a real terminal; the point is that
 	// the narrow case now goes through one rule instead of two.
 	room := m.width - lipgloss.Width(head) - lipgloss.Width(tail)
@@ -2449,7 +2449,7 @@ func (m *model) sessionHeader(id, suffix string) string {
 // The "[Sessions] Pipeline" tab strip used to be rendered here, by viewTabs.
 //
 // It is gone because it implied a peerage that was never true. Sessions is the
-// surface abctl exists for; the pipeline is config, read occasionally. And the
+// surface agentop exists for; the pipeline is config, read occasionally. And the
 // strip was a map with two of four destinations on it — Usage (`u`) and the
 // plugin catalog (`C`) are top-level panes too, and neither was ever a tab. One
 // rule now covers all three: Sessions is the app, and every other top-level
@@ -2483,9 +2483,9 @@ func trunc(s string, n int) string {
 }
 
 // yankDirRel is the yank output directory, relative to the user's home. It
-// follows the same convention as abctl's other durable state (cmd_claudecode.go's
+// follows the same convention as agentop's other durable state (cmd_claudecode.go's
 // cortexCfgRel / stateRel), so there is one ~/.cortex tree rather than a new one.
-const yankDirRel = ".cortex/abctl-events"
+const yankDirRel = ".cortex/agentop-events"
 
 // yankDir returns the absolute directory yank writes into.
 //
@@ -2501,9 +2501,9 @@ const yankDirRel = ".cortex/abctl-events"
 // arguments, so none of that is acceptable for a directory holding them.
 //
 // ~/.cortex is the user's own tree and is normally 0700, which makes those cases
-// unreachable — but abctl never creates it, so its mode is whatever an installer
+// unreachable — but agentop never creates it, so its mode is whatever an installer
 // or the user left. With a 0755 ~/.cortex, MkdirAll neither tightens the mode nor
-// refuses to follow an abctl-events symlink someone planted, and the event lands
+// refuses to follow an agentop-events symlink someone planted, and the event lands
 // in their directory. Verified. So the guarantee is enforced here rather than
 // assumed: yankEventToFile Lstats the directory and refuses to write unless it is
 // a real directory, owned by this user, with no group or world access.
@@ -2525,7 +2525,7 @@ func yankDir() (string, error) {
 
 // checkYankDir refuses to write into a directory that does not actually protect
 // its contents. MkdirAll returns nil for a path that already exists whatever its
-// owner or mode, and it happily follows a symlink — so an abctl-events symlink
+// owner or mode, and it happily follows a symlink — so an agentop-events symlink
 // planted by another local user would silently redirect events carrying identity
 // subjects and raw LLM completions into their directory.
 //
@@ -2535,13 +2535,13 @@ func yankDir() (string, error) {
 // attacker's tree). Lstat, not Stat: Stat resolves the link and would report the
 // target's mode.
 //
-// The mode requirement applies only to the directories abctl owns (~/.cortex and
-// abctl-events), not to the home directory itself: a real home is commonly 0750
+// The mode requirement applies only to the directories agentop owns (~/.cortex and
+// agentop-events), not to the home directory itself: a real home is commonly 0750
 // or 0755 — this machine's is 0750 — and demanding 0700 there would refuse to
 // yank on an ordinary account. Every component is still checked for a symlink,
 // which is the redirection risk.
 //
-// A loose mode on a directory abctl owns is tightened rather than refused, which
+// A loose mode on a directory agentop owns is tightened rather than refused, which
 // is what the rest of the tree already does for this exact problem:
 // writeBuiltinConfig in cmd/authbridge-proxy/local.go chmods ~/.cortex to 0700
 // after MkdirAll, and again one level down for the CA directory. Self-healing
@@ -2561,7 +2561,7 @@ func checkYankDir(dir string) error {
 		return err
 	}
 
-	// home first (symlink check only), then each component abctl owns.
+	// home first (symlink check only), then each component agentop owns.
 	fi, err := os.Lstat(home)
 	if err != nil {
 		return err
@@ -2615,8 +2615,8 @@ func yankEventToFile(e *pipeline.SessionEvent) (string, error) {
 		return "", err
 	}
 	ts := time.Now().UTC().Format("20060102-150405")
-	// No "abctl-event-" name prefix: inside a directory already called
-	// abctl-events it says nothing. The random tail stays — it is what keeps
+	// No "agentop-event-" name prefix: inside a directory already called
+	// agentop-events it says nothing. The random tail stays — it is what keeps
 	// two yanks in the same second from clobbering each other.
 	f, err := os.CreateTemp(dir, ts+"-*.json")
 	if err != nil {
@@ -2635,13 +2635,13 @@ func yankEventToFile(e *pipeline.SessionEvent) (string, error) {
 	return f.Name(), nil
 }
 
-// RunOptions selects the entry mode for abctl's TUI.
+// RunOptions selects the entry mode for agentop's TUI.
 //
-// If Endpoint is non-empty, abctl skips the picker and connects directly
+// If Endpoint is non-empty, agentop skips the picker and connects directly
 // to that URL — preserving the pre-picker behavior (and the documented
 // `--endpoint` flag).
 //
-// Otherwise, abctl uses Lister + PortForwarder to render the picker.
+// Otherwise, agentop uses Lister + PortForwarder to render the picker.
 // Both must be non-nil in picker mode.
 type RunOptions struct {
 	Endpoint      string

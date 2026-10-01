@@ -131,11 +131,11 @@ jobs:
           go fmt ./...
           go vet ./...
 
-      # The generator drives the real abctl TUI and compares its output against the
+      # The generator drives the real agentop TUI and compares its output against the
       # committed docs/assets/cortex-demo.svg, so it reads sibling trees through
       # relative paths and needs the full checkout. -count=1 is required, not
       # cosmetic: Go's test cache keys on this package's own inputs and knows
-      # nothing about abctl's sources or the committed asset, so a cached PASS can
+      # nothing about agentop's sources or the committed asset, so a cached PASS can
       # outlive exactly the UI change this job exists to catch.
       - name: Test (includes the asset staleness check)
         run: go test -count=1 -v ./...
@@ -150,7 +150,7 @@ jobs:
         binary:
           - authbridge-proxy
           - authbridge-envoy
-          # abctl is published by release-binaries.yaml, so it has to build
+          # agentop is published by release-binaries.yaml, so it has to build
           # under GOWORK=off here too. Omitting it let a missing go.sum entry
           # for a core transitive dep reach main: the workspace build used
           # everywhere else resolved it, and the per-module release build did
@@ -207,15 +207,15 @@ jobs:
             echo "::endgroup::"
           done
 
-      # Gives the abctl leg a real systemd --user session for
+      # Gives the agentop leg a real systemd --user session for
       # cmd_service_systemd_integration_test.go. The runner has no interactive login, so
       # nothing has started one yet; enable-linger asks logind to start and keep one
       # running. Either way a real problem here is loud, not silent: a hard failure (e.g.
       # enable-linger itself failing) fails this step outright under bash -e, so Test
       # never runs; a soft one (session unreachable after enable-linger) only warns here,
-      # and ABCTL_SYSTEMD_TESTS=required (below) is what turns THAT case into a failed
+      # and AGENTOP_SYSTEMD_TESTS=required (below) is what turns THAT case into a failed
       # test instead of a silent skip.
-      - name: Enable a systemd --user session (abctl leg only)
+      - name: Enable a systemd --user session (agentop leg only)
         if: matrix.binary == 'agentop'
         run: |
           sudo loginctl enable-linger "$(whoami)"
@@ -230,7 +230,7 @@ jobs:
 
       - name: Test
         env:
-          ABCTL_SYSTEMD_TESTS: ${{ matrix.binary == 'agentop' && 'required' || '' }}
+          AGENTOP_SYSTEMD_TESTS: ${{ matrix.binary == 'agentop' && 'required' || '' }}
         run: go test -v -race -cover ./...
 
   proxy-init-iptables:

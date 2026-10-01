@@ -60,7 +60,7 @@ func shortenLockTimeout(t *testing.T) {
 }
 
 // A held lock is waited for, then given up on — not waited for forever. This is the
-// wedged-holder case: before the timeout, `abctl observe` queued every harvest behind a
+// wedged-holder case: before the timeout, `agentop observe` queued every harvest behind a
 // lock nobody would release and showed no titles at all, indefinitely.
 func TestLockMetadata_TimesOutAndReportsIt(t *testing.T) {
 	shortenLockTimeout(t)

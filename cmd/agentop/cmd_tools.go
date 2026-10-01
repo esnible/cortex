@@ -10,21 +10,21 @@ import (
 	"github.com/rossoctl/cortex/cmd/agentop/toolscan"
 )
 
-const toolsUsage = `abctl tools — read agent logs to measure tool use
+const toolsUsage = `agentop tools — read agent logs to measure tool use
 
 Usage:
-  abctl tools scan [--days N | --all] [--keep Name,Name] [--dir PATH] [--write CONFIG]
+  agentop tools scan [--days N | --all] [--keep Name,Name] [--dir PATH] [--write CONFIG]
 
 Actions:
   scan   consult local coding agent logs to determine agent tool use
 
-Run "abctl tools scan --help" for the detail.
+Run "agentop tools scan --help" for the detail.
 `
 
-const toolsScanUsage = `abctl tools scan — consult local coding agent logs to determine agent tool use
+const toolsScanUsage = `agentop tools scan — consult local coding agent logs to determine agent tool use
 
 Usage:
-  abctl tools scan [--days N | --all] [--keep Name,Name] [--dir PATH] [--write CONFIG]
+  agentop tools scan [--days N | --all] [--keep Name,Name] [--dir PATH] [--write CONFIG]
 
 Currently scan only consults Claude Code logs.
 
@@ -42,7 +42,7 @@ Flags:
                   place; without it, the YAML block is printed for you to paste
 
 Transcripts record tools that were called, never tools that were offered, so a
-name abctl does not recognise is never proposed for removal.
+name agentop does not recognise is never proposed for removal.
 `
 
 // thinEvidenceTools is the number of distinct called tools below which the scan
@@ -54,10 +54,10 @@ const thinEvidenceTools = 5
 
 // runTools handles the `tools` subcommand. Returns the process exit code.
 func runTools(args []string, stdout, stderr io.Writer) int {
-	// `abctl tools --help` used to be read as an action name and answered with
+	// `agentop tools --help` used to be read as an action name and answered with
 	// "unknown subcommand", which sends someone asking what this command does to the
 	// one place that refuses to say. Same fix, and the same stdout/exit-0 split, as
-	// `abctl service --help`: an explicit request for help is a successful answer, so
+	// `agentop service --help`: an explicit request for help is a successful answer, so
 	// it is pipeable; a missing or wrong action stays an error on stderr.
 	if len(args) > 0 {
 		switch args[0] {
@@ -104,7 +104,7 @@ func runTools(args []string, stdout, stderr io.Writer) int {
 	// finds nothing used, so it would propose removing every tool it knows —
 	// the opposite of what someone reaching for 0 means. --all says it explicitly.
 	if *days <= 0 {
-		fmt.Fprintln(stderr, "abctl: --days must be positive (use --all for no window)")
+		fmt.Fprintln(stderr, "agentop: --days must be positive (use --all for no window)")
 		return 2
 	}
 	daysSet := false
@@ -114,7 +114,7 @@ func runTools(args []string, stdout, stderr io.Writer) int {
 		}
 	})
 	if *all && daysSet {
-		fmt.Fprintln(stderr, "abctl: --all and --days are mutually exclusive")
+		fmt.Fprintln(stderr, "agentop: --all and --days are mutually exclusive")
 		return 2
 	}
 	window := *days
@@ -126,7 +126,7 @@ func runTools(args []string, stdout, stderr io.Writer) int {
 	if scanDir == "" {
 		d, err := toolscan.DefaultProjectsDir()
 		if err != nil {
-			fmt.Fprintf(stderr, "abctl: locating transcripts: %v\n", err)
+			fmt.Fprintf(stderr, "agentop: locating transcripts: %v\n", err)
 			return 1
 		}
 		scanDir = d
@@ -134,11 +134,11 @@ func runTools(args []string, stdout, stderr io.Writer) int {
 
 	res, err := toolscan.Scan(scanDir, window, strings.Split(*keep, ","))
 	if err != nil {
-		fmt.Fprintf(stderr, "abctl: scanning %s: %v\n", scanDir, err)
+		fmt.Fprintf(stderr, "agentop: scanning %s: %v\n", scanDir, err)
 		return 1
 	}
 	if res.Files == 0 {
-		fmt.Fprintf(stderr, "abctl: no transcripts found under %s — nothing to infer from\n", scanDir)
+		fmt.Fprintf(stderr, "agentop: no transcripts found under %s — nothing to infer from\n", scanDir)
 		return 1
 	}
 
@@ -168,7 +168,7 @@ func runTools(args []string, stdout, stderr io.Writer) int {
 			scope = "any of your transcripts"
 			advice = "Use Claude Code for a while and re-run,"
 		}
-		fmt.Fprintf(stderr, "\nabctl: not writing %s — the scan observed no tool calls in %s,\n"+
+		fmt.Fprintf(stderr, "\nagentop: not writing %s — the scan observed no tool calls in %s,\n"+
 			"so it has no evidence for what you do not use. %s\n"+
 			"or paste the block above yourself once you have checked it.\n",
 			*write, scope, advice)
@@ -181,7 +181,7 @@ func runTools(args []string, stdout, stderr io.Writer) int {
 	// legitimate light users, so warn instead and name the two ways out. Thin
 	// evidence is a property of the input, not an error.
 	if len(res.Called) < thinEvidenceTools {
-		fmt.Fprintf(stderr, "\nabctl: thin evidence — only %d distinct tool(s) seen in %d transcript(s).\n"+
+		fmt.Fprintf(stderr, "\nagentop: thin evidence — only %d distinct tool(s) seen in %d transcript(s).\n"+
 			"  A short history makes this list aggressive: anything unseen counts as unused.\n"+
 			"  Consider --all, or check the list above before relying on it. Undo any name by\n"+
 			"  deleting it from remove: in the config.\n", len(res.Called), res.Files)
@@ -189,7 +189,7 @@ func runTools(args []string, stdout, stderr io.Writer) int {
 
 	changed, err := toolscan.PatchConfig(*write, res.Candidates)
 	if err != nil {
-		fmt.Fprintf(stderr, "abctl: %v\n", err)
+		fmt.Fprintf(stderr, "agentop: %v\n", err)
 		return 1
 	}
 	if changed {

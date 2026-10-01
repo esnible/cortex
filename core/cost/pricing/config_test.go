@@ -271,25 +271,25 @@ func TestWarnIfUnpinned(t *testing.T) {
 			if tc.warn {
 				// The direction of the error and the remedy both have to be in it, or an
 				// operator cannot act on it. Each surface is pinned together with the
-				// CAPABILITY claimed for it: a bare "abctl observe" also passes with the
+				// CAPABILITY claimed for it: a bare "agentop observe" also passes with the
 				// two halves swapped, and swapped the hint is false in both halves.
 				for _, want := range []string{
 					"VENDOR LIST", "OVERSTATED", "pricing.endpoints",
-					"abctl pricing --host <gateway> shows the rates",
-					"abctl observe annotates the cost total",
+					"agentop pricing --host <gateway> shows the rates",
+					"agentop observe annotates the cost total",
 				} {
 					if !strings.Contains(got, want) {
 						t.Errorf("warning omits %q: %s", want, got)
 					}
 				}
 				// Naming the right surfaces does not exclude the wrong one. The bug this
-				// pins was the hint sending an operator to `abctl cost`, which prints no
+				// pins was the hint sending an operator to `agentop cost`, which prints no
 				// provenance annotation (provenanceNote lives only in cmd/agentop/tui), and
 				// re-adding it leaves every pin above satisfied — so the ban is the only
 				// half that can fail for the original defect, and the pins above are the
 				// only half that can fail for its deletion.
-				if strings.Contains(got, "abctl cost") {
-					t.Errorf("warning sends the operator to abctl cost, which carries no provenance: %s", got)
+				if strings.Contains(got, "agentop cost") {
+					t.Errorf("warning sends the operator to agentop cost, which carries no provenance: %s", got)
 				}
 			}
 		})
@@ -311,7 +311,7 @@ func TestConfig_UnitDefaultsToUSDAndIsCarriedOnTheEntry(t *testing.T) {
 		{"explicit USD stays USD", "USD", CurrencyUSD},
 		{"a gateway that bills in credits", "credits", "credits"},
 		// Compared case-insensitively but CASE-PRESERVED, so an operator's spelling is what
-		// they see back in `abctl pricing` rather than a normalised one they never typed.
+		// they see back in `agentop pricing` rather than a normalised one they never typed.
 		{"case is preserved", "Bobcoins", "Bobcoins"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -525,7 +525,7 @@ func boolPtr(b bool) *bool { return &b }
 // meet.
 //
 // BOTH PRODUCERS, because they are separate call sites with separate struct tags: Describe() is
-// the raw table (`abctl pricing`) and EffectiveFor() is the resolved one (`abctl pricing --host`).
+// the raw table (`agentop pricing`) and EffectiveFor() is the resolved one (`agentop pricing --host`).
 // Only the second was reachable from any existing assertion.
 func TestDescribe_UnitIsSerialisedForBothProducers(t *testing.T) {
 	cfg := &Config{Endpoints: []EndpointConfig{
@@ -558,7 +558,7 @@ func TestDescribe_UnitIsSerialisedForBothProducers(t *testing.T) {
 		t.Errorf(`Describe() spelled the default out; every existing document changes:\n%s`, raw)
 	}
 
-	// EffectiveFor(): the resolved view, per host, and the one abctl --host renders.
+	// EffectiveFor(): the resolved view, per host, and the one agentop --host renders.
 	eff, err := json.Marshal(tbl.EffectiveFor("gw.bob"))
 	if err != nil {
 		t.Fatalf("marshal EffectiveFor: %v", err)
@@ -579,7 +579,7 @@ func TestDescribe_UnitIsSerialisedForBothProducers(t *testing.T) {
 //
 // The charset check accepts "usd" by design — it is letters — and five consumers test the result
 // against CurrencyUSD to decide whether a figure may be labelled "$". Four compared
-// case-sensitively, so `unit: usd` read as a NON-default unit: `abctl pricing` printed "per Mtok"
+// case-sensitively, so `unit: usd` read as a NON-default unit: `agentop pricing` printed "per Mtok"
 // over a table of dollars and the ledger wrote a currency field on every row of a deployment that
 // had only ever billed dollars. Canonicalised at this one entrance instead of at each comparison.
 //

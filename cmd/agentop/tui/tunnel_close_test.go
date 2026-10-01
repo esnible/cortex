@@ -109,7 +109,7 @@ func TestHandleStreamEvent_TunnelCloseDoesNotRefreshTheSession(t *testing.T) {
 	}
 }
 
-// What makes the close row useful with no abctl-side pairing work: it shares the open's
+// What makes the close row useful with no agentop-side pairing work: it shares the open's
 // RequestID, and the # column pairs on that across whatever landed in between. Pinned
 // because the proxy side of #1199 relies on it rather than adding anything here.
 func TestComputeEventPairs_TunnelCloseJoinsItsOpen(t *testing.T) {

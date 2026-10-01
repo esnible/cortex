@@ -112,7 +112,7 @@ func renderUnitFor(goos string, p servicePaths) string {
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
   <key>ThrottleInterval</key><integer>10</integer>
-  <key>AbctlVersion</key><string>` + xmlStr(version) + `</string>
+  <key>AgentopVersion</key><string>` + xmlStr(version) + `</string>
   <key>StandardOutPath</key><string>` + xmlStr(p.logFile) + `</string>
   <key>StandardErrorPath</key><string>` + xmlStr(p.logFile) + `</string>
   <key>ProcessType</key><string>Background</string>
@@ -138,7 +138,7 @@ func renderUnitFor(goos string, p servicePaths) string {
 	return `[Unit]
 Description=Cortex local proxy (authbridge-proxy)
 Documentation=https://github.com/rossoctl/cortex
-X-AbctlVersion=` + version + `
+X-AgentopVersion=` + version + `
 StartLimitIntervalSec=300
 StartLimitBurst=5
 
@@ -188,7 +188,7 @@ func loadService(goos string, p servicePaths, progress io.Writer) error {
 					supervisorName(goos), bootoutErr, strings.TrimSpace(string(bootoutOut)))
 			}
 			return fmt.Errorf("the previous %s is still shutting down after %s; "+
-				"run `abctl service status`, then try again", supervisorName(goos), serviceBootoutTimeout)
+				"run `agentop service status`, then try again", supervisorName(goos), serviceBootoutTimeout)
 		}
 
 		// Retried on EIO, re-checking the domain each time. Without the re-check the
@@ -249,7 +249,7 @@ func loadService(goos string, p servicePaths, progress io.Writer) error {
 			// refuses this on some systems.
 			return errLingerUnavailable
 		}
-		_ = os.WriteFile(lingerMarker(p), []byte("enabled by abctl\n"), 0o600) //nolint:errcheck
+		_ = os.WriteFile(lingerMarker(p), []byte("enabled by agentop\n"), 0o600) //nolint:errcheck
 	}
 	return nil
 }
@@ -261,7 +261,7 @@ var errLingerUnavailable = errors.New(
 
 // lingerMarker records that we enabled lingering, so uninstall undoes only that.
 func lingerMarker(p servicePaths) string {
-	return filepath.Join(filepath.Dir(p.configFile), "linger-enabled-by-abctl")
+	return filepath.Join(filepath.Dir(p.configFile), "linger-enabled-by-agentop")
 }
 
 // lingerEnabled reports whether lingering is already on. A parse failure reads as
@@ -547,11 +547,11 @@ func rotateLog(path string, maxBytes int64) {
 	_ = os.Rename(path, path+".1") //nolint:errcheck
 }
 
-// unitWriterVersion reports which abctl wrote the installed unit, or "" if it
+// unitWriterVersion reports which agentop wrote the installed unit, or "" if it
 // carries no stamp (written before stamping existed).
 //
 // The unit outlives the tool that manages it. A newer build can write a plist while
-// an older abctl stays on PATH, and that older one answers `service status` with
+// an older agentop stays on PATH, and that older one answers `service status` with
 // "unknown subcommand" — so the launchd artifact is live and unmanageable, with no
 // hint anywhere that the two disagree. Observed on a real machine.
 func unitWriterVersion(unitFile string) string {
@@ -560,7 +560,7 @@ func unitWriterVersion(unitFile string) string {
 		return ""
 	}
 	body := string(b)
-	for _, marker := range []string{"<key>AbctlVersion</key><string>", "X-AbctlVersion="} {
+	for _, marker := range []string{"<key>AgentopVersion</key><string>", "X-AgentopVersion="} {
 		i := strings.Index(body, marker)
 		if i < 0 {
 			continue

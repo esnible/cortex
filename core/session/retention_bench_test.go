@@ -181,7 +181,7 @@ func BenchmarkRetainedHeap(b *testing.B) {
 // (quickRank guesses rank 1 and titleFrom demotes every one — the screen missing 100% of the time),
 // reminder-only (the shape that drove the old quadratic retry cascade).
 //
-// Reported rather than asserted: it is a per-poll cost against abctl's two-second refresh, and
+// Reported rather than asserted: it is a per-poll cost against agentop's two-second refresh, and
 // five figures agreeing on one machine is the useful reading, not an absolute number.
 //
 //	go test ./session/ -bench ListSessions_Title -run '^$'

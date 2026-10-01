@@ -1323,7 +1323,7 @@ func TestRecordInboundReject_SkipsWithoutAuth(t *testing.T) {
 // direction tag, the plugin's Invocation context, and the Violation
 // mapped onto StatusCode + EventError. Gap: before this, outbound
 // denies (future IBAC, rate-limit, guardrail plugins) would surface
-// only as a 4xx on the agent and never appear in /v1/sessions or abctl.
+// only as a 4xx on the agent and never appear in /v1/sessions or agentop.
 func TestRecordOutboundReject_EmitsDeniedPhase(t *testing.T) {
 	store := session.New(5*time.Minute, 100, 0)
 	defer store.Close()

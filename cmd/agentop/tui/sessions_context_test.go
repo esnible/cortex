@@ -177,7 +177,7 @@ func TestSessionsTable_ContextColumnReplacesActive(t *testing.T) {
 	}
 }
 
-// A session abctl has no events for shows the dash, not an empty track. On a fresh attach that is
+// A session agentop has no events for shows the dash, not an empty track. On a fresh attach that is
 // every session idle since before the connection, so it is the common case rather than an edge.
 func TestSessionsTable_UnknownContextIsADash(t *testing.T) {
 	m := &model{width: 200}

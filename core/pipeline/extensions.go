@@ -165,7 +165,7 @@ type InferenceExtension struct {
 	//
 	// WHY A COUNT AND NOT THE SLICE: the two useful facts about a conversation that have nothing
 	// to do with its content are "did this request carry a tool manifest" and "how long is the
-	// conversation". abctl's CONTEXT gauge asks exactly those — a manifest separates an agentic
+	// conversation". agentop's CONTEXT gauge asks exactly those — a manifest separates an agentic
 	// turn from a one-shot completion, and the message count was how it guessed which of the
 	// threads sharing a session id was the conversation — and it asked them of len(Tools) and
 	// len(Messages), which `view=summary` strips. Measured on one live session, 41 of 62 inference
@@ -185,8 +185,8 @@ type InferenceExtension struct {
 	//
 	// Both version-skew directions land on that rule. An OLD proxy ignores `view` and returns
 	// full events (sessionapi.eventProjection), so the slices answer there. A proxy built between
-	// abctl's CONTEXT column and these fields projects without setting them, and then neither
-	// answers — which is one reason abctl remembers its own figure rather than recomputing it
+	// agentop's CONTEXT column and these fields projects without setting them, and then neither
+	// answers — which is one reason agentop remembers its own figure rather than recomputing it
 	// from whatever it happens to hold.
 	MessageCount int `json:"messageCount,omitempty"`
 	ToolCount    int `json:"toolCount,omitempty"`
@@ -211,7 +211,7 @@ type InferenceExtension struct {
 	// above; this field does not restate it, and a reader needs both.
 	//
 	// EMPTY MEANS "NOT STATED", NOT "MAIN" — the same rule as the counts, and the reason this
-	// is a string rather than a bool. abctl's CONTEXT gauge takes the main agent's LATEST turn
+	// is a string rather than a bool. agentop's CONTEXT gauge takes the main agent's LATEST turn
 	// where the role is stated and falls back to the message count where it is not; a bool's
 	// false cannot tell a proxy that says "main" from one that says nothing, and the difference
 	// decides which rule runs. Set only when the billing-header line is there, so a client that
@@ -405,7 +405,7 @@ type SecurityExtension struct {
 // InvocationAction is the universal 5-value vocabulary every plugin uses
 // to describe what it did on a single pipeline pass. Every plugin —
 // gate, parser, rate-limiter, guardrail, whatever we add next —
-// MUST emit exactly one of these per Invocation so abctl and /v1/sessions
+// MUST emit exactly one of these per Invocation so agentop and /v1/sessions
 // can render a consistent per-plugin timeline.
 //
 //	allow   — a gate plugin permitted the request. jwt-validation
@@ -447,7 +447,7 @@ const (
 // at most one of Inbound / Outbound.
 //
 // Replaces the earlier AuthExtension; parsers and any other plugin class
-// share the list now. abctl renders one row per Invocation, so operators
+// share the list now. agentop renders one row per Invocation, so operators
 // get a per-plugin timeline without guessing which plugins touched each
 // event.
 type Invocations struct {
@@ -550,7 +550,7 @@ type Invocation struct {
 	Path string `json:"path,omitempty"`
 
 	// Details carries plugin-specific context as a flat string→string
-	// map. Opaque to the framework; abctl renders it as key=value rows
+	// map. Opaque to the framework; agentop renders it as key=value rows
 	// in the invocation detail pane. Suggested convention: snake_case
 	// keys scoped to the plugin's semantic domain. Built-in plugins
 	// use keys like expected_issuer, token_subject, route_host,

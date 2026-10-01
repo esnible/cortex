@@ -14,7 +14,7 @@ import (
 // from the plugin's own per-token rates instead. Source says which happened.
 //
 // An ALIAS, not a copy: this is core's event.Event, so the compiler — not
-// a decode test — is what keeps abctl and the producer agreeing on the wire. This
+// a decode test — is what keeps agentop and the producer agreeing on the wire. This
 // file used to redeclare the struct and its decoder, which meant a field rename
 // in the plugin silently blanked a column here until a test happened to catch it.
 //

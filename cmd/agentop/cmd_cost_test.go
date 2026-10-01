@@ -346,7 +346,7 @@ func TestRunCost_UnreachableProxyExitsNonZeroAndSaysWhatToRun(t *testing.T) {
 		t.Fatal("exit = 0 for an unreachable proxy")
 	}
 	// A user whose proxy is down needs the next command, not a bare dial error.
-	if !strings.Contains(errOut.String(), "abctl service status") {
+	if !strings.Contains(errOut.String(), "agentop service status") {
 		t.Errorf("stderr does not name the recovery command:\n%s", errOut.String())
 	}
 }
@@ -375,7 +375,7 @@ func TestRunCost_RefusedWindowBlamesTheWindowNotTheProxy(t *testing.T) {
 	if !strings.Contains(stderr, "does not accept --window") {
 		t.Errorf("stderr does not blame the window:\n%s", stderr)
 	}
-	if strings.Contains(stderr, "abctl service status") {
+	if strings.Contains(stderr, "agentop service status") {
 		t.Errorf("stderr sends the user to check a proxy that just answered:\n%s", stderr)
 	}
 	// The server's own words reach the user: every 400 message this endpoint returns is
@@ -877,7 +877,7 @@ func TestRunCost_HumanSummarySaysWhichWayTheTotalIsInexact(t *testing.T) {
 // does not recognise cannot be quietly skipped: a reader subtracting what was printed from
 // the count would conclude the remainder were EXACT figures, which is the reading the whole
 // disclosure exists to prevent. A newer proxy naming a third reason is the case — an older
-// abctl against a newer sidecar is the normal deployment, not an exotic one.
+// agentop against a newer sidecar is the normal deployment, not an exotic one.
 func TestRunCost_AnUnknownInexactnessReasonIsPrintedNotDropped(t *testing.T) {
 	srv := fakeUsageServer(t, `{"window":"today","totals":{"requests":10,`+
 		`"costMicros":1240000,"pricedRequests":10,"priceableRequests":10,`+
@@ -1725,7 +1725,7 @@ func TestRunCost_UnknownAgentNamesTheOnesThatExist(t *testing.T) {
 // that a future change of axis inherits the disclosure. group=agent IS reconcilable, so
 // usage.Snapshot.UngroupedCostMicros can be non-zero: cost the totals include and no agent
 // carries. Without a word about it, a reader adding up --agent for every agent and comparing
-// that against plain `abctl cost` finds a shortfall with nothing to explain it.
+// that against plain `agentop cost` finds a shortfall with nothing to explain it.
 // THE RESIDUAL MUST DIFFER FROM THIS AGENT'S OWN COST, and the first version of this test did
 // not arrange that: it set both to 1_500_000 micros, so "1.50" appeared in the headline whether
 // or not the disclosure printed. Deleting the disclosure left this test GREEN — a dead guard
@@ -2444,7 +2444,7 @@ func TestRunCost_ByAgentOnAMixedWindowWithholdsTheCostCells(t *testing.T) {
 	}
 }
 
-// breakdownSection is the part of `abctl cost` output that writeCostBreakdown produced.
+// breakdownSection is the part of `agentop cost` output that writeCostBreakdown produced.
 //
 // EXISTS BECAUSE THE TWO SURFACES SHARE VOCABULARY. writeCostSummary prints a caveat naming the
 // same units and pointing at the same flag, immediately above this table, and it runs first — so a

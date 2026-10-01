@@ -13,7 +13,7 @@ import (
 //
 // It carries what this UI now READS rather than computes: the exchange total, the
 // prompt-only figure a request row shows, and the saving attributed to tool-prune. The
-// figures are the ones abctl used to derive itself — prompt 1,300 x 3.8e-6 + 680,000 x
+// figures are the ones agentop used to derive itself — prompt 1,300 x 3.8e-6 + 680,000 x
 // 3.8e-7 = 0.26334, saving 9,899 tokens at the cache-read rate = 0.0038 — so the rendered
 // cells below are unchanged by the move. That is the point: same output, one owner.
 const costWire = `{"cost_usd":0.2824,"source":"gateway-header",
@@ -189,7 +189,7 @@ func TestCostCellPhases(t *testing.T) {
 // below the flat one.
 // The tier weighting now happens in the proxy (core/cost/settle computes the prompt-only
 // figure; core/cost/pricing weights the tiers), and is tested there against the real rate
-// table. What abctl must still get right is reading the published figure and declining to
+// table. What agentop must still get right is reading the published figure and declining to
 // invent one — a $0.00 in this column reads as a free prompt.
 func TestPromptCost_ReadsThePublishedFigure(t *testing.T) {
 	inf := &pipeline.InferenceExtension{InputTokens: 1_000, CacheReadTokens: 99_000}
@@ -217,7 +217,7 @@ func TestPromptCost_ReadsThePublishedFigure(t *testing.T) {
 }
 
 // TestOutputCost_ReadsThePublishedFigure is promptCost's mirror: the output half is
-// published by the proxy too, so abctl reads it rather than deriving it from the total.
+// published by the proxy too, so agentop reads it rather than deriving it from the total.
 //
 // The derivation it must not do is CostUSD − PromptUSD. Here that difference is 0.0086
 // while the modelled output is 0.0352 — the gap is the gateway's discount against the rate

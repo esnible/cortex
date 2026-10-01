@@ -179,7 +179,7 @@ func TestBobShellEnableCreatesTheFile(t *testing.T) {
 
 // An rc file that already exists keeps its own permissions. README.md promises this,
 // and someone who deliberately locked their rc file down is exactly the person who
-// would not notice abctl widening it again.
+// would not notice agentop widening it again.
 //
 // 0600 is the mode to test with, because it is the one that differs from the
 // new-file default: with a 0644 fixture, deleting writeRCFile's mode-inheritance
@@ -280,9 +280,9 @@ func TestBobShellEnableDeclinesAHandEditedBlock(t *testing.T) {
 	}
 
 	var out, errb bytes.Buffer
-	// Exit 0, like disable's equivalent. This is abctl declining to GUESS, which is
+	// Exit 0, like disable's equivalent. This is agentop declining to GUESS, which is
 	// not the same thing as the user declining a prompt: --yes is passed, so nothing
-	// asked. abctl found a block it does not recognise, said what it found and why
+	// asked. agentop found a block it does not recognise, said what it found and why
 	// it stopped, and that is the most it can honestly do — a successful outcome for
 	// a command whose job is "or do nothing". A refused PROMPT is exitDeclined (3);
 	// see the decline test below. Do not unify the two.
@@ -417,7 +417,7 @@ func TestBobShellDisable(t *testing.T) {
 			var out, errb bytes.Buffer
 			// Every one of these is exit 0, for the same reason as enable's sibling
 			// case above: --yes is passed, so no prompt is reached and nobody
-			// declined anything. abctl is the one stopping, and it explains why.
+			// declined anything. agentop is the one stopping, and it explains why.
 			// Only a refused prompt is exitDeclined (3).
 			if code := runBobShell([]string{"disable", "--yes"}, &out, &errb); code != 0 {
 				t.Fatalf("exit = %d, want 0; stderr: %s", code, errb.String())
@@ -590,7 +590,7 @@ func TestRCTarget(t *testing.T) {
 // made. Each of these was a real defect: dialect-specific builtins to resolve the
 // binary past the function (dash has neither "whence" nor "type -P", and printed
 // prose that the shell then executed), and a variable that leaked into the user's
-// interactive shell. None is needed — "abctl exec" execve's into a process that
+// interactive shell. None is needed — "agentop exec" execve's into a process that
 // never reads this file, so the function cannot recurse.
 //
 // A test rather than a review note, so reintroducing any of it fails a build.
@@ -629,8 +629,8 @@ func TestBobShellBlockShape(t *testing.T) {
 	}
 	// What the feature actually is. Asserted so a refactor cannot quietly change
 	// which command the function runs.
-	if !strings.Contains(bobShellBlock, `abctl exec -- bob "$@"`) {
-		t.Errorf("block does not run abctl exec -- bob \"$@\":\n%s", bobShellBlock)
+	if !strings.Contains(bobShellBlock, `agentop exec -- bob "$@"`) {
+		t.Errorf("block does not run agentop exec -- bob \"$@\":\n%s", bobShellBlock)
 	}
 	if !strings.Contains(bobShellBlock, "export "+bobShellEnvVar+"=1") {
 		t.Errorf("block does not export %s, which is what status reads:\n%s", bobShellEnvVar, bobShellBlock)
@@ -683,7 +683,7 @@ func TestBobShellUnknownShell(t *testing.T) {
 				t.Errorf("block printed = %v, want %v; stdout:\n%s", got, tc.wantBlock, out.String())
 			}
 			// Whichever half it printed, it has to name the markers — they are what
-			// the user greps for, in a file abctl is not going to touch.
+			// the user greps for, in a file agentop is not going to touch.
 			if !strings.Contains(out.String(), bobShellMarkerStart) {
 				t.Errorf("stdout does not name the start marker:\n%s", out.String())
 			}
@@ -854,7 +854,7 @@ func TestBobShellRejectsStrayArguments(t *testing.T) {
 				if code != 0 {
 					t.Errorf("exit = %d, want 0; stderr: %s", code, errb.String())
 				}
-				if !strings.Contains(out.String(), "abctl configure bobshell —") {
+				if !strings.Contains(out.String(), "agentop configure bobshell —") {
 					t.Errorf("usage not on stdout:\n%s", out.String())
 				}
 			} else {
@@ -884,7 +884,7 @@ func TestBobShellHelpAndUsageErrors(t *testing.T) {
 			if code := runBobShell([]string{arg}, &out, &errb); code != 0 {
 				t.Errorf("exit = %d, want 0", code)
 			}
-			if !strings.Contains(out.String(), "abctl configure bobshell —") {
+			if !strings.Contains(out.String(), "agentop configure bobshell —") {
 				t.Errorf("usage not on stdout:\n%s", out.String())
 			}
 			if strings.Contains(out.String()+errb.String(), "unknown bobshell action") {
@@ -902,7 +902,7 @@ func TestBobShellHelpAndUsageErrors(t *testing.T) {
 		if code := runBobShell(nil, &out, &errb); code != 2 {
 			t.Errorf("exit = %d, want 2", code)
 		}
-		if !strings.Contains(errb.String(), "abctl configure bobshell —") {
+		if !strings.Contains(errb.String(), "agentop configure bobshell —") {
 			t.Errorf("usage not on stderr:\n%s", errb.String())
 		}
 		if out.Len() != 0 {
@@ -1160,7 +1160,7 @@ func TestBobShellWithoutYesAndWhenTheUserDeclinesWritesNothing(t *testing.T) {
 			// exitDeclined, and NOT the 0 this asserted at first. Declining is not a
 			// failure, which is why it is not 1 — but it is also not the same outcome
 			// as an unrecognised $SHELL, which is where the old reasoning went wrong.
-			// There, abctl did everything it could and the file is in a state the
+			// There, agentop did everything it could and the file is in a state the
 			// caller can live with. Here the caller asked for a change and did not
 			// get it, and 0 leaves a script no way to tell that apart from "applied".
 			// configureUsage documents 3 for a decline, and claude-code and
@@ -1238,7 +1238,7 @@ func TestBobShellFollowsOneHopIntoTheTrackedFile(t *testing.T) {
 
 			// The target lives OUTSIDE $HOME, as a checked-out dotfiles repo does.
 			// Inside home it would still pass, but it would no longer demonstrate
-			// that the write follows the link off the path abctl computed.
+			// that the write follows the link off the path agentop computed.
 			repo := t.TempDir()
 			tracked := filepath.Join(repo, "zshrc")
 			// disable needs the block already present to have something to remove;
@@ -1294,7 +1294,7 @@ func TestBobShellFollowsOneHopIntoTheTrackedFile(t *testing.T) {
 // took the dangling path: exit 0, "Sort the link out, or do it by hand", and the
 // block printed. That is wrong twice over for EACCES. There is no link to sort
 // out, so the advice names something that does not exist; and 0 tells a scripted
-// caller the command did its job when abctl could not even look at the file. The
+// caller the command did its job when agentop could not even look at the file. The
 // split is on the error VALUE, not the hop count, because a dangling link at hop 1
 // and an unreadable file at hop 0 both land here.
 //
@@ -1450,7 +1450,7 @@ func TestBobShellWriteFailureIsExit1AndLeavesNoLitter(t *testing.T) {
 				t.Fatal(err)
 			}
 			for _, e := range ents {
-				if strings.HasPrefix(e.Name(), ".abctl-bobshell-") {
+				if strings.HasPrefix(e.Name(), ".agentop-bobshell-") {
 					t.Errorf("left a temp file behind: %s", e.Name())
 				}
 			}
@@ -1583,7 +1583,7 @@ func TestBobShellDeclinesExactlyTwoHops(t *testing.T) {
 
 				var out, errb bytes.Buffer
 				// Declining here is advice, not failure: the chain is the user's
-				// deliberate arrangement and abctl can describe it exactly.
+				// deliberate arrangement and agentop can describe it exactly.
 				if code := runBobShell([]string{verb, "--yes"}, &out, &errb); code != 0 {
 					t.Fatalf("exit = %d, want 0\nstdout:\n%s\nstderr:\n%s", code, out.String(), errb.String())
 				}

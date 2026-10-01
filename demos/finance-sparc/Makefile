@@ -16,7 +16,7 @@
 
 .PHONY: help preflight host-setup build-images build-authbridge load-images \
         ollama-up deploy wait-pods patch-config setup-keycloak drive demo \
-        build-abctl show-result undeploy logs-agent logs-sparc logs-ollama
+        build-agentop show-result undeploy logs-agent logs-sparc logs-ollama
 
 .DEFAULT_GOAL := help
 
@@ -174,10 +174,10 @@ demo: preflight host-setup load-images ollama-up deploy patch-config setup-keycl
 	@echo
 	@echo "Demo complete. UI: http://rossoctl-ui.localtest.me:8080  |  forensic: make show-result"
 
-build-abctl:  ## Build abctl into /tmp (for show-result)
-	cd ../../cmd/agentop && go build -o /tmp/abctl-finance-sparc-demo .
+build-agentop:  ## Build agentop into /tmp (for show-result)
+	cd ../../cmd/agentop && go build -o /tmp/agentop-finance-sparc-demo .
 
-show-result: build-abctl  ## Launch abctl against the agent's session API
+show-result: build-agentop  ## Launch agentop against the agent's session API
 	bash scripts/launch-agentop.sh $(NS) $(AGENT)
 
 undeploy:  ## Remove demo resources (rossoctl install untouched)

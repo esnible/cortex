@@ -98,7 +98,7 @@ func TestHarvest_ReportsCounts(t *testing.T) {
 
 // An unchanged transcript is skipped, and the title it already had survives.
 //
-// The whole point of the incremental mode: `abctl observe` runs on every launch, and a
+// The whole point of the incremental mode: `agentop observe` runs on every launch, and a
 // full re-parse measured 0.73-1.18s over 207MB. Skipping must not cost the entry.
 func TestHarvest_IncrementalSkipsUnchangedAndKeepsTheTitle(t *testing.T) {
 	metadataHome(t)
@@ -252,7 +252,7 @@ func TestHarvest_CorruptMetadataIsRebuilt(t *testing.T) {
 		`{"type":"ai-title","aiTitle":"t"}`)
 	path := writeMetadataFile(t, "{not json")
 
-	// Incremental too, which is how `abctl observe` calls it: the rebuild has to clear the
+	// Incremental too, which is how `agentop observe` calls it: the rebuild has to clear the
 	// baseline, or a skip test against an empty map is the only thing making this work.
 	res, err := Harvest(Options{ConfigDir: cfg, Merge: true, Incremental: true})
 	if err != nil {
@@ -632,7 +632,7 @@ func TestHarvest_CountsBalanceAfterRecovery(t *testing.T) {
 //
 // The zero time is what every such entry decodes to, and harvestedAt reads it as "cannot
 // tell". That is the whole upgrade story, and it had no test: a regression here would be
-// invisible until someone's titles silently stopped updating after an abctl upgrade.
+// invisible until someone's titles silently stopped updating after an agentop upgrade.
 func TestHarvest_IncrementalReparsesPreUpgradeEntries(t *testing.T) {
 	metadataHome(t)
 	cfg := filepath.Join(t.TempDir(), "claude")
@@ -670,7 +670,7 @@ func TestHarvest_IncrementalReparsesPreUpgradeEntries(t *testing.T) {
 
 // ReadMetadata is bounded, like the viewer's own reader of the same file.
 //
-// `abctl observe` calls this synchronously before the TUI starts, to check the file is readable,
+// `agentop observe` calls this synchronously before the TUI starts, to check the file is readable,
 // so an unbounded read would stall startup on a stray large file with nothing on screen to say
 // why. A truncated read surfaces as a JSON error, which is the right outcome: the caller refuses
 // to merge over a file it cannot parse, so "too large" behaves like any other unreadable file
@@ -878,7 +878,7 @@ func TestHarvest_ConcurrentRunsLoseNothing(t *testing.T) {
 				// syscall.Flock(LOCK_EX) — lock_unix.go takes it with no timeout, deliberately. A
 				// child wedged holding it would block cmd.Wait(), then wg.Wait(), and with three
 				// attempts times six children the package would hit its own timeout with nothing
-				// saying which child stuck. Same two lines cmd_observe_test.go's runAbctlChild uses.
+				// saying which child stuck. Same two lines cmd_observe_test.go's runAgentopChild uses.
 				ctx, cancel := context.WithTimeout(context.Background(), childTimeout)
 				defer cancel()
 				cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=TestHarvest_ConcurrentRunsLoseNothing")
@@ -1015,8 +1015,8 @@ func TestTitleFromTranscript_FallsBackToTheLastUserPrompt(t *testing.T) {
 	}{
 		{
 			"plain string content",
-			[]string{`{"type":"user","message":{"role":"user","content":"how do I build abctl?"}}`},
-			"how do I build abctl?",
+			[]string{`{"type":"user","message":{"role":"user","content":"how do I build agentop?"}}`},
+			"how do I build agentop?",
 		},
 		{
 			"text blocks are joined",
@@ -1395,7 +1395,7 @@ func TestIsSyntheticPrompt_HandlesAttributesAndCase(t *testing.T) {
 	}
 	// And real prose is still a prompt, including text that merely contains a "<".
 	for _, s := range []string{
-		"how do I build abctl?",
+		"how do I build agentop?",
 		"is 3 < 5 in Go?",
 		"/review some/path.md",
 		"日本語の質問です",
@@ -2009,7 +2009,7 @@ func TestTitleFromTranscript_TitlesAreAlwaysPlain(t *testing.T) {
 		"nul \x00 here",
 		"tab\tand\nnewline",
 		// Legitimate content, which must survive as readable text.
-		"how do I build abctl?",
+		"how do I build agentop?",
 		"is 3 < 5 in Go?",
 		"日本語のセッションタイトルです",
 		"ship it 🎉",
@@ -2098,7 +2098,7 @@ func TestTitleFromTranscript_TitlesAreAlwaysPlain(t *testing.T) {
 // half of it: what the normalisation must NOT destroy.
 func TestClipTitle_KeepsLegitimateText(t *testing.T) {
 	for _, tc := range []struct{ in, want string }{
-		{"how do I build abctl?", "how do I build abctl?"},
+		{"how do I build agentop?", "how do I build agentop?"},
 		{"is 3 < 5 in Go?", "is 3 < 5 in Go?"},
 		{"日本語のセッションタイトル", "日本語のセッションタイトル"},
 		{"ship it 🎉", "ship it 🎉"},
@@ -2251,7 +2251,7 @@ func TestStripANSI_HandlesEveryEscapeClass(t *testing.T) {
 		{"charset selection, other", "a\x1b)0b", "ab"},
 		{"two-byte escape", "a\x1b7b", "ab"},
 		{"trailing lone ESC", "title\x1b", "title"},
-		{"no escapes", "how do I build abctl?", "how do I build abctl?"},
+		{"no escapes", "how do I build agentop?", "how do I build agentop?"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := stripANSI(tc.in); got != tc.want {
@@ -2377,7 +2377,7 @@ func TestTitleFromTranscript_AttributionDoesNotChangeTheTitle(t *testing.T) {
 	for _, tc := range []struct{ name, content, want string }{
 		{"slash command envelope", envelope, "/review some/path.md"},
 		{"pasted content wrapper", `<pasted_content id="x">the pasted body</pasted_content>`, "the pasted body"},
-		{"plain prose", "how do I build abctl?", "how do I build abctl?"},
+		{"plain prose", "how do I build agentop?", "how do I build agentop?"},
 		{"prose with trailing harness block", "my real question\n<system-reminder>hidden</system-reminder>", "my real question"},
 		// A harness-output wrapper still falls through in BOTH cases: its body is not the user's.
 		{"harness output wrapper", "<bash-stdout>total 40</bash-stdout>", "/w/fallback"},

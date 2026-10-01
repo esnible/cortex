@@ -17,7 +17,7 @@ import (
 //
 // The response is decoded one event at a time rather than as a document, and repeated
 // strings are collapsed as they arrive. Both matter more here than anywhere else in this
-// client: a snapshot of a real session is hundreds of megabytes of JSON, and abctl was
+// client: a snapshot of a real session is hundreds of megabytes of JSON, and agentop was
 // holding more memory than the proxy it was watching — 1.64GB against 1.03GB, and the
 // only one of the two still climbing. See decodeSessionView.
 func (c *Client) GetSessionPage(ctx context.Context, id string, before uint64, limit int) (*pipeline.SessionView, error) {
@@ -119,13 +119,13 @@ func decodeSessionView(r io.Reader) (*pipeline.SessionView, error) {
 				return nil, err
 			}
 		case "view":
-			// Read, not skipped: this is how abctl learns whether the projection it
+			// Read, not skipped: this is how agentop learns whether the projection it
 			// asked for was actually applied. Absent means the proxy predates it.
 			if err := dec.Decode(&view.View); err != nil {
 				return nil, err
 			}
 		default:
-			// Skipped, not rejected: a newer proxy may send fields this abctl does not
+			// Skipped, not rejected: a newer proxy may send fields this agentop does not
 			// know, and the decode has to consume the value either way to stay in sync
 			// with the token stream.
 			var skip json.RawMessage

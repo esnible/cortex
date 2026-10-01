@@ -615,7 +615,7 @@ func localConnected(t *testing.T, srvURL string) *model {
 
 // A connection with no pod/namespace AND no known local config has nothing to
 // edit, so `e` must say so rather than open a broken edit. The message has to
-// name a remedy: the old one blamed `--endpoint`, which a bare `abctl` that
+// name a remedy: the old one blamed `--endpoint`, which a bare `agentop` that
 // auto-connected to a local Cortex never passed.
 func TestEditUnavailableWithoutAStore(t *testing.T) {
 	srv := sessionAPIStub(t)
@@ -639,7 +639,7 @@ func TestEditUnavailableWithoutAStore(t *testing.T) {
 
 // The point of the local store: when the endpoint on screen IS this machine's
 // Cortex, `e` edits its config file — no picker, no pod, no kubectl. Nothing
-// about how abctl was launched gates this, only what it is connected to.
+// about how agentop was launched gates this, only what it is connected to.
 func TestEditUsesTheLocalFileStoreWhenConnectedLocally(t *testing.T) {
 	srv := sessionAPIStub(t)
 	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
@@ -678,7 +678,7 @@ func TestEditUsesTheLocalFileStoreWhenConnectedLocally(t *testing.T) {
 
 // dialURL emits http://127.0.0.1:47601 for the built-in config, but an
 // operator types --endpoint http://localhost:47601. An exact string compare
-// refused that and told them to "point abctl at a Cortex running on this
+// refused that and told them to "point agentop at a Cortex running on this
 // machine" — which they had just done.
 func TestSameEndpoint(t *testing.T) {
 	for _, tc := range []struct {

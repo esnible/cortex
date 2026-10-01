@@ -976,7 +976,7 @@ func TestTunnelReasonCell(t *testing.T) {
 		{"", "—"}, // bridged: folded into the inner request
 		{pipeline.TunnelClientRejectedCA, string(pipeline.TunnelClientRejectedCA)},
 		{pipeline.TunnelSkipCached, string(pipeline.TunnelSkipCached)},
-		{"some-future-reason", "some-future-reason"}, // newer proxy, older abctl
+		{"some-future-reason", "some-future-reason"}, // newer proxy, older agentop
 	} {
 		if got := tunnelReasonCell(tc.reason); got != tc.want {
 			t.Errorf("tunnelReasonCell(%q) = %q, want %q", tc.reason, got, tc.want)

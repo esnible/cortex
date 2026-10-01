@@ -351,7 +351,7 @@ body-reading plugin (it rewrites the request body). Declares
 
   The saving has to be priced on the response side, not here: the dollar amount depends on which prompt-cache tier the removed tokens came out of — 1x, 1.25x or 0.1x of the same rate — and only the response reveals that. It is inherently a request-fact times a response-fact.
 
-Generate the list from local transcripts with `abctl tools scan`, which
+Generate the list from local transcripts with `agentop tools scan`, which
 proposes only tools it recognises as Claude Code built-ins and never proposes
 one it has seen called. `--days N` sets the recency window (30 by default) and
 `--all` drops it; widening is the cautious direction, since a longer window

@@ -753,7 +753,7 @@ func sanitizeLabel(s string) string {
 // the truth rather than a gap in the reporting. Which is why two money surfaces do NOT
 // consult it: the sessions COST cell is summed out of the strip's fixed-hour ring window,
 // and renderCostSummary's pane cycles usageWindows, all of which are durations. The strip's
-// TODAY figure and `abctl cost` are the surfaces that can be ledger-backed, and they are
+// TODAY figure and `agentop cost` are the surfaces that can be ledger-backed, and they are
 // the ones that render it.
 //
 // A pointer parameter rather than a *usage.Snapshot, so the strip can ask about the day

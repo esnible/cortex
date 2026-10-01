@@ -1,11 +1,11 @@
-// Package claude owns the Claude Code session-metadata contract: the shape abctl's
+// Package claude owns the Claude Code session-metadata contract: the shape agentop's
 // harvester writes to ~/.cortex/session-metadata.json, the path it lives at, and the
 // harvest that produces it.
 //
 // It exists because that file is a contract between two things that cannot import each
-// other: the harvester, reached from abctl's package main, and the viewer in
+// other: the harvester, reached from agentop's package main, and the viewer in
 // cmd/agentop/tui. Before this, both the shape and the harvest lived in package main, so
-// nothing else could reach them and `abctl observe` could not name a session without
+// nothing else could reach them and `agentop observe` could not name a session without
 // shelling out to another subcommand.
 //
 // Anything that changes the file's name or shape belongs here, so that a change breaks
@@ -47,7 +47,7 @@ import (
 // contract anyone here controls.
 //
 // This is written as JSON to ~/.cortex/session-metadata.json. Key names stay camelCase
-// to match the sortColumn / sortDesc keys in abctl's own settings file rather than
+// to match the sortColumn / sortDesc keys in agentop's own settings file rather than
 // introducing a second convention.
 type SessionMetadata struct {
 	// Title is a human-readable name for the session. From Claude Code this is the

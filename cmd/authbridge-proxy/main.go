@@ -73,10 +73,10 @@ var version = "dev"
 // gate is the only way to keep the demo to the listeners it actually uses.
 var localMode bool
 
-// localStatePath is abctl's state file for this --local install, resolved while
+// localStatePath is agentop's state file for this --local install, resolved while
 // --local sets up and consumed later, once the bridge CA has been loaded, to warn
 // about a client pointed at a different CA. Empty when not in --local: outside it
-// there is no abctl-managed client to compare against.
+// there is no agentop-managed client to compare against.
 var localStatePath string
 
 // spiffeProviderNeeded reports whether any configured feature actually consumes
@@ -360,8 +360,8 @@ func main() {
 		// the proxy to the OS supervisor, which then starts it. Writing the config was
 		// previously a side effect of starting --local, so removing that start removed
 		// the only thing that ever created the file — a fresh install then had nothing
-		// for `abctl service install` to load. Exiting here keeps one source of truth
-		// for the built-in config instead of teaching abctl to write it too.
+		// for `agentop service install` to load. Exiting here keeps one source of truth
+		// for the built-in config instead of teaching agentop to write it too.
 		if *writeConfigOnly {
 			// Silent on success. This runs from install.sh, which reports progress
 			// itself; a structured INFO line with timestamps and key=value pairs in the
@@ -636,7 +636,7 @@ func main() {
 		} else {
 			// Said out loud, at the same level as "session tracking disabled", because the
 			// absence is what makes window=today degrade to the ring's 6 hours — and a
-			// degraded answer with no log line behind it reads as a bug in abctl.
+			// degraded answer with no log line behind it reads as a bug in agentop.
 			slog.Info("cost ledger disabled — window=today, window=month and window=7d will be served from the 6h in-memory ring",
 				// The DERIVED reason, not a guess about the deployment. It used to say
 				// "not a local install", which was the old localMode default describing
@@ -739,7 +739,7 @@ func main() {
 		// Now that the CA in force is loaded, compare it against the one a client was
 		// configured with. This has to happen here rather than during --local setup:
 		// the comparison is on certificates, so ours must exist first. Skipped outside
-		// --local, where there is no abctl-managed client to reason about.
+		// --local, where there is no agentop-managed client to reason about.
 		if localStatePath != "" {
 			if args := staleClientCAWarning(cfg.TLSBridge.CADir, clientCAFromState(localStatePath), src.CACertPEM()); args != nil {
 				slog.Warn("a client is configured against a different bridge CA than the one now in force", args...)

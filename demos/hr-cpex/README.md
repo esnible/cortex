@@ -437,7 +437,7 @@ make undeploy   # deletes the cpex-demo namespace
 - **Rossoctl operator injection.** Pods deploy via plain `kubectl apply`,
   not the operator's sidecar-injection path. Promoting cpex into the
   operator's sidecar list is a separate change.
-- **abctl TUI.** Would render each Invocation chain visually, including
+- **agentop TUI.** Would render each Invocation chain visually, including
   the deny short-circuit. Needs the per-sub-plugin Invocation work to
   land first.
 - **Production TLS.** Keycloak runs on plaintext HTTP. Wire a cert via

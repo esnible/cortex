@@ -31,7 +31,7 @@ func projected(events []pipeline.SessionEvent) []pipeline.SessionEvent {
 // projectedNoCounts is the SAME projection from a proxy that predates the counts: it strips the
 // slices and states nothing in their place.
 //
-// That window is real — abctl and the proxy install separately, so a build between the CONTEXT
+// That window is real — agentop and the proxy install separately, so a build between the CONTEXT
 // column and MessageCount/ToolCount projects blind — and it is the shape every rebase test below
 // needs, because it is the only one where the timeline genuinely cannot answer and the remembered
 // figure is the sole source left.
@@ -61,7 +61,7 @@ func project(events []pipeline.SessionEvent, counts bool) []pipeline.SessionEven
 // THE TIMELINE ANSWERS THROUGH THE COUNTS, and could not answer at all before them.
 //
 // Measured against a live proxy on the same 200-event window, 41 of 62 inference responses carry a
-// manifest unprojected and 0 of 62 do with view=summary — which abctl asks for on every timeline
+// manifest unprojected and 0 of 62 do with view=summary — which agentop asks for on every timeline
 // fetch. So the rule was evaluable on streamed events and blank on delivered ones, and the fix is
 // two ints the projection records before dropping the slices.
 func TestSessionContext_ReadsAProjectedTimelineThroughTheCounts(t *testing.T) {
@@ -86,7 +86,7 @@ func TestSessionContext_ReadsAProjectedTimelineThroughTheCounts(t *testing.T) {
 }
 
 // AN OLD PROXY RETURNS FULL EVENTS, so the len() arm has to stay. eventProjection treats an
-// unrecognised `view` as "no projection", which is the skew a new abctl against an old proxy hits —
+// unrecognised `view` as "no projection", which is the skew a new agentop against an old proxy hits —
 // and there the slices are populated while the counts are absent.
 func TestSessionContext_StillReadsAnOldProxysSlices(t *testing.T) {
 	evs := conversation("c1", time.Now(), 600, 500_000)
@@ -160,7 +160,7 @@ func TestSessionContextFor_AnOlderPageKeepsTheFigure(t *testing.T) {
 }
 
 // THE DETAIL FETCH IS THE ONLY PATH THAT PUTS A MANIFEST BACK, so it is the only way a session
-// abctl never streamed can ever show a gauge — and it changes an event's CONTENT at the same
+// agentop never streamed can ever show a gauge — and it changes an event's CONTENT at the same
 // length, which the fold's length check cannot see.
 func TestSessionContextFor_ADetailFetchFillsTheGauge(t *testing.T) {
 	base := time.Now()
@@ -169,7 +169,7 @@ func TestSessionContextFor_ADetailFetchFillsTheGauge(t *testing.T) {
 	for i := range full {
 		full[i].Seq = uint64(i + 1)
 	}
-	// A session abctl attached to after its traffic, served by a proxy that projects without
+	// A session agentop attached to after its traffic, served by a proxy that projects without
 	// stating the counts: nothing in the timeline can answer, so the detail fetch is the only
 	// source of a figure at all. Against a current proxy the snapshot answers on its own — see
 	// TestSessionsTable_AnIdleSessionsSnapshotFillsTheGauge.
@@ -291,7 +291,7 @@ func TestSessionsTable_AnIdleSessionsSnapshotFillsTheGauge(t *testing.T) {
 	m := &model{events: map[string][]pipeline.SessionEvent{}}
 	m.sessionsTbl = newSessionsTable()
 	if got := m.sessionContextFor(id, nil); got != 0 {
-		t.Fatalf("before the snapshot: %d, want 0 — abctl holds nothing for this session", got)
+		t.Fatalf("before the snapshot: %d, want 0 — agentop holds nothing for this session", got)
 	}
 
 	m.Update(snapshotLoadedMsg{id: id, events: projected(evs), projected: true})
@@ -352,7 +352,7 @@ func TestSessionsTable_AProjectedTimelineReadsTheRole(t *testing.T) {
 // THE FOLD MUST NOT RESCAN WHAT IT ALREADY FOLDED, which is the whole point of contextRun and was
 // pinned by nothing: either branch could regress to a whole-slice scan and every other test in this
 // package would stay green, because a rescan reaches the same ANSWER — 6.1ms and 3.49MB more slowly,
-// per session, per arriving event, on the pane abctl opens on.
+// per session, per arriving event, on the pane agentop opens on.
 //
 // So this poisons the prefix: the events already folded are overwritten with a turn that would win a
 // rescan outright. A fold that trusts its prefix cannot see it; anything that re-reads the prefix
@@ -532,10 +532,10 @@ func assertGaugeShows(t *testing.T, m *model, id string, promptTokens int, when 
 // rebase was pinned and the repaint was pinned by nothing. All three handlers that reach
 // rebaseSessionContext (the inventory on model.events lists them) ended without one, while the
 // fourth writer — the streamed append — has called rebuildSessionsTable all along. That asymmetry is
-// the bug: a session abctl streamed shows a gauge, a session it did not shows a dash that opening
+// the bug: a session agentop streamed shows a gauge, a session it did not shows a dash that opening
 // the session corrects in contextRun and nowhere the operator can see.
 //
-// What that looks like from the outside, and how it was reported: on a row idle since before abctl
+// What that looks like from the outside, and how it was reported: on a row idle since before agentop
 // attached, press Enter, come straight back out, and the gauge appears about a second later. The
 // wait is the /v1/sessions poll at refreshInterval, which is simply the next thing that happens to
 // rebuild the table.
@@ -563,7 +563,7 @@ func TestSessionsTable_ASnapshotRepaintsTheGaugeItFilled(t *testing.T) {
 	m.rebuildSessionsTable()
 
 	if got := heldContextCell(t, m, id); got != emptyCell {
-		t.Fatalf("before the snapshot the row holds %q, want %q — abctl has no events for a "+
+		t.Fatalf("before the snapshot the row holds %q, want %q — agentop has no events for a "+
 			"session idle since before it attached", got, emptyCell)
 	}
 
@@ -641,7 +641,7 @@ func TestSessionsTable_ADetailFetchRepaintsTheGauge(t *testing.T) {
 	assertGaugeShows(t, m, "s", 500_000, "after the detail fetch")
 }
 
-// THE BUG THIS WHOLE CHANGE EXISTS FOR: a session idle since before abctl attached shows a gauge
+// THE BUG THIS WHOLE CHANGE EXISTS FOR: a session idle since before agentop attached shows a gauge
 // on the first /v1/sessions poll, with no Enter, no snapshot and no wait.
 //
 // Asserted on the RENDERED ROW rather than on sessionContextFor, because a correct figure that
@@ -652,13 +652,13 @@ func TestSessionsTable_AnIdleRowShowsTheServersFigureWithoutBeingOpened(t *testi
 	m := &model{width: 200, pane: paneSessions, events: map[string][]pipeline.SessionEvent{}}
 	m.sessionsTbl = newSessionsTable()
 
-	// What the poll delivers: a row abctl holds no events for, carrying the server's figure.
+	// What the poll delivers: a row agentop holds no events for, carrying the server's figure.
 	m.Update(sessionsLoadedMsg([]session.SessionSummary{{
 		ID: id, UpdatedAt: base, EventCount: 1509,
 		PromptContext: &pipeline.PromptContext{Tokens: 851_000, Stated: true, At: base},
 	}}))
 
-	// The SERVER's 851,000 and nothing else: abctl holds no events for this row, so an exact
+	// The SERVER's 851,000 and nothing else: agentop holds no events for this row, so an exact
 	// comparison here is also what pins that rebuildSessionsTable passes s.PromptContext into
 	// sessionContextFor at all rather than dropping it.
 	assertGaugeShows(t, m, id, 851_000, "on the first poll")
@@ -669,7 +669,7 @@ func TestSessionsTable_AnIdleRowShowsTheServersFigureWithoutBeingOpened(t *testi
 // NAMED FOR THE FIGURE, NOT THE ROW, which a review corrected: this asserts on sessionContextFor,
 // and a TestSessionsTable_ prefix is a promise about the rendered cell — the very confusion the
 // comment above TestSessionsTable_ASnapshotRepaintsTheGaugeItFilled says let the reported bug
-// survive this suite. The claim here is about the merge RULE at abctl's call site, so the name says
+// survive this suite. The claim here is about the merge RULE at agentop's call site, so the name says
 // so and the sessions table it used to build (and never read) is gone.
 //
 // The row-level half of this path is covered rather than dropped:
@@ -678,7 +678,7 @@ func TestSessionsTable_AnIdleRowShowsTheServersFigureWithoutBeingOpened(t *testi
 func TestSessionContextFor_AStatedServerFigureBeatsAStaleUnstatedLocalOne(t *testing.T) {
 	base := time.Now()
 	const id = "s"
-	// abctl's own figure, folded from a proxy that stated no roles: the documented
+	// agentop's own figure, folded from a proxy that stated no roles: the documented
 	// stale-fallback case, 700k held from before a compaction.
 	m := &model{width: 200, pane: paneSessions, events: map[string][]pipeline.SessionEvent{
 		id: conversation("pre", base.Add(-time.Hour), 2468, 700_000),
@@ -697,7 +697,7 @@ func TestSessionContextFor_AStatedServerFigureBeatsAStaleUnstatedLocalOne(t *tes
 // AND MERGING CAN MOVE AN UNSTATED FIGURE THE OTHER WAY, which is the mirror of the test above and
 // the reason sessionContextFor's doc no longer reads as though merging can only improve a row.
 //
-// REPRODUCED THROUGH THE REAL PATH, not constructed: abctl attached mid-session and had followed a
+// REPRODUCED THROUGH THE REAL PATH, not constructed: agentop attached mid-session and had followed a
 // compaction correctly, while the server's fold — older, and with the longer memory — still held the
 // pre-compaction turn. The unstated arm LEADS ON Msgs, so 2,468 retained messages outrank the
 // client's post-compaction 952 and the merge hands the column back to the stale figure. That row
@@ -706,7 +706,7 @@ func TestSessionContextFor_AStatedServerFigureBeatsAStaleUnstatedLocalOne(t *tes
 // THE ORDERING IS NOT THE BUG HERE, so this test pins the behaviour rather than forbidding it. It is
 // the known cost of the message-count fallback, stated in pipeline.PromptContextOf: with no role to
 // read, a compaction leaves the longer pre-compaction request retained and the gauge keeps showing
-// the old context. abctl only had the better answer by the accident of having attached later, which
+// the old context. agentop only had the better answer by the accident of having attached later, which
 // is not a rule the merge can prefer. If a rule is ever found that does better, it belongs in
 // better() for BOTH combines, and this expectation should change there.
 func TestSessionContextFor_AStaleServerFigureCanTakeTheColumnFromAFresherLocalOne(t *testing.T) {
@@ -730,7 +730,7 @@ func TestSessionContextFor_AStaleServerFigureCanTakeTheColumnFromAFresherLocalOn
 	}
 }
 
-// An old proxy sends nothing, and nothing must not blank a row abctl can answer for itself.
+// An old proxy sends nothing, and nothing must not blank a row agentop can answer for itself.
 //
 // AT THE FIGURE, AND NAMED FOR IT: nil is the merge's identity, which is a claim about
 // sessionContextFor and not about a cell. The ROW-level half has its own sibling —
@@ -749,7 +749,7 @@ func TestSessionContextFor_ANilServerFigureKeepsTheLocalOne(t *testing.T) {
 }
 
 // AND THE CACHED-ONLY ROW STILL DRAWS ITS GAUGE, which is the second call site — the one the server
-// does not list at all, so it passes nil and abctl's own fold is the ONLY possible source.
+// does not list at all, so it passes nil and agentop's own fold is the ONLY possible source.
 //
 // On the RENDERED ROW, for the headline test's reason: the figure is not the row. This is also the
 // path a future "the server always sends it now, drop the local fold" simplification breaks, and it

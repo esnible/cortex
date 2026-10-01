@@ -239,13 +239,13 @@ func TestFetch_KubectlError(t *testing.T) {
 func TestApply_PassesManifest(t *testing.T) {
 	captured := make([]byte, 0)
 	stub := func(ctx context.Context, args ...string) ([]byte, error) {
-		// Args should be: apply --server-side --field-manager=abctl --force-conflicts=true -f <path>
+		// Args should be: apply --server-side --field-manager=agentop --force-conflicts=true -f <path>
 		if len(args) < 4 || args[0] != "apply" || args[1] != "--server-side" {
 			t.Fatalf("kubectl args: %v", args)
 		}
 		hasFM, hasForce := false, false
 		for _, a := range args {
-			if a == "--field-manager=abctl" {
+			if a == "--field-manager=agentop" {
 				hasFM = true
 			}
 			if a == "--force-conflicts=true" {
@@ -253,7 +253,7 @@ func TestApply_PassesManifest(t *testing.T) {
 			}
 		}
 		if !hasFM || !hasForce {
-			t.Fatalf("expected --field-manager=abctl and --force-conflicts=true; got %v", args)
+			t.Fatalf("expected --field-manager=agentop and --force-conflicts=true; got %v", args)
 		}
 		path := args[len(args)-1]
 		b, err := os.ReadFile(path)

@@ -178,7 +178,7 @@ func renderTierRowsIn(c usage.Counts, width int, unit string) []string {
 			// at least one micro, so zero means this tier is absent from the modelled mix —
 			// and formatUSDCell(0) prints "$0.00", which asserts the tier was FREE. That is
 			// the "$0.00 for a figure that might be unknown" lie this package refuses in
-			// sessionMoneyCell and in `abctl cost`'s headline, arriving through a third door.
+			// sessionMoneyCell and in `agentop cost`'s headline, arriving through a third door.
 			// Found by rendering the panel rather than by a test: the fixture populated all
 			// four tiers, so no assertion could see it.
 			row = fmt.Sprintf("%-*s %s", tierLabelWidth, label, emptyCell)
@@ -232,7 +232,7 @@ func reasoningChildRow(c usage.Counts, tiers [pricing.NumTiers]int64, ok bool,
 	notKnown := clipRow(fmt.Sprintf("%-*s %s", tierLabelWidth, childTierLabel, emptyCell), width)
 
 	// THE ARITHMETIC IS usage.ApportionReasoning'S, not this file's — it sits beside
-	// ApportionTiers so the drawer, `abctl cost` and the JSON cannot disagree about a
+	// ApportionTiers so the drawer, `agentop cost` and the JSON cannot disagree about a
 	// figure derived three times.
 	//
 	// ok from ApportionTiers gates first: with no mix to apportion by there is no output
@@ -244,7 +244,7 @@ func reasoningChildRow(c usage.Counts, tiers [pricing.NumTiers]int64, ok bool,
 	// `tiers[tier] == 0` escape the tier rows make — the wrong borrowing. A TIER
 	// apportioning to zero is absent from the modelled mix, so its figure is unknown; a
 	// reasoning count of zero means the provider measured the split and it was nothing.
-	// "—" for a value we have discards it, and `abctl cost`'s token line prints
+	// "—" for a value we have discards it, and `agentop cost`'s token line prints
 	// "reasoning (of output) 0" for the same Counts, so the two surfaces told different
 	// stories about one measured fact.
 	//

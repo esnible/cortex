@@ -529,7 +529,7 @@ specific events through the `Custom` escape-hatch map.
 ### 1. Invocation record — field reference
 
 An `Invocation` says *which* plugin ran and *what* it did, in a
-5-value vocabulary shared across all plugins. abctl renders one row
+5-value vocabulary shared across all plugins. agentop renders one row
 per invocation. Every plugin that runs on a pipeline pass produces
 at least one.
 
@@ -542,7 +542,7 @@ type Invocation struct {
     Path    string           // request path; framework-filled
 
     // Plugin-specific diagnostic context. Opaque to the framework;
-    // abctl renders as key=value rows in the detail pane.
+    // agentop renders as key=value rows in the detail pane.
     Details map[string]string
 
     // Shadow is framework-set; plugins never write it. True when the
@@ -572,14 +572,14 @@ only in test harnesses where the plugin runs outside a
 
 `Reason` is a stable machine-readable label (e.g. `path_bypass`,
 `no_matching_route`, `jwt_failed`, `matched_tools/call`) that
-discriminates within an Action value. abctl filters can match
+discriminates within an Action value. agentop filters can match
 either — `/skip` shows every skip action regardless of reason;
 `/path_bypass` narrows to that specific skip flavour.
 
 **What to put in Details:**
 
 Suggested key conventions used by built-in plugins (operators
-already know these; abctl filters match substring on both key and
+already know these; agentop filters match substring on both key and
 value):
 
 - Auth gates (jwt-validation): `expected_issuer`, `expected_audiences`
@@ -606,7 +606,7 @@ stringify non-string data themselves. Conventions across built-ins:
 | `[]string` — JWT audiences | comma-joined (`"aud-a,aud-b"`) | RFC 7519 permits spaces in `aud`, so space-joining would be ambiguous |
 | `[]string` — other | comma-joined by default; pick a delimiter that can't appear in your values | operator split-on-delimiter needs one predictable choice |
 | `time.Time` | RFC 3339 | consistent with logs |
-| `time.Duration` | `strconv.FormatInt(d.Milliseconds(), 10)` + `_ms` suffix on the key | milliseconds integer is abctl-friendly |
+| `time.Duration` | `strconv.FormatInt(d.Milliseconds(), 10)` + `_ms` suffix on the key | milliseconds integer is agentop-friendly |
 
 If your field's elements might contain the delimiter, pick a different
 delimiter and document it on the field rather than escape — consumers
@@ -636,7 +636,7 @@ type MetricsProvider interface { Metrics() []Metric }
 
 `describePipeline` calls `Metrics()` while serving `/v1/pipeline`, so it must be
 safe for concurrent use with the request path and must not block — take a
-mutex, copy, release. Returning `nil` is fine; abctl renders `(none)`.
+mutex, copy, release. Returning `nil` is fine; agentop renders `(none)`.
 
 Rules worth honouring:
 
@@ -666,7 +666,7 @@ attribution.
 
 Adding a new named extension is a core-library change: edit
 `pipeline/extensions.go`, `pipeline/session.go` (wire + JSON round-
-trip), the listener (snapshot + recorder), and abctl if you want
+trip), the listener (snapshot + recorder), and agentop if you want
 bespoke rendering. Most new plugins don't need one — they emit an
 Invocation and publish extra context through the Custom map
 (below).
@@ -702,7 +702,7 @@ Rules for plugin-public events:
   store has no auth on it — only safe-to-log data belongs there.
 - **Key prefix MUST be the plugin's `Name()`.** Keeps namespaces clean
   so unrelated plugins don't collide.
-- **Payload schema is plugin-owned.** No central registry; abctl
+- **Payload schema is plugin-owned.** No central registry; agentop
   treats unknown keys as raw JSON in the detail pane.
 
 ### Graduation: when to promote map → named category
@@ -712,7 +712,7 @@ Graduate to a typed slot when ≥2 of these are true:
 1. **Two or more plugins share the shape.** That's the signal the
    "category" concept is worth codifying — it prevents N plugins from
    each shipping their own near-identical struct.
-2. **abctl or the session API grows conditional logic on the key.**
+2. **agentop or the session API grows conditional logic on the key.**
    If consumers already parse the payload, making the schema compile-
    checked is a net win.
 3. **The data is populated on nearly every deployment.** Core
@@ -917,7 +917,7 @@ prompt-injection filters, etc.) iterate the contract via
 `pctx.ContentSources()` and never import any specific parser package.
 
 This section is optional. A parser that doesn't implement `ContentSource`
-still works for session bucketing and abctl rendering; it just isn't visible
+still works for session bucketing and agentop rendering; it just isn't visible
 to content-oriented guardrails.
 
 ### The contract

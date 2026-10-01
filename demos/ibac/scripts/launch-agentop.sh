@@ -1,7 +1,7 @@
 #!/bin/bash
-# Launch abctl against the IBAC agent's authbridge sidecar.
+# Launch agentop against the IBAC agent's authbridge sidecar.
 #
-# Since abctl now ships with a built-in Namespaces → Pods picker that
+# Since agentop now ships with a built-in Namespaces → Pods picker that
 # spawns its own kubectl port-forward, this script is a thin wrapper
 # that just verifies prerequisites and runs the binary. The picker
 # discovers the agent automatically; the user picks team1/email-agent.
@@ -10,15 +10,15 @@ set -euo pipefail
 
 NAMESPACE=${1:-team1}
 AGENT_NAME=${2:-email-agent}
-ABCTL_BIN=${ABCTL_BIN:-/tmp/abctl-ibac-demo}
+AGENTOP_BIN=${AGENTOP_BIN:-/tmp/agentop-ibac-demo}
 
-# 1. The Makefile's build-abctl target builds the binary on demand.
+# 1. The Makefile's build-agentop target builds the binary on demand.
 #    If it's still missing, the user invoked the script directly —
 #    point them at the right entry point.
-if [[ ! -x "$ABCTL_BIN" ]]; then
-  echo "ERROR: abctl binary not found at $ABCTL_BIN." >&2
-  echo "       Run \`make show-result\` (which depends on build-abctl)" >&2
-  echo "       or \`make build-abctl\` first." >&2
+if [[ ! -x "$AGENTOP_BIN" ]]; then
+  echo "ERROR: agentop binary not found at $AGENTOP_BIN." >&2
+  echo "       Run \`make show-result\` (which depends on build-agentop)" >&2
+  echo "       or \`make build-agentop\` first." >&2
   exit 1
 fi
 
@@ -30,5 +30,5 @@ if ! kubectl -n "$NAMESPACE" get deploy "$AGENT_NAME" >/dev/null 2>&1; then
   exit 1
 fi
 
-# 3. Run abctl. The picker handles port-forward setup + teardown.
-"$ABCTL_BIN"
+# 3. Run agentop. The picker handles port-forward setup + teardown.
+"$AGENTOP_BIN"

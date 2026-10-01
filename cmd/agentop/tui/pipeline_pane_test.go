@@ -11,7 +11,7 @@ import (
 // "(app)" divider — must have exactly as many cells as the table has columns.
 // The divider previously carried 7 cells against 6 columns, which made
 // bubbles' table.renderRow panic ("index out of range [6] with length 6")
-// the moment abctl rendered any pipeline.
+// the moment agentop rendered any pipeline.
 func TestRebuildPipelineTable_AllRowsMatchColumnCount(t *testing.T) {
 	m := &model{
 		pipeline: &apiclient.PipelineView{

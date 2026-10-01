@@ -13,7 +13,7 @@ import (
 //
 // It no longer does any of that arithmetic. The proxy prices the saving where both halves
 // are in hand — the byte delta from the request, the tier and the token ratio from the
-// response — and publishes the result in the cost record. Doing it here meant abctl held a
+// response — and publishes the result in the cost record. Doing it here meant agentop held a
 // rate table's worth of assumptions, applied them to base-tier rates that were wrong past a
 // long-context threshold, and could disagree with the server after a hot reload swapped the
 // table between the event and the render.

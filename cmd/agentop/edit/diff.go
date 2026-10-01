@@ -18,7 +18,7 @@ var (
 // by newlines.
 //
 // LCS is O(N*M) in the line count; pipeline subtrees are typically <50
-// lines so the cost is negligible. The diff is intended for the abctl
+// lines so the cost is negligible. The diff is intended for the agentop
 // edit confirmation overlay — it shows the user every line that
 // changed, in original order.
 func Diff(old, new []byte) string {

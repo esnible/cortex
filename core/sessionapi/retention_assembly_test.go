@@ -102,7 +102,7 @@ func TestLedgerSnapshot_CarriesTheCoverageShortfallMeasuredAtTheWindowsOwnInstan
 // the coverage figure is measured from the CLOCK. In that state a day can be reported outside
 // retention and still be summed into the total.
 //
-// Written because two comments claimed the opposite: `abctl cost` printed "any spend on them is
+// Written because two comments claimed the opposite: `agentop cost` printed "any spend on them is
 // outside the total" and usage.Snapshot's own doc said "that the total cannot include it is
 // certain". Both are false here, and in the direction that matters — the disclosure overstates
 // what is missing rather than hiding it. The wording on both now says "may".

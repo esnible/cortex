@@ -40,12 +40,12 @@ const (
 	bobSystemKeychain = "/Library/Keychains/System.keychain"
 )
 
-const bobUsage = `abctl configure bob — route IBM Bob through Cortex via its settings.json
+const bobUsage = `agentop configure bob — route IBM Bob through Cortex via its settings.json
 
 Usage:
-  abctl configure bob enable  [--yes] [--settings PATH] [--config PATH]
-  abctl configure bob disable [--yes] [--settings PATH] [--config PATH]
-  abctl configure bob status  [--settings PATH] [--config PATH]
+  agentop configure bob enable  [--yes] [--settings PATH] [--config PATH]
+  agentop configure bob disable [--yes] [--settings PATH] [--config PATH]
+  agentop configure bob status  [--settings PATH] [--config PATH]
 
 Flags:
   --yes            do not prompt for confirmation
@@ -62,17 +62,17 @@ left exactly as it was, and the first write copies the original to
 settings.json.bak and never overwrites that copy.
 
 disable removes "http.proxy" ONLY when it points at Cortex. A value that does
-not — a corporate proxy, say — is reported and left alone, because a proxy abctl
-did not write is not abctl's to delete.
+not — a corporate proxy, say — is reported and left alone, because a proxy agentop
+did not write is not agentop's to delete.
 
 The proxy is only half of it. Bob's requests are terminated by Cortex's TLS
 bridge, so Bob must also trust the bridge CA, and that is an OS trust-store
-change abctl does not make for you: it needs sudo, and a tool that silently
+change agentop does not make for you: it needs sudo, and a tool that silently
 escalates to alter machine-wide trust is not one you can audit. enable prints
 the command that does it, disable prints how to undo it, status prints how to
 check it.
 
-"abctl configure bobshell" is a different thing and the two are independent.
+"agentop configure bobshell" is a different thing and the two are independent.
 That one defines a "bob" shell function so typing "bob" runs through Cortex;
 this one configures what the editor does on its own.
 
@@ -98,7 +98,7 @@ var bobConfirm = func(path, what string, stdout io.Writer) bool {
 	return confirm(stdout)
 }
 
-// runBob dispatches `abctl configure bob`. Returns the process exit code.
+// runBob dispatches `agentop configure bob`. Returns the process exit code.
 func runBob(args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprint(stderr, bobUsage)
@@ -122,7 +122,7 @@ func runBob(args []string, stdout, stderr io.Writer) int {
 	switch action {
 	case "enable", "disable", "status":
 	default:
-		fmt.Fprintf(stderr, "abctl: unknown bob action %q (enable, disable, status)\n", action)
+		fmt.Fprintf(stderr, "agentop: unknown bob action %q (enable, disable, status)\n", action)
 		return 2
 	}
 
@@ -157,13 +157,13 @@ func runBob(args []string, stdout, stderr io.Writer) int {
 	}
 	yes := yesFlag != nil && *yesFlag
 	if fs.NArg() > 0 {
-		fmt.Fprintf(stderr, "abctl: bob %s takes no arguments (got %q)\n", action, fs.Arg(0))
+		fmt.Fprintf(stderr, "agentop: bob %s takes no arguments (got %q)\n", action, fs.Arg(0))
 		return 2
 	}
 
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
-		fmt.Fprintf(stderr, "abctl: cannot determine your home directory: %v\n", err)
+		fmt.Fprintf(stderr, "agentop: cannot determine your home directory: %v\n", err)
 		return 1
 	}
 	if *cortexCfgPath == "" {
@@ -176,7 +176,7 @@ func runBob(args []string, stdout, stderr io.Writer) int {
 			// line, which makes this a usage error rather than a failure. Unlike
 			// bobshell's off-platform arm there is no block of text to paste that
 			// would constitute an answer on its own.
-			fmt.Fprintf(stderr, "abctl: %v.\n  Pass --settings PATH to point at it.\n", perr)
+			fmt.Fprintf(stderr, "agentop: %v.\n  Pass --settings PATH to point at it.\n", perr)
 			return 2
 		}
 		*settingsPath = p
@@ -214,7 +214,7 @@ func bobSettingsPath(home string) (string, error) {
 	return filepath.Join(home, bobSettingsRel), nil
 }
 
-// bobOwnership is how sure abctl is that it wrote an http.proxy value.
+// bobOwnership is how sure agentop is that it wrote an http.proxy value.
 //
 // Three states rather than a bool, because the third one exists and a bool made a
 // caller answer it wrongly. Comparing the settings value against the address the
@@ -233,7 +233,7 @@ const (
 	// bobOurs: matches the address the config names, host and port.
 	bobOurs
 	// bobUnknown: the value is a loopback http proxy, but there is no config to
-	// compare it with. Shaped like something abctl writes and nothing contradicts
+	// compare it with. Shaped like something agentop writes and nothing contradicts
 	// it. disable treats this as removable; status says plainly that it is a guess.
 	bobUnknown
 )
@@ -372,7 +372,7 @@ func bobProxyIsListening(val string) bool {
 	return true
 }
 
-// bobTrustNote is the trust-store step abctl does NOT take, printed for the user
+// bobTrustNote is the trust-store step agentop does NOT take, printed for the user
 // to run.
 //
 // Printed rather than executed on purpose. Adding a root to the System keychain
@@ -382,7 +382,7 @@ func bobProxyIsListening(val string) bool {
 // keychain command too.
 //
 // caPath is ca.crt — the single bridge CA — and NOT bundle.crt, even though
-// bundle.crt is the file most of abctl's other CA messages name. The keychain is
+// bundle.crt is the file most of agentop's other CA messages name. The keychain is
 // ADDITIVE, so it wants one certificate; bundle.crt exists for the tools whose CA
 // setting REPLACES their trust store, and it holds the bridge CA followed by
 // every platform root. `add-trusted-cert -r trustRoot` on that file would install
@@ -395,7 +395,7 @@ func bobTrustNote(caPath string) string {
 	q := shellQuote(caPath)
 	if runtime.GOOS == "darwin" {
 		return "Bob must also trust the bridge CA, or every https request fails verification.\n" +
-			"  That is a machine-wide trust change needing sudo, so abctl does not make it\n" +
+			"  That is a machine-wide trust change needing sudo, so agentop does not make it\n" +
 			"  for you — run:\n\n" +
 			"    sudo security add-trusted-cert -d -r trustRoot \\\n" +
 			"      -k " + bobSystemKeychain + " " + q + "\n\n" +
@@ -471,7 +471,7 @@ func bobVerifyNote(caPath string) string {
 // bobWanted is the best-effort form of wantedFromConfig, for the two verbs that must
 // keep working when the config does not.
 //
-// Returns the proxy URL abctl would write and the CA path it would name, either of
+// Returns the proxy URL agentop would write and the CA path it would name, either of
 // which may be "" when the config is missing, unreadable or has no forward proxy.
 // enable does NOT use this — it needs a readable config and refuses without one.
 // disable and status do: a user who has uninstalled Cortex and wants Bob working
@@ -849,7 +849,7 @@ func bobWriteKey(path, key string, value any) error {
 	} else {
 		// Back the file up ONCE and never overwrite it, matching writeSettings: a
 		// second enable, or an enable/disable pair, must not replace the pristine
-		// pre-Cortex file with one abctl already edited.
+		// pre-Cortex file with one agentop already edited.
 		bak := path + ".bak"
 		if _, serr := os.Stat(bak); os.IsNotExist(serr) {
 			if werr := os.WriteFile(bak, src, 0o600); werr != nil {
@@ -893,7 +893,7 @@ func bobWriteKey(path, key string, value any) error {
 // choices and the message used to claim only the first. It writes <path>.bak from
 // the file's current contents ONLY when the file exists AND no .bak is there
 // already — never overwriting, because a second run would otherwise replace the
-// pristine pre-Cortex file with one abctl had already edited.
+// pristine pre-Cortex file with one agentop had already edited.
 //
 // So "a copy is kept as <path>.bak" was false twice over: on a settings file that
 // does not exist yet there is nothing to copy, and when a .bak survives from an
@@ -997,7 +997,7 @@ func bobNoDocument(settingsPath string) error {
 // bobNotInstalled is the refusal enable and disable share. One wording for both, because
 // the reason is the same and only the verb differs.
 func bobNotInstalled(what string, reason error, stderr io.Writer) int {
-	fmt.Fprintf(stderr, "abctl: %v.\n"+
+	fmt.Fprintf(stderr, "agentop: %v.\n"+
 		"  Nothing to %s. Start IBM Bob and change any setting so it writes the file,\n"+
 		"  or pass --settings with the path to a settings.json it does use.\n", reason, what)
 	return 1
@@ -1006,19 +1006,19 @@ func bobNotInstalled(what string, reason error, stderr io.Writer) int {
 func bobEnable(settingsPath, cortexCfgPath string, yes bool, stdout, stderr io.Writer) int {
 	want, cfg, err := wantedFromConfig(cortexCfgPath)
 	if err != nil {
-		fmt.Fprintf(stderr, "abctl: %v\n", err)
+		fmt.Fprintf(stderr, "agentop: %v\n", err)
 		return 1
 	}
 	// Same gate as claude-code and exec, and for the same reason: with the bridge
 	// off Cortex terminates no TLS, so pointing Bob at the proxy would send every
 	// https request into something that cannot answer it.
 	if !bridgeEnabled(cfg) {
-		fmt.Fprintf(stderr, "abctl: %v\n", errBridgeDisabled(cortexCfgPath))
+		fmt.Fprintf(stderr, "agentop: %v\n", errBridgeDisabled(cortexCfgPath))
 		return 1
 	}
 	caPath := want[envCACerts]
 	if caPath == "" {
-		fmt.Fprintf(stderr, "abctl: %s has no tls_bridge.ca_dir, so there is no CA for IBM Bob to\n"+
+		fmt.Fprintf(stderr, "agentop: %s has no tls_bridge.ca_dir, so there is no CA for IBM Bob to\n"+
 			"  trust; every https request would fail certificate verification. Enable the\n"+
 			"  TLS bridge first.\n", cortexCfgPath)
 		return 1
@@ -1030,7 +1030,7 @@ func bobEnable(settingsPath, cortexCfgPath string, yes bool, stdout, stderr io.W
 	}
 
 	if derr := bobDuplicateKey(settingsPath); derr != nil {
-		fmt.Fprintf(stderr, "abctl: %s: %v\n", settingsPath, derr)
+		fmt.Fprintf(stderr, "agentop: %s: %v\n", settingsPath, derr)
 		return 1
 	}
 
@@ -1040,10 +1040,10 @@ func bobEnable(settingsPath, cortexCfgPath string, yes bool, stdout, stderr io.W
 		// comments is bob's own: Bob is a VS Code fork, VS Code permits comments in
 		// settings.json and writes them back, so a commented file is the likeliest
 		// way to arrive here — and the generic "not valid JSON" does not hint at it.
-		fmt.Fprintf(stderr, "abctl: %v.\n"+
+		fmt.Fprintf(stderr, "agentop: %v.\n"+
 			"  If Bob has saved comments in it, that is why: VS Code allows them and this\n"+
 			"  command reads strict JSON. Remove them, or point --settings elsewhere —\n"+
-			"  abctl will not rewrite the file to strip them.\n", err)
+			"  agentop will not rewrite the file to strip them.\n", err)
 		return 1
 	}
 
@@ -1057,13 +1057,13 @@ func bobEnable(settingsPath, cortexCfgPath string, yes bool, stdout, stderr io.W
 		}
 		// bobNotOurs, not "!= bobOurs": enable reaches here only with a readable
 		// config (it exits 1 above otherwise), so bobUnknown cannot occur — but if
-		// that ever changes, a value abctl cannot judge should fall through to the
+		// that ever changes, a value agentop cannot judge should fall through to the
 		// write it is about to describe and prompt for, not be refused as foreign.
 		if bobOwns(existing, want[envProxy]) == bobNotOurs {
 			// Refuse rather than overwrite: the overwhelmingly likely owner of a
 			// foreign value is a corporate proxy the user needs, and this command
 			// keeps no record that could restore it.
-			fmt.Fprintf(stderr, "abctl: %s already sets %q to %q, which is not a Cortex proxy.\n"+
+			fmt.Fprintf(stderr, "agentop: %s already sets %q to %q, which is not a Cortex proxy.\n"+
 				"  Leaving it alone — remove or change it yourself if you want Cortex there\n"+
 				"  instead.\n", settingsPath, bobProxyKey, existing)
 			return 1
@@ -1082,7 +1082,7 @@ func bobEnable(settingsPath, cortexCfgPath string, yes bool, stdout, stderr io.W
 	default:
 		// A non-string (a number, an object) is not something this command wrote and
 		// not something it can compare. Same refusal as a foreign string.
-		fmt.Fprintf(stderr, "abctl: %s sets %q to a non-string value (%T).\n"+
+		fmt.Fprintf(stderr, "agentop: %s sets %q to a non-string value (%T).\n"+
 			"  Leaving it alone — fix it yourself if you want Cortex there instead.\n",
 			settingsPath, bobProxyKey, existing)
 		return 1
@@ -1106,14 +1106,14 @@ func bobEnable(settingsPath, cortexCfgPath string, yes bool, stdout, stderr io.W
 	}
 
 	if werr := bobWriteKey(settingsPath, bobProxyKey, proxy); werr != nil {
-		fmt.Fprintf(stderr, "abctl: %v\n", werr)
+		fmt.Fprintf(stderr, "agentop: %v\n", werr)
 		return 1
 	}
 
 	// Deliberately not "all Bob traffic now goes through Cortex": http.proxy is what
 	// VS Code's own networking and its extension host read, and it is the only
 	// documented lever — but an extension bundling its own HTTP client can bypass
-	// it. Claiming coverage abctl cannot deliver is how a user stops looking for the
+	// it. Claiming coverage agentop cannot deliver is how a user stops looking for the
 	// real reason something is unparsed.
 	fmt.Fprintf(stdout, "\nEnabled. %q in %s now points at Cortex — this is the setting\n"+
 		"VS Code forks read for their own networking and their extension host.\n\n",
@@ -1123,7 +1123,7 @@ func bobEnable(settingsPath, cortexCfgPath string, yes bool, stdout, stderr io.W
 	// proxy change without restarting is not something this command has verified.
 	fmt.Fprint(stdout, "Restart Bob so it re-reads its settings.\n\n")
 	fmt.Fprint(stdout, bobTrustNote(caPath))
-	fmt.Fprintf(stdout, "Undo with: abctl configure bob disable\n")
+	fmt.Fprintf(stdout, "Undo with: agentop configure bob disable\n")
 	return 0
 }
 
@@ -1133,13 +1133,13 @@ func bobDisable(settingsPath, cortexCfgPath, wantProxy, caPath string, yes bool,
 	}
 
 	if derr := bobDuplicateKey(settingsPath); derr != nil {
-		fmt.Fprintf(stderr, "abctl: %s: %v\n", settingsPath, derr)
+		fmt.Fprintf(stderr, "agentop: %s: %v\n", settingsPath, derr)
 		return 1
 	}
 
 	doc, err := readSettings(settingsPath)
 	if err != nil {
-		fmt.Fprintf(stderr, "abctl: %v\n", err)
+		fmt.Fprintf(stderr, "agentop: %v\n", err)
 		return 1
 	}
 
@@ -1158,7 +1158,7 @@ func bobDisable(settingsPath, cortexCfgPath, wantProxy, caPath string, yes bool,
 		// this file already satisfies it — there is nothing for the user to fix, so
 		// reporting a failure would be wrong.
 		fmt.Fprintf(stdout, "%s sets %q to %v, which is not a Cortex proxy.\n"+
-			"  Left alone — abctl removes only values it would have written.\n",
+			"  Left alone — agentop removes only values it would have written.\n",
 			settingsPath, bobProxyKey, existing)
 		return 0
 	}
@@ -1179,7 +1179,7 @@ func bobDisable(settingsPath, cortexCfgPath, wantProxy, caPath string, yes bool,
 		// uninstalled or --config was a typo, and only the second is worth retrying —
 		// so the reader needs to see WHICH file was not read to tell them apart.
 		// bobStatus's equivalent arm already names it; this one did not.
-		fmt.Fprintf(stderr, "abctl: %s sets %q to %q, which is shaped like a Cortex\n"+
+		fmt.Fprintf(stderr, "agentop: %s sets %q to %q, which is shaped like a Cortex\n"+
 			"  proxy but cannot be confirmed as one: %s could not be read, so there is no\n"+
 			"  address to compare against — every loopback http proxy looks like this.\n"+
 			"  Refusing to delete it unattended. Re-run without --yes to see the value and\n"+
@@ -1192,13 +1192,13 @@ func bobDisable(settingsPath, cortexCfgPath, wantProxy, caPath string, yes bool,
 	if owns == bobUnknown {
 		// Say it is a guess, because it is: with no readable config there is no
 		// address to compare against, and what is left is that the value is a
-		// loopback http proxy — the shape abctl writes. Removing it is still the
+		// loopback http proxy — the shape agentop writes. Removing it is still the
 		// right default (this is the uninstalled-Cortex case, when the off switch
 		// matters most), but the user should know which of the two answers they are
 		// getting, and the prompt below names the value before anything is written.
 		fmt.Fprintf(stdout, "  (%s\n"+
 			"   is not readable, so this is judged by shape alone — a loopback\n"+
-			"   proxy, which is what abctl writes)\n", cortexCfgPath)
+			"   proxy, which is what agentop writes)\n", cortexCfgPath)
 	}
 	fmt.Fprint(stdout, bobBackupNote(settingsPath))
 	if !yes && !bobConfirm(settingsPath, "Write to", stdout) {
@@ -1210,7 +1210,7 @@ func bobDisable(settingsPath, cortexCfgPath, wantProxy, caPath string, yes bool,
 	// above is that nothing else in the file changes, and a re-marshal would
 	// reorder and reindent every other key.
 	if werr := bobWriteKey(settingsPath, bobProxyKey, nil); werr != nil {
-		fmt.Fprintf(stderr, "abctl: %v\n", werr)
+		fmt.Fprintf(stderr, "agentop: %v\n", werr)
 		return 1
 	}
 
@@ -1244,12 +1244,12 @@ func bobStatus(settingsPath, cortexCfgPath, wantProxy, caPath string, stdout io.
 	//
 	// Always exit 0: "not configured" is a successful report, the same call
 	// claudeCodeStatus and bobShellStatus make. A non-zero status here would make
-	// `abctl configure bob status` unusable in a shell conditional for anything but
+	// `agentop configure bob status` unusable in a shell conditional for anything but
 	// "is it on".
 	// No document means no answer. The verdict this used to print was bobStatusNo with
 	// `"http.proxy" is unset` under it — a positive report about a file that is not
 	// there, indistinguishable from a real Bob that simply is not routed through Cortex.
-	// Saying so is the difference between "Bob is not configured" and "abctl cannot tell
+	// Saying so is the difference between "Bob is not configured" and "agentop cannot tell
 	// whether Bob is configured", and only the second is true here.
 	if nerr := bobNoDocument(settingsPath); nerr != nil {
 		fmt.Fprintf(stdout, "%s\n  %v\n", bobStatusUnknown, nerr)
@@ -1281,8 +1281,8 @@ func bobStatus(settingsPath, cortexCfgPath, wantProxy, caPath string, stdout io.
 	// Only a value this command recognises as the Cortex proxy is probed for liveness.
 	// Probing a foreign one warns that someone's corporate proxy is down, which is
 	// neither true (it is reachable from somewhere, just not here) nor any of Cortex's
-	// business — and it reads as a complaint about a setting abctl deliberately leaves
-	// alone. An unjudgeable loopback value IS probed: it is the shape abctl writes, and
+	// business — and it reads as a complaint about a setting agentop deliberately leaves
+	// alone. An unjudgeable loopback value IS probed: it is the shape agentop writes, and
 	// disable would act on it, so its liveness is informative.
 	verdict, listening := bobStatusNo, ""
 	switch existing := doc[bobProxyKey].(type) {
@@ -1301,7 +1301,7 @@ func bobStatus(settingsPath, cortexCfgPath, wantProxy, caPath string, stdout io.
 			// claiming "not a Cortex proxy" here would be a statement about the
 			// settings file resting on the absence of a config file. Report both.
 			add("%q=%s in %s", bobProxyKey, existing, settingsPath)
-			add("that is a loopback proxy, which is the shape abctl writes, but %s is not",
+			add("that is a loopback proxy, which is the shape agentop writes, but %s is not",
 				cortexCfgPath)
 			add("readable — so whether it is this machine's Cortex proxy cannot be told from here")
 		case wantProxy == "":
@@ -1322,7 +1322,7 @@ func bobStatus(settingsPath, cortexCfgPath, wantProxy, caPath string, stdout io.
 			// refusal are deliberate, so the advice is what changes: name the two
 			// steps that do work, in the order they work in.
 			add("to move it: change that value to %s by hand, or remove it and run", wantProxy)
-			add("`abctl configure bob enable`")
+			add("`agentop configure bob enable`")
 		default:
 			add("%q=%s in %s", bobProxyKey, existing, settingsPath)
 			add("that is not this machine's Cortex proxy, which %s puts at %s",
@@ -1338,7 +1338,7 @@ func bobStatus(settingsPath, cortexCfgPath, wantProxy, caPath string, stdout io.
 	// Second line, when it applies. Liveness is a separate axis from ownership, and
 	// this is a WARNING rather than part of the verdict because the setting is correct
 	// either way: Cortex being stopped is the normal state of a laptop, and the answer
-	// is `abctl service start`, not an edit to Bob's settings.
+	// is `agentop service start`, not an edit to Bob's settings.
 	if listening != "" && !bobProxyIsListening(listening) {
 		fmt.Fprintf(stdout, "WARNING: No proxy is listening at %s\n", listening)
 	}

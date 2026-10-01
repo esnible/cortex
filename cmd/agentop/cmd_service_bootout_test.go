@@ -53,12 +53,12 @@ func TestBootoutWaitIsWiredIn(t *testing.T) {
 
 func TestWaitBootedOut_RealLaunchd(t *testing.T) {
 	// Four skip paths meant this could report success having executed no assertion —
-	// on the very machine a release is built from. ABCTL_LAUNCHD_TESTS=required turns
+	// on the very machine a release is built from. AGENTOP_LAUNCHD_TESTS=required turns
 	// every skip into a failure, so a release check can prove the race was exercised
 	// rather than hope it was. This bug shipped because a path was never exercised; the
 	// guard against it should not be silently skippable.
 	skip := t.Skipf
-	if os.Getenv("ABCTL_LAUNCHD_TESTS") == "required" {
+	if os.Getenv("AGENTOP_LAUNCHD_TESTS") == "required" {
 		skip = t.Fatalf
 	}
 	if runtime.GOOS != "darwin" {

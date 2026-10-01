@@ -571,7 +571,7 @@ func (s *Server) modifyResponse(resp *http.Response) error {
 		s.Sessions.Rekey(session.DefaultSessionID, pctx.Extensions.A2A.SessionID)
 	}
 
-	// Mirror forwardproxy's response-phase event so abctl pairs every
+	// Mirror forwardproxy's response-phase event so agentop pairs every
 	// inbound request with a response row. Without this, A2A
 	// `message/stream` requests show up as orphan request events.
 	// SSE responses still get recorded — the body is whatever the
@@ -619,7 +619,7 @@ func (s *Server) errorHandler(w http.ResponseWriter, _ *http.Request, err error)
 // recordInboundReject emits a SessionDenied event for inbound requests
 // a pipeline plugin rejected. Lets gate plugins (jwt-validation and
 // future inbound guardrails) show operators what was blocked and why
-// via /v1/sessions and abctl, instead of the block appearing only as
+// via /v1/sessions and agentop, instead of the block appearing only as
 // a 401/403 on the caller side.
 //
 // Skips when no Invocations were appended — the deny came from a

@@ -302,7 +302,7 @@ func agentLabel(c *pipeline.EventClient) string {
 // the file does not. The ceiling is the same argument from the other side — the ring's
 // usage.plausibleTokenReport refuses a whole report whose counters exceed
 // pricing.MaxPlausibleTokens, so admitting one here would let the ring and the ledger
-// report different token totals for identical traffic, and abctl renders both.
+// report different token totals for identical traffic, and agentop renders both.
 //
 // PER FIELD RATHER THAN ALL-OR-NOTHING, the one place this deliberately differs from the
 // ring. The ring refuses the whole report because it can say so: Counts.RefusedTokenRequests
@@ -559,7 +559,7 @@ func (w *Writer) Record(_ string, e *pipeline.SessionEvent) {
 			// while this branch sets PricedRequests to 1.
 			//
 			// That inverts the subset: every consumer computes coverage as
-			// priceable-minus-priced (see abctl's `cost` command and its spend strip), and
+			// priceable-minus-priced (see agentop's `cost` command and its spend strip), and
 			// a NEGATIVE gap fails their `> 0` test, so a day mixing these responses with
 			// genuinely unpriced ones prints no coverage warning at all — the caveat
 			// disappears exactly when there is something to caveat.

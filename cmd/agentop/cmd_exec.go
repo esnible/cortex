@@ -21,7 +21,7 @@ import (
 // variables can be written once and reach every session including background
 // agents. Nothing else has that: curl, python, node, gh, a test suite all read
 // the process environment, and the alternative is a shell export that leaks into
-// every unrelated command in that terminal until it is unset. `abctl exec`
+// every unrelated command in that terminal until it is unset. `agentop exec`
 // scopes the routing to a single child.
 //
 // The values come from the same wanted() the enable path uses, so the two cannot
@@ -47,18 +47,18 @@ var execProxyVars = []string{"HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_p
 // A local copy went stale the moment GIT_SSL_CAINFO joined the managed set —
 // --print silently stopped emitting it — so exec reads the managed set instead.
 
-const execUsage = `abctl exec — run a command with Cortex's proxy and CA in its environment
+const execUsage = `agentop exec — run a command with Cortex's proxy and CA in its environment
 
 Usage:
-  abctl exec [--cortex-stats-url URL] -- COMMAND [ARG...]
-  abctl exec [--cortex-stats-url URL] --print
+  agentop exec [--cortex-stats-url URL] -- COMMAND [ARG...]
+  agentop exec [--cortex-stats-url URL] --print
 
-Everything after -- is passed to COMMAND exactly as given; abctl does not
+Everything after -- is passed to COMMAND exactly as given; agentop does not
 interpret it, so the command's own flags need no escaping:
 
-  abctl exec -- curl -sv https://api.anthropic.com/v1/messages
-  abctl exec -- claude --dangerously-skip-permissions
-  abctl exec -- bob
+  agentop exec -- curl -sv https://api.anthropic.com/v1/messages
+  agentop exec -- claude --dangerously-skip-permissions
+  agentop exec -- bob
 
 The child inherits your environment plus these, read from the RUNNING proxy's
 /config so they always match the process that will serve the request:
@@ -77,7 +77,7 @@ other in tls_bridge.ca_dir. Requires tls_bridge.mode: enabled.
 
 Values already in your environment are replaced for this child only; nothing is
 exported to your shell and no file is modified. Signals go to the child, and
-abctl exits with the child's exit status, so it is safe in a pipeline or a
+agentop exits with the child's exit status, so it is safe in a pipeline or a
 Makefile.
 
 Flags:
@@ -88,7 +88,7 @@ Flags:
                  and a proxy that is down is reported rather than yielding an
                  environment that points at nothing.
   --print        print the variables that would be set and exit, without running
-                 anything. Shell-quoted, so: eval "$(abctl exec --print)"
+                 anything. Shell-quoted, so: eval "$(agentop exec --print)"
                  Mutually exclusive with a command: --print emits settings for a
                  shell to keep (paths under the CA directory, which outlive this
                  process), whereas a command gets them for its own lifetime only.
@@ -99,7 +99,7 @@ was not found on PATH), or 2 for a usage error.
 
 // execEnvNotFound is the exit code for "command not found", following the shell
 // convention. A caller distinguishing "my command is missing" from "my command
-// failed" gets the same answer from `abctl exec` as from `sh -c`.
+// failed" gets the same answer from `agentop exec` as from `sh -c`.
 const execEnvNotFound = 127
 
 // runExec handles the `exec` subcommand. Returns the process exit code.
@@ -108,11 +108,11 @@ func runExec(args []string, stdout, stderr io.Writer) int {
 	//
 	// flag.Parse stops at -- and would leave the rest in fs.Args(), which sounds
 	// like enough, but it also stops at the first non-flag argument and at any flag
-	// it does not recognise. So `abctl exec curl -x` (no --) would be accepted with
-	// "curl" as a positional, and `abctl exec -- claude --config x` risks the child's
+	// it does not recognise. So `agentop exec curl -x` (no --) would be accepted with
+	// "curl" as a positional, and `agentop exec -- claude --config x` risks the child's
 	// own --config being read as ours if the delimiter were ever dropped. Requiring
 	// the delimiter and cutting on it first makes the boundary syntactic: nothing
-	// after it is ever parsed, so no child flag can collide with an abctl flag,
+	// after it is ever parsed, so no child flag can collide with an agentop flag,
 	// now or when a future flag is added.
 	before, cmdArgs, found := cutArgs(args, "--")
 
@@ -127,37 +127,37 @@ func runExec(args []string, stdout, stderr io.Writer) int {
 
 	// The delimiter is required to RUN something, not to print.
 	//
-	// `abctl exec --print` is a complete request on its own: it asks for the
+	// `agentop exec --print` is a complete request on its own: it asks for the
 	// environment, and there is no command for a delimiter to separate. Demanding
 	// `--print --` answered a well-formed request with usage text.
 	if !found && !*printOnly {
 		fmt.Fprint(stderr, execUsage)
 		return 2
 	}
-	// `abctl exec --print --` is the opposite mistake: the delimiter promises a
+	// `agentop exec --print --` is the opposite mistake: the delimiter promises a
 	// command and none follows. Refused rather than quietly read as plain --print —
 	// it is the empty case of the mutual exclusion below, and the same reasoning
 	// applies, so it gets the same answer.
-	// `abctl exec --` with nothing after it is a usage error knowable from argv, so
+	// `agentop exec --` with nothing after it is a usage error knowable from argv, so
 	// it is answered here rather than after the config fetch below. Diagnosed later,
 	// a user with Cortex down was told "no Cortex is running" and got exit 1 for what
 	// execUsage documents as exit 2 — and paid a pointless round-trip to learn it.
 	if found && !*printOnly && len(cmdArgs) == 0 {
-		fmt.Fprintln(stderr, "abctl: nothing to run after --")
+		fmt.Fprintln(stderr, "agentop: nothing to run after --")
 		fmt.Fprint(stderr, execUsage)
 		return 2
 	}
 	if found && *printOnly && len(cmdArgs) == 0 {
-		fmt.Fprintln(stderr, "abctl: --print takes no command, so `--` has nothing to separate.")
-		fmt.Fprintln(stderr, "  Use `abctl exec --print` on its own.")
+		fmt.Fprintln(stderr, "agentop: --print takes no command, so `--` has nothing to separate.")
+		fmt.Fprintln(stderr, "  Use `agentop exec --print` on its own.")
 		return 2
 	}
 	// Stray positional arguments before the delimiter are a mistake, not something
-	// to ignore: `abctl exec curl -- -sv` most likely means the user typed the
+	// to ignore: `agentop exec curl -- -sv` most likely means the user typed the
 	// command in the wrong place, and silently running `-sv` is a worse answer than
 	// saying so.
 	if fs.NArg() > 0 {
-		fmt.Fprintf(stderr, "abctl: unexpected argument %q before --; the command goes after --\n", fs.Arg(0))
+		fmt.Fprintf(stderr, "agentop: unexpected argument %q before --; the command goes after --\n", fs.Arg(0))
 		return 2
 	}
 
@@ -167,31 +167,31 @@ func runExec(args []string, stdout, stderr io.Writer) int {
 	// long their output is meant to last. --print emits paths for a shell to keep —
 	// the same ca.crt and bundle.crt that `claude-code enable` writes into
 	// settings.json — and those outlive any single invocation, because Cortex writes
-	// them, not abctl. Running a command is the opposite: one process, one lifetime.
+	// them, not agentop. Running a command is the opposite: one process, one lifetime.
 	// Asking for both in one breath is a contradiction about intent, not a spare
 	// argument, so it is refused the way an argument in the wrong place is rather
 	// than warned about and half-honoured.
 	if *printOnly && len(cmdArgs) > 0 {
-		fmt.Fprintf(stderr, "abctl: --print and a command are mutually exclusive.\n"+
+		fmt.Fprintf(stderr, "agentop: --print and a command are mutually exclusive.\n"+
 			"  --print emits environment settings to keep (paths under the CA directory,\n"+
 			"  which outlive this process); running a command applies them to that one\n"+
 			"  child. Pick one:\n"+
-			"    abctl exec --print               # print the settings\n"+
-			"    abctl exec -- %s\n",
+			"    agentop exec --print               # print the settings\n"+
+			"    agentop exec -- %s\n",
 			strings.Join(cmdArgs, " "))
 		return 2
 	}
 
 	inject, missingBundle, err := execEnv(*statsURL)
 	if err != nil {
-		fmt.Fprintf(stderr, "abctl: %v\n", err)
+		fmt.Fprintf(stderr, "agentop: %v\n", err)
 		return 1
 	}
 	// execEnv already dropped the replacing variables; say what that costs.
 	if missingBundle != "" {
-		fmt.Fprintf(stderr, "abctl: note: %s does not exist yet — Cortex writes it on first start.\n"+
+		fmt.Fprintf(stderr, "agentop: note: %s does not exist yet — Cortex writes it on first start.\n"+
 			"  Until then the child keeps its own trusted roots and only hosts the bridge\n"+
-			"  terminates will fail verification (abctl service start).\n", missingBundle)
+			"  terminates will fail verification (agentop service start).\n", missingBundle)
 	}
 
 	if *printOnly {
@@ -209,7 +209,7 @@ func runChild(argv []string, inject map[string]string, stdout, stderr io.Writer)
 	// would give, rather than arriving as a generic start failure.
 	path, err := exec.LookPath(argv[0])
 	if err != nil {
-		fmt.Fprintf(stderr, "abctl: %v\n", err)
+		fmt.Fprintf(stderr, "agentop: %v\n", err)
 		if errors.Is(err, exec.ErrNotFound) {
 			return execEnvNotFound
 		}
@@ -224,7 +224,7 @@ func runChild(argv []string, inject map[string]string, stdout, stderr io.Writer)
 	cmd.Args[0] = argv[0]
 	cmd.Env = mergeEnv(os.Environ(), inject)
 	// The child gets this process's real stdio, not a pipe: it may be interactive
-	// (`abctl exec -- claude`), and a pipe would cost it the terminal, so it would
+	// (`agentop exec -- claude`), and a pipe would cost it the terminal, so it would
 	// disable colour, refuse to prompt, or line-buffer its output. stdout/stderr
 	// are still honoured when a caller passed something else, which is what makes
 	// this testable.
@@ -232,18 +232,18 @@ func runChild(argv []string, inject map[string]string, stdout, stderr io.Writer)
 	cmd.Stdout = stdout
 	cmd.Stderr = stderr
 
-	// Signal handling splits by how the signal arrives, and abctl has to survive
+	// Signal handling splits by how the signal arrives, and agentop has to survive
 	// both kinds — it is a wrapper, so dying first strands the child on the terminal.
 	//
 	// tty-generated signals (SIGINT and SIGQUIT from a keystroke) go to the whole
 	// foreground process group, so the child already has them: there is no Setpgid
 	// here, deliberately, because an interactive child is supposed to see Ctrl-C.
-	// Relaying them would double the signal. But abctl must still CATCH them, or
+	// Relaying them would double the signal. But agentop must still CATCH them, or
 	// Go's default disposition kills the wrapper while the child keeps running —
-	// for `abctl exec -- claude`, where Ctrl-C interrupts a turn rather than
+	// for `agentop exec -- claude`, where Ctrl-C interrupts a turn rather than
 	// quitting, that leaves the shell prompt and claude both reading one stdin, with
 	// the terminal in whatever mode claude left it. Verified: with SIGINT unhandled,
-	// abctl exits -2 and the child survives. SIGQUIT is the same shape and
+	// agentop exits -2 and the child survives. SIGQUIT is the same shape and
 	// additionally dumps Go's goroutine stacks over the user's screen.
 	//
 	// So they are caught and dropped: notified, never forwarded. The runtime absorbs
@@ -254,12 +254,12 @@ func runChild(argv []string, inject map[string]string, stdout, stderr io.Writer)
 	// ignored dispositions across the exec (caught ones reset to default), so the
 	// child would inherit the ignore and Ctrl-C would stop reaching it at all.
 	//
-	// A signal aimed at abctl's PID alone is the other kind: `timeout 30 abctl exec
+	// A signal aimed at agentop's PID alone is the other kind: `timeout 30 agentop exec
 	// -- …`, a CI runner, or systemd sends SIGTERM to the wrapper only, and nothing
-	// reaches the child unless abctl passes it on. Those two ARE relayed.
+	// reaches the child unless agentop passes it on. Those two ARE relayed.
 	//
 	// Notify BEFORE Start: a signal landing between them would hit the default
-	// disposition and kill abctl with the child already running. The channel is
+	// disposition and kill agentop with the child already running. The channel is
 	// buffered, so one arriving in that window is held for the relay rather than
 	// dropped.
 	relayed := []os.Signal{syscall.SIGTERM, syscall.SIGHUP}
@@ -269,7 +269,7 @@ func runChild(argv []string, inject map[string]string, stdout, stderr io.Writer)
 
 	if err := cmd.Start(); err != nil {
 		signal.Stop(sigs)
-		fmt.Fprintf(stderr, "abctl: %s: %v\n", argv[0], err)
+		fmt.Fprintf(stderr, "agentop: %s: %v\n", argv[0], err)
 		return 1
 	}
 
@@ -290,7 +290,7 @@ func runChild(argv []string, inject map[string]string, stdout, stderr io.Writer)
 		for {
 			select {
 			case sig := <-sigs:
-				// Absorbed signals are caught so abctl survives them, and deliberately
+				// Absorbed signals are caught so agentop survives them, and deliberately
 				// NOT forwarded: the child already got them from the tty.
 				if slices.Contains(absorbed, sig) {
 					continue
@@ -317,7 +317,7 @@ func runChild(argv []string, inject map[string]string, stdout, stderr io.Writer)
 		}
 		// Not an ExitError: the command existed but could not be executed at all
 		// (a directory, no exec bit, bad interpreter line).
-		fmt.Fprintf(stderr, "abctl: %s: %v\n", argv[0], err)
+		fmt.Fprintf(stderr, "agentop: %s: %v\n", argv[0], err)
 		return 1
 	}
 	return 0
@@ -418,7 +418,7 @@ func execEnv(statsURL string) (env map[string]string, missingBundle string, err 
 // Comparison is case-sensitive on every platform, which is correct here: the
 // lowercase and uppercase proxy spellings are distinct variables that we set
 // deliberately, and folding them would collapse the four proxy names into one.
-// (Windows environments are case-insensitive, but abctl's proxy/CA story is a Unix
+// (Windows environments are case-insensitive, but agentop's proxy/CA story is a Unix
 // one.)
 func mergeEnv(env []string, inject map[string]string) []string {
 	out := make([]string, 0, len(env)+len(inject))

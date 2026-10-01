@@ -29,7 +29,7 @@ const ConfigDirEnv = "CLAUDE_CONFIG_DIR"
 // need different advice, so a caller printing a remedy must check the narrower sentinel
 // first rather than assuming this one means permissions.
 //
-// Exported because the repair is a CLI affordance: `abctl experimental
+// Exported because the repair is a CLI affordance: `agentop experimental
 // read-claude-sessions` names --merge=false as the way past, and only the command layer
 // knows its own flags. Callers discriminate with errors.Is.
 var ErrCorruptMetadata = errors.New("corrupt session metadata")
@@ -99,7 +99,7 @@ type Options struct {
 	// Requires Merge, and Harvest refuses the combination rather than trusting the
 	// caller: skipped transcripts contribute nothing to this harvest's map, so
 	// rebuilding the file from an incremental run would drop every session it
-	// skipped. This is the mode `abctl observe` uses, where the harvest is a side
+	// skipped. This is the mode `agentop observe` uses, where the harvest is a side
 	// effect of opening the viewer and a full scan of every transcript (measured:
 	// 0.73-1.18s over 207MB) is too much to pay before the first frame.
 	Incremental bool
@@ -180,8 +180,8 @@ type Result struct {
 //
 // The whole of the work, with none of the reporting: every count and warning comes back
 // on Result for the caller to print however suits it. That split is what lets one
-// implementation serve both `abctl experimental read-claude-sessions`, where the harvest
-// is the subject and reports in full, and `abctl observe`, where it is a side effect that
+// implementation serve both `agentop experimental read-claude-sessions`, where the harvest
+// is the subject and reports in full, and `agentop observe`, where it is a side effect that
 // must stay quiet.
 func Harvest(opts Options) (Result, error) {
 	if opts.Incremental && !opts.Merge {
@@ -245,7 +245,7 @@ func Harvest(opts Options) (Result, error) {
 			// where the entries actually go: the only ones a rebuild loses are those whose
 			// transcripts are gone, and refusing did not preserve those either — it just
 			// deferred the choice onto a user who had to know --merge=false to make it,
-			// while `abctl observe` showed no titles at all until they did. Since every
+			// while `agentop observe` showed no titles at all until they did. Since every
 			// launch read the same bad file, that state never cleared itself.
 			//
 			// The read failure stays a refusal, and the distinction is the whole safety
@@ -1854,7 +1854,7 @@ func ReadMetadata(path string) (map[string]SessionMetadata, error) {
 	defer f.Close() //nolint:errcheck // read-only
 	// BOUNDED at the same 16 MiB the viewer's own reader of this file uses, for the same reason:
 	// a stray large file at this path would otherwise be read whole and decoded before the viewer
-	// starts — `abctl observe` calls this synchronously to check the file is readable, so an
+	// starts — `agentop observe` calls this synchronously to check the file is readable, so an
 	// unbounded read stalls startup with nothing on screen to say why. Far past any real metadata
 	// file: the measured 192-session file is 74 KB.
 	//

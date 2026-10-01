@@ -38,8 +38,8 @@ func TestDecodeSessionView_MatchesTheBufferedDecode(t *testing.T) {
 				`"inference":{"model":"m","messages":[{"role":"user","content":"hi"}],`+
 				`"tools":[{"name":"t","description":"d","parameters":{"type":"object"}}]}}]}`,
 			at.Format(time.RFC3339Nano))},
-		// A field this abctl does not know must be skipped, not fatal: a newer proxy is a
-		// normal thing to point an older abctl at.
+		// A field this agentop does not know must be skipped, not fatal: a newer proxy is a
+		// normal thing to point an older agentop at.
 		{"unknown field", fmt.Sprintf(
 			`{"id":"s1","somethingNew":{"a":[1,2,{"b":null}]},"events":[{"seq":1,"at":%q,`+
 				`"direction":"outbound","phase":"request"}],"alsoNew":7}`,
@@ -166,9 +166,9 @@ func benchDecodeDoc(b *testing.B) []byte {
 	return doc
 }
 
-// BenchmarkDecodeSessionViewHeap reports what receiving one snapshot costs abctl, buffered
+// BenchmarkDecodeSessionViewHeap reports what receiving one snapshot costs agentop, buffered
 // against streamed-and-interned. It is the client-side counterpart of
-// sessionapi.BenchmarkSnapshotHeap, and the number this decode path exists to move: abctl
+// sessionapi.BenchmarkSnapshotHeap, and the number this decode path exists to move: agentop
 // was measured at 1.64GB against the proxy's 1.03GB, and was the only one of the two still
 // growing.
 //

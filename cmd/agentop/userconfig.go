@@ -12,19 +12,19 @@ import (
 	"github.com/rossoctl/cortex/cmd/agentop/tui"
 )
 
-// userCfgRel is abctl's own settings file, relative to the user's home.
+// userCfgRel is agentop's own settings file, relative to the user's home.
 //
 // A sibling of ~/.cortex/config.yaml (the PROXY's config), in the same tree but
 // under a distinct name, because the two have nothing to do with each other: one
-// is operator configuration the proxy reads at startup, this one is UI state abctl
+// is operator configuration the proxy reads at startup, this one is UI state agentop
 // writes back as the user works. Follows cortexCfgRel / stateRel and tui's
 // yankDirRel so there is one ~/.cortex tree rather than a new dotfile per tool.
-const userCfgRel = ".cortex/abctl-config.yaml"
+const userCfgRel = ".cortex/agentop-config.yaml"
 
-// userConfigPath returns ~/.cortex/abctl-config.yaml.
+// userConfigPath returns ~/.cortex/agentop-config.yaml.
 //
 // Errors rather than falling back to a relative path: a settings file written into
-// whatever directory abctl happened to start in would be found again only by
+// whatever directory agentop happened to start in would be found again only by
 // accident, and the caller's fallback (no persistence) is honest about what
 // happened. UserHomeDir only fails when $HOME is unset — a bare `env -i`, some
 // systemd units — so this costs nothing anyone hits by accident.
@@ -50,7 +50,7 @@ func userConfigPath() (string, error) {
 // scolding a first run for that would be noise on every fresh machine. Anything
 // else — unreadable, unparseable, a directory where a file should be — warns once
 // on warn and continues, because silently ignoring a file the user hand-edited
-// would look like abctl ignoring their edit.
+// would look like agentop ignoring their edit.
 //
 // warn is an io.Writer rather than a hardcoded os.Stderr so tests assert on the
 // message. Callers must pass a writer that is safe to use before bubbletea takes
@@ -62,13 +62,13 @@ func loadUserConfig(path string, warn io.Writer) tui.UserSettings {
 	body, err := os.ReadFile(path)
 	if err != nil {
 		if !errors.Is(err, os.ErrNotExist) {
-			fmt.Fprintf(warn, "abctl: ignoring %s: %v; using default settings\n", path, err)
+			fmt.Fprintf(warn, "agentop: ignoring %s: %v; using default settings\n", path, err)
 		}
 		return tui.UserSettings{}
 	}
 	var s tui.UserSettings
 	if err := yaml.Unmarshal(body, &s); err != nil {
-		fmt.Fprintf(warn, "abctl: ignoring %s: %v; using default settings\n", path, err)
+		fmt.Fprintf(warn, "agentop: ignoring %s: %v; using default settings\n", path, err)
 		// Discard the struct entirely rather than keeping what parsed: yaml.v3 can
 		// populate some fields before erroring, and half a config applied silently is
 		// harder to diagnose than none.
@@ -79,7 +79,7 @@ func loadUserConfig(path string, warn io.Writer) tui.UserSettings {
 
 // saveUserConfig writes s to path, creating ~/.cortex if it is not there.
 //
-// abctl does not otherwise create that directory — the proxy's writeBuiltinConfig
+// agentop does not otherwise create that directory — the proxy's writeBuiltinConfig
 // does, and tui's yank path is the one exception — so on a machine that has only
 // ever run the viewer, this is the first thing to make it. 0700 matches what
 // writeBuiltinConfig sets.
@@ -161,7 +161,7 @@ func saveUserConfig(path string, s tui.UserSettings) error {
 
 // fileHeader explains the file to whoever opens it, since it is meant to be
 // hand-editable.
-var fileHeader = []byte("# abctl user settings. Written by abctl; safe to hand-edit or delete.\n" +
+var fileHeader = []byte("# agentop user settings. Written by agentop; safe to hand-edit or delete.\n" +
 	"# Columns not listed under events.columns keep their default — only deviations are recorded.\n")
 
 // writeAll is io.Writer.Write, indirected so a test can make a write fail. The

@@ -8,7 +8,7 @@
 // the proxy.
 //
 // The verdict is entirely configuration: `remove` names the tools to drop.
-// There is no learning, no state and no storage dependency. `abctl tools scan`
+// There is no learning, no state and no storage dependency. `agentop tools scan`
 // produces a candidate list from local transcripts, but the plugin itself only
 // ever does what it was told.
 //
@@ -139,7 +139,7 @@ func (p *ToolPrune) Configure(raw json.RawMessage) error {
 	}
 	if len(p.remove) == 0 {
 		slog.Info("tool-prune: configured with an empty remove list — no-op until names are added",
-			"hint", "abctl tools scan")
+			"hint", "agentop tools scan")
 	}
 	return nil
 }
@@ -504,7 +504,7 @@ func (p *ToolPrune) OnFinish(_ context.Context, pctx *pipeline.Context) {
 	// The saving is priced by the cost owner, not here.
 	//
 	// This function used to do it: estimate tokens from the byte delta, pick the tier,
-	// resolve rates, multiply. That was the third copy of the same arithmetic — abctl had
+	// resolve rates, multiply. That was the third copy of the same arithmetic — agentop had
 	// one and litellm-budget-track had another — and this plugin's job is reducing
 	// tokens, not accounting for money. It now reads the figure attributed to it and
 	// aggregates, so the pane and the ledger cannot disagree about what was saved.
@@ -590,7 +590,7 @@ func (p *ToolPrune) noteDrift(observed []pipeline.InferenceTool) {
 		if len(missing) > 0 {
 			slog.Warn("tool-prune: configured tools not present in the observed manifest — list may be stale",
 				"missing", strings.Join(missing, ","),
-				"hint", "re-run abctl tools scan")
+				"hint", "re-run agentop tools scan")
 		}
 	})
 }

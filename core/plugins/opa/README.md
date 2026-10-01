@@ -601,4 +601,4 @@ The plugin records `Invocation` entries for every decision:
 | `deny` | `opa_not_ready` | OPA not yet initialized (bundle not loaded) |
 | `skip` | `no_policy_rule` | Decision path undefined in bundle (no rule for this phase) |
 
-These appear in the session events API (`:9094`) and in `abctl`.
+These appear in the session events API (`:9094`) and in `agentop`.

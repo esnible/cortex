@@ -85,7 +85,7 @@ func TestSessionsPane_CachedOnlyRowCarriesTheTitle(t *testing.T) {
 // LoadSessionMetadata reads what the harvester writes, and answers empty for every failure.
 //
 // The absent case is the contract that matters: it is the state of every machine until
-// someone runs `abctl experimental read-claude-sessions`, and it must be silent rather than
+// someone runs `agentop experimental read-claude-sessions`, and it must be silent rather than
 // an error the viewer has to render.
 func TestLoadSessionMetadata(t *testing.T) {
 	dir := t.TempDir()
@@ -316,10 +316,10 @@ func TestSessionLabelAndHeader(t *testing.T) {
 	if got, want := m.sessionLabel("id-3"), "id-3"; got != want {
 		t.Errorf("sessionLabel for a blank title = %q, want the bare id %q", got, want)
 	}
-	if got, want := m.sessionHeader("id-1", ""), "abctl · fix the parser (id-1)"; got != want {
+	if got, want := m.sessionHeader("id-1", ""), "agentop · fix the parser (id-1)"; got != want {
 		t.Errorf("events header = %q, want %q", got, want)
 	}
-	if got, want := m.sessionHeader("id-1", "event"), "abctl · fix the parser (id-1) · event"; got != want {
+	if got, want := m.sessionHeader("id-1", "event"), "agentop · fix the parser (id-1) · event"; got != want {
 		t.Errorf("detail header = %q, want %q", got, want)
 	}
 }
@@ -351,7 +351,7 @@ func TestSessionHeader_DoesNotClipWhenThereIsRoom(t *testing.T) {
 // m.width: the constants it replaced were 36 and 24, and a fixed 36 leaves a titled session
 // showing only its title with the id — the part a bug report has to quote — cut off entirely.
 // Second, the surviving end is the RIGHT one, so what a narrow terminal keeps is the id and
-// the leaf of the path rather than the "abctl · " that is on every screen anyway.
+// the leaf of the path rather than the "agentop · " that is on every screen anyway.
 func TestSessionHeader_ClipsToTerminalWidthFromTheLeft(t *testing.T) {
 	const id = "0e61b82d-8578-4d16-a18e-1d085ca678fc"
 	const title = "/Users/someone/src/cortex/.worktrees/claudesessions/authbridge/cmd/agentop"
@@ -370,7 +370,7 @@ func TestSessionHeader_ClipsToTerminalWidthFromTheLeft(t *testing.T) {
 		if !strings.HasSuffix(got, "("+id+")") {
 			t.Errorf("width %d: header lost the id: %q", w, got)
 		}
-		if !strings.HasPrefix(got, "abctl · …") {
+		if !strings.HasPrefix(got, "agentop · …") {
 			t.Errorf("width %d: want a left-clipped label after the prefix, got %q", w, got)
 		}
 	}
@@ -1037,7 +1037,7 @@ func TestLooksLikePath(t *testing.T) {
 		{"/review some/path.md", false}, // a space before the second slash
 		{"/clear", false},               // one segment
 		{"/fix-ocr", false},
-		{"how do I build abctl?", false},
+		{"how do I build agentop?", false},
 		{"src/cortex/authbridge", false}, // no leading slash
 		{"", false},
 	} {
@@ -1862,7 +1862,7 @@ func TestUntitledMisses_SameUnnameableRowKeepsBackingOff(t *testing.T) {
 // TestUntitledMisses_ReturningSessionCountsAsNew pins that the set is rebuilt, not appended to.
 //
 // A row that leaves the list and comes back is a new row to an operator watching the pane, and
-// abctl's own docs note a session id can be re-created after eviction. An append-only set would
+// agentop's own docs note a session id can be re-created after eviction. An append-only set would
 // remember it as "already counted" and make its first title wait out a backoff earned before it
 // went away.
 func TestUntitledMisses_ReturningSessionCountsAsNew(t *testing.T) {
@@ -2191,7 +2191,7 @@ func TestLoadSessionMetadata_AtTheReadCap(t *testing.T) {
 // The motivating case, and the reason the fallback exists at all: on the laptop this was found on,
 // every blank harvested entry belonged to an agent with no Claude Code transcript tree to read — but
 // one that routes through the proxy, so /v1/sessions had derived a title for exactly those sessions.
-// A blank TITLE was never "this session has no name", only "no name where abctl was looking".
+// A blank TITLE was never "this session has no name", only "no name where agentop was looking".
 func TestSessionsPane_ServedTitleFillsAnUnharvestedCell(t *testing.T) {
 	m := newServedTitleModel(t,
 		map[string]SessionMetadata{},
@@ -2612,7 +2612,7 @@ func TestSessionsPane_ServedTitleIsSanitized(t *testing.T) {
 	}
 }
 
-// EVERY CONTROL CLASS IS REPLACED, including the ones abctl used to leave to the producer.
+// EVERY CONTROL CLASS IS REPLACED, including the ones agentop used to leave to the producer.
 //
 // THIS TEST REPLACES A CHARACTERIZATION. sanitizeLabel covered the BIDI overrides and isolates
 // (U+202A-202E, U+2066-2069) and stopped there, so the plain MARKS — U+200E LRM, U+200F RLM,
@@ -2811,12 +2811,12 @@ func assertFixtureIsSlowPath(t *testing.T, s string) {
 	}
 }
 
-// THE SERVED TITLE IS CAPPED CLIENT-SIDE, and nothing upstream of abctl is what guarantees it.
+// THE SERVED TITLE IS CAPPED CLIENT-SIDE, and nothing upstream of agentop is what guarantees it.
 //
 // The pairing this closes: TestTitleCap_IsSafeOnlyBecauseTheRendererRemeasures covers the HARVESTED
 // title's cap against claude.MaxTitleLen, and the served title never touches that path. The proxy has
 // its own cap, but it is unexported in another module on purpose, /v1/sessions is unauthenticated, and
-// abctl is pointed at whatever host an operator names — so "the producer caps it" is not an assertion
+// agentop is pointed at whatever host an operator names — so "the producer caps it" is not an assertion
 // this side can make.
 //
 // WHY A LENGTH AND NOT A DEADLINE. What an uncapped title costs is not a malformed cell — truncLeft

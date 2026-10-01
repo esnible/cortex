@@ -394,7 +394,7 @@ func TestColumnPicker_OwnsTheKeyboard(t *testing.T) {
 
 // `q` must quit while the picker is open. A modal that traps the user until they
 // find its exit is worse than one that honours the key they already reach for, and
-// `q` means quit everywhere else in abctl.
+// `q` means quit everywhere else in agentop.
 func TestColumnPicker_QuitStaysLive(t *testing.T) {
 	m := newTestEventsModel(t)
 	m.handleKey(keyRune('c'))

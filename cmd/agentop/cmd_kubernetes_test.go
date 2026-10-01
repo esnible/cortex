@@ -49,13 +49,13 @@ func TestChooseEndpoint(t *testing.T) {
 // it takes kubernetes as an argument, so it is equally correct under either
 // default. Read from a fresh flag set the way runObserve builds one, so flipping
 // the registered default fails here rather than silently changing which Cortex a
-// bare `abctl observe` connects to.
+// bare `agentop observe` connects to.
 func TestKubernetesFlag_DefaultsToFalse(t *testing.T) {
 	// registerObserveFlags, not a flag set of this test's own: declaring
 	// "kubernetes" here with a default of its own choosing would assert that false
 	// equals false, and go on passing with production flipped to true — which is the
 	// one thing this test exists to catch.
-	fs := flag.NewFlagSet("abctl", flag.ContinueOnError)
+	fs := flag.NewFlagSet("agentop", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	f := registerObserveFlags(fs)
 	if err := fs.Parse(nil); err != nil {
@@ -63,7 +63,7 @@ func TestKubernetesFlag_DefaultsToFalse(t *testing.T) {
 	}
 	kubernetes := f.kubernetes
 	if *kubernetes {
-		t.Error("--kubernetes must default to false, so a bare `abctl observe` takes a live local Cortex")
+		t.Error("--kubernetes must default to false, so a bare `agentop observe` takes a live local Cortex")
 	}
 	// The flag package's own record of the default, which is what --help prints.
 	if got := fs.Lookup("kubernetes").DefValue; got != "false" {

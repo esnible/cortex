@@ -30,7 +30,7 @@ func (m *model) footerView() string {
 	// Yank is the case this exists for: the path is the longest thing the footer
 	// ever carries, and appending it after the ~32 columns of connection state,
 	// rate pushed it off the right edge on a narrow terminal — the user
-	// saw "yanked → /Users/you/.cortex/abctl-" and could not read the filename,
+	// saw "yanked → /Users/you/.cortex/agentop-" and could not read the filename,
 	// which is the whole point of showing it. Dropping the prefix while the notice
 	// is up buys those columns back; the prefix returns on the next keypress, and
 	// a sticky flash is by definition something the user just asked for and is
@@ -117,7 +117,7 @@ func (m *model) footerView() string {
 		status.WriteString(styleWarn.Render("   [sort: " + string(m.sortCol) + glyph + "]"))
 	}
 
-	// Flash message (e.g. "yanked → ~/.cortex/abctl-events/...").
+	// Flash message (e.g. "yanked → ~/.cortex/agentop-events/...").
 	if m.flash != "" && (m.flashSticky || time.Now().Before(m.flashUntil)) {
 		status.WriteString(styleTitle.Render("   " + m.flash))
 	}

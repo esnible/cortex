@@ -46,7 +46,7 @@ type entry struct {
 	//
 	// Nothing here can detect that, and nothing here needs to: the store cannot tell a
 	// re-created session from a trimmed one. A paging client compares wall-clock time
-	// rather than Seq for exactly this reason — see abctl's applyOlderPage. See also
+	// rather than Seq for exactly this reason — see agentop's applyOlderPage. See also
 	// pipeline.SessionEvent.Seq.
 	nextSeq uint64
 
@@ -55,7 +55,7 @@ type entry struct {
 	//
 	// INCREMENTAL BECAUSE THE ALTERNATIVE WAS A REGRESSION. These were first summed on
 	// demand, by decoding every event of every session inside ListSessions. That runs under
-	// the read lock, abctl re-fetches /v1/sessions every two seconds, and the event list is
+	// the read lock, agentop re-fetches /v1/sessions every two seconds, and the event list is
 	// UNCAPPED by default (see New) — so a long session put an unbounded number of
 	// json.Unmarshal calls on a timer, in front of a lock whose writer side is
 	// Store.Append on the proxy's request path. sumTokens beside it is a pointer-deref
@@ -379,7 +379,7 @@ func (s *Store) append(sessionID string, b *Bucket, event pipeline.SessionEvent)
 	// expensive thing on this path, and it touches no store state — so it has no business
 	// inside a critical section that blocks every reader and every other appender. Doing it
 	// here is also what lets ListSessions read two integers instead of decoding every event
-	// of every session on abctl's two-second poll; see entry.cost.
+	// of every session on agentop's two-second poll; see entry.cost.
 	money := moneyOf(&event)
 
 	// BEFORE THE LOCK FOR THE SAME REASON, and unlike sess.context.Add below — see the comment
@@ -596,7 +596,7 @@ func isIntentEvent(e pipeline.SessionEvent) bool {
 // events evict in chronological order; the protected intent stays
 // at its original index, leaving a temporal gap between it and the
 // first non-evicted event after it. That gap is visible in
-// /v1/sessions and abctl as a discontinuity in the timeline, which
+// /v1/sessions and agentop as a discontinuity in the timeline, which
 // is the right shape: the intent's append time is preserved
 // (consumers can correlate against the inbound request's wall-clock
 // timestamp) and chronological order across surviving events stays
@@ -832,11 +832,11 @@ type SessionSummary struct {
 	// render as a real one, so an absent key is what a client should expect for a session the
 	// events never named.
 	//
-	// ABSENT IS A DISPLAYED STATE NOW, not just an unread one. abctl renders this in its TITLE
+	// ABSENT IS A DISPLAYED STATE NOW, not just an unread one. agentop renders this in its TITLE
 	// column as a FALLBACK: it prefers a title harvested from Claude Code's transcripts and
 	// reaches for this one only when that harvest named nothing. So the sessions where this
 	// field decides what an operator sees are exactly those with no transcript on the machine
-	// running abctl — an agent that routes through the proxy without writing Claude Code
+	// running agentop — an agent that routes through the proxy without writing Claude Code
 	// transcripts is the case that motivated it. Do not assume a change here is invisible.
 	Title string `json:"title,omitempty"`
 	// Agent is the coding agent this session belongs to, as usage.AgentLabel names it, which is
@@ -1027,7 +1027,7 @@ func (s *Store) ListSessions() []SessionSummary {
 			Active:    id == s.activeID,
 			// Read, not computed — and unlike TotalTokens above this is NOT a walk. Folding the rule
 			// here instead would repeat the mistake entry.cost documents: O(events) per session
-			// under the read lock, on abctl's two-second poll, in front of a lock whose writer side
+			// under the read lock, on agentop's two-second poll, in front of a lock whose writer side
 			// is Append on the proxy's request path, with maxEvents unset by default.
 			PromptContext: sess.context.Publish(),
 		})
@@ -1271,7 +1271,7 @@ func (s *Store) isExpired(sess *entry, now time.Time) bool {
 //
 // Performance note: fan-out runs under s.mu, which serializes Append on the
 // subscriber list length. This is fine for the debug API's expected load
-// (O(1) live consumers: one abctl instance + maybe a curl tail). If the
+// (O(1) live consumers: one agentop instance + maybe a curl tail). If the
 // store ever needs to support many concurrent subscribers, refactor this
 // to an unlocked broadcast (snapshot the slice under the lock, send outside).
 func (s *Store) publishLocked(event pipeline.SessionEvent) {

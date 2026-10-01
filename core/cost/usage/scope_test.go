@@ -103,8 +103,8 @@ func TestScopeToAgent_DropsTheProvenanceMapsAndKeepsTheReadFacts(t *testing.T) {
 
 // The two whole-window residuals SURVIVE the narrowing, because a residual is a fact about the
 // window rather than about an agent — and because callers are already reading one off this
-// function's result: `abctl cost` prints UngroupedCostMicros at writeCostSummary's --agent note,
-// and abctl's usage pane prints it through tui.costUngroupedRow.
+// function's result: `agentop cost` prints UngroupedCostMicros at writeCostSummary's --agent note,
+// and agentop's usage pane prints it through tui.costUngroupedRow.
 //
 // PINNED HERE BECAUSE EVERY GUARD IT HAD WAS IN A CONSUMER. Measured on this tree: nilling
 // UngroupedCostMicros in ScopeToAgent fails two cmd/agentop tests, and nilling
@@ -138,11 +138,11 @@ func TestScopeToAgent_KeepsTheWindowResidualsForTheCallerToDisclose(t *testing.T
 	}
 }
 
-// KeepBuckets is the mode `abctl cost` asks for: it reads only window totals ON ITS SCOPED PATH,
+// KeepBuckets is the mode `agentop cost` asks for: it reads only window totals ON ITS SCOPED PATH,
 // so it wants no per-bucket work done there. The buckets and their Series come through untouched.
 //
 // THE QUALIFIER IS LOAD-BEARING and is restored from scope.go's own wording rather than rewritten:
-// `abctl cost --by` does read buckets (writeCostBreakdown folds them), so the same sentence without
+// `agentop cost --by` does read buckets (writeCostBreakdown folds them), so the same sentence without
 // "on its scoped path" is false of the command as a whole.
 func TestScopeToAgent_KeepBucketsLeavesTheSeriesIntact(t *testing.T) {
 	got, err := ScopeToAgent(scopeFixture(), "claude-code/2.1.270", KeepBuckets)

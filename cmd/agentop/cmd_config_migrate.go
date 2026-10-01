@@ -38,7 +38,7 @@ var listenerPins = []pinnedListener{
 		// in the config, and any added later, without a further migration.
 		key:   "bind_loopback_only",
 		value: "true",
-		comment: "Added by abctl: bind every listener to 127.0.0.1, including any not named\n" +
+		comment: "Added by agentop: bind every listener to 127.0.0.1, including any not named\n" +
 			"here. Without it a listener falls back to a preset default that binds every\n" +
 			"interface — on a laptop, the Wi-Fi.",
 		isFlag:          true,
@@ -47,13 +47,13 @@ var listenerPins = []pinnedListener{
 	{
 		key:             "health_addr",
 		value:           "127.0.0.1:47604",
-		comment:         "Added by abctl: unpinned, the preset binds health on :9091 — every interface.",
+		comment:         "Added by agentop: unpinned, the preset binds health on :9091 — every interface.",
 		unpinnedDefault: ":9091",
 	},
 	{
 		key:   "transparent_proxy_addr",
 		value: "127.0.0.1:47603",
-		comment: "Added by abctl: unpinned, the preset binds :8082 on every interface. --local skips\n" +
+		comment: "Added by agentop: unpinned, the preset binds :8082 on every interface. --local skips\n" +
 			"this listener but --config does not, and the service runs with --config.",
 		unpinnedDefault: ":8082",
 	},
@@ -100,7 +100,7 @@ func migrateConfig(path string, stdout io.Writer) (changed bool, err error) {
 
 	// Keep the previous file once, under a distinct name so it cannot be confused
 	// with the config itself.
-	bak := path + ".before-abctl-migrate"
+	bak := path + ".before-agentop-migrate"
 	if _, serr := os.Stat(bak); os.IsNotExist(serr) {
 		if werr := os.WriteFile(bak, raw, 0o600); werr != nil {
 			return false, fmt.Errorf("writing %s: %w", bak, werr)

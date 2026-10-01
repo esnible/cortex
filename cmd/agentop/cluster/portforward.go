@@ -59,7 +59,7 @@ type PortForwarder interface {
 // PortForward is a live tunnel to a pod. The caller MUST Close it
 // exactly once.
 type PortForward interface {
-	// Endpoint is the URL abctl points its apiclient at (:9094 session API).
+	// Endpoint is the URL agentop points its apiclient at (:9094 session API).
 	Endpoint() string
 	// StatusEndpoint is the URL of the agent's stat server (:9093 /reload/status).
 	StatusEndpoint() string
@@ -156,7 +156,7 @@ func (p *kubectlPortForward) Endpoint() string {
 }
 
 // StatusEndpoint is the URL of the agent's stat server (:9093) reached
-// via the picker's port-forward. abctl's edit flow polls /reload/status
+// via the picker's port-forward. agentop's edit flow polls /reload/status
 // here.
 func (p *kubectlPortForward) StatusEndpoint() string {
 	return "http://127.0.0.1:" + strconv.Itoa(p.statusPort)

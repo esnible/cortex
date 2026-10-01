@@ -104,8 +104,8 @@ func TestTunnelHeader_NoInvocations(t *testing.T) {
 	}
 }
 
-// The proxy writes the cost record under both the current and the legacy key, so an abctl
-// older than the rename keeps showing cost. This abctl reads the current one, so the detail
+// The proxy writes the cost record under both the current and the legacy key, so an agentop
+// older than the rename keeps showing cost. This agentop reads the current one, so the detail
 // view must show ONE record — two identical objects under two names give an operator no way
 // to tell which is authoritative.
 func TestFilterForDetail_ShowsOneCostRecord(t *testing.T) {
