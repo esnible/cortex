@@ -106,7 +106,7 @@ func main() {
 			// The old spelling, kept working and kept discoverable. Same spirit as the
 			// bare-`agentop` notice below: on stderr and not fatal, because anyone with
 			// this in a script or in muscle memory must not have it break under them —
-			// install.sh --claude-code still runs it, and the laptop docs still print it.
+			// v0.8.0's install.sh --claude-code runs it, for one.
 			//
 			// Printed HERE rather than inside runClaudeCode, which is what keeps the
 			// notice in exactly one place: `agentop configure claude-code` reaches

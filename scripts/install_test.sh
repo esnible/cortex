@@ -873,6 +873,105 @@ check "svc action: no identifiable holder + ports held -> ports-busy" "ports-bus
 check "svc action: exit 0 wins even with a foreign holder present" "supervised" \
 	"$(with_service_install_action 0 ok yes '84858 /co/.local/bin/cortex')"
 
+# --- quiet_service_install: what an install SHOWS of `agentop service install` ---
+#
+# A deny list of lines that are true but beside the point mid-install. The danger in a
+# filter on this output is the other direction — swallowing a warning or an error — so
+# most cases here are lines that must survive it.
+with_quiet_service_install() { # input on stdin
+	sed -n '/^quiet_service_install()/,/^}/p' "${INSTALL_SH}" >"${TMP}/qsi.sh"
+	printf 'quiet_service_install\n' >>"${TMP}/qsi.sh"
+	sh "${TMP}/qsi.sh"
+}
+# The lines a healthy re-install on macOS prints, as cmd_service.go renders them.
+check "quiet: a healthy re-install shows only its outcome" \
+	"Running as a launchd user agent, healthy." \
+	"$(with_quiet_service_install <<'EOF'
+  2 connection(s) will be cut. Clients reconnect on their next
+  request — a request in flight right now fails.
+Running as a launchd user agent, healthy.
+A supervisor process handles crashes (launchd will not restart these agents).
+  Captured session history is cleared: the store is in memory, so any
+  timeline you were reading in agentop starts over.
+EOF
+)"
+_qsi_keep='Waiting for the previous Cortex to stop (up to 30s)...
+Updated /h/.cortex/config.yaml (previous kept as /h/.cortex/config.yaml.bak):
+  + listener.bind_loopback_only: true   (was: false)
+agentop: launchctl bootstrap failed: 5: Input/output error
+agentop: the unit loaded but the supervisor does not report it running (exit 1).
+Already current: cortex is running under launchd user agent and healthy.
+  Nothing to change. Use `agentop service restart` to restart it anyway.'
+check "quiet: progress, migrations, warnings and errors all pass through" \
+	"${_qsi_keep}" "$(printf '%s\n' "${_qsi_keep}" | with_quiet_service_install)"
+# grep exits 1 when it selects nothing; under the installer's pipe that must not read
+# as a failure, nor take the status file's place.
+_qsi_st=0
+printf 'A supervisor process handles crashes (x).\n' | with_quiet_service_install >/dev/null || _qsi_st=$?
+check "quiet: dropping every line still exits 0" "0" "${_qsi_st}"
+# Each pattern must still occur, verbatim, where agentop prints it. A reworded line
+# fails safe — it simply shows again — but a pattern matching nothing is dead code
+# that reads as a working filter, so it is a red test here.
+_qsi_n=0
+_qsi_missing=""
+while IFS= read -r _p; do
+	_qsi_n=$((_qsi_n + 1))
+	grep -qF -- "${_p}" "${REPO_ROOT}/cmd/agentop/cmd_service.go" || _qsi_missing="${_qsi_missing} [${_p}]"
+done <<EOF
+$(sed -n '/^quiet_service_install()/,/^}/p' "${INSTALL_SH}" | sed -n "s/^[[:space:]]*-e '\([^']*\)'.*/\1/p")
+EOF
+check "quiet: the pattern list was read (guards the next check from passing vacuously)" "5" "${_qsi_n}"
+check "quiet: every pattern still occurs in cmd/agentop/cmd_service.go" "" "${_qsi_missing}"
+check "install.sh shows service install through the filter, and records it unfiltered" "1" \
+	"$(grep -cxF '		tee "${svc_out_file}" | quiet_service_install' "${INSTALL_SH}" || true)"
+
+# --- print_next_steps: the closing summary ---
+#
+# The one thing an install must end on is the command to run next. The rest is a table
+# whose rows depend on two facts: whether Claude Code was wired up, and whether a
+# service exists for `service stop` to act on.
+with_next_steps() { # wired supervised agentop_disp
+	{
+		sed -n '/^info() /p' "${INSTALL_SH}"
+		printf 'SUPERVISED="%s"\n' "$2"
+		printf "agentop_disp='%s'\n" "$3"
+		sed -n '/^print_rows()/,/^}/p' "${INSTALL_SH}"
+		sed -n '/^print_next_steps()/,/^}/p' "${INSTALL_SH}"
+		printf 'print_next_steps "%s"\n' "$1"
+	} >"${TMP}/ns.sh"
+	sh "${TMP}/ns.sh"
+}
+has() { # needle haystack -> yes/no
+	case "$2" in *"$1"*) printf yes ;; *) printf no ;; esac
+}
+# The descriptions start in one column: rows are "  CMD<pad>   DESC", and no command
+# holds three spaces in a row, so the end of the first run of 3+ spaces is the column.
+desc_columns() {
+	awk '/^  [^ ]/ { if (match($0, /   +[^ ]/)) print RSTART + RLENGTH - 1 }' |
+		sort -u | wc -l | tr -d '[:space:]'
+}
+_ns=$(with_next_steps 1 1 agentop)
+check "summary, wired: leads with running agentop" "yes" \
+	"$(has 'Next: run `agentop` to watch your agent traffic live.' "${_ns}")"
+check "summary, wired: offers the undo" "yes" "$(has 'agentop configure claude-code disable' "${_ns}")"
+check "summary, wired: does not offer enable again" "no" "$(has 'claude-code enable' "${_ns}")"
+check "summary, wired + supervised: offers service stop" "yes" "$(has 'agentop service stop' "${_ns}")"
+check "summary, wired: points every other agent at agentop exec" "yes" "$(has 'agentop exec -- <cmd>' "${_ns}")"
+check "summary, wired: the descriptions line up" "1" "$(printf '%s\n' "${_ns}" | desc_columns)"
+_ns=$(with_next_steps "" "" agentop)
+check "summary, not wired: says to send an agent through first" "yes" \
+	"$(has 'Next: send an agent through Cortex, then run `agentop`' "${_ns}")"
+check "summary, not wired: offers enable" "yes" "$(has 'agentop configure claude-code enable' "${_ns}")"
+check "summary, not wired: does not offer an undo for nothing" "no" "$(has 'disable' "${_ns}")"
+check "summary, unsupervised: no service stop (there is no service)" "no" "$(has 'service stop' "${_ns}")"
+check "summary, not wired: the descriptions line up" "1" "$(printf '%s\n' "${_ns}" | desc_columns)"
+_ns=$(with_next_steps 1 1 '"/Users/a b/.local/bin/agentop"')
+check "summary: a full path with a space keeps its quotes" "yes" \
+	"$(has '"/Users/a b/.local/bin/agentop" service stop' "${_ns}")"
+check "summary: a full path still lines up" "1" "$(printf '%s\n' "${_ns}" | desc_columns)"
+check "install.sh calls configure claude-code, not the renamed spelling" "0" \
+	"$(grep -cF '"${BIN_DIR}/agentop" claude-code' "${INSTALL_SH}" || true)"
+
 # --- pid_exe_path: the full path, because `comm` cannot carry one on Linux ---
 #
 # The bug this replaced: the path check used `ps -o comm=`. On Linux `comm` is the

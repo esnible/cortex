@@ -209,9 +209,8 @@ Options:
   --no-service     do not use the OS service supervisor (launchd/systemd); start
                    the proxy directly as a background process instead. Chosen
                    automatically when the supervisor turns out to be unavailable
-                   (e.g. a macOS seatbelt sandbox that blocks launchctl), and always
-                   prints the environment variables to point ANY AI harness at
-                   Cortex, not just Claude Code
+                   (e.g. a macOS seatbelt sandbox that blocks launchctl); either
+                   way it prints how to start, stop, and check it by hand
   --stop           stop a running Cortex and exit — the supervised service if one
                    is installed, and the background proxy from its pidfile. Does
                    not download, install, or start anything. Safe to re-run.
@@ -448,8 +447,7 @@ VERSION_REF="${SCRIPT_REF}"
 # It must NOT fire when the script is run as a LOCAL FILE — a clone, or a fix under test
 # (`./install.sh`, `sh install.sh`). That file is what the user chose to run; silently
 # re-fetching the newest release and running THAT instead is why a fix in a cloned repo
-# did nothing — the "Using the installer from vX" line ran the OLD released code and
-# died. `[ -f "$0" ] && [ -r "$0" ]` is the discriminator: a readable file at $0 means a
+# did nothing — the bootstrap quietly ran the OLD released code instead, and it died. `[ -f "$0" ] && [ -r "$0" ]` is the discriminator: a readable file at $0 means a
 # real local script (skip the re-exec), while the pipe leaves $0 as "sh" with no such
 # file. Also skipped: offline (AUTHBRIDGE_SKIP_DOWNLOAD=1, nothing to fetch), --stop
 # (fetches nothing, and the released target predates the flag), and the re-exec'd child
@@ -530,7 +528,9 @@ if [ -n "${_reexec}" ]; then
 			[ -n "${http}" ] || http="000"
 		fi
 		if [ "${http}" = "200" ] && [ -s "${boot}" ]; then
-			info "Using the installer from ${want_ref}."
+			# Not announced: once the child resolves the release, its "Downloading vX" or
+			# "Already at vX" line names it, so saying the same thing first was noise.
+			#
 			# set -e would abort the parent on a non-zero child before any of the
 			# lines below ran, leaking the downloaded script on every failed
 			# install. The if/else keeps the status and still cleans up.
@@ -840,6 +840,29 @@ service_install_action() { # status output
 	printf 'fallback\n'
 }
 
+# quiet_service_install is a filter on what `agentop service install` shows during an
+# install. It drops the lines that are true but beside the point here — why there are
+# two cortex processes, that a re-run cuts connections that reconnect on their own,
+# that agentop's timeline restarted — and passes everything else, so warnings, errors,
+# a config migration, and the "Waiting for the previous Cortex to stop" progress still
+# show. Run by hand, `agentop service install` prints all of them.
+#
+# A deny list, not an allow list, so it fails safe: if agentop rewords one of these,
+# that line shows again, rather than a new message going missing. install_test.sh checks
+# every pattern still occurs in cmd/agentop/cmd_service.go, so a reworded line is a
+# red test rather than a filter that quietly matches nothing.
+#
+# `|| true`: grep exits 1 when every line was dropped, which is not a failure.
+quiet_service_install() {
+	grep -v -F \
+		-e 'A supervisor process handles crashes' \
+		-e 'connection(s) will be cut. Clients reconnect on their next' \
+		-e 'a request in flight right now fails.' \
+		-e 'Captured session history is cleared' \
+		-e 'timeline you were reading in agentop starts over.' \
+		|| true
+}
+
 # Where the unsupervised proxy records its pid, so a service-less install still has
 # exactly one process to find, check, and stop.
 PROXY_PIDFILE="${CORTEX_DIR}/proxy.pid"
@@ -1029,31 +1052,65 @@ stop_cortex() {
 	fi
 }
 
-# print_env_instructions prints the environment variables that point ANY tool or AI
-# harness at Cortex — not just Claude Code, and not only via ~/.claude/settings.json.
-# ca_dir and the ports are read from the surrounding script at call time.
-print_env_instructions() {
-	info "  Point ANY AI tool / harness at Cortex with these environment variables:"
-	info "    HTTPS_PROXY=http://localhost:${DEMO_FORWARD_PORT}"
-	info "    HTTP_PROXY=http://localhost:${DEMO_FORWARD_PORT}"
-	info "    NODE_EXTRA_CA_CERTS=${ca_dir}/ca.crt        # Node tools (Claude Code, Codex, etc.); EXTENDS trust"
+# print_rows CMD DESC [CMD DESC]... prints a two-column table, the command column
+# padded to its widest entry so the descriptions line up whichever spelling of
+# agentop (bare, or a full path when BIN_DIR is not on PATH) the rows carry.
+print_rows() {
+	_pr_w=0
+	_pr_i=0
+	for _pr_a in "$@"; do
+		# Even positions (0, 2, ...) are commands; only they set the width.
+		if [ $((_pr_i % 2)) -eq 0 ] && [ "${#_pr_a}" -gt "${_pr_w}" ]; then
+			_pr_w=${#_pr_a}
+		fi
+		_pr_i=$((_pr_i + 1))
+	done
+	while [ "$#" -ge 2 ]; do
+		# shellcheck disable=SC2059 # the only variable in the format is the computed width
+		printf "  %-${_pr_w}s   %s\n" "$1" "$2"
+		shift 2
+	done
+}
+
+# print_next_steps prints the closing summary: one line saying what to run next, then
+# a short table of the other commands worth knowing. agentop_disp and SUPERVISED are
+# read from the surrounding script at call time.
+#
+# $1 is non-empty when Claude Code routes through Cortex. That decides the headline —
+# agentop has traffic to show only once something is routed — and whether the table
+# offers enable or disable.
+#
+# Every other tool or harness gets `agentop exec` rather than the environment
+# variables themselves. exec derives the same variables from the same config, and
+# `exec --print` prints them for a tool that cannot be wrapped (an IDE, a GUI app).
+# They used to be printed here in full: twenty lines on every install, ahead of the
+# one command the install is for.
+print_next_steps() { # wired
+	_ns_wired=$1
 	info ""
-	info "  Tools that REPLACE the trust store need the CA+roots bundle, not ca.crt:"
-	info "    SSL_CERT_FILE=${ca_dir}/bundle.crt          # Go, OpenSSL, and most others (Linux)"
-	info "    REQUESTS_CA_BUNDLE=${ca_dir}/bundle.crt     # Python requests / httpx"
-	info "    CURL_CA_BUNDLE=${ca_dir}/bundle.crt         # curl"
-	info "    GIT_SSL_CAINFO=${ca_dir}/bundle.crt         # git"
-	info ""
-	info "  Example — send one command through Cortex (works for any harness):"
-	info "    HTTPS_PROXY=http://localhost:${DEMO_FORWARD_PORT} \\"
-	info "      NODE_EXTRA_CA_CERTS=${ca_dir}/ca.crt \\"
-	info "      SSL_CERT_FILE=${ca_dir}/bundle.crt <your-agent-command>"
-	if [ "$(uname -s)" = "Darwin" ]; then
-		info ""
-		info "  On macOS, Go tools (go, gh) ignore SSL_CERT_FILE — trust the CA instead:"
-		info "    security add-trusted-cert -k ~/Library/Keychains/login.keychain-db \\"
-		info "      -p ssl ${ca_dir}/ca.crt"
+	if [ -n "${_ns_wired}" ]; then
+		info "Next: run \`${agentop_disp}\` to watch your agent traffic live."
+		set -- "${agentop_disp} tools scan" "propose unused tools to prune"
+	else
+		info "Next: send an agent through Cortex, then run \`${agentop_disp}\` to watch its traffic live."
+		set -- "${agentop_disp} configure claude-code enable" "send Claude Code through Cortex"
 	fi
+	set -- "$@" \
+		"${agentop_disp} exec -- <cmd>" "send any other agent through Cortex" \
+		"${agentop_disp} exec --print" "the same, as env vars to set yourself"
+	if [ -z "${_ns_wired}" ]; then
+		set -- "$@" "${agentop_disp} tools scan" "propose unused tools to prune"
+	fi
+	# `service stop` means nothing where no service was installed; print_local_start_help
+	# carries the pidfile kill for that path instead.
+	if [ -n "${SUPERVISED}" ]; then
+		set -- "$@" "${agentop_disp} service stop" "stop Cortex"
+	fi
+	if [ -n "${_ns_wired}" ]; then
+		set -- "$@" "${agentop_disp} configure claude-code disable" "undo the Claude Code setup"
+	fi
+	info ""
+	print_rows "$@"
 }
 
 # print_local_start_help prints how to start/stop/inspect the proxy when it runs
@@ -1225,7 +1282,7 @@ remove_stale abctl agentop
 # succeeds and then cannot run the command it just told you to run is the worst first
 # impression available, and the most common one.
 #
-# Consent, a backup, and a guarded block, matching what `agentop claude-code enable` does
+# Consent, a backup, and a guarded block, matching what `agentop configure claude-code enable` does
 # to settings.json — same pattern, no new concept. Declining keeps the old advice.
 offer_path_setup() {
 	_profile=""
@@ -1366,6 +1423,12 @@ case ":${PATH}:" in
 	*":${BIN_DIR}:"*) agentop_cmd="agentop" proxy_cmd="cortex" ;;
 	*) agentop_cmd="${BIN_DIR}/agentop" proxy_cmd="$proxy" ;;
 esac
+# agentop_disp is agentop_cmd as the summary prints it: quoted only when the path holds
+# a space, because a quoted bare "agentop" reads as a typo rather than a command.
+case "${agentop_cmd}" in
+	*" "*) agentop_disp="\"${agentop_cmd}\"" ;;
+	*) agentop_disp="${agentop_cmd}" ;;
+esac
 
 # Both skip paths have already said what they did ("Already at <v>" or "Using the
 # binaries already in ..."), so saying "Installed" after them would be both redundant
@@ -1398,7 +1461,7 @@ fi
 # installed the binaries and then died on `launchctl bootstrap failed` / a systemd
 # bus error. So we check access first (supervisor_usable), fall back to a plain
 # background process when it is missing, and either way print how to start it by hand
-# and the environment variables any AI harness needs — not just Claude Code.
+# and how to send any AI harness through it — not just Claude Code.
 
 # If the supervisor was not already ruled out by --no-service, check now
 # whether it can actually be driven. Unusable -> run unsupervised rather than die.
@@ -1499,9 +1562,13 @@ else
 	# agentop's exit status is carried through the pipe via a status file (POSIX sh has no
 	# PIPESTATUS). mktemp, not a predictable "$$" name, avoids the symlink-preplant shape
 	# (CWE-59); ensure_tmpdir has resolved a writable TMPDIR by now.
+	#
+	# What is SHOWN passes through quiet_service_install; what is RECORDED is everything,
+	# because tee writes the file before the filter sees a line.
 	svc_out_file=$(mktemp "${TMPDIR}/cortex-svc-out.XXXXXX")
 	svc_st_file=$(mktemp "${TMPDIR}/cortex-svc-st.XXXXXX")
-	{ "${BIN_DIR}/agentop" service install --yes --proxy "${BIN_DIR}/cortex" 2>&1; echo $? >"${svc_st_file}"; } | tee "${svc_out_file}"
+	{ "${BIN_DIR}/agentop" service install --yes --proxy "${BIN_DIR}/cortex" 2>&1; echo $? >"${svc_st_file}"; } |
+		tee "${svc_out_file}" | quiet_service_install
 	svc_status=$(cat "${svc_st_file}" 2>/dev/null || echo 1)
 	svc_out=$(cat "${svc_out_file}" 2>/dev/null || true)
 	rm -f "${svc_out_file}" "${svc_st_file}"
@@ -1574,77 +1641,45 @@ pidfile_process_unnamed || remove_stale authbridge-proxy cortex
 # silently starts *rewriting* it. It is also Claude-Code-specific — the scan reads
 # ~/.claude/projects — so for anyone driving a different agent it would be a
 # mutation with no upside. Opting in is one command, and it belongs to the person
-# who knows whether they want it.
-local_cfg="${CORTEX_DIR}/config.yaml"
-# Only when we are NOT about to do it ourselves: with --claude-code this told the
-# reader to run the exact command that runs two lines later. The prune hint moved to
-# the closing summary, so the middle of the flow carries no side quests.
-if [ -f "${local_cfg}" ] && [ -z "${WIRE_CLAUDE_CODE}" ]; then
-	info "  Point Claude Code at Cortex, then just run \`claude\`:"
-	info "    ${agentop_cmd} claude-code enable"
-	info ""
-fi
+# who knows whether they want it — so the closing summary names `tools scan`.
+
 # --claude-code: hand off to agentop, which owns the JSON merge (a shell-side edit
 # of a file holding API tokens is not worth attempting) and prompts on /dev/tty —
 # stdin here is the script itself when piped, so it cannot be read for an answer.
+#
+# The current spelling, `configure claude-code`: the old top-level `claude-code`
+# still works but prints a rename notice on every run, and every release that ships
+# an agentop at all (v0.8.0 on) has `configure`.
+wired=""
 if [ -n "${WIRE_CLAUDE_CODE:-}" ]; then
 	info ""
 	set +e
 	if [ -n "${ASSUME_YES}" ]; then
-		"${BIN_DIR}/agentop" claude-code enable --yes
+		"${BIN_DIR}/agentop" configure claude-code enable --yes
 	else
-		"${BIN_DIR}/agentop" claude-code enable
+		"${BIN_DIR}/agentop" configure claude-code enable
 	fi
 	cc_status=$?
 	set -e
 	case "${cc_status}" in
-		0)
-			info ""
-			info "  \"${agentop_cmd}\"                         watch traffic — and the \$ saved on every Claude Code prompt"
-			info "  \"${agentop_cmd}\" tools scan              propose unused tools to prune (the \$ saved then shows live in \"${agentop_cmd}\")"
-			# `service stop` is meaningless where no service could be installed, so do
-			# not offer it there — offer the pidfile kill for the unsupervised path.
-			if [ -z "${SUPERVISED}" ]; then
-				info "  kill \$(cat ${PROXY_PIDFILE})   stop Cortex (unsupervised)"
-			else
-				info "  \"${agentop_cmd}\" service stop            stop Cortex"
-			fi
-			info "  \"${agentop_cmd}\" claude-code disable     undo"
-			info ""
-			# Claude Code is wired up, but other tools/harnesses on this machine still
-			# need the environment variables — print them so this install is not
-			# Claude-Code-only, and show the manual start when unsupervised.
-			if [ -z "${SUPERVISED}" ]; then
-				print_local_start_help
-				info ""
-			fi
-			print_env_instructions
-			info ""
-			exit 0
-			;;
+		0) wired=1 ;;
 		3)
-			# Declined, or no terminal to ask on. A normal outcome — fall through to
-			# the manual instructions below.
-			info ""
-			info "  Claude Code left unchanged. To do it later:"
-			info "    \"${agentop_cmd}\" claude-code enable"
-			info ""
+			# Declined, or no terminal to ask on. A normal outcome — the summary below
+			# offers the same command to run later.
+			info "Claude Code left unchanged."
 			;;
 		*)
 			# Anything else went wrong (a foreign HTTPS_PROXY, unparseable settings).
 			# Reporting that as "left unchanged" and exiting 0 would claim a success
 			# that did not happen.
-			die "agentop claude-code enable failed (exit ${cc_status}); Cortex is running but Claude Code is not configured for it"
+			die "agentop configure claude-code enable failed (exit ${cc_status}); Cortex is running but Claude Code is not configured for it"
 			;;
 	esac
 fi
-info "  Watch traffic:   \"${agentop_cmd}\"   (also shows the \$ saved on every Claude Code prompt)"
-info "  Prune unused tools to save more:  ${agentop_cmd} tools scan --write ${CORTEX_DIR}/config.yaml"
-info "    (tools scan only proposes the prune list; the actual \$ saved shows live in \"${agentop_cmd}\".)"
-info ""
+print_next_steps "${wired}"
 if [ -z "${SUPERVISED}" ]; then
-	print_local_start_help
 	info ""
+	print_local_start_help
 fi
 # Said only when the CA actually CHANGED just now, and said late so it is the last
 # thing on screen rather than scrolled past. Silent on the common case — an upgrade
@@ -1652,25 +1687,11 @@ fi
 # is affected.
 ca_fp_after="$(ca_fingerprint)"
 if [ -n "${ca_fp_after}" ] && [ "${ca_fp_before}" != "${ca_fp_after}" ]; then
+	info ""
 	info "  NOTE: a new CA was created for this machine."
 	info "    Agents that were ALREADY RUNNING trust a different CA (or none) and"
 	info "    cannot be observed until restarted — a client reads its CA file once,"
 	info "    at startup. Traffic still flows, so nothing on their side will complain:"
 	info "    it tunnels through unparsed instead. Restart them to see their traffic."
-	info ""
-fi
-# The full, harness-agnostic environment block. `agentop claude-code enable` wires
-# these into ~/.claude/settings.json for Claude Code specifically; the variables
-# below are what every OTHER tool or agent needs, and are printed unconditionally so
-# this install is never Claude-Code-only.
-print_env_instructions
-info ""
-info "  Wire up Claude Code specifically (writes ~/.claude/settings.json):"
-info "    ${agentop_cmd} claude-code enable"
-info ""
-if [ -n "${SUPERVISED}" ]; then
-	info "  Stop it:         \"${agentop_cmd}\" service stop      (start / restart / status too)"
-else
-	info "  Stop it:         kill \$(cat ${PROXY_PIDFILE})   (running unsupervised)"
 fi
 info ""
