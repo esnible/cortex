@@ -176,6 +176,11 @@ func (m *model) fetchUsage() tea.Cmd {
 			//
 			// A FAILURE IS REPORTED, not swallowed. A scope stops matching on its own as the
 			// window moves past an agent's last request.
+			//
+			// Other is a fold of the series rather than one of them, so it is made one first.
+			if scope == otherAgents {
+				snap = foldOtherAgents(snap)
+			}
 			snap, err = usage.ScopeToAgent(snap, scope, usage.NarrowBuckets)
 		}
 		return usageLoadedMsg{snap: snap, windowUnits: windowUnits, req: req, err: err}

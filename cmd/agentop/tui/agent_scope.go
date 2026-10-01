@@ -12,9 +12,21 @@ import (
 // Unscoped it is the plain read. Scoped it asks the server to narrow, and where the answer carries
 // no agent echo — a server that predates agent= — narrows the group=agent series itself, the way
 // the usage pane always has.
+//
+// OTHER IS ALWAYS NARROWED HERE, never sent: it is no label the server knows, so agent=Other would
+// come back as zero. The cost is the breakdown — narrowed buckets carry no series, so every axis
+// is served as none, and the drawer says so (drawerScopeNote) as it does for a ring window.
 func fetchUsageScoped(ctx context.Context, client *apiclient.Client, window string, resolution time.Duration, agent string, group usage.Group) (*usage.Snapshot, error) {
 	if agent == "" {
 		return client.GetUsageWindow(ctx, window, resolution, "", group)
+	}
+	if agent == otherAgents {
+		all, err := client.GetUsageWindow(ctx, window, resolution, "", usage.GroupAgent)
+		if err != nil {
+			return nil, err
+		}
+		scoped := usage.NarrowToAgent(*foldOtherAgents(all), agent)
+		return &scoped, nil
 	}
 	snap, err := client.GetUsageWindowForAgent(ctx, window, resolution, "", agent, group)
 	if err != nil || snap.Agent == agent {
