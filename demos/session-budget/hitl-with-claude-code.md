@@ -60,7 +60,7 @@ Proxy, from the repo root:
 `:8082` must be free — the proxy always opens a transparent listener
 there even in `roles: [forward]`, and a stale `cortex` from
 a prior run will fail boot with `address already in use`. If that
-happens: `pkill -f cortex` and relaunch.
+happens: `pkill -x cortex` and relaunch.
 
 The proxy generates `cortex-ca/ca.crt` on first launch — that's the trust
 anchor Claude Code needs. Note that this path is **relative to the

@@ -293,7 +293,7 @@ pids=$(lsof -ti :9099 -sTCP:LISTEN); [ -n "$pids" ] && kill $pids
 # pkill -f approver may miss the go-run child (see "Reset between runs");
 # freeing :9099 directly is more reliable.
 pids=$(lsof -ti :9099 -sTCP:LISTEN); [ -n "$pids" ] && kill $pids
-pkill -f cortex
+pkill -x cortex
 docker rm -f sb-demo-redis
 ```
 

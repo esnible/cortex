@@ -285,7 +285,7 @@ agentop                      # the viewer, as usual
 ```
 
 What you give up: no restart after a crash, and nothing brings it back at login. Stop
-it with `kill $(pgrep -f cortex)` — there is no service to stop.
+it with `kill $(pgrep -x cortex)` — there is no service to stop.
 
 Two assumptions that do not hold in such environments, and what happens:
 
