@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -295,6 +296,29 @@ func TestSpendDrawer_SaysWhenOneAgentHasNoBreakdown(t *testing.T) {
 	m.Update(m.fetchSpendDrawer()())
 	if view := m.paneView(); !strings.Contains(view, "no model breakdown for one agent") {
 		t.Errorf("the drawer does not say the model breakdown is unavailable:\n%s", view)
+	}
+}
+
+// A scoped drawer the server DID break down — a recognised agent's last hour, served from its own
+// ring — heads the column with the axis and lists the agent's models, with no note.
+func TestSpendDrawer_ShowsOneAgentsBreakdownWhenServed(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		one := usage.Counts{Requests: 1, CostMicros: 760_000, PricedRequests: 1, PriceableRequests: 1}
+		_ = json.NewEncoder(w).Encode(usage.Snapshot{
+			Window: "1h0m0s", Group: usage.GroupModel, Agent: r.URL.Query().Get("agent"),
+			Totals: one, Priced: true,
+			Buckets: []usage.Bucket{{At: time.Now(), Counts: one, Series: map[string]usage.Counts{"claude-opus-5": one}}},
+		})
+	}))
+	defer ts.Close()
+	m := fitModel(t, paneSessions, 120, 50, nil)
+	m.client = apiclient.New(ts.URL)
+	m.agentScope = "claude-code"
+	m.spend.expanded = true
+	m.Update(m.fetchSpendDrawer()())
+	view := m.paneView()
+	if !strings.Contains(view, "BY MODEL") || !strings.Contains(view, "claude-opus-5") || strings.Contains(view, "breakdown for one agent") {
+		t.Errorf("the drawer does not show the served model breakdown:\n%s", view)
 	}
 }
 

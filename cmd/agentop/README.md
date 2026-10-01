@@ -1231,8 +1231,9 @@ says `agent=`. Against a server that names no session's agent, the list stays wh
 and its footer says `list not scoped`. The spend band and its drawer show that
 agent's figures, asked of the server with `/v1/usage?agent=`; against a server too
 old to answer that, agentop narrows the `group=agent` series itself, as the usage pane
-does. The drawer drops its agent axis, and a window the server cannot break down for
-one agent reads `BY NONE`. Unscoped, the sessions pane gains an `AGENT` column when
+does. The drawer drops its agent axis and breaks the agent's spend down by model or
+endpoint in every window. It reads `BY NONE` under `Other`, and against an older proxy
+that cannot break the last hour down for one agent. Unscoped, the sessions pane gains an `AGENT` column when
 two agents are listed, and the agents pane a `SESSIONS` count once sessions name
 their agent.
 

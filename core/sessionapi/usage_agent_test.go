@@ -122,9 +122,8 @@ func TestHandleUsage_AgentLabelBound(t *testing.T) {
 	}
 }
 
-// The ring keeps no per-agent tally by unit, so for one agent it serves group=currency as none:
-// for an agent in one unit, whose plain traffic the unscoped ring files under USD, and for one in
-// two. The ledger keeps a unit on every row and splits the agent by it.
+// Both producers split one agent by unit: the ring from that agent's own ring, the ledger from the
+// unit on every row. For an agent in one unit the ring still files its plain traffic under USD.
 func TestHandleUsage_AgentAndGroupCurrency(t *testing.T) {
 	tbl, err := pricing.Build(&pricing.Config{Endpoints: []pricing.EndpointConfig{{
 		Hosts: []string{"gw.bob"}, Unit: "Bobcoins",
@@ -159,8 +158,16 @@ func TestHandleUsage_AgentAndGroupCurrency(t *testing.T) {
 		}
 		ts, _ := newTestServer(t, WithUsage(agg))
 		_, body := fetchUsage(t, ts.URL, "?window=1h"+query)
-		if snap := decode(body); snap.Group != usage.GroupNone || len(usage.FoldSeriesAcrossWindow(snap.Buckets)) != 0 {
-			t.Errorf("ring, two units %v: group=%q series %v, want none", twoUnits, snap.Group, usage.FoldSeriesAcrossWindow(snap.Buckets))
+		snap := decode(body)
+		series := usage.FoldSeriesAcrossWindow(snap.Buckets)
+		wantUSD := int64(0)
+		if twoUnits {
+			wantUSD = 20_000
+		}
+		if snap.Group != usage.GroupCurrency || series["Bobcoins"].CostMicros != 10_000 ||
+			series[pricing.CurrencyUSD].Requests != 1 || series[pricing.CurrencyUSD].CostMicros != wantUSD {
+			t.Errorf("ring, two units %v: group=%q series %v, want Bobcoins 10000 and one USD request of %d",
+				twoUnits, snap.Group, series, wantUSD)
 		}
 	}
 

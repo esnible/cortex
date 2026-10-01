@@ -1254,10 +1254,12 @@ func addCoverageInto(m map[string]int64, k string, v int64, saturated *bool) {
 // a session that has produced no priceable traffic yet is a normal state, and
 // the caller already knows whether the session exists from /v1/sessions.
 func (a *Aggregator) Snapshot(window, resolution time.Duration, sessionID string, group Group) Snapshot {
-	return a.snapshot(window, resolution, sessionID, group, MaxSeriesInResponse)
+	return a.snapshot(window, resolution, sessionID, "", group, MaxSeriesInResponse)
 }
 
-func (a *Aggregator) snapshot(window, resolution time.Duration, sessionID string, group Group, maxSeries int) Snapshot {
+// snapshot reads one ring: sessionID's when set, else agent's when set, else every session's. A
+// ring that does not exist reads as zeroed buckets, for an agent as for a session.
+func (a *Aggregator) snapshot(window, resolution time.Duration, sessionID, agent string, group Group, maxSeries int) Snapshot {
 	if resolution < BucketWidth {
 		resolution = BucketWidth
 	}
@@ -1273,13 +1275,16 @@ func (a *Aggregator) snapshot(window, resolution time.Duration, sessionID string
 	defer a.mu.RUnlock()
 
 	ring := a.all
-	if sessionID != "" {
+	switch {
+	case sessionID != "":
 		r, ok := a.sessions[sessionID]
 		if !ok {
 			ring = nil // fall through: emits zeroed buckets at the right times
 		} else {
 			ring = r.buckets
 		}
+	case agent != "":
+		ring = a.agents[agent] // nil when the agent has sent nothing yet, as above
 	}
 
 	newest := a.now().Truncate(BucketWidth)

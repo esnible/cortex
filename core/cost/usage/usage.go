@@ -912,8 +912,23 @@ type Aggregator struct {
 	mu       sync.RWMutex
 	all      []bucket
 	sessions map[string]*sessionRing
-	maxSess  int
-	now      func() time.Time
+	// agents holds a whole ring per RECOGNISED coding agent, keyed by AgentLabel, so agent= can
+	// be answered with any grouping. The agent axis alone cannot do that: a bucket tallies each
+	// axis separately, so once a snapshot reads byAgent to find one agent there is nothing left
+	// to break that agent's traffic down by.
+	//
+	// ONLY pipeline.IsKnownAgent NAMES GET ONE, and that gate is the memory bound. An
+	// unrecognised agent's label is its raw User-Agent, set off-host, so a ring per label would
+	// let a caller grow this process by varying a header. The known names are a closed set in
+	// code, so nothing here is capped or evicted — and because nothing is evicted, a ring holds
+	// its agent's whole history and a narrowed total can never come up short.
+	//
+	// It can come up LONGER than the agent axis's row for the same agent, in one case: a minute
+	// with more than maxLabelsPerBucket agent labels files the late ones under (other) in byAgent,
+	// while the agent's own ring still counts them. The ring is the right figure there.
+	agents  map[string][]bucket
+	maxSess int
+	now     func() time.Time
 
 	// pending holds request-phase plugin names awaiting their response event,
 	// keyed by RequestID. See Record.
@@ -995,6 +1010,7 @@ func New(opts ...Option) *Aggregator {
 	a := &Aggregator{
 		all:      make([]bucket, NumBuckets),
 		sessions: make(map[string]*sessionRing),
+		agents:   make(map[string][]bucket),
 		pending:  make(map[string]*pendingRequest),
 		maxSess:  defaultMaxSessions,
 		now:      time.Now,
@@ -1113,6 +1129,17 @@ func (a *Aggregator) Record(sessionID string, e *pipeline.SessionEvent) {
 
 	t := at.Truncate(BucketWidth)
 	a.foldInto(a.all, t, sessionID, e, requestPlugins, ec, avoided)
+
+	// BEFORE the session ring, whose branch below returns early on both of its paths. See the
+	// agents field for why only a recognised agent gets a ring.
+	if agent := AgentLabel(e.Client); pipeline.IsKnownAgent(agent) {
+		ring, ok := a.agents[agent]
+		if !ok {
+			ring = make([]bucket, NumBuckets)
+			a.agents[agent] = ring
+		}
+		a.foldInto(ring, t, sessionID, e, requestPlugins, ec, avoided)
+	}
 
 	if ring, ok := a.sessions[sessionID]; ok {
 		ring.lastSeen = at
