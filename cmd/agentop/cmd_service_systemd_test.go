@@ -150,10 +150,10 @@ func TestSupervisorRunning_Linux(t *testing.T) {
 func TestLoadService_Linux(t *testing.T) {
 	// The daemon-reload/enable-now failure subtests below only prove loadService
 	// reports the right failure when systemctl fails — they say nothing about what
-	// gets invoked, in what order, on a run that succeeds. This closes that: the two
+	// gets invoked, in what order, on a run that succeeds. This closes that: the
 	// calls must happen in order, with --user and the exact unit name, not just "some
 	// two calls that happened to both exit 0".
-	t.Run("daemon-reload then enable --now, in that order, with the exact unit", func(t *testing.T) {
+	t.Run("daemon-reload, enable, then restart, in that order, with the exact unit", func(t *testing.T) {
 		p := servicePathsFixture(t)
 		logPath, logLine := callLog(t)
 		fakeSystemctl(t, "#!/bin/sh\n"+logLine+"\nexit 0\n")
@@ -162,8 +162,8 @@ func TestLoadService_Linux(t *testing.T) {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		calls := readCallLog(t, logPath)
-		want := []string{"--user daemon-reload", "--user enable --now cortex.service"}
-		if len(calls) != len(want) || calls[0] != want[0] || calls[1] != want[1] {
+		want := []string{"--user daemon-reload", "--user enable cortex.service", "--user restart cortex.service"}
+		if strings.Join(calls, "|") != strings.Join(want, "|") {
 			t.Errorf("systemctl calls = %v, want %v in that order", calls, want)
 		}
 	})
@@ -204,7 +204,7 @@ exit 1
 		}
 	})
 
-	t.Run("enable --now failure is reported", func(t *testing.T) {
+	t.Run("enable failure is reported", func(t *testing.T) {
 		p := servicePathsFixture(t)
 		fakeSystemctl(t, `#!/bin/sh
 case "$*" in
@@ -216,6 +216,26 @@ exit 1
 		err := loadService("linux", p, io.Discard)
 		if err == nil || !strings.Contains(err.Error(), "enable") || !strings.Contains(err.Error(), "nope") {
 			t.Errorf("err = %v, want it to name enable --now and the underlying reason", err)
+		}
+	})
+
+	// enable alone leaves a unit that is already running on the binary it started with,
+	// so an upgrade kept serving the old one: a v0.7.0 install upgraded under systemd
+	// was still running the deleted authbridge-proxy afterwards.
+	t.Run("restart failure is reported", func(t *testing.T) {
+		p := servicePathsFixture(t)
+		fakeSystemctl(t, `#!/bin/sh
+case "$*" in
+  *restart*)
+    echo "nope: start limit hit" >&2
+    exit 1 ;;
+esac
+exit 0
+`)
+		fakeLoginctl(t, "#!/bin/sh\necho 'Linger=yes'\nexit 0\n")
+		err := loadService("linux", p, io.Discard)
+		if err == nil || !strings.Contains(err.Error(), "restart") || !strings.Contains(err.Error(), "start limit") {
+			t.Errorf("err = %v, want it to name restart and the underlying reason", err)
 		}
 	})
 

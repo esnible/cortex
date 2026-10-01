@@ -228,8 +228,11 @@ func loadService(goos string, p servicePaths, progress io.Writer) error {
 	if out, err := exec.Command("systemctl", "--user", "daemon-reload").CombinedOutput(); err != nil {
 		return fmt.Errorf("systemctl --user daemon-reload: %v: %s", err, strings.TrimSpace(string(out)))
 	}
-	if out, err := exec.Command("systemctl", "--user", "enable", "--now", systemdUnit).CombinedOutput(); err != nil {
-		return fmt.Errorf("systemctl --user enable --now %s: %v: %s", systemdUnit, err, strings.TrimSpace(string(out)))
+	if out, err := exec.Command("systemctl", "--user", "enable", systemdUnit).CombinedOutput(); err != nil {
+		return fmt.Errorf("systemctl --user enable %s: %v: %s", systemdUnit, err, strings.TrimSpace(string(out)))
+	}
+	if out, err := exec.Command("systemctl", "--user", "restart", systemdUnit).CombinedOutput(); err != nil {
+		return fmt.Errorf("systemctl --user restart %s: %v: %s", systemdUnit, err, strings.TrimSpace(string(out)))
 	}
 	// Without lingering, a user unit stops at logout — which defeats the point on a
 	// headless or SSH-only box. Best-effort: it needs polkit on some systems.
