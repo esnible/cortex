@@ -138,7 +138,8 @@ All of this happens transparently via sidecar injection -- no application code c
 
 ## Top-Level Directory Structure
 
-There is no `authbridge/` subdirectory: what used to live there is the repo root.
+What used to live under `authbridge/` is the repo root. Only `authbridge/install.sh`
+remains there: it runs `scripts/install.sh`, for the URL v0.7.0 and its docs give.
 
 ```
 cortex/
