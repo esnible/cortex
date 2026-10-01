@@ -92,12 +92,13 @@ before any decrypted request exists, so it can only use `ActiveSession()`.
   be split by any concurrent traffic. The `tunnelLog` lock is held across the claim and
   the append, so a second multiplexed request on the same tunnel cannot land between
   them.
-- **Timestamped at recording, not at CONNECT.** The open row is stamped when it is
-  appended. Keeping the CONNECT's own time would put a row with an earlier `At` after
-  rows with later ones, and agentop's pager treats an older page whose last event is
-  later than the newer page's first as "session restarted" — a false flash at any page
-  boundary that fell between them. The cost is the 50–150 ms between CONNECT and first
-  request.
+- **Stamped with its first row's time, not the CONNECT's.** The open row takes the `At`
+  of the row it is appended with. Keeping the CONNECT's own time would put a row with an
+  earlier `At` after rows with later ones, and agentop's pager treats an older page whose
+  last event is later than the newer page's first as "session restarted" — a false flash
+  at any page boundary that fell between them. Stamping it at its own append would be a
+  few microseconds *later* than the request after it, the same fault in the other
+  direction. The cost is the 50–150 ms between CONNECT and first request.
 - **Flushed if nothing records.** A tunnel whose admitted handlers all finish without
   recording — none admitted, a body that failed to read — records the open on today's
   rule and a close, once `ServeConn` has returned and no admitted handler is still

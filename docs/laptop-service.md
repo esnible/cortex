@@ -86,7 +86,8 @@ Some limitations worth knowing:
   session of the same agent (by `User-Agent`). An agent's calls before its first header wait in a
   `pending:<agent>` bucket that its first session then absorbs, and a request from no
   known agent goes to `default` while two agents have both sent traffic in the last five
-  minutes (a tunnel's own row keeps today's attribution). Two sessions of the SAME agent
+  minutes (a bridged tunnel's own row goes wherever its first decrypted request goes, directly before
+  it; an opaque tunnel's row keeps today's attribution). Two sessions of the SAME agent
   still share by timing. It is on by default, including for a `~/.cortex/config.yaml`
   written before the setting existed; `session.client_affinity: false` turns it off and
   puts every header-less request back on timing. It is not hot-reloadable — restart the
