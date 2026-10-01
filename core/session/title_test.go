@@ -1239,6 +1239,48 @@ func TestSessionTitle_TruncatedLocalCommandBlockIsDropped(t *testing.T) {
 	})
 }
 
+// A LEADING ENVELOPE IS TITLED BY ITS BODY, not by the machinery that follows the close. Both shapes
+// are verbatim from live sessions, where each used to serve its own markup as the title.
+func TestSessionTitle_LeadingEnvelopeYieldsItsBody(t *testing.T) {
+	for _, tc := range []struct{ name, in, want string }{
+		{
+			"bash-input is titled by the command, not the output",
+			"<bash-input>git checkout main && git pull</bash-input>\n" +
+				"<bash-stdout>Switched to branch 'main'</bash-stdout><bash-stderr></bash-stderr>",
+			"git checkout main && git pull",
+		},
+		{
+			"session is titled by the ask, not the instructions after it",
+			"<session>\nWhy does main.go not list any sessions?\n</session>\n\n" +
+				"Write the title in the predominant language of the session.",
+			"Why does main.go not list any sessions?",
+		},
+		{"no machinery behind it", "<bash-input>git branch</bash-input>", "git branch"},
+		// Blank yields nothing rather than markup, so the walk reaches a real title.
+		{"an empty body names nothing", "<bash-input></bash-input>\n<bash-stdout>out</bash-stdout>", ""},
+		{"a blank body names nothing", "<bash-input>   </bash-input>\n<bash-stdout>out</bash-stdout>", ""},
+		// Anchored, like every other tag test here.
+		{
+			"prose mentioning the tag keeps its own words",
+			"what does <bash-input> mean in a transcript?",
+			"what does <bash-input> mean in a transcript?",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := candidateTitle(userEvent(tc.in)); got != tc.want {
+				t.Errorf("got %q, want %q", got, tc.want)
+			}
+		})
+	}
+	t.Run("a real prompt behind a blank envelope still names the session", func(t *testing.T) {
+		const want = "the real ask"
+		got := foldTitle(t, titleEvent("<bash-input></bash-input>\n<bash-stdout>x</bash-stdout>"), titleEvent(want))
+		if got != want {
+			t.Errorf("got %q, want %q", got, want)
+		}
+	})
+}
+
 // A /rename the user typed keeps winning; the block must not shadow the prefix that arm tests.
 // A /rename IS THE ONE TITLE THE USER TYPED, so the strip must hand it to the arm that reads it
 // rather than consuming it as machinery.
@@ -1312,6 +1354,11 @@ func TestQuickRank_DoesNotUnderPromiseOnLocalCommands(t *testing.T) {
 		localCommandOpen + "Caveat: truncated",
 		localCommandOpen + "Caveat: truncated\nprose behind it",
 		"<command-name>/x</command-name><command-args>a</command-args><local-command-stdout>truncated",
+		// Leading envelopes: a body settles at rankUserMsg, a blank one at rankNone.
+		"<bash-input>git branch</bash-input>\n<bash-stdout>out</bash-stdout>",
+		"<bash-input></bash-input>\n<bash-stdout>out</bash-stdout>",
+		"<session>\nthe ask\n</session>\n\ninstructions",
+		"<session>  </session>\n\ninstructions",
 	} {
 		settled, _ := titleFrom(content)
 		if guess := quickRank(content); guess > settled {

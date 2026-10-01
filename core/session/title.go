@@ -232,6 +232,17 @@ func titleFrom(content string) (int, string) {
 	if strings.HasPrefix(content, transcriptOpen) {
 		return rankNone, ""
 	}
+	// A LEADING ENVELOPE'S BODY IS THE TITLE, and what follows the close is machinery. Anchored like
+	// the arms around it, so prose quoting the tag keeps its own words.
+	for _, env := range leadingEnvelopes {
+		if !strings.HasPrefix(content, env[0]) {
+			continue
+		}
+		if t := between(content, env[0], env[1]); !foldsBlank(t) {
+			return rankUserMsg, t
+		}
+		return rankNone, ""
+	}
 	// AN ENVELOPE THAT IS THE WHOLE MESSAGE YIELDS ITS BODY OR NOTHING, and must never fall through
 	// to the generic rankUserMsg arm: falling through takes the LITERAL MARKUP as the title, which is
 	// non-blank, so foldsBlank cannot reject it and under first-wins it blocks the session's real
@@ -288,6 +299,18 @@ const (
 	localCommandOpen  = "<local-command-caveat>"
 	localCommandClose = "</local-command-caveat>"
 )
+
+// leadingEnvelopes wrap the user's own words in a tag the harness opens the message with, and are
+// followed by machinery rather than closing the message. The BODY is the title; extend the table to
+// cover more of them.
+//
+// Distinct from wholeMessageEnvelope, which requires the close to end the message. No live message
+// has that shape for these tags (measured: 0 of 22), because something always follows — captured
+// output after <bash-input>, title-writing instructions after <session>.
+var leadingEnvelopes = [][2]string{
+	{"<bash-input>", "</bash-input>"},
+	{"<session>", "</session>"},
+}
 
 // argsOpen / argsClose wrap the arguments a user typed after a command name. Named because
 // stripLocalCommands keeps that one body rather than only discarding it; the table below refers to
