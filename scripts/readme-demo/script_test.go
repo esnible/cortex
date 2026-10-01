@@ -114,7 +114,7 @@ func TestShellStates_TypingCarriesATypeReveal(t *testing.T) {
 	if got := states[0].Rows[0].Reveal.Kind; got != "type" {
 		t.Errorf("command row reveal = %q, want type", got)
 	}
-	if want := 5 * typeRate; states[0].Rows[0].Reveal.Dur != want {
+	if want := time.Duration(len(act.Steps[0].Cmd)) * typeRate; states[0].Rows[0].Reveal.Dur != want {
 		t.Errorf("typing duration = %s, want %s", states[0].Rows[0].Reveal.Dur, want)
 	}
 	if got := states[0].Rows[1].Reveal.Kind; got != "fill" {

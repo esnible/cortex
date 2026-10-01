@@ -170,7 +170,7 @@ cortex/
 │   ├── Dockerfile                    #   plugins, has no demo — but deliberately kept
 │   └── entrypoint.sh                 #   and kept compiling. Do not delete.
 │
-├── cmd/agentop/                        # Terminal UI over the session API (:9094).
+├── cmd/agentop/                      # Terminal UI over the session API (:9094).
 │   ├── tui/                          #   Panes: sessions, events, pipeline, catalog
 │   ├── edit/, apiclient/,            #   Pipeline editing, API client, cluster
 │   │   cluster/, toolscan/           #   port-forward, tool manifest scanning

@@ -29,7 +29,7 @@ Usage:
   agentop pipeline get             the active pipeline, as a table
   agentop pipeline get --json      the same, as JSON for a script
   agentop pipeline get --endpoint URL
-                                 ask a specific proxy rather than the local one
+                                   ask a specific proxy rather than the local one
 
 Shows the same composition as the viewer's Pipeline pane: every plugin in order,
 inbound chain then outbound, with the application between them.

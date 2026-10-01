@@ -109,9 +109,9 @@ No config file can answer this, because the effective figures come from your `pr
 section *plus* the table compiled into the binary *plus* any shipped discount. Four views:
 
 ```sh
-agentop pricing                      # every row unscaled, plus a "Gateway discounts" section
-agentop pricing --host <gateway>     # what THAT endpoint is charged, discount applied
-agentop pricing --json               # machine-readable: rows, multipliers, upstreamCommit
+agentop pricing                    # every row unscaled, plus a "Gateway discounts" section
+agentop pricing --host <gateway>   # what THAT endpoint is charged, discount applied
+agentop pricing --json             # machine-readable: rows, multipliers, upstreamCommit
 curl localhost:47602/pricing/table # the same, over HTTP (add ?host=<gateway>)
 ```
 

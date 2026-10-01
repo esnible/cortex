@@ -32,7 +32,7 @@ service that survives crashes and logins.
 Then open two terminals:
 
 ```sh
-agentop observe   # the viewer
+agentop observe # the viewer
 claude          # as usual — no environment variables to set
 ```
 

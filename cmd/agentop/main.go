@@ -58,22 +58,22 @@ func writeRootUsage(fs *flag.FlagSet) {
 Usage:
   agentop observe              open the traffic viewer (TUI)
   agentop service <action>     run Cortex as a service: install, uninstall,
-                             status, stop, start, restart
+                               status, stop, start, restart
   agentop configure <agent>    point a coding agent at Cortex: claude-code, bob,
-                             bobshell, codex, opencode
+                               bobshell, codex, opencode
   agentop exec -- CMD [ARG...] run CMD with Cortex's proxy and CA in its
-                             environment, for tools with no settings file
+                               environment, for tools with no settings file
   agentop tools <action>       tool-definition costs: scan
   agentop pipeline <action>    the plugin pipeline in effect: get
   agentop pricing              show the model rates in effect (--host <gateway>)
   agentop cost                 what your agents have spent (--window today|month|7d|1h)
   agentop experimental <action>
-                             unstable helpers: read-claude-sessions
+                               unstable helpers: read-claude-sessions
 
   agentop claude-code <action> deprecated: same as "agentop configure claude-code".
-                             Still works; prefer the new spelling.
+                               Still works; prefer the new spelling.
   agentop                      deprecated: same as "agentop observe". Bare agentop
-                             will stop opening the viewer in a future release.
+                               will stop opening the viewer in a future release.
 
   agentop --version            print the version and exit
 

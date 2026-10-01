@@ -21,7 +21,7 @@ That restart is the point, though, and it is worth seeing once:
 
 ```sh
 kill -9 $(pgrep -f 'authbridge-proxy --config')   # comes back within ~2s
-agentop service status                              # healthy again
+agentop service status                            # healthy again
 ```
 
 On macOS you will see **two** `authbridge-proxy` processes: a supervisor (the one
@@ -281,7 +281,7 @@ Cortex still runs there; it just is not supervised:
 
 ```sh
 authbridge-proxy --local     # in its own terminal, or backgrounded
-agentop                        # the viewer, as usual
+agentop                      # the viewer, as usual
 ```
 
 What you give up: no restart after a crash, and nothing brings it back at login. Stop
@@ -504,8 +504,8 @@ enable` puts it back.
 ### Remove it
 
 ```sh
-agentop configure claude-code disable   # 1. unwire Claude Code
-agentop service uninstall               # 2. stop it and remove the service
+agentop configure claude-code disable # 1. unwire Claude Code
+agentop service uninstall             # 2. stop it and remove the service
 rm -rf ~/.cortex                      # 3. config, CA, logs, cost history, agentop's UI settings
 rm -f ~/.local/bin/agentop ~/.local/bin/authbridge-proxy
 ```
@@ -516,7 +516,7 @@ read the config that step 3 deletes.
 #### Check nothing is left
 
 ```sh
-agentop configure claude-code status   # should say "not enabled"
+agentop configure claude-code status # should say "not enabled"
 pgrep -fl authbridge-prox            # should print nothing
 ls ~/.cortex 2>/dev/null             # should print nothing
 ```

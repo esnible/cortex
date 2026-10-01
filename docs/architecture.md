@@ -19,7 +19,7 @@ curl -fsSLO "${base}/agentop_${VER}_${OS}_${ARCH}.tar.gz"
 curl -fsSLO "${base}/checksums.txt"
 sha256sum -c checksums.txt --ignore-missing    # macOS: shasum -a 256 -c ... --ignore-missing
 tar xzf "agentop_${VER}_${OS}_${ARCH}.tar.gz"
-sudo mv agentop /usr/local/bin/                  # onto PATH
+sudo mv agentop /usr/local/bin/                # onto PATH
 agentop --version
 ```
 
