@@ -382,7 +382,7 @@ kubectl get pod -n team1 -l app.kubernetes.io/name=git-issue-agent \
 Expected (proxy-sidecar mode, the cluster default):
 
 ```txt
-agent cortex
+agent authbridge-proxy
 ```
 
 Or, in envoy-sidecar mode:
