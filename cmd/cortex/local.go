@@ -178,6 +178,11 @@ func parseBridgeCAPEM(pemBytes []byte) *x509.Certificate {
 // skips it, and it is pinned anyway so that starting this same file with
 // --config cannot bind it on every interface.
 //
+// A config this function wrote is never rewritten, so an addition here reaches
+// existing installs only if agentop's migration adds it too. Two already do: the
+// listener pins (cmd/agentop/cmd_config_migrate.go) and the IBM Bob pricing entry
+// (cmd/agentop/cmd_config_migrate_pricing.go) — keep each in step with its copy.
+//
 // The YAML body is flush-left on purpose — a raw string literal preserves
 // leading whitespace, so indenting these lines in source would corrupt the YAML.
 func builtinConfigYAML(caDir string) string {

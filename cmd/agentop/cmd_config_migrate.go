@@ -106,18 +106,8 @@ func migrateConfig(path string, stdout io.Writer) (changed bool, err error) {
 			return false, fmt.Errorf("writing %s: %w", bak, werr)
 		}
 	}
-	tmp := path + ".tmp"
-	if werr := os.WriteFile(tmp, []byte(updated), 0o600); werr != nil {
-		return false, werr
-	}
-	// Validate the result before it replaces anything: a migration that produces
-	// an unparseable config would take the proxy down on next start.
-	if _, verr := config.Load(tmp); verr != nil {
-		_ = os.Remove(tmp)
-		return false, fmt.Errorf("the migrated config would not parse (%w); left %s alone", verr, path)
-	}
-	if rerr := os.Rename(tmp, path); rerr != nil {
-		return false, rerr
+	if err := replaceConfig(path, updated, nil); err != nil {
+		return false, err
 	}
 
 	fmt.Fprintf(stdout, "Updated %s (previous kept as %s):\n", path, bak)
@@ -130,6 +120,29 @@ func migrateConfig(path string, stdout io.Writer) (changed bool, err error) {
 			pin.key, pin.value, pin.unpinnedDefault)
 	}
 	return true, nil
+}
+
+// replaceConfig swaps updated in for the file at path, through a temp file that
+// must load first — and, when verify is set, pass it. A migration that produces an
+// unparseable config would take the proxy down on next start, so the original
+// survives any failure.
+func replaceConfig(path, updated string, verify func(*config.Config) error) error {
+	tmp := path + ".tmp"
+	if werr := os.WriteFile(tmp, []byte(updated), 0o600); werr != nil {
+		return werr
+	}
+	cfg, verr := config.Load(tmp)
+	if verr != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("the migrated config would not parse (%w); left %s alone", verr, path)
+	}
+	if verify != nil {
+		if verr := verify(cfg); verr != nil {
+			_ = os.Remove(tmp)
+			return fmt.Errorf("%w; left %s alone", verr, path)
+		}
+	}
+	return os.Rename(tmp, path)
 }
 
 // insertListenerKeys adds keys to the listener block, matching whatever
