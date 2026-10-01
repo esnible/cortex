@@ -287,9 +287,9 @@ cd core/plugins/litellm_budgettrack
 # Run the plugin in a test pipeline
 go test -v ./...
 
-# Or build authbridge-proxy with the plugin and test end-to-end, from the repo root:
+# Or build cortex with the plugin and test end-to-end, from the repo root:
 go build ./cmd/cortex/
-./authbridge-proxy --config test-config.yaml
+./cortex --config test-config.yaml
 # Send requests with x-litellm-response-cost header in responses
 ```
 

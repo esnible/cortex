@@ -15,7 +15,7 @@ import (
 func TestResolveServicePaths_SurvivesAMissingBinary(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	t.Setenv("PATH", filepath.Join(home, "nowhere")) // no authbridge-proxy anywhere
+	t.Setenv("PATH", filepath.Join(home, "nowhere")) // no cortex anywhere
 	cfgDir := filepath.Join(home, ".cortex")
 	if err := os.MkdirAll(cfgDir, 0o700); err != nil {
 		t.Fatal(err)
@@ -51,7 +51,7 @@ func TestServiceInstall_RefusesABrokenConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	// A binary that exists, so this isolates the config check.
-	bin := filepath.Join(home, "authbridge-proxy")
+	bin := filepath.Join(home, "cortex")
 	if err := os.WriteFile(bin, []byte("#!/bin/sh\n"), 0o755); err != nil { //nolint:gosec
 		t.Fatal(err)
 	}
@@ -114,7 +114,7 @@ func TestReportInstallSuccess(t *testing.T) {
 // on darwin: the const exists so these assertions are not skipped on CI.
 func TestCrashRecoveryNote(t *testing.T) {
 	if !strings.Contains(crashRecoveryNote, "supervisor") {
-		t.Error("note does not name the supervisor; two authbridge-proxy processes " +
+		t.Error("note does not name the supervisor; two cortex processes " +
 			"with no explanation is the first thing people ask about")
 	}
 	if strings.Contains(strings.TrimSpace(crashRecoveryNote), "\n") {

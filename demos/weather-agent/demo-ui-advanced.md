@@ -95,7 +95,7 @@ Wait for the tool pod to be **Ready**. Once it registers in Keycloak, the
 ```bash
 kubectl get pods -n team1 -l app.kubernetes.io/name=weather-tool-advanced
 # Expect 2/2 (mcp + authbridge-proxy). No separate spiffe-helper container —
-# authbridge-proxy sources its SPIRE credentials in-process — so it's 2/2, not 3/3.
+# cortex sources its SPIRE credentials in-process — so it's 2/2, not 3/3.
 ```
 
 ---

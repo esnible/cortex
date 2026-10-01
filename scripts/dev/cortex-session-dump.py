@@ -119,7 +119,7 @@ def resolve_api(explicit):
     """Return a base URL whose /v1/sessions answers, or exit saying what was tried.
 
     Two ports are both "the default" depending on how Cortex was started: the
-    laptop preset (`authbridge-proxy --local`) pins 47601, while the mode presets
+    laptop preset (`cortex --local`) pins 47601, while the mode presets
     use 9094, which is also what a `kubectl port-forward` is usually pointed at.
     Probing both beats making every laptop user pass --api.
     """

@@ -40,7 +40,7 @@ func Validate(cfg *Config) error {
 // The ledger is not an independent subsystem: it records by being added to the
 // session store as a Recorder (sessions.AddRecorder(costLedger)), so with the store
 // absent there is no path by which an event can reach it. The whole ledger block in
-// authbridge-proxy's main is nested inside `if cfg.Session.SessionEnabled()`, which
+// cortex's main is nested inside `if cfg.Session.SessionEnabled()`, which
 // meant this pair produced no error, no warning, and no log line naming the ledger at
 // all — the operator who turned it on got silence, and the only way to find out was
 // to read main.go.

@@ -1,5 +1,5 @@
 // Package bootstrap holds process-level helpers shared by the authbridge
-// binaries (authbridge-proxy, authbridge-cpex, authbridge-envoy). Each binary
+// binaries (cortex, cortex-cpex, cortex-envoy). Each binary
 // has its own main() orchestration and listener wiring; only the byte-identical
 // plumbing — logging setup, the SIGUSR1 log-level toggle, the health and stats
 // servers, and the HTTP-listener helpers — lives here so a fix has to be made

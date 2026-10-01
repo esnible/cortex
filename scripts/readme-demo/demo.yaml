@@ -29,7 +29,7 @@ acts:
         out:
           - "Resolving newest release..."
           - "Downloading v0.9.3 for darwin/arm64..."
-          - "Installed agentop and authbridge-proxy to ~/.cortex/bin"
+          - "Installed agentop and cortex to ~/.cortex/bin"
           - "Setting up the launchd service..."
           - ""
           - 'Adds to the "env" block of ~/.claude/settings.json:'

@@ -14,7 +14,7 @@
 //
 // THAT EDGE ADDS NOTHING ANYWHERE, and the check is `go list -deps`, not a grep for a direct
 // import: every module that links this package already linked pricing — core and
-// authbridge-proxy price traffic, and agentop reaches it through core/cost/usage and core/config.
+// cortex price traffic, and agentop reaches it through core/cost/usage and core/config.
 package event
 
 import (

@@ -34,7 +34,7 @@ func captureWarns(t *testing.T, fn func(*slog.Logger)) []map[string]any {
 }
 
 // A cost_ledger block in this binary's config is loaded, validated, and discarded:
-// authbridge-envoy builds a session store and stops there, with no ledger and no
+// cortex-envoy builds a session store and stops there, with no ledger and no
 // usage aggregator, so nothing in the block can take effect. Inert is the right
 // answer for an ext_proc sidecar (per-pod day files are the wrong sink for spend),
 // but inert-and-unmentioned is not — an operator who set dir and retention_days had
@@ -63,7 +63,7 @@ func TestWarnCostLedgerInert_SaysSoWhenTheBlockIsPresent(t *testing.T) {
 	// And it has to say what to do, since the operator's intent (durable cost
 	// history) is achievable — just not in this binary.
 	fix, _ := recs[0]["fix"].(string)
-	if !strings.Contains(fix, "authbridge-proxy") {
+	if !strings.Contains(fix, "cortex") {
 		t.Errorf("warn must point at the binary that honours the block, got %q", fix)
 	}
 }
@@ -81,7 +81,7 @@ func TestWarnCostLedgerInert_SilentWhenAbsent(t *testing.T) {
 }
 
 // The inert-by-design claim rests on this binary having nowhere to put the ledger.
-// Pin that: an aggregator or ledger appearing in authbridge-envoy makes the warning
+// Pin that: an aggregator or ledger appearing in cortex-envoy makes the warning
 // a lie, and this is the test that should fail when someone wires one.
 //
 // Asserted against the parsed import list rather than behaviour because there is no

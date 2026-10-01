@@ -4,10 +4,10 @@ set -eu
 # AuthBridge praxis-sidecar combined entrypoint.
 #
 # Unlike the other AuthBridge entrypoints, this one is a two-phase pipeline
-# rather than a process supervisor, because authbridge-praxis is a config
+# rather than a process supervisor, because cortex-praxis is a config
 # GENERATOR, not a proxy:
 #
-#   Phase 1: authbridge-praxis — reads the AuthBridge config and writes a
+#   Phase 1: cortex-praxis — reads the AuthBridge config and writes a
 #            Praxis proxy config (+ a Praxis policy document when the inbound
 #            pipeline declares something the policy engine can enforce). Runs
 #            to completion and exits.
@@ -15,7 +15,7 @@ set -eu
 #            config so it becomes PID 1.
 #
 # Phase 1 must succeed before phase 2 starts. `set -e` guarantees that: if
-# authbridge-praxis exits non-zero (bad AuthBridge config, unconvertible
+# cortex-praxis exits non-zero (bad AuthBridge config, unconvertible
 # pipeline, unwritable output path) the script aborts and the container exits
 # non-zero, so Kubernetes restarts it. Starting Praxis anyway would serve
 # traffic through a stale config from a previous run — or fail confusingly on
@@ -59,7 +59,7 @@ fi
 # --- Phase 1: generate the Praxis config from the AuthBridge config ---
 echo "[entrypoint] Generating Praxis config from ${AUTHBRIDGE_CONFIG}..."
 # shellcheck disable=SC2086  # AUDIENCE_ARGS is intentionally word-split (empty = omitted)
-/usr/local/bin/authbridge-praxis \
+/usr/local/bin/cortex-praxis \
   --config "${AUTHBRIDGE_CONFIG}" \
   --praxis-config-out "${PRAXIS_CONFIG}" \
   --praxis-policy-out "${PRAXIS_POLICY}" \

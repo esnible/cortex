@@ -1,5 +1,5 @@
 // Package clientstate owns the on-disk record agentop writes when it points an agent
-// at Cortex, and which authbridge-proxy reads back to check the agent is still
+// at Cortex, and which cortex reads back to check the agent is still
 // pointed at the CA in force.
 //
 // It exists because that record is a contract between two separate main packages in

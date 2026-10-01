@@ -2,10 +2,10 @@
 set -eu
 
 # AuthBridge proxy-sidecar combined entrypoint with process supervision.
-# Manages: authbridge-proxy.
+# Manages: cortex.
 #
 # Startup order:
-#   1. authbridge-proxy (background) — HTTP forward + reverse proxies
+#   1. cortex (background) — HTTP forward + reverse proxies
 #
 # Process management: PID 1 (this shell) supervises every long-running
 # critical process. If any critical process exits, the others are killed
@@ -23,9 +23,9 @@ cleanup() {
 }
 trap cleanup TERM INT
 
-# --- Phase 1: authbridge-proxy (HTTP forward + reverse proxies) ---
-echo "[entrypoint] Starting authbridge-proxy..."
-/usr/local/bin/authbridge-proxy "$@" &
+# --- Phase 1: cortex (HTTP forward + reverse proxies) ---
+echo "[entrypoint] Starting cortex..."
+/usr/local/bin/cortex "$@" &
 CRITICAL_PIDS="$CRITICAL_PIDS $!"
 
 # Block until any critical process exits, then terminate the container

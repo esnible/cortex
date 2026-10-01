@@ -251,7 +251,7 @@ func TestServiceIsCurrent(t *testing.T) {
 		dir := t.TempDir()
 		p := servicePaths{
 			unitFile:   filepath.Join(dir, "unit.plist"),
-			binary:     filepath.Join(dir, "authbridge-proxy"),
+			binary:     filepath.Join(dir, "cortex"),
 			configFile: filepath.Join(dir, "config.yaml"),
 			home:       dir,
 		}

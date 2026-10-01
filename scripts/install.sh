@@ -3,7 +3,7 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/rossoctl/cortex/main/scripts/install.sh | sh
 #
-# Detects your OS/arch, downloads the prebuilt `agentop` and `authbridge-proxy`
+# Detects your OS/arch, downloads the prebuilt `agentop` and `cortex`
 # binaries for the newest release, verifies their SHA-256 checksums, installs
 # them to ~/.local/bin, and starts Cortex in the background — then prints the
 # commands to watch traffic and point an agent at it, plus how to stop it.
@@ -182,7 +182,7 @@ Usage:
   curl -fsSL https://raw.githubusercontent.com/rossoctl/cortex/main/scripts/install.sh | sh
   curl -fsSL ...install.sh | sh -s -- [option]
 
-Installs agentop and authbridge-proxy to ~/.local/bin, starts the proxy with its
+Installs agentop and cortex to ~/.local/bin, starts the proxy with its
 built-in config in ~/.cortex, and prints the command to send an agent through it.
 Traffic is decrypted and parsed for viewing; nothing is rewritten.
 
@@ -677,7 +677,7 @@ pid_exe_path() { # pid
 # port_holder prints "<pid> <executable-path>" for whatever listens on the given
 # loopback port, and nothing when it cannot name both. The binary path is the
 # whole point here: it is what distinguishes our own proxy from a foreign one,
-# since every candidate is named authbridge-proxy.
+# since every candidate is named cortex.
 #
 # Two pid sources, mirroring port_in_use: lsof, then `ss -p` (iproute2, the
 # default on modern Linux where lsof is often not installed, and the platform
@@ -735,7 +735,7 @@ port_holder() {
 # proxies fighting over one port.
 #
 # "Ours" is decided by the pidfile and by the binary path we install to, not by
-# process name: every candidate is named authbridge-proxy, so the name cannot
+# process name: every candidate is named cortex, so the name cannot
 # discriminate.
 #
 # This fails CLOSED in every direction. When the holder cannot be named — no
@@ -776,7 +776,7 @@ foreign_proxy_holder() {
 	# Keeping the plain text check as well matters for the case where the file is
 	# gone: an install whose binary was replaced under a running process still
 	# reads as ours on the string alone.
-	_fp_mine="${BIN_DIR}/authbridge-proxy"
+	_fp_mine="${BIN_DIR}/cortex"
 	[ "${_fp_cmd}" = "${_fp_mine}" ] && return 1
 	if command -v readlink >/dev/null 2>&1; then
 		_fp_a=$(readlink -f "${_fp_cmd}" 2>/dev/null || true)
@@ -891,7 +891,7 @@ start_unsupervised() {
 		info "Cortex is already running (pid $(cat "${PROXY_PIDFILE}"))."
 		return 0
 	fi
-	nohup "${BIN_DIR}/authbridge-proxy" --local --supervise \
+	nohup "${BIN_DIR}/cortex" --local --supervise \
 		>>"${CORTEX_DIR}/proxy.log" 2>&1 &
 	_pid=$!
 	printf '%s\n' "${_pid}" > "${PROXY_PIDFILE}"
@@ -1012,7 +1012,7 @@ print_env_instructions() {
 print_local_start_help() {
 	info "  This environment has no usable OS service supervisor, so Cortex runs as a"
 	info "  plain background process (it will NOT restart after a reboot or logout):"
-	info "    start:   \"${BIN_DIR}/authbridge-proxy\" --local --supervise   (backgrounded)"
+	info "    start:   \"${BIN_DIR}/cortex\" --local --supervise   (backgrounded)"
 	info "    stop:    kill \$(cat ${PROXY_PIDFILE})"
 	info "    status:  curl -fsS http://localhost:${DEMO_HEALTH_PORT}/ >/dev/null && echo up || echo down"
 	info "    logs:    tail -f ${CORTEX_DIR}/proxy.log"
@@ -1061,7 +1061,7 @@ fi
 
 # --- skip the download entirely when asked (offline re-run) ---
 if [ "${AUTHBRIDGE_SKIP_DOWNLOAD:-}" = "1" ]; then
-	for b in agentop authbridge-proxy; do
+	for b in agentop cortex; do
 		[ -x "${BIN_DIR}/${b}" ] || die "AUTHBRIDGE_SKIP_DOWNLOAD=1 but ${BIN_DIR}/${b} is missing"
 	done
 	version="already installed"
@@ -1081,7 +1081,7 @@ trap 'rm -rf "$tmp"' EXIT
 
 base="https://github.com/${REPO}/releases/download/${version}"
 agentop_tgz="agentop_${version}_${os}_${arch}.tar.gz"
-proxy_tgz="authbridge-proxy_${version}_${os}_${arch}.tar.gz"
+proxy_tgz="cortex_${version}_${os}_${arch}.tar.gz"
 
 # Already at this version? Then there is nothing to download, and nothing to
 # overwrite. Re-running the one-liner is how people upgrade, so it runs constantly
@@ -1089,7 +1089,7 @@ proxy_tgz="authbridge-proxy_${version}_${os}_${arch}.tar.gz"
 # nothing. Both binaries must match: replacing one and not the other is the version
 # skew that put an older proxy in the launchd unit.
 if installed_version agentop | grep -qx "${version}" &&
-	installed_version authbridge-proxy | grep -qx "${version}"; then
+	installed_version cortex | grep -qx "${version}"; then
 	info "Already at ${version} — not re-downloading."
 	skip_install=1
 fi
@@ -1148,7 +1148,7 @@ fi
 mkdir -p "$BIN_DIR"
 tar -xzf "${tmp}/${agentop_tgz}" -C "$tmp"
 tar -xzf "${tmp}/${proxy_tgz}" -C "$tmp"
-for b in agentop authbridge-proxy; do
+for b in agentop cortex; do
 	[ -f "${tmp}/${b}" ] || die "archive did not contain expected binary: ${b}"
 	chmod +x "${tmp}/${b}"
 	mv -f "${tmp}/${b}" "${BIN_DIR}/${b}"
@@ -1156,7 +1156,7 @@ done
 
 # macOS: clear the quarantine flag so Gatekeeper doesn't block the unsigned binaries.
 if [ "$os" = "darwin" ] && command -v xattr >/dev/null 2>&1; then
-	xattr -dr com.apple.quarantine "${BIN_DIR}/agentop" "${BIN_DIR}/authbridge-proxy" 2>/dev/null || true
+	xattr -dr com.apple.quarantine "${BIN_DIR}/agentop" "${BIN_DIR}/cortex" 2>/dev/null || true
 fi
 
 rm -rf "$tmp"
@@ -1310,10 +1310,10 @@ install_session_dump() {
 install_session_dump
 
 # --- report ---
-proxy="${BIN_DIR}/authbridge-proxy"
+proxy="${BIN_DIR}/cortex"
 ca_dir="${CORTEX_DIR}/ca" # matches defaultCortexDir()+caDirName in local.go
 case ":${PATH}:" in
-	*":${BIN_DIR}:"*) agentop_cmd="agentop" proxy_cmd="authbridge-proxy" ;;
+	*":${BIN_DIR}:"*) agentop_cmd="agentop" proxy_cmd="cortex" ;;
 	*) agentop_cmd="${BIN_DIR}/agentop" proxy_cmd="$proxy" ;;
 esac
 
@@ -1322,7 +1322,7 @@ esac
 # and untrue.
 if [ -z "${skip_install:-}" ]; then
 	info ""
-	info "Installed agentop and authbridge-proxy to ${BIN_DIR}"
+	info "Installed agentop and cortex to ${BIN_DIR}"
 fi
 case ":${PATH}:" in
 	*":${BIN_DIR}:"*) ;;
@@ -1395,15 +1395,15 @@ fi
 # without it. The unsupervised start needs it just as much.
 if [ ! -f "${CORTEX_DIR}/config.yaml" ]; then
 	# Executed by explicit path, and REPORTED by the same explicit path. proxy_cmd is
-	# the display form — a bare "authbridge-proxy" when BIN_DIR is on PATH — so naming
+	# the display form — a bare "cortex" when BIN_DIR is on PATH — so naming
 	# it here would hand back a command that resolves through PATH, which is not
 	# necessarily the binary that just failed. That distinction is the whole point of
-	# pinning the path: an older authbridge-proxy earlier on PATH is exactly how the
+	# pinning the path: an older cortex earlier on PATH is exactly how the
 	# service came up dead in end-to-end testing.
-	if ! "${BIN_DIR}/authbridge-proxy" --local --write-config; then
+	if ! "${BIN_DIR}/cortex" --local --write-config; then
 		die "could not write ${CORTEX_DIR}/config.yaml.
   Run this to see why:
-    \"${BIN_DIR}/authbridge-proxy\" --local --write-config"
+    \"${BIN_DIR}/cortex\" --local --write-config"
 	fi
 fi
 
@@ -1437,7 +1437,7 @@ else
 	set +e
 	# --proxy: use the binary this script just installed, not whatever happens to be
 	# earlier on PATH. An end-to-end run found the unit pointing at an older
-	# authbridge-proxy from another directory, which rejected --supervise and exited,
+	# cortex from another directory, which rejected --supervise and exited,
 	# so the service never came up.
 	#
 	# Capture agentop's COMBINED output (2>&1) through tee: it stays visible live —
@@ -1451,7 +1451,7 @@ else
 	# (CWE-59); ensure_tmpdir has resolved a writable TMPDIR by now.
 	svc_out_file=$(mktemp "${TMPDIR}/cortex-svc-out.XXXXXX")
 	svc_st_file=$(mktemp "${TMPDIR}/cortex-svc-st.XXXXXX")
-	{ "${BIN_DIR}/agentop" service install --yes --proxy "${BIN_DIR}/authbridge-proxy" 2>&1; echo $? >"${svc_st_file}"; } | tee "${svc_out_file}"
+	{ "${BIN_DIR}/agentop" service install --yes --proxy "${BIN_DIR}/cortex" 2>&1; echo $? >"${svc_st_file}"; } | tee "${svc_out_file}"
 	svc_status=$(cat "${svc_st_file}" 2>/dev/null || echo 1)
 	svc_out=$(cat "${svc_out_file}" 2>/dev/null || true)
 	rm -f "${svc_out_file}" "${svc_st_file}"
@@ -1481,7 +1481,7 @@ else
 			die "port ${DEMO_FORWARD_PORT} is held by a proxy this install does not manage:
     pid ${svc_foreign%% *}  ${svc_foreign#* }
   That process will not shut down on its own, so re-running will not help. It is
-  most likely an authbridge-proxy started by hand or from another checkout. Stop it
+  most likely an cortex started by hand or from another checkout. Stop it
   and re-run this installer:
     kill ${svc_foreign%% *}
   If it comes back on its own, it is another install's supervised service rather

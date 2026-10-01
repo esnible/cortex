@@ -24,7 +24,7 @@ import (
 	// so it registers no plugins (see scripts/profile-tags).
 )
 
-// version is the authbridge-proxy build version, overridden at release time
+// version is the cortex build version, overridden at release time
 // via -ldflags "-X main.version=<tag>". Defaults to "dev" for local builds.
 var version = "dev"
 
@@ -108,11 +108,11 @@ func main() {
 	flag.Parse()
 
 	if *showVersion {
-		fmt.Println("authbridge-proxy", version)
+		fmt.Println("cortex", version)
 		return
 	}
 
-	bootstrap.InitLogging("authbridge-praxis")
+	bootstrap.InitLogging("cortex-praxis")
 	bootstrap.StartSignalToggle()
 
 	if *configPath == "" {

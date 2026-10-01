@@ -43,7 +43,7 @@ spec:
             requests: { cpu: "100m", memory: "128Mi" }
             limits:   { cpu: "1", memory: "512Mi" }
         - name: authbridge-proxy
-          image: authbridge-cg:latest       # authbridge-proxy built with the context-guru plugin (see run.sh)
+          image: authbridge-cg:latest       # cortex built with the context-guru plugin (see run.sh)
           imagePullPolicy: IfNotPresent
           args: ["--config", "/etc/authbridge/config.yaml"]
           env:

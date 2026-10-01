@@ -57,7 +57,7 @@ import (
 // INERT BY DESIGN, not an oversight, and that is why this is a log line rather than
 // wiring or a refusal:
 //
-//   - Wiring it would be wrong here. authbridge-envoy is an ext_proc sidecar, which
+//   - Wiring it would be wrong here. cortex-envoy is an ext_proc sidecar, which
 //     is a Kubernetes shape, and the ledger is deliberately OFF in Kubernetes (see
 //     CostLedgerConfig): a pod's filesystem is ephemeral, one replica's day files are
 //     invisible to the next, and the right sink for fleet-wide spend is a central
@@ -65,7 +65,7 @@ import (
 //     manufacture exactly the arrangement the proxy's own comment argues against.
 //
 //   - Refusing it at load would be wrong too. config.Validate is shared by every
-//     binary, and the gap is per-BINARY rather than per-mode — authbridge-cpex runs
+//     binary, and the gap is per-BINARY rather than per-mode — cortex-cpex runs
 //     proxy-sidecar mode and has no ledger either — so a mode-keyed refusal would
 //     both miss cpex and turn a stray inherited key into a crash-loop over an
 //     observability nicety. main.go already makes that trade the other way for a
@@ -81,17 +81,17 @@ func warnCostLedgerInert(cfg *config.Config, logger *slog.Logger) {
 	if cfg.CostLedger == nil {
 		return
 	}
-	logger.Warn("cost_ledger is configured but INERT in authbridge-envoy — no cost history will be written",
+	logger.Warn("cost_ledger is configured but INERT in cortex-envoy — no cost history will be written",
 		"reason", "this binary wires no cost ledger and no usage aggregator; the ext_proc sidecar is a Kubernetes shape, where per-pod day files are the wrong sink for spend (use a central collector)",
 		"effect", "the whole cost_ledger block is ignored, including dir and retention_days",
-		"fix", "remove the cost_ledger block here; for durable local cost history run authbridge-proxy --local, which does honour it")
+		"fix", "remove the cost_ledger block here; for durable local cost history run cortex --local, which does honour it")
 }
 
 func main() {
 	configPath := flag.String("config", "", "path to config YAML file")
 	flag.Parse()
 
-	bootstrap.InitLogging("authbridge-envoy")
+	bootstrap.InitLogging("cortex-envoy")
 	bootstrap.StartSignalToggle()
 
 	if *configPath == "" {
@@ -162,7 +162,7 @@ func main() {
 		}
 		if c.Mode != "" && c.Mode != config.ModeEnvoySidecar {
 			return nil, nil, nil, fmt.Errorf(
-				"authbridge-envoy supports only mode=%q (got %q); use cmd/authbridge for other modes",
+				"cortex-envoy supports only mode=%q (got %q); use cmd/authbridge for other modes",
 				config.ModeEnvoySidecar, c.Mode)
 		}
 		c.Mode = config.ModeEnvoySidecar
@@ -290,7 +290,7 @@ func main() {
 		}()
 	}
 
-	slog.Info("authbridge-envoy starting", "mode", cfg.Mode, "logLevel", bootstrap.LogLevel().String())
+	slog.Info("cortex-envoy starting", "mode", cfg.Mode, "logLevel", bootstrap.LogLevel().String())
 
 	healthSrv, healthErr := bootstrap.StartHealthServer(inboundH, outboundH, cfg.Listener.HealthAddr)
 	if healthErr != nil {

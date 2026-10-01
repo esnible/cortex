@@ -136,7 +136,7 @@ func renderUnitFor(goos string, p servicePaths) string {
 	// of unbounded flushes run after that deadline, which is what the 5s of slack over
 	// 15 is actually for.
 	return `[Unit]
-Description=Cortex local proxy (authbridge-proxy)
+Description=Cortex local proxy (cortex)
 Documentation=https://github.com/rossoctl/cortex
 X-AgentopVersion=` + version + `
 StartLimitIntervalSec=300

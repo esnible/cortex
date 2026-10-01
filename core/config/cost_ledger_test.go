@@ -239,7 +239,7 @@ func TestMinCostLedgerRetentionDays_MatchesTheWindowItProtects(t *testing.T) {
 
 // The ledger has no path to an event without the session store: it records by being
 // registered as a Recorder on it, and the block that constructs it in
-// authbridge-proxy's main is nested inside `if cfg.Session.SessionEnabled()`. This
+// cortex's main is nested inside `if cfg.Session.SessionEnabled()`. This
 // pair used to load, validate, report success, and write nothing — with no error, no
 // warning, and no log line naming the ledger anywhere.
 //

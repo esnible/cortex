@@ -20,11 +20,11 @@ it restarted within a couple of seconds, which looks like a process refusing to 
 That restart is the point, though, and it is worth seeing once:
 
 ```sh
-kill -9 $(pgrep -f 'authbridge-proxy --config')   # comes back within ~2s
+kill -9 $(pgrep -f 'cortex --config')   # comes back within ~2s
 agentop service status                            # healthy again
 ```
 
-On macOS you will see **two** `authbridge-proxy` processes: a supervisor (the one
+On macOS you will see **two** `cortex` processes: a supervisor (the one
 launchd starts, holding no ports) and the proxy itself. launchd does not restart user
 agents added mid-session — verified across `KeepAlive`, `StartInterval` and
 `RunAtLoad` — so the supervisor is what makes crash recovery work. On Linux there is
@@ -186,7 +186,7 @@ which is not a decision anybody made. A container with neither signal can only w
 that is discarded on restart, so there it stays off and says why in a startup log line.
 
 That rule replaced an earlier one keyed on `--local`, which was the cause of a real bug: the
-installed service runs `authbridge-proxy --config ~/.cortex/config.yaml` and never `--local`, so
+installed service runs `cortex --config ~/.cortex/config.yaml` and never `--local`, so
 "on by default" was false for every install. The generated config also writes
 `cost_ledger: {enabled: true}` explicitly, which is now belt-and-braces rather than the
 mechanism — a config generated before that was added still gets the ledger, because the default
@@ -280,12 +280,12 @@ anything and tells you so, rather than failing at `launchctl bootstrap` with
 Cortex still runs there; it just is not supervised:
 
 ```sh
-authbridge-proxy --local     # in its own terminal, or backgrounded
+cortex --local     # in its own terminal, or backgrounded
 agentop                      # the viewer, as usual
 ```
 
 What you give up: no restart after a crash, and nothing brings it back at login. Stop
-it with `kill $(pgrep -f authbridge-proxy)` — there is no service to stop.
+it with `kill $(pgrep -f cortex)` — there is no service to stop.
 
 Two assumptions that do not hold in such environments, and what happens:
 
@@ -418,7 +418,7 @@ wrappers that set `HOME=$PWD` each get their own CA. Point every environment at 
 CA instead:
 
 ```sh
-authbridge-proxy --local --ca-dir /Users/you/.cortex/ca
+cortex --local --ca-dir /Users/you/.cortex/ca
 ```
 
 `--ca-dir` moves only the CA; the config stays at its usual path. On startup the
@@ -507,7 +507,7 @@ enable` puts it back.
 agentop configure claude-code disable # 1. unwire Claude Code
 agentop service uninstall             # 2. stop it and remove the service
 rm -rf ~/.cortex                      # 3. config, CA, logs, cost history, agentop's UI settings
-rm -f ~/.local/bin/agentop ~/.local/bin/authbridge-proxy
+rm -f ~/.local/bin/agentop ~/.local/bin/cortex
 ```
 
 Order matters for the first two: `agentop configure claude-code disable` needs to

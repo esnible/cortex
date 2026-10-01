@@ -7,7 +7,7 @@ Cortex provides **secure, transparent token management** for Kubernetes workload
 ## Download prebuilt binaries
 
 Prefer not to compile from source? Every `v*` release attaches prebuilt `agentop` (the
-session-inspector TUI) and `authbridge-proxy` binaries for linux and macOS (amd64 +
+session-inspector TUI) and `cortex` binaries for linux and macOS (amd64 +
 arm64) on the [Releases page](https://github.com/rossoctl/cortex/releases).
 
 ```sh
@@ -23,14 +23,14 @@ sudo mv agentop /usr/local/bin/                # onto PATH
 agentop --version
 ```
 
-`authbridge-proxy` ships the same way (`authbridge-proxy_${VER}_${OS}_${ARCH}.tar.gz`).
+`cortex` ships the same way (`cortex_${VER}_${OS}_${ARCH}.tar.gz`).
 
 - **Linux** binaries are fully static (`CGO_ENABLED=0`) — no libc dependency, run anywhere.
 - **macOS** binaries are portable but unsigned; after extracting, clear the Gatekeeper
   quarantine once: `xattr -dr com.apple.quarantine ./agentop` (or `codesign --sign - ./agentop`).
 
-Building from source: `make agentop` or `make authbridge-proxy` from the repo
-root. `authbridge-proxy` defaults to the `full` plugin profile; pass
+Building from source: `make agentop` or `make cortex` from the repo
+root. `cortex` defaults to the `full` plugin profile; pass
 `PROFILE=lite` or `local` for smaller sets. See
 [Build-tag plugin selection](#build-tag-plugin-selection) for the underlying
 `go build` invocations.
@@ -60,9 +60,9 @@ Sidecar container images:
 
 | Image | Contents |
 |-------|----------|
-| `authbridge` | proxy-sidecar: the authbridge-proxy binary |
+| `authbridge` | proxy-sidecar: the cortex binary |
 | `authbridge-envoy` | envoy-sidecar combined: Envoy + ext_proc |
-| `authbridge-lite` | `authbridge-proxy` built with the `lite` profile (see `scripts/profile-tags`), a sidecar minimum. A build variant, not a separate binary |
+| `authbridge-lite` | `cortex` built with the `lite` profile (see `scripts/profile-tags`), a sidecar minimum. A build variant, not a separate binary |
 
 | Mode | Image | Use Case | How It Works |
 |------|-------|----------|-------------|
@@ -70,7 +70,7 @@ Sidecar container images:
 | `envoy-sidecar` | `authbridge-envoy` | Transparent interception via iptables | Envoy intercepts all traffic, delegates auth to authbridge via ext_proc gRPC |
 
 There are only these two modes. `lite` is a build *profile*, not a mode: the
-`authbridge-lite` image runs the `authbridge-proxy` binary in `proxy-sidecar`
+`authbridge-lite` image runs the `cortex` binary in `proxy-sidecar`
 mode with a trimmed plugin set (see the profile table below).
 
 The operator resolves the mode per workload from `AgentRuntime.Spec.AuthBridgeMode` → namespace ConfigMap → deprecated `rossoctl.io/authbridge-mode` annotation → cluster default (`proxy-sidecar`). See operator#361.
@@ -454,7 +454,7 @@ declarative profile per shipped artifact and emits its tags:
 
 | Profile | Artifact | Plugins |
 |---------|----------|---------|
-| `local` | desktop `authbridge-proxy` | the three parsers + `tool-prune` |
+| `local` | desktop `cortex` | the three parsers + `tool-prune` |
 | `full` | `authbridge` image, Kubernetes proxy-sidecar | all thirteen |
 | `lite` | `authbridge-lite` image | sidecar minimum: jwt-validation, token-exchange, litellm-budget-track, static-inject |
 | `envoy` | `authbridge-envoy` image | envoy-sidecar set |

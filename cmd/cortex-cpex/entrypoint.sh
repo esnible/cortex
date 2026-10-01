@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # AuthBridge CPEX-enabled sidecar entrypoint with process supervision.
-# Manages: authbridge-cpex (authbridge-proxy + CPEX plugin).
+# Manages: cortex-cpex (cortex + CPEX plugin).
 #
 # Identical to cmd/cortex/entrypoint.sh except for the
 # binary name; promote to a shared script when one is extracted.
@@ -18,8 +18,8 @@ cleanup() {
 }
 trap cleanup TERM INT
 
-echo "[entrypoint] Starting authbridge-cpex..."
-/usr/local/bin/authbridge-cpex "$@" &
+echo "[entrypoint] Starting cortex-cpex..."
+/usr/local/bin/cortex-cpex "$@" &
 CRITICAL_PIDS="$CRITICAL_PIDS $!"
 
 # shellcheck disable=SC2086

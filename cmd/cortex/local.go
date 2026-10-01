@@ -181,7 +181,7 @@ func parseBridgeCAPEM(pemBytes []byte) *x509.Certificate {
 // The YAML body is flush-left on purpose — a raw string literal preserves
 // leading whitespace, so indenting these lines in source would corrupt the YAML.
 func builtinConfigYAML(caDir string) string {
-	return `# Built-in config for: authbridge-proxy --local
+	return `# Built-in config for: cortex --local
 # Forward-only proxy + TLS bridge (auto-generated CA) + LLM/MCP/A2A parsers.
 # The running proxy watches this file — edit it to hot-reload.
 mode: proxy-sidecar
@@ -361,7 +361,7 @@ func writeBuiltinConfig(cortexDir, caDir string) (string, error) {
 	// MkdirAll leaves an existing directory's mode alone, so a ~/.cortex created
 	// before this (or by another tool) would stay 0755 and the perms claim would
 	// be true only for fresh installs. install.sh already chmods it; this makes a
-	// bare `authbridge-proxy --local` match.
+	// bare `cortex --local` match.
 	if err := os.Chmod(cortexDir, 0o700); err != nil {
 		return "", err
 	}

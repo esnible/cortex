@@ -36,7 +36,7 @@ var allProfiles = []ProfileName{
 //
 // Artifact contents:
 //
-//	local  desktop authbridge-proxy — the three parsers + tool-prune
+//	local  desktop cortex — the three parsers + tool-prune
 //	full   authbridge image, Kubernetes proxy-sidecar — all thirteen
 //	lite   authbridge-lite image — sidecar minimum
 //	envoy  authbridge-envoy image

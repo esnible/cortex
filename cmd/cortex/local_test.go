@@ -503,12 +503,12 @@ func TestCostLedgerDir_DefaultsUnderCortexDirAndIsAbsolute(t *testing.T) {
 
 // THE LEDGER MUST BE ON FOR A CONFIG LAUNCHED WITH --config, because that is how every
 // INSTALLED laptop launches: `agentop service install` writes a plist/unit whose ExecStart is
-// `authbridge-proxy --config ~/.cortex/config.yaml`, never --local.
+// `cortex --config ~/.cortex/config.yaml`, never --local.
 //
 // The default alone could not deliver that WHEN THIS WAS WRITTEN, and that is now the weaker
 // half of the guarantee. LedgerEnabled(defaultOn) was asked with defaultOn = localMode,
 // localMode is set only by --local, and a config with no cost_ledger block fell through to
-// false — so "on by default" was true only for a hand-run `authbridge-proxy --local`, and the
+// false — so "on by default" was true only for a hand-run `cortex --local`, and the
 // installed service had it off for its whole life, silently.
 //
 // ledgerDefaultOn has since replaced that rule with one keyed on whether anything survives a

@@ -61,7 +61,7 @@ import (
 	// (see scripts/profile-tags).
 )
 
-// version is the authbridge-proxy build version, overridden at release time
+// version is the cortex build version, overridden at release time
 // via -ldflags "-X main.version=<tag>". Defaults to "dev" for local builds.
 var version = "dev"
 
@@ -300,11 +300,11 @@ func main() {
 	}
 
 	if *showVersion {
-		fmt.Println("authbridge-proxy", version)
+		fmt.Println("cortex", version)
 		return
 	}
 
-	bootstrap.InitLogging("authbridge-proxy")
+	bootstrap.InitLogging("cortex")
 	bootstrap.StartSignalToggle()
 
 	if *demoDeprecated && !*local {
@@ -454,7 +454,7 @@ func main() {
 		}
 		if c.Mode != "" && c.Mode != config.ModeProxySidecar {
 			return nil, nil, nil, fmt.Errorf(
-				"authbridge-proxy supports only mode=%q (got %q); use cmd/cortex-envoy for envoy-sidecar mode",
+				"cortex supports only mode=%q (got %q); use cmd/cortex-envoy for envoy-sidecar mode",
 				config.ModeProxySidecar, c.Mode)
 		}
 		c.Mode = config.ModeProxySidecar
@@ -949,7 +949,7 @@ func main() {
 		}()
 	}
 
-	slog.Info("authbridge-proxy starting", "version", version, "mode", cfg.Mode, "logLevel", bootstrap.LogLevel().String())
+	slog.Info("cortex starting", "version", version, "mode", cfg.Mode, "logLevel", bootstrap.LogLevel().String())
 
 	healthSrv, healthErr := bootstrap.StartHealthServer(inboundH, outboundH, cfg.Listener.HealthAddr)
 	if healthErr != nil {

@@ -114,7 +114,7 @@ container's logs, a mode field, a ConfigMap, a literal UI label. Both of these a
 provides zero-trust token management", "the AuthBridge sidecar validates the JWT".
 
 `install.sh` is the reference implementation — zero prose "AuthBridge", with
-`authbridge-proxy` appearing only as the name of the binary it installs.
+`cortex` appearing only as the name of the binary it installs.
 
 ## What Cortex Does
 
@@ -163,7 +163,7 @@ cortex/
 │
 ├── cmd/cortex-envoy/             # envoy-sidecar mode. Full plugin set.
 │   ├── main.go
-│   ├── Dockerfile                    #   envoy-sidecar combined image (Envoy + authbridge-envoy)
+│   ├── Dockerfile                    #   envoy-sidecar combined image (Envoy + cortex-envoy)
 │   └── entrypoint.sh
 │
 ├── cmd/cortex-cpex/              # proxy-sidecar mode + cpex plugin. -tags cpex, cgo required.
@@ -239,7 +239,7 @@ cortex/
 
 ### 1. AuthBridge Binaries (Go)
 
-**Sidecar binaries** providing transparent traffic interception for both inbound JWT validation and outbound OAuth 2.0 token exchange (RFC 8693). All sidecar binaries but `authbridge-praxis` pin one deployment shape and refuse a mismatching `mode:` at boot; mode is no longer selected at runtime. The `authbridge-lite` **image** is a build variant of the proxy binary (not a separate binary) — see below.
+**Sidecar binaries** providing transparent traffic interception for both inbound JWT validation and outbound OAuth 2.0 token exchange (RFC 8693). All sidecar binaries but `cortex-praxis` pin one deployment shape and refuse a mismatching `mode:` at boot; mode is no longer selected at runtime. The `authbridge-lite` **image** is a build variant of the proxy binary (not a separate binary) — see below.
 
 **Library:** `core/` — see [`core/README.md`](core/README.md) for the library reference
 **Language:** Go 1.26.5 (`go.work` and the nine workspace modules; the
@@ -276,7 +276,7 @@ into workload pods. Default deployment shape (proxy-sidecar mode):
          ┌────────────────────────────────────┐
          │            WORKLOAD POD            │
          │                                    │
-         │  authbridge-proxy ──► SPIRE Agent  │  (in-process
+         │  cortex ──► SPIRE Agent  │  (in-process
          │    - spiffe.Provider reads SVIDs   │   Workload API
          │      over the Workload API and     │   client; shaped
          │      mirrors them under /opt/      │   by the `spiffe:`
@@ -291,7 +291,7 @@ into workload pods. Default deployment shape (proxy-sidecar mode):
          The operator also creates a Secret with client-id +
          client-secret and mounts it at /shared/.
 
-         For envoy-sidecar mode, replace authbridge-proxy with
+         For envoy-sidecar mode, replace cortex with
          the authbridge-envoy image (Envoy + ext_proc) and add a
          proxy-init container for iptables.
 ```
@@ -329,15 +329,15 @@ shipped artifact.
 ### Release binaries
 
 `v*` tag pushes trigger `.github/workflows/release-binaries.yaml`, which
-cross-compiles `authbridge-proxy` and `agentop` for linux/darwin ×
-amd64/arm64 and attaches tarballs to the GitHub Release. `authbridge-proxy`
+cross-compiles `cortex` and `agentop` for linux/darwin ×
+amd64/arm64 and attaches tarballs to the GitHub Release. `cortex`
 ships in variants that mirror the container images:
 
 | Variant | Tarball name shape | Matches |
 |---|---|---|
-| unqualified (default plugins) | `authbridge-proxy_<ver>_<os>_<arch>.tar.gz` | `authbridge` image |
-| `-lite` (sidecar-minimum plugin set — see `scripts/profile-tags`) | `authbridge-proxy-lite_<ver>_<os>_<arch>.tar.gz` | `authbridge-lite` image |
-| `-sessionbudget` (default + opt-in session-budget) | `authbridge-proxy-sessionbudget_<ver>_<os>_<arch>.tar.gz` | no image today |
+| unqualified (default plugins) | `cortex_<ver>_<os>_<arch>.tar.gz` | `authbridge` image |
+| `-lite` (sidecar-minimum plugin set — see `scripts/profile-tags`) | `cortex-lite_<ver>_<os>_<arch>.tar.gz` | `authbridge-lite` image |
+| `-sessionbudget` (default + opt-in session-budget) | `cortex-sessionbudget_<ver>_<os>_<arch>.tar.gz` | no image today |
 
 One variant per opt-in plugin currently offered for try-out (today:
 `-sessionbudget`) — never enumerate combos. To add one, append to the
@@ -348,12 +348,12 @@ One variant per opt-in plugin currently offered for try-out (today:
 self-contained `demos/*` modules are outside the workspace. `go-tidy-check` in
 `ci.yaml` does cover all 12: it discovers them with `find`, not from `go.work`):
 - `core/` — the runtime library: `pipeline`, `plugins`, `listener`, `config`, `spiffe` (the framework, 57% of it); `cost/{pricing,settle,ledger,event,usage}` (21%); `session`, `sessionapi`, `observe`, `redact` (10%); `auth`, `bypass`, `capabilities` (1.6%); plus transport and storage glue. **Consumed outside this repo**, so removing exported API here is a cross-repo change.
-- `cmd/authbridge-{proxy,envoy,cpex,praxis}/` — thin main packages that import core and start the listeners they need; they import no plugin package directly. (The `authbridge-lite` image is `authbridge-proxy` built with the `lite` profile.)
+- `cmd/authbridge-{proxy,envoy,cpex,praxis}/` — thin main packages that import core and start the listeners they need; they import no plugin package directly. (The `authbridge-lite` image is `cortex` built with the `lite` profile.)
 - `cmd/agentop/` — the TUI; also released as a standalone binary.
 - `core/storage/redis/`, `scripts/{profile-tags,readme-demo}/`, and the self-contained `demos/{echo,finance-sparc,ibac}/`.
 - `go.work` — workspace linking core + the binaries for local development.
 
-**Config format:** YAML with `${ENV_VAR}` expansion, mode presets, and startup validation. The `mode` field must match the binary for all but `authbridge-praxis`, which pins no mode.
+**Config format:** YAML with `${ENV_VAR}` expansion, mode presets, and startup validation. The `mode` field must match the binary for all but `cortex-praxis`, which pins no mode.
 
 ## Component Details
 
@@ -655,7 +655,7 @@ are configured at the Envoy data-plane level by extending the
 X.509 SVIDs are read by Envoy directly from `/opt/svid.pem`,
 `/opt/svid_key.pem`, `/opt/svid_bundle.pem` — the same paths
 proxy-sidecar's mTLS uses. The spiffe Provider's file-mirror in
-the `authbridge-envoy` binary keeps these fresh on rotation.
+the `cortex-envoy` binary keeps these fresh on rotation.
 
 **Inbound parity with proxy-sidecar:** byte-identical observable
 semantics — TLS handshakes terminate against the SPIRE trust bundle,
@@ -722,8 +722,8 @@ All images are pushed to `ghcr.io/rossoctl/cortex/` from
 
 | Image | Source | Description |
 |-------|--------|-------------|
-| **`authbridge`** | **`cmd/cortex/Dockerfile`** | **proxy-sidecar image (default mode): authbridge-proxy, full plugin set incl. parsers. No Envoy.** |
-| `authbridge-envoy` | `cmd/cortex-envoy/Dockerfile` | envoy-sidecar combined image: Envoy + authbridge-envoy (ext_proc, full plugin set) |
+| **`authbridge`** | **`cmd/cortex/Dockerfile`** | **proxy-sidecar image (default mode): cortex, full plugin set incl. parsers. No Envoy.** |
+| `authbridge-envoy` | `cmd/cortex-envoy/Dockerfile` | envoy-sidecar combined image: Envoy + cortex-envoy (ext_proc, full plugin set) |
 | `authbridge-lite` | `cmd/cortex/Dockerfile` (+ `GO_BUILD_TAGS` from the `lite` profile) | proxy-sidecar image with a sidecar-minimum plugin set (see `scripts/profile-tags`). A build variant of `authbridge`, not a separate binary; not yet referenced by the operator's default config |
 | `authbridge-cpex` | `cmd/cortex-cpex/Dockerfile` | proxy-sidecar build with the CPEX plugin. Two tag sources: the literal `cpex` tag, always required because it gates `cmd/cortex-cpex/main.go`, plus the plugin tags its Dockerfile appends from `GO_BUILD_TAGS` (resolved from the `cpex` profile in `build.yaml`) — `cpex` alone registers no plugins. Links `libcpex_ffi.a` from a pinned CPEX release (CGO_ENABLED=1). Routes hooks through the CPEX framework (APL DSL + named CPEX policy plugins). FFI ABI version is read from `cmd/cortex-cpex/CPEX_FFI_VERSION` |
 | `proxy-init` | `deploy/proxy-init/Dockerfile.init` | Alpine + iptables init container (envoy-sidecar + proxy-sidecar enforce-redirect modes) |
@@ -755,7 +755,7 @@ Hooks:
 `ci.yaml` both run, but only one of them can fail:
 
 - `go vet ./...` **is** a gate, on 7 of the 12 modules: `core`, both
-  `scripts/*`, and the `cmd/{authbridge-proxy,authbridge-envoy,agentop,authbridge-praxis}`
+  `scripts/*`, and the `cmd/{cortex,authbridge-envoy,agentop,authbridge-praxis}`
   matrix. Not vetted anywhere: `cmd/cortex-cpex` (deliberately excluded — it
   needs CGO and a pinned `libcpex_ffi.a`, so `build.yaml` covers it via the image
   build), `core/storage/redis`, and the three `demos/*` modules.
@@ -962,8 +962,8 @@ resulting `/shared/client-id.txt` and `/shared/client-secret.txt`.
   `go mod tidy -diff` in every module — `ci.yaml`'s `go-tidy-check` gates on it,
   and `build`/`vet`/`test` all pass while it fails.
 - Logging with `log/slog`; the binaries log under their own name
-  (`authbridge-proxy`, `authbridge-envoy`). Note the `authbridge-lite` image runs
-  the `authbridge-proxy` binary, so it logs as `authbridge-proxy`.
+  (`cortex`, `authbridge-envoy`). Note the `authbridge-lite` image runs
+  the `cortex` binary, so it logs as `cortex`.
 - gRPC ext-proc uses `envoyproxy/go-control-plane` types (in `core/listener/extproc`)
 - JWT validation uses `lestrrat-go/jwx/v2` (in `core/plugins/jwtvalidation/validation`)
 

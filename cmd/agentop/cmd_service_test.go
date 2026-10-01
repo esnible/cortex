@@ -16,7 +16,7 @@ import (
 func servicePathsFixture(t *testing.T) servicePaths {
 	t.Helper()
 	dir := t.TempDir()
-	bin := filepath.Join(dir, "authbridge-proxy")
+	bin := filepath.Join(dir, "cortex")
 	if err := os.WriteFile(bin, []byte("#!/bin/sh\nsleep 30\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -171,7 +171,7 @@ func TestRunningPID_OnlyClaimsOurOwnProcess(t *testing.T) {
 	if got := runningPID(pf); got != 0 {
 		t.Errorf("garbage pidfile -> %d, want 0", got)
 	}
-	// A live pid that is NOT authbridge-proxy: this process.
+	// A live pid that is NOT cortex: this process.
 	_ = os.WriteFile(pf, []byte(strconv.Itoa(os.Getpid())+"\n"), 0o600)
 	if got := runningPID(pf); got != 0 {
 		t.Errorf("pid of a foreign process -> %d, want 0 (it is not ours)", got)
@@ -260,7 +260,7 @@ func TestLastLines_SurfacesTheReason(t *testing.T) {
 // into the wrong arguments.
 func TestRenderUnit_HostilePaths(t *testing.T) {
 	p := servicePaths{
-		binary:     "/Users/a & b/.local/bin/authbridge-proxy",
+		binary:     "/Users/a & b/.local/bin/cortex",
 		configFile: "/Users/a & b/.cortex/my config.yaml",
 		logFile:    "/Users/a & b/.cortex/proxy.log",
 		home:       "/Users/a & b",
@@ -302,7 +302,7 @@ func TestRenderUnit_HostilePaths(t *testing.T) {
 
 	t.Run("a single quote in the path cannot break out", func(t *testing.T) {
 		q := servicePaths{
-			binary:     "/home/o'brien/bin/authbridge-proxy",
+			binary:     "/home/o'brien/bin/cortex",
 			configFile: "/home/o'brien/.cortex/config.yaml",
 			logFile:    "/home/o'brien/.cortex/proxy.log",
 			home:       "/home/o'brien",
@@ -319,7 +319,7 @@ func TestRenderUnit_HostilePaths(t *testing.T) {
 // there would hide crashes from its StartLimit accounting.
 func TestSupervisionIsPlatformCorrect(t *testing.T) {
 	p := servicePaths{
-		binary: "/u/bin/authbridge-proxy", configFile: "/u/.cortex/config.yaml",
+		binary: "/u/bin/cortex", configFile: "/u/.cortex/config.yaml",
 		logFile: "/u/.cortex/proxy.log", home: "/u",
 	}
 	darwin := renderUnitFor("darwin", p)

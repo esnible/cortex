@@ -1401,7 +1401,7 @@ Resolving also keeps the temporary file a sibling of the real one, which the
 atomicity guarantee needs: a rename across filesystems fails `EXDEV`.
 
 That relies on the proxy watching the resolved file's directory, which the
-reloader does — but the reloader ships in `authbridge-proxy`, and that installs
+reloader does — but the reloader ships in `cortex`, and that installs
 separately from agentop. **A proxy started before that change still has the old
 single watch**, so on Linux a symlinked config will not observe the write: the
 poll times out and rolls the edit back. Run `agentop service restart` after

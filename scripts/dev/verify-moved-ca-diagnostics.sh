@@ -6,7 +6,7 @@
 # two throwaway HOMEs under a temp dir — it never touches your real ~/.cortex, and
 # it starts its proxy on an unused high port so a running Cortex is unaffected.
 #
-# Usage:  scripts/dev/verify-moved-ca-diagnostics.sh [path-to-authbridge-proxy]
+# Usage:  scripts/dev/verify-moved-ca-diagnostics.sh [path-to-cortex]
 #
 # With no argument it builds the binary from this checkout.
 set -euo pipefail
@@ -38,10 +38,10 @@ mkdir -p "$HOME_A" "$HOME_B"
 
 BIN="${1:-}"
 if [[ -z "$BIN" ]]; then
-  echo "==> building authbridge-proxy"
+  echo "==> building cortex"
   # Inside $WORK so cleanup removes it; a separate mktemp -d would leak a
   # directory on every run.
-  BIN="$WORK/authbridge-proxy"
+  BIN="$WORK/cortex"
   # Plugins are all opt-in build tags, and the built-in --local config names four
   # of them. Without the `local` profile's tags the binary starts, fails to build
   # its pipeline, and exits — so the tags are required, not an optimisation.

@@ -53,7 +53,7 @@ func TestStopIsDurable(t *testing.T) {
 // PATH could not even parse `service`.
 func TestUnitCarriesItsWriter(t *testing.T) {
 	p := servicePaths{
-		binary:     "/u/bin/authbridge-proxy",
+		binary:     "/u/bin/cortex",
 		configFile: "/u/.cortex/config.yaml",
 		logFile:    "/u/.cortex/proxy.log",
 		home:       "/u",

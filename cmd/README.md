@@ -15,7 +15,7 @@ the `lite` profile's tags), not a separate binary.
 |---|---|---|---|---|
 | [`cortex/`](cortex/) | `proxy-sidecar` (default) | HTTP forward + reverse proxies | full (jwt-validation, token-exchange, a2a-parser, mcp-parser, inference-parser) | `ghcr.io/rossoctl/cortex/authbridge` |
 | [`cortex-envoy/`](cortex-envoy/) | `envoy-sidecar` | gRPC ext_proc on `:9090` (hooked into Envoy) | full | `ghcr.io/rossoctl/cortex/authbridge-envoy` |
-| `authbridge-lite` _(build variant of `authbridge-proxy`)_ | `proxy-sidecar` | HTTP forward + reverse proxies | lite — `authbridge-proxy` built with the `lite` profile, a sidecar minimum (see [`../scripts/profile-tags`](../scripts/profile-tags)) | `ghcr.io/rossoctl/cortex/authbridge-lite` |
+| `authbridge-lite` _(build variant of `cortex`)_ | `proxy-sidecar` | HTTP forward + reverse proxies | lite — `cortex` built with the `lite` profile, a sidecar minimum (see [`../scripts/profile-tags`](../scripts/profile-tags)) | `ghcr.io/rossoctl/cortex/authbridge-lite` |
 | [`cortex-cpex/`](cortex-cpex/) | `proxy-sidecar` | HTTP forward + reverse proxies | full + `cpex` (needs cgo; links `libcpex_ffi.a`) | `ghcr.io/rossoctl/cortex/authbridge-cpex` |
 | [`cortex-praxis/`](cortex-praxis/) | `proxy-sidecar` _(output shape; pins no input mode)_ | HTTP, from a rendered Praxis config | **none** — defines no `plugins_*.go`. **Paused, not abandoned:** kept and kept compiling (it is in the `ci.yaml` matrix for that reason). Do not delete. | not published |
 | [`agentop/`](agentop/) | n/a | n/a | n/a | not published as an image; released as a standalone binary by `release-binaries.yaml` |
@@ -41,7 +41,7 @@ ConfigMap contracts are documented in
 
 ## Ports
 
-**Proxy-sidecar (`authbridge-proxy`, and its `authbridge-lite` image variant):**
+**Proxy-sidecar (`cortex`, and its `authbridge-lite` image variant):**
 
 | Port | Purpose |
 |---|---|
@@ -61,7 +61,7 @@ a second instance on the default ports dies on a bind conflict. They are not all
 under the same config key — everything above is a `listener.*` address except
 `9093`, which is `stats.stats_address`. The defaults bind every interface, which
 is what Kubernetes probes and sidecar traffic need but not what a laptop wants;
-local single-host setups typically pin them all to `127.0.0.1`. `authbridge-proxy
+local single-host setups typically pin them all to `127.0.0.1`. `cortex
 --local` ships exactly such a config — see
 [`docs/laptop-token-savings.md`](../docs/laptop-token-savings.md).
 
@@ -80,7 +80,7 @@ local single-host setups typically pin them all to `127.0.0.1`. `authbridge-prox
 
 ## Choosing a binary
 
-- **Default deployment**: use `authbridge-proxy`. No Envoy, observable via
+- **Default deployment**: use `cortex`. No Envoy, observable via
   agentop. Cooperative egress (HTTP_PROXY) needs no iptables; the always-on
   `enforce-redirect` egress guard and the opt-in transparent inbound listener
   both use [`proxy-init`](../deploy/proxy-init/).
@@ -88,7 +88,7 @@ local single-host setups typically pin them all to `127.0.0.1`. `authbridge-prox
   `authbridge-envoy`. Requires the [`proxy-init`](../deploy/proxy-init/)
   iptables init container.
 - **Size-constrained, no protocol-aware events needed**: use the
-  `authbridge-lite` image — the `authbridge-proxy` binary built with the
+  `authbridge-lite` image — the `cortex` binary built with the
   `lite` profile from `scripts/profile-tags` (a sidecar
   minimum). Same listener layout, but without parsers/OPA — agentop
   will only see denial events and basic auth-level invocations, not

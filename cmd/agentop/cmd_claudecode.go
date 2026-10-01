@@ -72,7 +72,7 @@ const (
 // managedState is the ownership record. A nil entry means the key was absent
 // before enable, so disable deletes it; a non-nil entry is the value to restore.
 // managedState is core/clientstate.State: the shape is shared with
-// authbridge-proxy, which reads this file back to check the client is still pointed
+// cortex, which reads this file back to check the client is still pointed
 // at the CA in force. Aliased rather than redeclared so a field rename cannot leave
 // the reader silently returning nothing.
 type managedState = clientstate.State

@@ -1,4 +1,4 @@
-# AuthBridge CPEX-enabled sidecar image — authbridge-proxy (HTTP
+# AuthBridge CPEX-enabled sidecar image — cortex (HTTP
 # forward + reverse proxies) plus the `cpex` plugin which routes
 # hooks through the CPEX framework (APL DSL + named CPEX policy
 # plugins). Built with -tags cpex; links libcpex_ffi.a from a
@@ -6,7 +6,7 @@
 #
 # Build context: . (repository root; needs core/ and cmd/cortex-cpex/)
 #
-# Why not just authbridge-proxy: that image is pure-Go, CGO_ENABLED=0.
+# Why not just cortex: that image is pure-Go, CGO_ENABLED=0.
 # CPEX requires cgo. Operators switch images (not build flags) to
 # enable CPEX.
 
@@ -103,7 +103,7 @@ RUN set -eu; \
     fi; \
     echo "[ffi] extracted libcpex_ffi.a + VERSION=$got_version + FFI_ABI=$got_abi (asserted)"
 
-# ---------- Stage 2: build authbridge-cpex with cgo + -tags cpex ----
+# ---------- Stage 2: build cortex-cpex with cgo + -tags cpex ----
 # golang:alpine (musl) so we link the musl CPEX FFI asset and run on the
 # small Alpine base. CGO needs a C compiler + musl headers (gcc, musl-dev).
 #
@@ -155,10 +155,10 @@ RUN test -n "${GO_BUILD_TAGS}" || { \
 # -trimpath drops absolute build paths for reproducibility; -s -w drop the
 # Go symbol table + DWARF (panic traces still resolve via pclntab).
 RUN cd cmd/cortex-cpex && \
-    go build -tags "cpex${GO_BUILD_TAGS:+,${GO_BUILD_TAGS}}" -trimpath -ldflags="-s -w" -o /authbridge-cpex .
+    go build -tags "cpex${GO_BUILD_TAGS:+,${GO_BUILD_TAGS}}" -trimpath -ldflags="-s -w" -o /cortex-cpex .
 
 # ---------- Stage 3: runtime ----------------------------------------
-# Alpine — same base + digest the authbridge-proxy / -lite images pin. The
+# Alpine — same base + digest the cortex / -lite images pin. The
 # musl FFI asset links against musl, so no glibc floor and no debian base.
 # entrypoint.sh is bash, so we install bash (matching the proxy image).
 FROM alpine:3.20@sha256:beefdbd8a1da6d2915566fde36db9db0b524eb737fc57cd1367effd16dc0d06d
@@ -168,7 +168,7 @@ FROM alpine:3.20@sha256:beefdbd8a1da6d2915566fde36db9db0b524eb737fc57cd1367effd1
 # glibc bases ship it implicitly; on Alpine it must be installed explicitly.
 RUN apk add --no-cache bash ca-certificates libgcc
 
-COPY --from=builder --chmod=755 /authbridge-cpex /usr/local/bin/authbridge-cpex
+COPY --from=builder --chmod=755 /cortex-cpex /usr/local/bin/cortex-cpex
 COPY --chmod=755 cmd/cortex-cpex/entrypoint.sh /usr/local/bin/entrypoint.sh
 
 USER 1001

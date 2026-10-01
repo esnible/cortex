@@ -81,7 +81,7 @@ service.
 // can point all of it at a temp dir instead of the real ~/Library/LaunchAgents.
 type servicePaths struct {
 	unitFile   string // plist or .service
-	binary     string // absolute path to authbridge-proxy
+	binary     string // absolute path to cortex
 	configFile string // ~/.cortex/config.yaml
 	logFile    string
 	pidFile    string
@@ -123,7 +123,7 @@ func runService(args []string, stdout, stderr io.Writer) int {
 	yes := fs.Bool("yes", false, "do not prompt for confirmation")
 	cortexCfg := fs.String("config", "", "Cortex config file")
 	unitOverride := fs.String("unit-file", "", "unit file path (testing)")
-	proxyPath := fs.String("proxy", "", "authbridge-proxy binary to supervise (default: the one installed beside agentop)")
+	proxyPath := fs.String("proxy", "", "cortex binary to supervise (default: the one installed beside agentop)")
 	printUnit := fs.Bool("print-unit", false, "print the unit file and exit, installing nothing")
 	forceRestart := fs.Bool("restart", false, "with install: restart even when nothing changed")
 	if err := fs.Parse(args[1:]); err != nil {
@@ -179,7 +179,7 @@ func resolveServicePaths(cortexCfg, unitOverride, proxyOverride string) (service
 	// An absolute binary path: a supervisor has no shell PATH to search.
 	//
 	// Resolution order matters. PATH first was wrong: an end-to-end run found the
-	// plist pointing at an OLDER authbridge-proxy that happened to sit earlier on
+	// plist pointing at an OLDER cortex that happened to sit earlier on
 	// PATH, which then rejected --supervise and exited, so the service never came up.
 	// agentop and the proxy are installed together, so the sibling of the running agentop
 	// is the one that matches it; PATH is only a fallback. An explicit --proxy wins
@@ -188,16 +188,16 @@ func resolveServicePaths(cortexCfg, unitOverride, proxyOverride string) (service
 	bin := proxyOverride
 	if bin == "" {
 		if self, serr := os.Executable(); serr == nil {
-			if sib := filepath.Join(filepath.Dir(self), "authbridge-proxy"); fileExists(sib) {
+			if sib := filepath.Join(filepath.Dir(self), "cortex"); fileExists(sib) {
 				bin = sib
 			}
 		}
 	}
 	if bin == "" {
-		if found, lerr := exec.LookPath("authbridge-proxy"); lerr == nil {
+		if found, lerr := exec.LookPath("cortex"); lerr == nil {
 			bin = found
 		} else {
-			bin = filepath.Join(home, ".local", "bin", "authbridge-proxy")
+			bin = filepath.Join(home, ".local", "bin", "cortex")
 		}
 	}
 	if abs, aerr := filepath.Abs(bin); aerr == nil {
@@ -219,7 +219,7 @@ func resolveServicePaths(cortexCfg, unitOverride, proxyOverride string) (service
 			p.unitFile = filepath.Join(home, ".config", "systemd", "user", systemdUnit)
 		default:
 			return p, fmt.Errorf("no supervisor integration for %s; start the proxy yourself:\n"+
-				"  authbridge-proxy --config %s &", runtime.GOOS, cortexCfg)
+				"  cortex --config %s &", runtime.GOOS, cortexCfg)
 		}
 	default:
 		p.unitFile = unitOverride
@@ -267,7 +267,7 @@ func serviceInstall(p servicePaths, yes, forceRestart bool, stdout, stderr io.Wr
 		// Not "run the installer first": the installer is what calls this, so that
 		// advice sent people in a circle. Name the command that creates the file.
 		fmt.Fprintf(stderr, "agentop: no config at %s. Create it with:\n"+
-			"  authbridge-proxy --local --write-config\n", p.configFile)
+			"  cortex --local --write-config\n", p.configFile)
 		return 1
 	}
 
@@ -314,7 +314,7 @@ func serviceInstall(p servicePaths, yes, forceRestart bool, stdout, stderr io.Wr
 	}
 
 	if _, serr := os.Stat(p.binary); serr != nil {
-		fmt.Fprintf(stderr, "agentop: authbridge-proxy not found at %s; install it first\n", p.binary)
+		fmt.Fprintf(stderr, "agentop: cortex not found at %s; install it first\n", p.binary)
 		return 1
 	}
 	// launchd loads the LOGIN home's ~/Library/LaunchAgents, taken from the user
@@ -331,7 +331,7 @@ func serviceInstall(p servicePaths, yes, forceRestart bool, stdout, stderr io.Wr
 
 	if p.configErr != nil {
 		fmt.Fprintf(stderr, "agentop: %s will not load, so a supervised proxy could not start:\n  %v\n"+
-			"  Fix it (or delete it and run: authbridge-proxy --local --write-config), then re-run.\n",
+			"  Fix it (or delete it and run: cortex --local --write-config), then re-run.\n",
 			p.configFile, p.configErr)
 		return 1
 	}
@@ -350,7 +350,7 @@ func serviceInstall(p servicePaths, yes, forceRestart bool, stdout, stderr io.Wr
 			fmt.Fprintf(stderr, "agentop: could not update %s (%v),\n"+
 				"  and as it stands it binds %s on every interface.\n"+
 				"  Refusing to supervise that. Add `bind_loopback_only: true` under listener:,\n"+
-				"  or delete the file and run: authbridge-proxy --local --write-config\n",
+				"  or delete the file and run: cortex --local --write-config\n",
 				p.configFile, mErr, strings.Join(exposed, ", "))
 			return 1
 		}
@@ -486,7 +486,7 @@ func serviceInstall(p servicePaths, yes, forceRestart bool, stdout, stderr io.Wr
 	return 0
 }
 
-// crashRecoveryNote explains why there are two authbridge-proxy processes on macOS.
+// crashRecoveryNote explains why there are two cortex processes on macOS.
 //
 // launchd does not restart these agents — see renderUnitFor and
 // cmd/cortex/supervise.go — so crash recovery belongs to the supervisor, not
@@ -564,7 +564,7 @@ func serviceStatus(p servicePaths, stdout io.Writer) int {
 	// able to manage.
 	if w := unitWriterVersion(p.unitFile); w != "" && w != version {
 		fmt.Fprintf(stdout, "WARNING: this unit was written by agentop %s; you are running %s.\n"+
-			"  The unit also pins a fixed authbridge-proxy path, which that agentop chose.\n"+
+			"  The unit also pins a fixed cortex path, which that agentop chose.\n"+
 			"  Reinstall with this build to bring them back in step:  agentop service install\n",
 			w, version)
 	}
@@ -863,7 +863,7 @@ func serviceIsCurrent(p servicePaths) bool {
 // that was missing: the unit naming the right binary PATH is not the same as that
 // path holding the bytes we installed, and every OTHER clause is satisfied when it
 // does not. Replacing the binary in place — a source rebuild, or an installer
-// overwriting it — left install reporting "Already current: authbridge-proxy is
+// overwriting it — left install reporting "Already current: cortex is
 // running under launchd and healthy" while the running process was the previous
 // build. True of the unit, false of the service, and silent either way.
 //

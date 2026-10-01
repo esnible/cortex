@@ -165,7 +165,7 @@ curl localhost:47601/v1/usage | jq .unpricedBy
 The Bob endpoint above is the worked example for [Billing units](#billing-units): it bills in
 Bobcoins rather than dollars, so closing its gap means giving that endpoint a `unit:` as well as
 rates. Pricing it without one would record Bobcoins as dollars — the figure would look right and be
-neither. The built-in local config (`authbridge-proxy --local --write-config`, which both
+neither. The built-in local config (`cortex --local --write-config`, which both
 `install.sh` and `make dev-install` run) ships that entry, so a new install prices Bob already; a
 `~/.cortex/config.yaml` written before it is never rewritten, so an older install still shows this
 gap until the block below is added.

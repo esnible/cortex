@@ -1,7 +1,7 @@
 //go:build cpex
 
 // Package main is the CPEX-enabled authbridge binary: identical to
-// authbridge-proxy (HTTP forward + reverse proxies, full rossoctl
+// cortex (HTTP forward + reverse proxies, full rossoctl
 // plugin set) plus the `cpex` plugin which routes hooks through the
 // CPEX (Context Plugin Execution) framework — including the APL DSL
 // and any pre-built CPEX policy plugins (Cedar, PII scanner, audit
@@ -9,12 +9,12 @@
 //
 // This binary requires `-tags cpex` and links libcpex_ffi via cgo.
 // The build constraint at the top of this file ensures a no-tag
-// build fails fast rather than silently producing an authbridge-proxy
+// build fails fast rather than silently producing an cortex
 // duplicate.
 //
-// For envoy-sidecar mode use authbridge-envoy; for a no-cgo, pure-Go
-// build use authbridge-proxy. The body of main() below is duplicated
-// from authbridge-proxy/main.go pending a core-side `Run()`
+// For envoy-sidecar mode use cortex-envoy; for a no-cgo, pure-Go
+// build use cortex. The body of main() below is duplicated
+// from cortex/main.go pending a core-side `Run()`
 // extraction — see this binary's README for the extraction proposal.
 package main
 
@@ -45,16 +45,16 @@ import (
 
 	"github.com/rossoctl/cortex/core/listener/forwardproxy"
 	"github.com/rossoctl/cortex/core/listener/reverseproxy"
-	// Plugins — same set as authbridge-proxy, plus the cpex plugin
+	// Plugins — same set as cortex, plus the cpex plugin
 	// which lives behind //go:build cpex. The cpex import only fires
-	// in this binary's build; pure-Go binaries (authbridge-proxy,
-	// authbridge-envoy, authbridge-lite) don't import it.
+	// in this binary's build; pure-Go binaries (cortex,
+	// cortex-envoy, authbridge-lite) don't import it.
 )
 
 // warnCostLedgerInert says out loud that a cost_ledger block in this binary's config
 // does nothing. Safe to call unconditionally; silent when the block is absent.
 //
-// FOURTH BINARY WITH THIS SHAPE, and the same answer as authbridge-envoy's for the same
+// FOURTH BINARY WITH THIS SHAPE, and the same answer as cortex-envoy's for the same
 // reasons — see warnCostLedgerInert there, which this mirrors deliberately rather than
 // paraphrases. This binary builds a session store and stops: no usage aggregator, no
 // ledger, and a session API constructed without WithUsage, so the whole block is loaded,
@@ -62,7 +62,7 @@ import (
 //
 // INERT IS THE RIGHT ANSWER; the silence was not:
 //
-//   - Wiring it would be wrong here. authbridge-cpex runs proxy-sidecar mode in
+//   - Wiring it would be wrong here. cortex-cpex runs proxy-sidecar mode in
 //     Kubernetes, where the ledger is deliberately off (see CostLedgerConfig): a pod's
 //     filesystem is ephemeral, one replica's day files are invisible to the next, and the
 //     right sink for fleet-wide spend is a central collector rather than N per-pod files
@@ -82,17 +82,17 @@ func warnCostLedgerInert(cfg *config.Config, logger *slog.Logger) {
 	if cfg.CostLedger == nil {
 		return
 	}
-	logger.Warn("cost_ledger is configured but INERT in authbridge-cpex — no cost history will be written",
+	logger.Warn("cost_ledger is configured but INERT in cortex-cpex — no cost history will be written",
 		"reason", "this binary wires no cost ledger and no usage aggregator; it runs in Kubernetes, where per-pod day files are the wrong sink for spend (use a central collector)",
 		"effect", "the whole cost_ledger block is ignored, including dir and retention_days",
-		"fix", "remove the cost_ledger block here; for durable local cost history run authbridge-proxy --local, which does honour it")
+		"fix", "remove the cost_ledger block here; for durable local cost history run cortex --local, which does honour it")
 }
 
 func main() {
 	configPath := flag.String("config", "", "path to config YAML file")
 	flag.Parse()
 
-	bootstrap.InitLogging("authbridge-cpex")
+	bootstrap.InitLogging("cortex-cpex")
 	bootstrap.StartSignalToggle()
 
 	if *configPath == "" {
@@ -140,7 +140,7 @@ func main() {
 		}
 		if c.Mode != "" && c.Mode != config.ModeProxySidecar {
 			return nil, nil, nil, fmt.Errorf(
-				"authbridge-cpex supports only mode=%q (got %q); use cmd/cortex-envoy for envoy-sidecar mode",
+				"cortex-cpex supports only mode=%q (got %q); use cmd/cortex-envoy for envoy-sidecar mode",
 				config.ModeProxySidecar, c.Mode)
 		}
 		c.Mode = config.ModeProxySidecar
@@ -215,7 +215,7 @@ func main() {
 	} else {
 		slog.Info("session tracking disabled")
 	}
-	// Outside the branch on purpose, like authbridge-proxy's: this binary builds a session
+	// Outside the branch on purpose, like cortex's: this binary builds a session
 	// store and stops there — no usage aggregator, no cost ledger — so a cost_ledger block
 	// in its config is loaded, validated and thrown away. That absence is deliberate (see
 	// the helper); the silence about it was not, and a warning that only exists down one
@@ -257,7 +257,7 @@ func main() {
 	defer sharedStore.Close()
 	rpSrv.Shared = sharedStore
 	fpSrv.Shared = sharedStore
-	// Same per-session bucketing as authbridge-proxy: a client-supplied session
+	// Same per-session bucketing as cortex: a client-supplied session
 	// id beats the global ActiveSession(), so concurrent agent sessions stay
 	// separable. Falls back to the previous behavior when absent.
 	//
@@ -309,7 +309,7 @@ func main() {
 		}()
 	}
 
-	slog.Info("authbridge-cpex starting", "mode", cfg.Mode, "logLevel", bootstrap.LogLevel().String())
+	slog.Info("cortex-cpex starting", "mode", cfg.Mode, "logLevel", bootstrap.LogLevel().String())
 
 	healthSrv, healthErr := bootstrap.StartHealthServer(inboundH, outboundH, cfg.Listener.HealthAddr)
 	if healthErr != nil {

@@ -1,4 +1,4 @@
-# AuthBridge proxy-sidecar combined image — authbridge-proxy (HTTP
+# AuthBridge proxy-sidecar combined image — cortex (HTTP
 # forward + reverse proxies, no Envoy / no gRPC, full plugin set) in
 # a single container.
 #
@@ -9,7 +9,7 @@
 # spiffe-helper sidecar binary).
 #
 # Uses alpine base (~5 MB) — needs bash for the supervisor entrypoint.
-# authbridge-proxy is CGO_ENABLED=0 static, so musl is fine.
+# cortex is CGO_ENABLED=0 static, so musl is fine.
 #
 # Build context: . (repository root; needs access to core/ and cmd/cortex/)
 #
@@ -17,7 +17,7 @@
 # GOPROXY like any other dependency). It builds pure-Go — skeleton's cgo is behind
 # the cg_skeleton build tag — so CGO_ENABLED=0 below stays correct.
 
-# Stage 1: Build authbridge-proxy binary.
+# Stage 1: Build cortex binary.
 # `-ldflags="-s -w"` drops the symbol table and DWARF debug info to
 # shave ~30% off the binary. Go's runtime keeps `pclntab` separately,
 # so panic stack traces still show function names.
@@ -40,14 +40,14 @@ RUN test -n "${GO_BUILD_TAGS}" || { \
       echo "Pass a profile, e.g. --build-arg GO_BUILD_TAGS=\"\$(go -C scripts/profile-tags run . full)\"" >&2; \
       exit 1; }
 ENV GOWORK=off
-RUN cd cmd/cortex && CGO_ENABLED=0 GOOS=linux go build -tags "${GO_BUILD_TAGS}" -ldflags="-s -w" -o /authbridge-proxy .
+RUN cd cmd/cortex && CGO_ENABLED=0 GOOS=linux go build -tags "${GO_BUILD_TAGS}" -ldflags="-s -w" -o /cortex .
 
 # Stage 2: Runtime — alpine (has bash, ~5 MB base)
 FROM alpine:3.20@sha256:beefdbd8a1da6d2915566fde36db9db0b524eb737fc57cd1367effd16dc0d06d
 
 RUN apk add --no-cache bash ca-certificates
 
-COPY --from=builder --chmod=755 /authbridge-proxy /usr/local/bin/authbridge-proxy
+COPY --from=builder --chmod=755 /cortex /usr/local/bin/cortex
 COPY --chmod=755 cmd/cortex/entrypoint.sh /usr/local/bin/entrypoint.sh
 
 USER 1001

@@ -25,8 +25,8 @@
 // # Build tag
 //
 // The real CPEX backend uses cgo and links libcpex_ffi.a. The
-// authbridge-cpex binary is the only build target that compiles
-// this package with -tags cpex; other binaries (authbridge-proxy,
+// cortex-cpex binary is the only build target that compiles
+// this package with -tags cpex; other binaries (cortex,
 // authbridge-envoy, authbridge-lite) do not import this package.
 //
 // The package itself compiles tag-free for unit tests: the Manager

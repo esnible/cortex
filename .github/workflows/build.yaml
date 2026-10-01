@@ -32,21 +32,21 @@ jobs:
             dockerfile: Dockerfile.init
 
           # AuthBridge envoy-sidecar combined image —
-          # Envoy + authbridge-envoy (ext_proc). SVIDs are fetched
+          # Envoy + cortex-envoy (ext_proc). SVIDs are fetched
           # in-process over the SPIRE Workload API; no spiffe-helper.
           - name: authbridge-envoy
             context: .
             dockerfile: cmd/cortex-envoy/Dockerfile
 
           # AuthBridge proxy-sidecar combined image (default mode) —
-          # authbridge-proxy (full plugin set, includes parsers).
+          # cortex (full plugin set, includes parsers).
           # No Envoy, no gRPC. SVIDs are fetched in-process over the
           # SPIRE Workload API; no spiffe-helper.
           - name: authbridge
             context: .
             dockerfile: cmd/cortex/Dockerfile
 
-          # AuthBridge proxy-sidecar LITE image — the SAME authbridge-proxy
+          # AuthBridge proxy-sidecar LITE image — the SAME cortex
           # binary + Dockerfile, built with a trimmed plugin set (roughly
           # halving the binary). A build variant, not a separate binary.
           # GO_BUILD_TAGS is derived at step time from
@@ -56,7 +56,7 @@ jobs:
             context: .
             dockerfile: cmd/cortex/Dockerfile
 
-          # AuthBridge proxy-sidecar CPEX image — authbridge-proxy built
+          # AuthBridge proxy-sidecar CPEX image — cortex built
           # with -tags cpex (links libcpex_ffi.a from a pinned CPEX
           # release) so the `cpex` plugin routes hooks through the CPEX
           # framework (APL DSL + named CPEX policy plugins). Needs the

@@ -274,7 +274,7 @@ kubectl get pod -n team1 -l app.kubernetes.io/name=weather-service -o jsonpath='
 Expected (Step 2 defaults — `proxy-sidecar` mode):
 
 ```text
-agent authbridge-proxy
+agent cortex
 ```
 
 Or, in `envoy-sidecar` mode:

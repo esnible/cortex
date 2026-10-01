@@ -70,7 +70,7 @@ load_image_to_kind ghcr.io/rossoctl/rossoctl/spiffe-idp-setup:local
 echo "✅ Built and loaded: spiffe-idp-setup:local"
 echo ""
 
-# Build authbridge (proxy-sidecar combined: authbridge-proxy + spiffe-helper)
+# Build authbridge (proxy-sidecar combined: cortex + spiffe-helper)
 # Default deployment shape — used when the workload's mode is proxy-sidecar.
 # After cortex#411 the unified binary was split into three
 # mode-specific binaries; each has its own Dockerfile under cmd/authbridge-*/.
@@ -99,7 +99,7 @@ load_image_to_kind ghcr.io/rossoctl/cortex/authbridge-envoy:local
 echo "✅ Built and loaded: authbridge-envoy:local"
 echo ""
 
-# Build authbridge-lite: the same authbridge-proxy binary/Dockerfile built with
+# Build authbridge-lite: the same cortex binary/Dockerfile built with
 # the `lite` profile (see scripts/profile-tags). A build variant, not
 # a separate binary.
 echo "=========================================="

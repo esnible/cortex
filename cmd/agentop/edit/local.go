@@ -156,7 +156,7 @@ func (s FileStore) Apply(ctx context.Context, payload []byte) (time.Time, error)
 	// than being written off here as a platform caveat.
 	//
 	// VERSION DEPENDENCY, and it is a real one: that watcher fix ships in
-	// authbridge-proxy, which installs separately from agentop and is long-lived.
+	// cortex, which installs separately from agentop and is long-lived.
 	// A proxy started before it was added still has the old single watch, so a
 	// symlinked config on Linux behaves as described above no matter how new
 	// agentop is. `agentop service restart` after upgrading the proxy is what closes

@@ -13,7 +13,7 @@ import (
 // fixtureLocalConfig mirrors the shape of ~/.cortex/config.yaml: comments the
 // user cares about, top-level keys both before and after pipeline:, and a
 // trailing key so FindPipelineRange has a real "next sibling" to stop at.
-const fixtureLocalConfig = `# Built-in config for: authbridge-proxy --local
+const fixtureLocalConfig = `# Built-in config for: cortex --local
 mode: proxy-sidecar
 listener:
   roles: [forward]
@@ -35,7 +35,7 @@ session:
 // That makes FindPipelineRange take its nextKeyLine == 0 branch (end =
 // len(innerYAML)) — the branch production always takes, and the one
 // fixtureLocalConfig never reaches because it has a trailing session: key.
-const fixtureLocalConfigPipelineLast = `# Built-in config for: authbridge-proxy --local
+const fixtureLocalConfigPipelineLast = `# Built-in config for: cortex --local
 mode: proxy-sidecar
 stats:
   address: 127.0.0.1:47602
@@ -93,7 +93,7 @@ func TestFileStore_PipelineLastRunsToEndOfFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read back: %v", err)
 	}
-	want := "# Built-in config for: authbridge-proxy --local\n" +
+	want := "# Built-in config for: cortex --local\n" +
 		"mode: proxy-sidecar\n" +
 		"stats:\n  address: 127.0.0.1:47602\n" +
 		"pipeline:\n  outbound:\n    - name: mcp-parser\n"
@@ -250,7 +250,7 @@ func TestFileStore_RoundTripPreservesEverythingOutsidePipeline(t *testing.T) {
 	}
 	got := string(after)
 	for _, keep := range []string{
-		"# Built-in config for: authbridge-proxy --local",
+		"# Built-in config for: cortex --local",
 		"mode: proxy-sidecar",
 		"forward_proxy_addr: 127.0.0.1:47600",
 		"address: 127.0.0.1:47602",

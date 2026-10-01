@@ -68,7 +68,7 @@ engine pulls a large transitive dependency set.
 Bridges AuthBridge hooks to the [CPEX](https://github.com/contextforge-org/cpex)
 framework (a policy enforcement runtime for AI agents): an APL DSL plus named
 CPEX policy plugins (Cedar, PII, audit, …). Requires the separate
-`authbridge-cpex` binary (`-tags cpex`, `CGO_ENABLED=1`, links a pinned
+`cortex-cpex` binary (`-tags cpex`, `CGO_ENABLED=1`, links a pinned
 `libcpex_ffi.a`). Full details in [cpex-plugin.md](./cpex-plugin.md);
 see also the plugin's [README](../core/plugins/cpex/README.md).
 

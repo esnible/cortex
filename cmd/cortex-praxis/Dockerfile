@@ -1,7 +1,7 @@
-# AuthBridge praxis-sidecar combined image — the authbridge-praxis config
+# AuthBridge praxis-sidecar combined image — the cortex-praxis config
 # generator plus a Praxis proxy binary, in a single container.
 #
-# How this differs from the other AuthBridge images: authbridge-praxis is not a
+# How this differs from the other AuthBridge images: cortex-praxis is not a
 # proxy. It converts an AuthBridge config into a Praxis config (and, when the
 # inbound pipeline declares jwt-validation, a Praxis policy document), and
 # Praxis is the data plane. The entrypoint therefore runs the generator to
@@ -162,7 +162,7 @@ filter_chains:\n\
     && echo "policy-engine verified: policy filter accepted a valid policy document" \
     && rm -f /probe.yaml /probe-policy.yaml
 
-# ── Stage 2: Build the authbridge-praxis config generator ───────────────────
+# ── Stage 2: Build the cortex-praxis config generator ───────────────────
 #
 # `-ldflags="-s -w"` drops the symbol table and DWARF debug info to shave ~30%
 # off the binary. Go's runtime keeps `pclntab` separately, so panic stack
@@ -178,18 +178,18 @@ COPY cmd/cortex-praxis/ cmd/cortex-praxis/
 
 ARG GO_BUILD_TAGS=""
 ENV GOWORK=off
-RUN cd cmd/cortex-praxis && CGO_ENABLED=0 GOOS=linux go build -tags "${GO_BUILD_TAGS}" -ldflags="-s -w" -o /authbridge-praxis .
+RUN cd cmd/cortex-praxis && CGO_ENABLED=0 GOOS=linux go build -tags "${GO_BUILD_TAGS}" -ldflags="-s -w" -o /cortex-praxis .
 
 # ── Stage 3: Runtime ───────────────────────────────────────────────────────
 #
-# alpine (has bash for the entrypoint, ~5 MB base). authbridge-praxis is
+# alpine (has bash for the entrypoint, ~5 MB base). cortex-praxis is
 # CGO_ENABLED=0 static; the Praxis binary is musl-linked against the same libc
 # family as this base, with OpenSSL statically linked in.
 FROM alpine:3.20@sha256:beefdbd8a1da6d2915566fde36db9db0b524eb737fc57cd1367effd16dc0d06d
 
 RUN apk add --no-cache bash ca-certificates
 
-COPY --from=go-builder --chmod=755 /authbridge-praxis /usr/local/bin/authbridge-praxis
+COPY --from=go-builder --chmod=755 /cortex-praxis /usr/local/bin/cortex-praxis
 COPY --from=praxis-builder --chmod=755 /praxis-bin /usr/local/bin/praxis
 COPY --chmod=755 cmd/cortex-praxis/entrypoint.sh /usr/local/bin/entrypoint.sh
 

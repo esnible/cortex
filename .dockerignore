@@ -30,15 +30,15 @@ dist
 # builder, which recompiles from source anyway.
 #
 # `cmd/*/authbridge-*` catches the in-package builds (cmd/cortex/
-# authbridge-proxy and friends) without touching the package DIRECTORIES, which
+# cortex and friends) without touching the package DIRECTORIES, which
 # are one path segment shorter, nor any source file — no tracked file under
 # cmd/*/ begins with "authbridge-".
 agentop
-authbridge-proxy
-authbridge-envoy
-authbridge-cpex
+cortex
+cortex-envoy
+cortex-cpex
 authbridge-lite
-authbridge-praxis
+cortex-praxis
 profile-tags
 readme-demo
 cmd/agentop/agentop

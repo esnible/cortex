@@ -660,13 +660,13 @@ with_proxy_running() { # pidfile-content(__MISSING__ for none)  kill_exit  ps_mo
 	} >"${TMP}/prun.sh"
 	sh "${TMP}/prun.sh" 2>/dev/null
 }
-check "proxy_running: missing pidfile -> stopped" "stopped" "$(with_proxy_running __MISSING__ 0 authbridge-proxy)"
-check "proxy_running: non-numeric pid -> stopped" "stopped" "$(with_proxy_running abc 0 authbridge-proxy)"
-check "proxy_running: empty pid -> stopped" "stopped" "$(with_proxy_running '' 0 authbridge-proxy)"
-check "proxy_running: dead pid (kill -0 fails) -> stopped" "stopped" "$(with_proxy_running 12345 1 authbridge-proxy)"
+check "proxy_running: missing pidfile -> stopped" "stopped" "$(with_proxy_running __MISSING__ 0 cortex)"
+check "proxy_running: non-numeric pid -> stopped" "stopped" "$(with_proxy_running abc 0 cortex)"
+check "proxy_running: empty pid -> stopped" "stopped" "$(with_proxy_running '' 0 cortex)"
+check "proxy_running: dead pid (kill -0 fails) -> stopped" "stopped" "$(with_proxy_running 12345 1 cortex)"
 check "proxy_running: alive, ps blind (sandbox) -> running" "running" "$(with_proxy_running 12345 0 fail)"
 check "proxy_running: alive, ps empty comm -> running" "running" "$(with_proxy_running 12345 0 empty)"
-check "proxy_running: alive, ps names authbridge-proxy -> running" "running" "$(with_proxy_running 12345 0 authbridge-proxy)"
+check "proxy_running: alive, ps names cortex -> running" "running" "$(with_proxy_running 12345 0 cortex)"
 check "proxy_running: alive, ps names another process -> stopped" "stopped" "$(with_proxy_running 12345 0 sshd)"
 
 # --- ensure_tmpdir: exports TMPDIR on BOTH paths (regression: unset-TMPDIR abort) ---
@@ -747,23 +747,23 @@ check "svc action: refusal wins over ports-busy" "refused" \
 # at the port level and want opposite advice: wait for it vs stop it. The verdict
 # carries the pid and path through, since die() names them.
 check "svc action: a foreign holder outranks ports-busy (opposite advice)" \
-	"foreign-proxy 84858 /co/.local/bin/authbridge-proxy" \
-	"$(with_service_install_action 1 'bind: address already in use' yes '84858 /co/.local/bin/authbridge-proxy')"
+	"foreign-proxy 84858 /co/.local/bin/cortex" \
+	"$(with_service_install_action 1 'bind: address already in use' yes '84858 /co/.local/bin/cortex')"
 # ...but never over a safety refusal, which must still win outright.
 check "svc action: refusal outranks a foreign holder" "refused" \
-	"$(with_service_install_action 1 'refusing to expose listener' yes '84858 /co/.local/bin/authbridge-proxy')"
+	"$(with_service_install_action 1 'refusing to expose listener' yes '84858 /co/.local/bin/cortex')"
 # An unidentifiable holder must fall through to ports-busy, NOT be accused.
 check "svc action: no identifiable holder + ports held -> ports-busy" "ports-busy" \
 	"$(with_service_install_action 1 'bind: address already in use' yes '')"
 # A foreign holder is irrelevant when the install actually succeeded.
 check "svc action: exit 0 wins even with a foreign holder present" "supervised" \
-	"$(with_service_install_action 0 ok yes '84858 /co/.local/bin/authbridge-proxy')"
+	"$(with_service_install_action 0 ok yes '84858 /co/.local/bin/cortex')"
 
 # --- pid_exe_path: the full path, because `comm` cannot carry one on Linux ---
 #
 # The bug this replaced: the path check used `ps -o comm=`. On Linux `comm` is the
 # kernel's comm field — argv[0]'s basename capped at 15 chars (TASK_COMM_LEN-1) —
-# so a 16-char "authbridge-proxy" prints as "authbridge-prox" and NEVER as a path.
+# so a 16-char "cortex" prints as "authbridge-prox" and NEVER as a path.
 # Compared for equality against an install path that made every busy-port upgrade
 # race on Linux classify as foreign-proxy, and die telling the user to kill their
 # own proxy. macOS hid it completely: there `comm` does print a path.
@@ -803,17 +803,17 @@ with_pid_exe_path() { # proc_exe_target(empty for no /proc)  lsof_txt  ps_args
 	sh "${TMP}/pep.sh" 2>/dev/null
 }
 check "pid_exe_path: /proc/<pid>/exe is preferred (Linux truth)" \
-	"/home/u/.local/bin/authbridge-proxy" \
-	"$(with_pid_exe_path /home/u/.local/bin/authbridge-proxy /lsof/path /ps/path)"
+	"/home/u/.local/bin/cortex" \
+	"$(with_pid_exe_path /home/u/.local/bin/cortex /lsof/path /ps/path)"
 # A binary replaced under a running process reads "<path> (deleted)" — an upgrade
 # in progress is exactly when this code runs, so the suffix must be trimmed off
 # rather than travelling into a path comparison that would then call it foreign.
 check "pid_exe_path: a deleted/replaced binary keeps its path, drops ' (deleted)'" \
-	"/home/u/.local/bin/authbridge-proxy" \
-	"$(with_pid_exe_path '/home/u/.local/bin/authbridge-proxy (deleted)' '' '')"
+	"/home/u/.local/bin/cortex" \
+	"$(with_pid_exe_path '/home/u/.local/bin/cortex (deleted)' '' '')"
 check "pid_exe_path: no /proc -> lsof txt descriptor (the macOS path)" \
-	"/Users/u/.local/bin/authbridge-proxy" \
-	"$(with_pid_exe_path '' /Users/u/.local/bin/authbridge-proxy /ps/path)"
+	"/Users/u/.local/bin/cortex" \
+	"$(with_pid_exe_path '' /Users/u/.local/bin/cortex /ps/path)"
 # Same case, stated as the bug it guards: lsof ORs -p and -d unless -a is passed,
 # so without it the query means "this pid OR any txt descriptor on the system" and
 # head -1 can take another process's executable. On macOS this is the source
@@ -821,8 +821,8 @@ check "pid_exe_path: no /proc -> lsof txt descriptor (the macOS path)" \
 # proxy as foreign and dies. The stub above emits a foreign record first when -a is
 # missing, so this check is what fails if the flag is ever dropped.
 check "pid_exe_path: the lsof query is ANDed with -a (not 'this pid OR any txt fd')" \
-	"/Users/u/.local/bin/authbridge-proxy" \
-	"$(with_pid_exe_path '' /Users/u/.local/bin/authbridge-proxy '')"
+	"/Users/u/.local/bin/cortex" \
+	"$(with_pid_exe_path '' /Users/u/.local/bin/cortex '')"
 # Belt and braces: pin the flag in the source too, so a refactor that rewrites the
 # invocation cannot quietly lose the conjunction while still passing the stub test.
 check "the lsof executable query passes -a" "1" \
@@ -830,8 +830,8 @@ check "the lsof executable query passes -a" "1" \
 # argv[0] is the weakest source (caller-chosen, possibly relative) so it is last,
 # but it beats reporting nothing.
 check "pid_exe_path: no /proc, no lsof -> first field of ps args" \
-	"/Users/u/.local/bin/authbridge-proxy" \
-	"$(with_pid_exe_path '' '' '/Users/u/.local/bin/authbridge-proxy --local --supervise')"
+	"/Users/u/.local/bin/cortex" \
+	"$(with_pid_exe_path '' '' '/Users/u/.local/bin/cortex --local --supervise')"
 # Nothing can name it: must FAIL, never print a placeholder. foreign_proxy_holder
 # treats any non-match as foreign, so "unknown" as a value would accuse a process
 # nobody can see — the thing the previous `${_ph_cmd:-unknown}` fallback did.
@@ -860,21 +860,21 @@ with_foreign_proxy_holder() { # holder-line(empty=none)  pidfile(__MISSING__)  b
 }
 # The reported bug: a proxy from a checkout, different path, never drains.
 check "foreign: a holder at another path IS foreign (the reported bug)" \
-	"84858 /co/.local/bin/authbridge-proxy" \
-	"$(with_foreign_proxy_holder '84858 /co/.local/bin/authbridge-proxy' __MISSING__ /home/u/.local/bin)"
+	"84858 /co/.local/bin/cortex" \
+	"$(with_foreign_proxy_holder '84858 /co/.local/bin/cortex' __MISSING__ /home/u/.local/bin)"
 # The genuine upgrade race: our own managed binary restarting. Must stay ours, or
 # the installer dies on an ordinary upgrade — what the PR promises not to do.
 check "foreign: our own managed binary is NOT foreign (upgrade race preserved)" \
 	"__OURS__" \
-	"$(with_foreign_proxy_holder '29497 /home/u/.local/bin/authbridge-proxy' __MISSING__ /home/u/.local/bin)"
+	"$(with_foreign_proxy_holder '29497 /home/u/.local/bin/cortex' __MISSING__ /home/u/.local/bin)"
 # The pidfile identifies our unsupervised proxy even when the path check would not.
 check "foreign: the pid in our pidfile is NOT foreign, whatever its path" \
 	"__OURS__" \
-	"$(with_foreign_proxy_holder '777 /some/other/authbridge-proxy' 777 /home/u/.local/bin)"
+	"$(with_foreign_proxy_holder '777 /some/other/cortex' 777 /home/u/.local/bin)"
 # An empty pidfile must not match an empty-ish pid field or accuse blindly.
 check "foreign: an empty pidfile does not make a real holder ours" \
-	"84858 /co/.local/bin/authbridge-proxy" \
-	"$(with_foreign_proxy_holder '84858 /co/.local/bin/authbridge-proxy' '' /home/u/.local/bin)"
+	"84858 /co/.local/bin/cortex" \
+	"$(with_foreign_proxy_holder '84858 /co/.local/bin/cortex' '' /home/u/.local/bin)"
 # Nobody is listening: nothing to report.
 check "foreign: no holder at all -> nothing reported" \
 	"__OURS__" "$(with_foreign_proxy_holder '' __MISSING__ /home/u/.local/bin)"
@@ -902,7 +902,7 @@ with_port_holder_ss() { # port  ss-listing-fixture
 	{
 		printf 'command() { case "$2" in ss) return 0 ;; *) return 1 ;; esac; }\n'
 		printf 'ss() { cat "%s"; }\n' "$2"
-		printf 'pid_exe_path() { printf "/home/u/.local/bin/authbridge-proxy\\n"; }\n'
+		printf 'pid_exe_path() { printf "/home/u/.local/bin/cortex\\n"; }\n'
 		sed -n '/^port_holder()/,/^}/p' "${INSTALL_SH}"
 		printf 'port_holder "%s" || echo __NONE__\n' "$1"
 	} >"${TMP}/phss.sh"
@@ -912,22 +912,22 @@ fixture ssp_v4loop.txt <<'EOF'
 LISTEN 0 4096 127.0.0.1:47600 0.0.0.0:* users:(("authbridge-prox",pid=84858,fd=7))
 EOF
 check "port_holder/ss: IPv4 loopback -> pid from users:((...)) [lsof absent]" \
-	"84858 /home/u/.local/bin/authbridge-proxy" "$(with_port_holder_ss 47600 "${FIXTURE}")"
+	"84858 /home/u/.local/bin/cortex" "$(with_port_holder_ss 47600 "${FIXTURE}")"
 fixture ssp_v6loop.txt <<'EOF'
 LISTEN 0 4096 [::1]:47600 [::]:* users:(("authbridge-prox",pid=84858,fd=7))
 EOF
 check "port_holder/ss: IPv6 loopback [::1] also holds the port" \
-	"84858 /home/u/.local/bin/authbridge-proxy" "$(with_port_holder_ss 47600 "${FIXTURE}")"
+	"84858 /home/u/.local/bin/cortex" "$(with_port_holder_ss 47600 "${FIXTURE}")"
 fixture ssp_wild.txt <<'EOF'
 LISTEN 0 4096 0.0.0.0:47600 0.0.0.0:* users:(("authbridge-prox",pid=84858,fd=7))
 EOF
 check "port_holder/ss: a wildcard bind holds the loopback port" \
-	"84858 /home/u/.local/bin/authbridge-proxy" "$(with_port_holder_ss 47600 "${FIXTURE}")"
+	"84858 /home/u/.local/bin/cortex" "$(with_port_holder_ss 47600 "${FIXTURE}")"
 fixture ssp_wild6.txt <<'EOF'
 LISTEN 0 4096 [::]:47600 [::]:* users:(("authbridge-prox",pid=84858,fd=7))
 EOF
 check "port_holder/ss: an IPv6 wildcard bind holds it too" \
-	"84858 /home/u/.local/bin/authbridge-proxy" "$(with_port_holder_ss 47600 "${FIXTURE}")"
+	"84858 /home/u/.local/bin/cortex" "$(with_port_holder_ss 47600 "${FIXTURE}")"
 # An external-only listener leaves the loopback port free: reporting it as the
 # holder would accuse an unrelated process of a conflict that does not exist.
 fixture ssp_external.txt <<'EOF'
@@ -983,7 +983,7 @@ check "port_holder: a pid whose path cannot be resolved reports nothing (no 'unk
 # The regression guard proper: no path comparison may be fed from `ps -o comm=`,
 # because it cannot carry a path on Linux. This is the defect that shipped.
 check "no comm=-derived path comparison remains" "0" \
-	"$(grep -c 'comm=.*authbridge-proxy\|authbridge-proxy.*comm=' "${INSTALL_SH}")"
+	"$(grep -c 'comm=.*cortex\|cortex.*comm=' "${INSTALL_SH}")"
 
 # --- the new-CA notice is gated on the CA CHANGING, not on ca.crt existing ---
 #

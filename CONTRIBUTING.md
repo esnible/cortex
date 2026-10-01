@@ -37,7 +37,7 @@ pre-commit install
 cd deploy/proxy-init && make docker-build-init
 ```
 
-Most day-to-day work needs no cluster: `make agentop` / `make authbridge-proxy`
+Most day-to-day work needs no cluster: `make agentop` / `make cortex`
 build to `./bin/`, and `make dev-install` puts them on your PATH. Note that
 `dev-install` restarts the shared local Cortex service, which cuts every
 attached session.

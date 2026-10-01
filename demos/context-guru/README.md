@@ -112,7 +112,7 @@ context-guru belongs to **no shipped profile**: every plugin is opt-in, and this
 one is not named by any profile in `scripts/profile-tags`, so it is
 linked only when the binary is built with `-tags include_plugin_contextguru`. Its embedded engine pulls a large
 transitive dependency set (bifrost/core, tiktoken-go, tree-sitter grammars,
-starlark), so the default `authbridge-proxy`/`authbridge-envoy` binaries stay lean
+starlark), so the default `cortex`/`cortex-envoy` binaries stay lean
 and a deployment that doesn't want compaction never pays for it.
 
 ```bash

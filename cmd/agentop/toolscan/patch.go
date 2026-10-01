@@ -37,7 +37,7 @@ func PatchConfig(path string, candidates []string) (changed bool, err error) {
 				abs = path
 			}
 			return false, fmt.Errorf("no config at %s\n"+
-				"  authbridge-proxy --local writes ~/.cortex/config.yaml,\n"+
+				"  cortex --local writes ~/.cortex/config.yaml,\n"+
 				"  so pass that, or an absolute path. To find it:\n"+
 				"    curl -s localhost:47602/config | grep ca_dir", abs)
 		}

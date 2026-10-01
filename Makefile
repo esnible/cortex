@@ -1,7 +1,7 @@
 # Root Makefile for cortex monorepo
 # Orchestrates linting and formatting across all sub-projects
 
-.PHONY: lint fmt pre-commit build-proxy-init pricing-table agentop authbridge-proxy dev-install help
+.PHONY: lint fmt pre-commit build-proxy-init pricing-table agentop cortex dev-install help
 
 BIN_DIR := $(CURDIR)/bin
 
@@ -57,7 +57,7 @@ endif
 
 ##@ Binary Targets
 
-# authbridge-proxy's plugin set is resolved from a named profile via
+# cortex's plugin set is resolved from a named profile via
 # scripts/profile-tags — the same helper CI uses — so the tag
 # list stays in sync without hand-maintenance. agentop links no plugins.
 
@@ -66,7 +66,7 @@ agentop: ## Build agentop to ./bin/agentop
 	@echo "→ building agentop"
 	@cd cmd/agentop && GOWORK=off go build -o $(BIN_DIR)/agentop .
 
-authbridge-proxy: ## Build authbridge-proxy to ./bin/authbridge-proxy (PROFILE=full|lite|local, default full)
+cortex: ## Build cortex to ./bin/cortex (PROFILE=full|lite|local, default full)
 	@mkdir -p $(BIN_DIR)
 	@# Restrict PROFILE to the plugin sets this binary ships.
 	@if [ -n "$(PROFILE)" ] && [ -z "$(filter full lite local,$(PROFILE))" ]; then \
@@ -79,19 +79,19 @@ authbridge-proxy: ## Build authbridge-proxy to ./bin/authbridge-proxy (PROFILE=f
 	@# binary" is answered by the tag list, and quieting the command removed the only
 	@# place it appeared.
 	@TAGS=$$(go -C scripts/profile-tags run . $(or $(PROFILE),full)) && \
-		echo "→ building authbridge-proxy (profile $(or $(PROFILE),full)): $$TAGS" && \
+		echo "→ building cortex (profile $(or $(PROFILE),full)): $$TAGS" && \
 		cd cmd/cortex && \
-		GOWORK=off go build -tags "$$TAGS" -o $(BIN_DIR)/authbridge-proxy .
+		GOWORK=off go build -tags "$$TAGS" -o $(BIN_DIR)/cortex .
 
 ##@ Local Dev
 
 # install.sh installs Cortex from a RELEASE: it downloads prebuilt binaries, verifies
 # their checksums, and starts the service. There was no equivalent for the tree you are
-# sitting in — `make authbridge-proxy` built to ./bin and stopped, leaving four manual
+# sitting in — `make cortex` built to ./bin and stopped, leaving four manual
 # steps between a build and a running proxy. This is that bridge, and nothing else here
 # is a substitute for it.
 
-dev-install: authbridge-proxy agentop ## Build from this tree, install to ~/.local/bin, restart the service (PROFILE=full|lite|local)
+dev-install: cortex agentop ## Build from this tree, install to ~/.local/bin, restart the service (PROFILE=full|lite|local)
 	@mkdir -p $(DEV_BIN_DIR)
 	@# Copy to a sibling name and rename, rather than writing over the target.
 	@# Replacing a RUNNING executable in place fails with ETXTBSY on macOS, and both
@@ -99,7 +99,7 @@ dev-install: authbridge-proxy agentop ## Build from this tree, install to ~/.loc
 	@# rename swaps the directory entry and leaves the live process on its own inode.
 	@# The .new file is removed on any failure: this directory is meant to be on PATH,
 	@# so a half-copied executable left behind is worse than the failure itself.
-	@for b in authbridge-proxy agentop; do \
+	@for b in cortex agentop; do \
 		cp $(BIN_DIR)/$$b $(DEV_BIN_DIR)/$$b.new && \
 		mv -f $(DEV_BIN_DIR)/$$b.new $(DEV_BIN_DIR)/$$b || \
 		{ rm -f $(DEV_BIN_DIR)/$$b.new; exit 1; }; \
@@ -125,7 +125,7 @@ dev-install: authbridge-proxy agentop ## Build from this tree, install to ~/.loc
 	@# than only as an upgrade.
 	@if [ ! -f "$(HOME)/.cortex/config.yaml" ]; then \
 		echo "→ no config at ~/.cortex/config.yaml; writing the built-in one"; \
-		$(DEV_BIN_DIR)/authbridge-proxy --local --write-config || exit 1; \
+		$(DEV_BIN_DIR)/cortex --local --write-config || exit 1; \
 	fi
 	@# Absolute path, not bare `agentop`: PATH may resolve to a different copy, and the
 	@# unit records which agentop wrote it. --yes because a build command that stops to
