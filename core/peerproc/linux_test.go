@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/netip"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -119,5 +120,47 @@ func TestListenerOwner_MatchesAWildcardBind(t *testing.T) {
 	p, err := r.ListenerOwner(netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), port))
 	if err != nil || p.PID != int32(os.Getpid()) {
 		t.Errorf("ListenerOwner(127.0.0.1:%d) over a 0.0.0.0 bind = %+v, %v", port, p, err)
+	}
+}
+
+// A binary removed or replaced under a running process reads "<path> (deleted)" in
+// /proc/<pid>/exe. The suffix is not part of the path, and an agent upgraded in place
+// must still compare equal to the binary at that path.
+func TestConnOwner_ExeOfARemovedBinaryIsItsPath(t *testing.T) {
+	r := newResolver(t)
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(self)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent := filepath.Join(dir, "agent")
+	if err := os.WriteFile(agent, b, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ln := listen(t, "tcp", "127.0.0.1:0")
+	cmd := exec.Command(agent)
+	cmd.Env = append(os.Environ(), "PEERPROC_TEST_DIAL="+ln.Addr().String())
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
+	client, server := ends(acceptOne(t, ln))
+	if err := os.Remove(agent); err != nil {
+		t.Fatal(err)
+	}
+
+	p, err := r.ConnOwner(client, server)
+	if err != nil || p.PID != int32(cmd.Process.Pid) {
+		t.Fatalf("ConnOwner = %+v, %v; want the child %d", p, err, cmd.Process.Pid)
+	}
+	if p.Exe != agent {
+		t.Errorf("Exe %q after the binary was removed, want %q", p.Exe, agent)
 	}
 }

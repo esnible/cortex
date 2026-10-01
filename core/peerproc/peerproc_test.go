@@ -116,9 +116,11 @@ func TestConnOwner_NamesAChildProcessAndItsAncestry(t *testing.T) {
 	}
 	cmd := exec.Command(self)
 	cmd.Env = append(os.Environ(), "PEERPROC_TEST_DIAL="+ln.Addr().String())
+	before := time.Now()
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
 	}
+	after := time.Now()
 	t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
 	client, server := ends(acceptOne(t, ln))
 	child := int32(cmd.Process.Pid)
@@ -132,6 +134,12 @@ func TestConnOwner_NamesAChildProcessAndItsAncestry(t *testing.T) {
 	}
 	if p.PPID != int32(os.Getpid()) {
 		t.Errorf("child's ppid %d, want this process %d", p.PPID, os.Getpid())
+	}
+	// Linux's start time is ticks after boot plus a whole-second boot time, so it can read
+	// up to a second early; 5s either side still catches a missing boot time or a wrong
+	// tick rate, which are off by years or by a factor.
+	if p.Start.Before(before.Add(-5*time.Second)) || p.Start.After(after.Add(5*time.Second)) {
+		t.Errorf("child's Start %v, want within 5s of its launch (%v .. %v)", p.Start, before, after)
 	}
 	if !sameFile(p.Exe, self) {
 		t.Errorf("child's exe %q, want %q", p.Exe, self)

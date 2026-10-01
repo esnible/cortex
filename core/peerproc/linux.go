@@ -207,11 +207,15 @@ func (l *linux) procInfo(pid int32) (Proc, error) {
 	if err != nil {
 		return Proc{}, fmt.Errorf("pid %d: %w", pid, err)
 	}
-	exe, _ := os.Readlink(base + "/exe") // "" when the caller may not read it
+	// "" when the caller may not read it. The kernel appends " (deleted)" once the
+	// binary has been removed or replaced under the running process — an agent upgraded
+	// in place — and that suffix is not part of any path.
+	exe, _ := os.Readlink(base + "/exe")
+	exe = strings.TrimSuffix(exe, " (deleted)")
 	return Proc{
 		PID:   pid,
 		PPID:  ppid,
-		Start: l.bootTime.Add(time.Duration(ticks) * time.Second / clockTicks),
+		Start: l.bootTime.Add(time.Duration(ticks) * (time.Second / clockTicks)),
 		Exe:   exe,
 	}, nil
 }
