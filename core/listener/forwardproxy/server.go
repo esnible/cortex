@@ -651,14 +651,18 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 // (bridged, or the client's connection died post-forge and there is nothing left
 // to tunnel), false when it declined and the caller should tunnel instead.
 //
-// tl records the tunnel-open event with the reason the bytes stayed opaque.
-// bridgeServe owns that call on every path it takes — including the successful
-// one, where it must happen before ServeConn blocks — because two of the reasons
-// are discovered only in here.
+// tl records the tunnel-open event with the reason the bytes stayed opaque, and
+// bridgeServe decides it on every path it takes, because two of the reasons are
+// discovered only in here. On the declining paths and a failed forge it records the
+// open itself. On the bridged path it records nothing: markBridged defers the open to
+// the tunnel's first decrypted request that records a row, and must run before
+// ServeConn starts any handler.
 //
-// It also owns the close on the two paths that return true without a decrypted
-// request answering the tunnel: a failed forge, and a bridge that served nothing.
-// On the false path the caller tunnels and records the close itself.
+// A failed forge returns true with no decrypted request to answer the tunnel, so
+// bridgeServe records its close too. A bridged tunnel is settled by whichever of
+// finish and the last handler's release comes last, which records what the tunnel
+// still owes — its open and a close — only if no request recorded a row. On the
+// false path the caller tunnels and records the close itself.
 func (s *Server) bridgeServe(client net.Conn, authority, host string, tl *tunnelLog) bool {
 	// 1) Verify upstream reachability + cert via the dedicated client, BEFORE forging.
 	//    HEAD avoids GET side-effects; a non-2xx status still returns err==nil (cert
@@ -756,8 +760,8 @@ func (s *Server) bridgeServe(client net.Conn, authority, host string, tl *tunnel
 	// any skip left by a different client that does not — which is what stops one stale
 	// agent suppressing this host for everyone until a window elapses.
 	s.TLSBridge.Skip.Succeed(host)
-	// Bridged: record with no reason, which is what tells agentop to fold this row into
-	// the decrypted inner request whose own action is the interesting one.
+	// Bridged: defer the open, with no reason, which is what tells agentop to fold this
+	// row into the decrypted inner request whose own action is the interesting one.
 	markBridged(tl)
 
 	// 3) Serve the decrypted conn through the UNCHANGED pipeline.
@@ -1446,10 +1450,12 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Under client affinity the tunnel row joins the session this CONNECT was gated
-	// under, not ActiveSession() at recording time. Pinned only now, after the
-	// pipeline, for the reason sessionID is a local; left unpinned where affinity had no
-	// answer, for the reason in tunnelSessionID. See recordTunnelOpened.
+	// Under client affinity an opaque tunnel's row joins the session this CONNECT was
+	// gated under, not ActiveSession() at recording time. A bridged tunnel's open follows
+	// its first recorded request instead (tunnelLog.recordWith); only one that records no
+	// request files under this pin, when it settles. Pinned only now, after the pipeline,
+	// for the reason sessionID is a local; left unpinned where affinity had no answer, for
+	// the reason in tunnelSessionID. See recordTunnelOpened.
 	if s.ClientAffinity && !skipped && s.Sessions != nil && sessionID != "" {
 		pctx.OutboundSessionID = sessionID
 	}
@@ -1971,6 +1977,11 @@ type tunnelLog struct {
 	// directly before it; see recordWith. settleLocked records it on today's rule when no
 	// request ever does.
 	deferred bool
+	// openEv is the deferred open row, built by deferOpen on the CONNECT's goroutine
+	// before ServeConn. Whoever records it later runs in a handler, and on h2 a handler
+	// can outlive ServeConn while handleConnect runs the CONNECT's finishers, which may
+	// write pctx.Extensions; so no handler may build this row from pctx itself.
+	openEv pipeline.SessionEvent
 	// answered is set once a decrypted request has recorded a row. That row answers the
 	// tunnel, and agentop folds the open into it, so no close is recorded.
 	answered bool
@@ -1984,7 +1995,8 @@ func (s *Server) newTunnelLog(pctx *pipeline.Context, skipped bool) *tunnelLog {
 	return &tunnelLog{s: s, pctx: pctx, skipped: skipped}
 }
 
-// open records the tunnel-open row. The first call wins; later ones are no-ops.
+// open records the tunnel-open row. The first call wins; later ones are no-ops. It also
+// cancels a deferred open, so a call after deferOpen cannot lead to a second open row.
 func (t *tunnelLog) open(reason pipeline.TunnelReason) {
 	if t.skipped {
 		return
@@ -1994,7 +2006,7 @@ func (t *tunnelLog) open(reason pipeline.TunnelReason) {
 	if t.opened {
 		return
 	}
-	t.opened, t.reason = true, reason
+	t.opened, t.reason, t.deferred = true, reason, false
 	t.bucket = t.s.recordTunnelOpened(t.pctx, reason)
 }
 
@@ -2058,19 +2070,29 @@ func (t *tunnelLog) finish() {
 // settleLocked records what a bridged tunnel still owes once nothing more can record
 // under it: its open, if no request took it, and a close. A tunnel some request answered
 // owes nothing.
+//
+// A settled tunnel's open is stamped and filed now — time.Now(), under today's session
+// rule as it answers at this moment — since there is no request row to take either from.
 func (t *tunnelLog) settleLocked() {
 	if !t.done || t.inflight > 0 || t.answered {
 		return
 	}
 	if t.deferred {
 		t.deferred, t.opened = false, true
-		t.bucket = t.s.recordTunnelOpened(t.pctx, t.reason)
+		open := t.openEv
+		open.At = time.Now()
+		t.bucket = t.s.appendTunnelOpen(t.pctx, open)
 	}
 	t.closeLocked(http.StatusOK, nil, 0, 0)
 }
 
 // deferOpen marks t as a bridged tunnel whose open row waits for recordWith. A no-op once
 // the open is recorded: the transparent listener records its own before bridging.
+//
+// It builds that row now, on the CONNECT's goroutine and before ServeConn starts any
+// handler; see openEv. Building it also fills pctx's RequestID memo, so a close row a
+// handler later records through settleLocked reads pctx without writing it, and reads
+// only fields set before bridging: identity, host, method, path, start time, client.
 func (t *tunnelLog) deferOpen() {
 	if t.skipped {
 		return
@@ -2079,6 +2101,7 @@ func (t *tunnelLog) deferOpen() {
 	defer t.mu.Unlock()
 	if !t.opened {
 		t.deferred = true
+		t.openEv = t.s.tunnelOpenEvent(t.pctx, "")
 	}
 }
 
@@ -2102,7 +2125,7 @@ func (t *tunnelLog) recordWith(sid string, ev pipeline.SessionEvent) bool {
 		return false
 	}
 	t.deferred, t.opened = false, true
-	open := t.s.tunnelOpenEvent(t.pctx, "")
+	open := t.openEv
 	open.At = ev.At
 	t.bucket = t.s.Sessions.AppendPair(sid, open, ev)
 	return true

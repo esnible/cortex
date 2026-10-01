@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"fmt"
 	"io"
 	"net/http"
@@ -14,6 +15,7 @@ import (
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/plugins/plugintesting"
 	"github.com/rossoctl/cortex/core/session"
+	"golang.org/x/net/http2"
 )
 
 // Tests for #1187's first part: a bridged tunnel's open row is recorded with the
@@ -36,7 +38,9 @@ func deferredTunnel(s *Server) *tunnelLog {
 }
 
 // openThen asserts sid holds exactly one tunnel open, directly followed by another
-// event for the same host and stamped no later than it, and returns the two.
+// event for the same host and stamped with that event's time, and returns the two. Every
+// caller's open was recorded by recordWith, which copies its row's time, so a different
+// stamp means some other same-host row came between them.
 func openThen(t *testing.T, store *session.Store, sid string) (open, next pipeline.SessionEvent) {
 	t.Helper()
 	v := store.View(sid)
@@ -60,10 +64,10 @@ func openThen(t *testing.T, store *session.Store, sid string) (open, next pipeli
 		t.Fatalf("event after the open = %+v, want the decrypted request to %s", next, open.Host)
 	}
 	if open.TunnelReason != "" {
-		t.Errorf("bridged open carries reason %q; an empty reason is what makes agentop fold it", open.TunnelReason)
+		t.Errorf("bridged open carries reason %q; agentop folds an open into the request after it only when its reason is empty", open.TunnelReason)
 	}
-	if open.At.After(next.At) {
-		t.Errorf("open stamped %s, after the next row's %s; agentop's pager reads that as a restarted session", open.At, next.At)
+	if !open.At.Equal(next.At) {
+		t.Errorf("open stamped %s, want its row's %s: a later stamp reads to agentop's pager as a restarted session, and any other means a row came between", open.At, next.At)
 	}
 	return open, next
 }
@@ -252,5 +256,156 @@ func TestHandleConnect_BridgedOpenJoinsARejectedRequest(t *testing.T) {
 	}
 	if v := store.View(session.DefaultSessionID); v != nil {
 		t.Errorf("default holds %d event(s); the open belongs with the denial", len(v.Events))
+	}
+}
+
+// outlivesServeConn holds a bridged tunnel's decrypted request in the pipeline until the
+// CONNECT has finished, then lets it go on. On h2 that is a real order: ServeConn returns
+// when the client goes, without waiting for a handler still running, and handleConnect
+// then runs RunFinish on the CONNECT's pctx while the handler is alive.
+//
+// Its OnFinish on the CONNECT writes Extensions.Custom, as the Finisher contract allows.
+// It releases the request BEFORE writing, so nothing orders that write before whatever
+// the handler then reads; a real finisher has no such ordering with a handler either,
+// and an order here would only hide the race from the detector.
+//
+// With deny set the released request is rejected without an invocation, so it records
+// nothing and the handler's release settles the tunnel instead.
+type outlivesServeConn struct {
+	deny     bool
+	entered  chan struct{} // the decrypted request is inside the pipeline
+	finished chan struct{} // the CONNECT's OnFinish is running
+	served   chan struct{} // the decrypted request has finished its pipeline pass
+}
+
+type outlivesServeConnState struct{ n int }
+
+func (*outlivesServeConn) Name() string { return "outlives-serveconn" }
+func (*outlivesServeConn) Capabilities() pipeline.PluginCapabilities {
+	return pipeline.PluginCapabilities{}
+}
+func (p *outlivesServeConn) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.Action {
+	if pctx.Method == http.MethodConnect {
+		return pipeline.Action{Type: pipeline.Continue}
+	}
+	close(p.entered)
+	select {
+	case <-p.finished:
+	case <-time.After(10 * time.Second): // reported by the test's own wait, not hung on
+	}
+	if p.deny {
+		return pipeline.Deny("test.denied", "denied without a record")
+	}
+	return pipeline.Action{Type: pipeline.Continue}
+}
+func (*outlivesServeConn) OnResponse(_ context.Context, _ *pipeline.Context) pipeline.Action {
+	return pipeline.Action{Type: pipeline.Continue}
+}
+func (p *outlivesServeConn) OnFinish(_ context.Context, pctx *pipeline.Context) {
+	if pctx.Method != http.MethodConnect {
+		close(p.served)
+		return
+	}
+	close(p.finished)
+	pipeline.SetState(pctx, "outlives-serveconn", &outlivesServeConnState{n: 1})
+}
+
+// outliveTheConnect drives one h2 bridged request through probe and returns once the
+// CONNECT has finished and the request has passed through the pipeline.
+func outliveTheConnect(t *testing.T, store *session.Store, probe *outlivesServeConn) {
+	t.Helper()
+	proxyAddr, target, ca, done := bridgingProxyWith(t, store, func(s *Server) {
+		s.SessionIDHeaders = []string{session.ClaudeCodeSessionHeader}
+		p, err := plugintesting.BuildPipeline([]pipeline.Plugin{probe})
+		if err != nil {
+			t.Fatalf("BuildPipeline: %v", err)
+		}
+		s.OutboundPipeline = pipeline.NewHolder(p)
+	})
+
+	raw, br, _ := sendConnect(t, proxyAddr, target)
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(ca) {
+		t.Fatal("bad bridge CA")
+	}
+	tc := tls.Client(&bufferedConn{Conn: raw, r: br}, &tls.Config{
+		ServerName: hostOnly(target), RootCAs: pool, NextProtos: []string{"h2"},
+	})
+	if err := tc.Handshake(); err != nil {
+		t.Fatalf("bridged handshake: %v", err)
+	}
+	if got := tc.ConnectionState().NegotiatedProtocol; got != "h2" {
+		t.Fatalf("bridge negotiated %q; this test needs h2, where ServeConn does not wait for handlers", got)
+	}
+	cc, err := (&http2.Transport{}).NewClientConn(tc)
+	if err != nil {
+		t.Fatalf("h2 client conn: %v", err)
+	}
+	req, _ := http.NewRequest(http.MethodGet, "https://"+hostOnly(target)+"/x", nil)
+	req.Header.Set(session.ClaudeCodeSessionHeader, "sess-1")
+	go func() {
+		if resp, err := cc.RoundTrip(req); err == nil {
+			_ = resp.Body.Close()
+		}
+	}()
+
+	waitFor(t, probe.entered, "the decrypted request never reached the pipeline")
+	_ = tc.Close() // the client goes; ServeConn returns with the handler still running
+	waitDone(t, done)
+	waitFor(t, probe.served, "the decrypted request never finished its pipeline pass")
+}
+
+// On h2 a decrypted request can record after the CONNECT has finished, so building the
+// deferred open then — or settling the tunnel then — would read the CONNECT's pctx while
+// its finishers write it. The open is built when the tunnel is marked bridged; run under
+// -race, both cases fail if it is not.
+func TestHandleConnect_H2HandlerOutlivingTheConnectRecordsItsOpen(t *testing.T) {
+	t.Run("the request records", func(t *testing.T) {
+		store := session.New(5*time.Minute, 100, 0)
+		defer store.Close()
+		outliveTheConnect(t, store, &outlivesServeConn{
+			entered: make(chan struct{}), finished: make(chan struct{}), served: make(chan struct{}),
+		})
+
+		if _, next := openThen(t, store, "sess-1"); next.HTTPPath != "/x" {
+			t.Errorf("open precedes %q, want the request to /x", next.HTTPPath)
+		}
+	})
+
+	t.Run("the request records nothing", func(t *testing.T) {
+		store := session.New(5*time.Minute, 100, 0)
+		defer store.Close()
+		outliveTheConnect(t, store, &outlivesServeConn{
+			deny:    true,
+			entered: make(chan struct{}), finished: make(chan struct{}), served: make(chan struct{}),
+		})
+
+		// The pipeline pass ends before the handler's release, which is what settles.
+		deadline := time.Now().Add(10 * time.Second)
+		for {
+			if _, closes := tunnelRows(store, session.DefaultSessionID); len(closes) > 0 {
+				break
+			}
+			if time.Now().After(deadline) {
+				t.Fatal("the tunnel never settled after its last handler returned")
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		open, closed := onePair(t, store, session.DefaultSessionID)
+		if open.TunnelReason != "" || closed.StatusCode != http.StatusOK {
+			t.Errorf("settled tunnel = {reason %q, close status %d}, want {\"\", 200}", open.TunnelReason, closed.StatusCode)
+		}
+		if v := store.View("sess-1"); v != nil {
+			t.Errorf("sess-1 holds %d event(s); a request that recorded nothing files nothing", len(v.Events))
+		}
+	})
+}
+
+func waitFor(t *testing.T, ch <-chan struct{}, msg string) {
+	t.Helper()
+	select {
+	case <-ch:
+	case <-time.After(10 * time.Second):
+		t.Fatal(msg)
 	}
 }

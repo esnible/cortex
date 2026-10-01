@@ -211,6 +211,21 @@ func (s *Server) recordTunnelOpened(pctx *pipeline.Context, reason pipeline.Tunn
 	if s.Sessions == nil {
 		return nil
 	}
+	// Always record the tunnel-open so passthrough/non-bridged tunnels (no
+	// plugin activity) are still visible. For a TLS-bridged call agentop folds
+	// this CONNECT event into the decrypted inner-request row.
+	return s.appendTunnelOpen(pctx, s.tunnelOpenEvent(pctx, reason))
+}
+
+// appendTunnelOpen records an already-built open row ev under the session a tunnel's own
+// row goes to, and returns its bucket; nil when session tracking is off. It is
+// recordTunnelOpened's filing rule on its own, for a bridged tunnel that settles with no
+// request having taken its deferred open (tunnelLog.settleLocked). Of pctx it reads only
+// OutboundSessionID, which the listener pins before bridging and nothing writes after.
+func (s *Server) appendTunnelOpen(pctx *pipeline.Context, ev pipeline.SessionEvent) *session.Bucket {
+	if s.Sessions == nil {
+		return nil
+	}
 	// Without client affinity this reads ActiveSession() at recording time, as it always
 	// has, ignoring the identity the tunnel was gated under (#1187). With it, the pin set
 	// after gating wins; see handleConnect.
@@ -224,14 +239,11 @@ func (s *Server) recordTunnelOpened(pctx *pipeline.Context, reason pipeline.Tunn
 	if sid == "" {
 		sid = session.DefaultSessionID
 	}
-	// Always record the tunnel-open so passthrough/non-bridged tunnels (no
-	// plugin activity) are still visible. For a TLS-bridged call agentop folds
-	// this CONNECT event into the decrypted inner-request row.
-	return s.Sessions.AppendBucket(sid, s.tunnelOpenEvent(pctx, reason))
+	return s.Sessions.AppendBucket(sid, ev)
 }
 
 // tunnelOpenEvent is a tunnel's open row, for recordTunnelOpened and for a bridged
-// tunnel's deferred open (tunnelLog.recordWith).
+// tunnel's deferred open, which tunnelLog.deferOpen builds before any handler runs.
 func (s *Server) tunnelOpenEvent(pctx *pipeline.Context, reason pipeline.TunnelReason) pipeline.SessionEvent {
 	return pipeline.SessionEvent{
 		At:          time.Now(),
