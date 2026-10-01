@@ -304,6 +304,29 @@ func serviceInstall(p servicePaths, yes, forceRestart bool, stdout, stderr io.Wr
 		return exitDeclined
 	}
 
+	return runServiceInstall(p, adopt, forceRestart, !yes, stdout, stderr).exit
+}
+
+// installResult is what runServiceInstall did. exit is what `agentop service install`
+// returns for it; the other two let a caller that reports in its own words (`agentop
+// setup`) tell the outcomes apart without parsing text.
+type installResult struct {
+	exit           int  // what `agentop service install` returns
+	alreadyCurrent bool // nothing needed changing, so nothing was touched
+	healthy        bool // the health endpoint answered after the start
+}
+
+// runServiceInstall is serviceInstall from the moment the user has agreed: every check
+// that needs the supervisor, the config migration, and the start itself.
+//
+// adopt is the hand-started proxy to stop first (0 for none). The caller finds it
+// before asking, so the preview and the action agree on which process that is.
+// announceUnit prints the unit path, which the interactive install does and --yes
+// does not.
+//
+// It writes exactly what serviceInstall always wrote, to the same streams. A caller
+// that wants its own presentation passes buffers.
+func runServiceInstall(p servicePaths, adopt int, forceRestart, announceUnit bool, stdout, stderr io.Writer) installResult {
 	// Probed before anything is written. Without this the first sign of trouble was
 	// launchctl's "Bootstrap failed: 5: Input/output error" after the unit was already on
 	// disk — a message that names neither the cause nor a way forward. Reported from a
@@ -314,12 +337,12 @@ func serviceInstall(p servicePaths, yes, forceRestart bool, stdout, stderr io.Wr
 			"    %s --local\n\n"+
 			"  It will not restart after a crash or come back at login while running that\n"+
 			"  way. To stop it: kill that process.\n", supervisorName(runtime.GOOS), why, p.binary)
-		return exitNoSupervisor
+		return installResult{exit: exitNoSupervisor}
 	}
 
 	if _, serr := os.Stat(p.binary); serr != nil {
 		fmt.Fprintf(stderr, "agentop: cortex not found at %s; install it first\n", p.binary)
-		return 1
+		return installResult{exit: 1}
 	}
 	// launchd loads the LOGIN home's ~/Library/LaunchAgents, taken from the user
 	// record — not $HOME. With $HOME pointed at a project directory (sandboxes do this)
@@ -337,7 +360,7 @@ func serviceInstall(p servicePaths, yes, forceRestart bool, stdout, stderr io.Wr
 		fmt.Fprintf(stderr, "agentop: %s will not load, so a supervised proxy could not start:\n  %v\n"+
 			"  Fix it (or delete it and run: cortex --local --write-config), then re-run.\n",
 			p.configFile, p.configErr)
-		return 1
+		return installResult{exit: 1}
 	}
 
 	// Taking ownership of how the proxy runs is the natural moment to bring an
@@ -356,7 +379,7 @@ func serviceInstall(p servicePaths, yes, forceRestart bool, stdout, stderr io.Wr
 				"  Refusing to supervise that. Add `bind_loopback_only: true` under listener:,\n"+
 				"  or delete the file and run: cortex --local --write-config\n",
 				p.configFile, mErr, strings.Join(exposed, ", "))
-			return 1
+			return installResult{exit: 1}
 		}
 		fmt.Fprintf(stderr, "agentop: could not update %s (%v); it already binds loopback only, continuing\n",
 			p.configFile, mErr)
@@ -397,7 +420,7 @@ func serviceInstall(p servicePaths, yes, forceRestart bool, stdout, stderr io.Wr
 		fmt.Fprintf(stdout, "Already current: %s is running under %s and healthy.\n"+
 			"  Nothing to change. Use `agentop service restart` to restart it anyway.\n",
 			filepath.Base(p.binary), supervisorName(runtime.GOOS))
-		return 0
+		return installResult{alreadyCurrent: true}
 	}
 
 	// Warned HERE, not earlier: past the no-op check we know a restart is really going
@@ -424,7 +447,7 @@ func serviceInstall(p servicePaths, yes, forceRestart bool, stdout, stderr io.Wr
 		fmt.Fprintf(stdout, "Stopping pid %d...\n", adopt)
 		if err := stopPID(adopt); err != nil {
 			fmt.Fprintf(stderr, "agentop: could not stop pid %d (%v); stop it yourself and re-run\n", adopt, err)
-			return 1
+			return installResult{exit: 1}
 		}
 		_ = os.Remove(p.pidFile)
 	}
@@ -434,11 +457,11 @@ func serviceInstall(p servicePaths, yes, forceRestart bool, stdout, stderr io.Wr
 
 	if err := os.MkdirAll(filepath.Dir(p.unitFile), 0o755); err != nil {
 		fmt.Fprintf(stderr, "agentop: %v\n", err)
-		return 1
+		return installResult{exit: 1}
 	}
 	if err := os.WriteFile(p.unitFile, []byte(renderUnit(p)), 0o644); err != nil {
 		fmt.Fprintf(stderr, "agentop: writing %s: %v\n", p.unitFile, err)
-		return 1
+		return installResult{exit: 1}
 	}
 	// Recorded here as well as on start/restart. loadService below may fail after this
 	// point, and a stamp naming the binary we are about to launch is still the right
@@ -447,7 +470,7 @@ func serviceInstall(p servicePaths, yes, forceRestart bool, stdout, stderr io.Wr
 	// The path is not printed on the happy path: it is one more line of output on an
 	// install that already says what happened, and `agentop service status` reports it
 	// whenever someone actually needs it.
-	if !yes {
+	if announceUnit {
 		fmt.Fprintf(stdout, "Wrote %s\n", p.unitFile)
 	}
 
@@ -463,7 +486,7 @@ func serviceInstall(p servicePaths, yes, forceRestart bool, stdout, stderr io.Wr
 			fmt.Fprintf(stderr, "agentop: also could not remove %s: %v\n", p.unitFile, rmErr)
 		}
 		fmt.Fprintf(stderr, "agentop: %v\n", err)
-		return 1
+		return installResult{exit: 1}
 	}
 
 	// "Loaded" is not "serving". A bad config is fatal at startup and a supervisor
@@ -481,23 +504,23 @@ func serviceInstall(p servicePaths, yes, forceRestart bool, stdout, stderr io.Wr
 		for _, line := range lastLines(p.logFile, 5) {
 			fmt.Fprintf(stderr, "    %s\n", line)
 		}
-		return 1
+		return installResult{exit: 1}
 	}
 
 	if p.healthURL != "" {
 		if waitHealthy(p.healthURL, serviceReadyTimeout) {
 			reportInstallSuccess(true, stdout)
 			reportHistoryCleared(wasServing, stdout)
-			return 0
+			return installResult{healthy: true}
 		}
 		fmt.Fprintf(stderr, "\nagentop: installed, but nothing answered %s within %s.\n"+
 			"  Check %s — a config error is fatal at startup and the supervisor will keep retrying.\n"+
 			"  agentop service status shows the current state.\n", p.healthURL, serviceReadyTimeout, p.logFile)
-		return 1
+		return installResult{exit: 1}
 	}
 	reportInstallSuccess(false, stdout)
 	reportHistoryCleared(wasServing, stdout)
-	return 0
+	return installResult{}
 }
 
 // crashRecoveryNote explains why there are two cortex processes on macOS.
@@ -539,20 +562,8 @@ func serviceUninstall(p servicePaths, yes bool, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stdout, "Not changed.")
 		return exitDeclined
 	}
-	if err := unloadService(runtime.GOOS, p); err != nil {
-		// Report but keep going: leaving the unit file behind would make a
-		// reinstall look installed-but-dead.
-		fmt.Fprintf(stderr, "agentop: %v\n", err)
-	}
-	if err := os.Remove(p.unitFile); err != nil {
-		fmt.Fprintf(stderr, "agentop: removing %s: %v\n", p.unitFile, err)
+	if !removeService(p, stderr) {
 		return 1
-	}
-	// Launch state, so it goes with the unit rather than surviving in ~/.cortex beside
-	// the config and CA the message below promises are untouched. Left behind, it would
-	// describe a service that no longer exists.
-	if err := os.Remove(p.stampFile); err != nil && !os.IsNotExist(err) {
-		fmt.Fprintf(stderr, "agentop: could not remove %s: %v\n", p.stampFile, err)
 	}
 	// Not "start it yourself with a backgrounded proxy": running unsupervised is no
 	// longer a mode this tool offers, and on macOS a hand-started proxy gets no crash
@@ -562,6 +573,29 @@ func serviceUninstall(p servicePaths, yes bool, stdout, stderr io.Writer) int {
 		"  Or unwire Claude Code: agentop configure claude-code disable\n"+
 		"  The config and CA are untouched in %s\n", filepath.Dir(p.configFile))
 	return 0
+}
+
+// removeService unloads the service and deletes its unit and launch stamp, reporting
+// failures to stderr as serviceUninstall always has. It returns false only when the
+// unit file could not be removed: the one failure that leaves the service looking
+// installed.
+func removeService(p servicePaths, stderr io.Writer) bool {
+	if err := unloadService(runtime.GOOS, p); err != nil {
+		// Report but keep going: leaving the unit file behind would make a
+		// reinstall look installed-but-dead.
+		fmt.Fprintf(stderr, "agentop: %v\n", err)
+	}
+	if err := os.Remove(p.unitFile); err != nil {
+		fmt.Fprintf(stderr, "agentop: removing %s: %v\n", p.unitFile, err)
+		return false
+	}
+	// Launch state, so it goes with the unit rather than surviving in ~/.cortex beside
+	// the config and CA the message serviceUninstall prints promises are untouched.
+	// Left behind, it would describe a service that no longer exists.
+	if err := os.Remove(p.stampFile); err != nil && !os.IsNotExist(err) {
+		fmt.Fprintf(stderr, "agentop: could not remove %s: %v\n", p.stampFile, err)
+	}
+	return true
 }
 
 func serviceStatus(p servicePaths, stdout io.Writer) int {
