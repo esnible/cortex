@@ -262,6 +262,10 @@ func serviceInstalled(p servicePaths) bool {
 	return err == nil
 }
 
+// serviceConfirm prompts before install or uninstall changes the supervisor. A var
+// for the reasons claudeCodeConfirm gives.
+var serviceConfirm = confirm
+
 func serviceInstall(p servicePaths, yes, forceRestart bool, stdout, stderr io.Writer) int {
 	if _, err := os.Stat(p.configFile); err != nil {
 		// Not "run the installer first": the installer is what calls this, so that
@@ -295,7 +299,7 @@ func serviceInstall(p servicePaths, yes, forceRestart bool, stdout, stderr io.Wr
 	if !yes {
 		fmt.Fprintf(stdout, "Undo with: agentop service uninstall\n\n")
 	}
-	if !yes && !confirm(stdout) {
+	if !yes && !serviceConfirm(stdout) {
 		fmt.Fprintln(stdout, "Not changed.")
 		return exitDeclined
 	}
@@ -531,7 +535,7 @@ func serviceUninstall(p servicePaths, yes bool, stdout, stderr io.Writer) int {
 	fmt.Fprintf(stdout, "Cortex will no longer start at login. Claude Code stops working whenever\n"+
 		"the proxy is not running — `agentop configure claude-code disable` removes that\n"+
 		"dependency.\n\n")
-	if !yes && !confirm(stdout) {
+	if !yes && !serviceConfirm(stdout) {
 		fmt.Fprintln(stdout, "Not changed.")
 		return exitDeclined
 	}

@@ -464,7 +464,7 @@ func claudeCodeEnable2(settingsPath, cortexCfgPath, statePath string, yes bool, 
 	fmt.Fprintf(stdout, "Adds to the \"env\" block of %s:\n%s\n",
 		settingsPath, strings.Join(changes, "\n"))
 	fmt.Fprintf(stdout, "Nothing else in the file changes; a copy is kept as %s.bak\n\n", settingsPath)
-	if !yes && !confirm(stdout) {
+	if !yes && !claudeCodeConfirm(stdout) {
 		fmt.Fprintln(stdout, "Not changed.")
 		return exitDeclined
 	}
@@ -516,7 +516,7 @@ func claudeCodeDisable2(settingsPath, statePath string, yes bool, stdout, stderr
 		return 0
 	}
 	fmt.Fprintf(stdout, "This will remove from %s: %s\n\n", settingsPath, strings.Join(present, ", "))
-	if !yes && !confirm(stdout) {
+	if !yes && !claudeCodeConfirm(stdout) {
 		fmt.Fprintln(stdout, "Not changed.")
 		return exitDeclined
 	}
@@ -697,6 +697,13 @@ func writeSettings(path string, doc map[string]any) error {
 	}
 	return os.Rename(tmp, path)
 }
+
+// claudeCodeConfirm prompts before enable or disable writes the settings file. A var
+// so tests can substitute it, for the reason bobConfirm gives: `go test` inherits the
+// terminal it was launched from, so an unstubbed prompt blocks waiting on a human.
+// Its own var, not shared with serviceConfirm, for bobConfirm's other reason: a test
+// stubbing one command's prompt must not silently disarm another's.
+var claudeCodeConfirm = confirm
 
 // confirm reads a yes/no from the terminal.
 //
