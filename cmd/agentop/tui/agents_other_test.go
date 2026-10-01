@@ -184,7 +184,7 @@ func TestAgentScope_EveryListedSessionBelongsToExactlyOneRow(t *testing.T) {
 		t.Errorf("Other lists %q, want the unrecognised session, the default bucket and the cached one", got)
 	}
 	m.rebuildAgentsTable()
-	if cell := m.agentsTbl.Rows()[2]; cell[0] != otherAgents || cell[1] != "3" {
+	if cell := m.agentsTbl.Rows()[3]; cell[0] != otherAgents || cell[1] != "3" {
 		t.Errorf("Other's row = %v, want SESSIONS 3, what its scope lists", cell)
 	}
 }
@@ -211,8 +211,8 @@ func TestPickerRows_SessionsAloneShowOtherButNeverOpenThePane(t *testing.T) {
 		t.Errorf("pickerRows changed m.agents to %+v; the gate would count the extra row", m.agents)
 	}
 	m.rebuildAgentsTable()
-	m.agentsTbl.SetCursor(2)
-	if got := m.selectedAgentLabel(); got != otherAgents {
+	m.agentsTbl.SetCursor(3)
+	if got, _ := m.selectedAgentScope(); got != otherAgents {
 		t.Errorf("cursor on the appended row selects %q, want Other", got)
 	}
 
@@ -228,7 +228,7 @@ func TestAgentsPane_EnterOnOtherReachesTheUnrecognisedSession(t *testing.T) {
 	m := otherSessionsFixture()
 	m.pane, m.previousPane, m.client = paneAgents, paneSessions, deadClient()
 	m.rebuildAgentsTable()
-	m.agentsTbl.SetCursor(2)
+	m.agentsTbl.SetCursor(3)
 	m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
 	if m.agentScope != otherAgents || m.pane != paneSessions {
 		t.Fatalf("scope %q on %v, want Other on the sessions pane", m.agentScope, m.pane)

@@ -264,7 +264,8 @@ func newAgentsTable() table.Model {
 	return t
 }
 
-// rebuildAgentsTable rebuilds rows from m.pickerRows, which selectedAgentLabel indexes too.
+// rebuildAgentsTable rebuilds rows from All agents then m.pickerRows, which selectedAgentScope
+// indexes too.
 func (m *model) rebuildAgentsTable() {
 	// Columns and rows change together, as in rebuildSessionsTable: SESSIONS appears only once a
 	// session names its agent, so a server that names none shows the table unchanged.
@@ -279,7 +280,14 @@ func (m *model) rebuildAgentsTable() {
 		m.agentsTbl.SetColumns(want)
 	}
 	picker := m.pickerRows()
-	rows := make([]table.Row, 0, len(picker))
+	rows := make([]table.Row, 0, len(picker)+1)
+	// Its figures are left blank: the band above already carries the window's total, and summed
+	// across agents billing in different units it would only read as mixed.
+	all := table.Row{allAgentsLabel, "", "", ""}
+	if withSessions {
+		all = append(all, "")
+	}
+	rows = append(rows, all)
 	for _, a := range picker {
 		rows = append(rows, table.Row{
 			// SANITISED AT RENDER TIME. The label is a User-Agent, so it is
@@ -362,20 +370,35 @@ func (m *model) enterAgentsOrRefuse(from paneID) (entered bool, refusal string) 
 	return true, ""
 }
 
-// selectedAgentLabel is the label of the row under the cursor, or "" when there is none.
+// allAgentsLabel is the picker's first row, the one that clears the scope.
+//
+// A ROW AND NOT A TOGGLE. Enter used to clear the scope when pressed on the agent already scoped,
+// so every row but one meant "show me this agent" and that one meant "show me everything" — and a
+// reader re-picking the agent they were on got every agent's spend instead. With this row, Enter
+// always shows what is highlighted.
+//
+// ADDED BY rebuildAgentsTable, not by pickerRows: pickerRows is the partition of the sessions
+// list that agentsPaneApplies and the Other row reason about, and this row partitions nothing.
+const allAgentsLabel = "All agents"
+
+// selectedAgentScope is the scope the row under the cursor selects: "" on All agents, else that
+// agent's label. ok is false when the cursor is on no row.
 //
 // READ OFF m.pickerRows BY CURSOR INDEX, not out of the rendered table cell: the cell is passed
 // through sanitizeLabel, which is a display transform — a control character or a long label
 // arrives on the wire and leaves that function altered, so scoping to what the cell says could
 // scope to a string no agent ever sent. The two are kept in step by rebuildAgentsTable, which
-// builds the rows from m.pickerRows in order.
-func (m *model) selectedAgentLabel() string {
-	picker := m.pickerRows()
+// builds the rows from m.pickerRows in order, after All agents.
+func (m *model) selectedAgentScope() (scope string, ok bool) {
 	i := m.agentsTbl.Cursor()
-	if i < 0 || i >= len(picker) {
-		return ""
+	if i == 0 {
+		return "", true
 	}
-	return picker[i].label
+	picker := m.pickerRows()
+	if i < 1 || i > len(picker) {
+		return "", false
+	}
+	return picker[i-1].label, true
 }
 
 // leaveAgentsPane returns to whichever pane opened the AGENTS pane.

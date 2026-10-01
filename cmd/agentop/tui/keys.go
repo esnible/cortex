@@ -590,19 +590,13 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 		case paneAgents:
 			// Pick the agent the views are narrowed to, then LEAVE: the pane is a picker.
 			//
-			// A TOGGLE: Enter on the agent already scoped clears the scope instead of re-applying
-			// it. There is no "all agents" row to select, and the alternative was a second binding
-			// that would only ever be pressed on this one pane. helpView says which direction the
-			// key will go, the way the usage pane's [s] does for the session scope.
-			row := m.selectedAgentLabel()
-			if row == "" {
+			// NOT A TOGGLE: Enter on the agent already scoped keeps it, and the All agents row is
+			// what clears it. See allAgentsLabel.
+			scope, ok := m.selectedAgentScope()
+			if !ok {
 				return nil
 			}
-			if m.agentScope == row {
-				m.agentScope = ""
-			} else {
-				m.agentScope = row
-			}
+			m.agentScope = scope
 			// Same exit as the esc arm above, including the paneNone → Sessions fallback and the
 			// usage-polling resume. Shared through leaveAgentsPane so the two cannot drift on
 			// where the pane returns to. The spend band and drawer restart under the new scope, so
@@ -1263,17 +1257,14 @@ func (m *model) helpView() string {
 		}
 		return "[↑↓] nav  [↵] plugin detail  [r] refresh  [esc] back  [?] keys  [q] quit"
 	case paneAgents:
-		// [↵] LABELLED BY WHAT IT WILL DO TO THE ROW UNDER THE CURSOR, because one key goes both
-		// ways: on the agent already scoped it clears the scope, on any other it scopes to that
-		// one. Without the flip the toggle is invisible — an operator standing on the scoped
-		// agent has no way to know Enter will not simply re-apply it. Same idea as the usage
-		// pane's [s], whose label flips between "all sessions" and "this session".
+		// [↵] LABELLED BY WHAT IT WILL SHOW: the highlighted agent, or every agent on the All
+		// agents row.
 		//
 		// STILL NO [r]: the rows are refetched by every `A` press, so a refresh key would
 		// duplicate the way in, and advertising it would be the inert-key problem the usage
 		// pane's breakdownHint above avoids.
 		enterHint := "  [↵] scope to this agent"
-		if m.agentScope != "" && m.selectedAgentLabel() == m.agentScope {
+		if scope, ok := m.selectedAgentScope(); ok && scope == "" {
 			enterHint = "  [↵] all agents"
 		}
 		return "[↑↓] nav" + enterHint + "  [esc] back  [?] keys  [q] quit"

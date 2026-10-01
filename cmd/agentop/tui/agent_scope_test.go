@@ -151,9 +151,10 @@ func TestAgentsPane_SessionsColumnOnlyOnceSessionsNameAgents(t *testing.T) {
 	}
 	m.sessions = sessionsFixture()
 	m.rebuildAgentsTable()
-	// The fixture's default bucket names no agent, so it is Other's, and Other gets a row.
-	if rows := m.agentsTbl.Rows(); len(rows) != 3 || rows[0][1] != "1" || rows[1][1] != emptyCell ||
-		rows[2][0] != otherAgents || rows[2][1] != "1" {
+	// The fixture's default bucket names no agent, so it is Other's, and Other gets a row. Row 0 is
+	// All agents.
+	if rows := m.agentsTbl.Rows(); len(rows) != 4 || rows[1][1] != "1" || rows[2][1] != emptyCell ||
+		rows[3][0] != otherAgents || rows[3][1] != "1" {
 		t.Errorf("SESSIONS cells = %v, want bob's 1, node's dash and Other's 1", rows)
 	}
 }
@@ -172,6 +173,7 @@ func TestAgentsPane_EnterRestartsTheBandUnderTheScope(t *testing.T) {
 	m.client = apiclient.New(ts.URL)
 	m.agents = []agentRow{{label: "bob-shell/2.0.5"}, {label: "claude-code/2.1.284"}}
 	m.rebuildAgentsTable()
+	m.handleKey(tea.KeyMsg{Type: tea.KeyDown})
 	cmd := m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
 	if m.agentScope != "bob-shell/2.0.5" || cmd == nil {
 		t.Fatalf("scope %q, cmd %v", m.agentScope, cmd)
@@ -214,7 +216,7 @@ func TestAgentScope_TwoVersionsOfOneAgentAreTwoScopes(t *testing.T) {
 		{label: "bob-shell/2.0.5"}, {label: "claude-code/2.1.283"}}}
 	m.rebuildAgentsTable()
 	var cells []string
-	for _, r := range m.agentsTbl.Rows() {
+	for _, r := range m.agentsTbl.Rows()[1:] {
 		cells = append(cells, r[1])
 	}
 	if want := []string{"1", "1", "1", emptyCell}; !slices.Equal(cells, want) {
@@ -253,6 +255,7 @@ func TestAgentsPane_EnterScopesAfterTheColumnsChange(t *testing.T) {
 		if m.pane != paneAgents {
 			t.Fatalf("%s: left the agents pane", name)
 		}
+		m.handleKey(tea.KeyMsg{Type: tea.KeyDown})
 		m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
 		if m.agentScope != "bob-shell/2.0.5" {
 			t.Errorf("%s: Enter scoped to %q, want the row under the cursor", name, m.agentScope)
