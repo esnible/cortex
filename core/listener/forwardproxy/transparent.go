@@ -224,14 +224,22 @@ func (s *Server) recordTunnelOpened(pctx *pipeline.Context, reason pipeline.Tunn
 	if sid == "" {
 		sid = session.DefaultSessionID
 	}
-	plugins := pipeline.SnapshotPlugins(pctx.Extensions.Custom)
-	ev := pipeline.SessionEvent{
+	// Always record the tunnel-open so passthrough/non-bridged tunnels (no
+	// plugin activity) are still visible. For a TLS-bridged call agentop folds
+	// this CONNECT event into the decrypted inner-request row.
+	return s.Sessions.AppendBucket(sid, s.tunnelOpenEvent(pctx, reason))
+}
+
+// tunnelOpenEvent is a tunnel's open row, for recordTunnelOpened and for a bridged
+// tunnel's deferred open (tunnelLog.recordWith).
+func (s *Server) tunnelOpenEvent(pctx *pipeline.Context, reason pipeline.TunnelReason) pipeline.SessionEvent {
+	return pipeline.SessionEvent{
 		At:          time.Now(),
 		Direction:   pipeline.Outbound,
 		Phase:       pipeline.SessionRequest,
 		RequestID:   pctx.RequestID(),
 		Invocations: pipeline.SnapshotInvocations(pctx.Extensions.Invocations, pipeline.InvocationPhaseRequest),
-		Plugins:     plugins,
+		Plugins:     pipeline.SnapshotPlugins(pctx.Extensions.Custom),
 		Identity:    pipeline.SnapshotIdentity(pctx),
 		Host:        pctx.Host,
 		// Method is CONNECT — real on a proxied CONNECT, synthetic on a
@@ -249,10 +257,6 @@ func (s *Server) recordTunnelOpened(pctx *pipeline.Context, reason pipeline.Tunn
 		TunnelReason: reason,
 		Client:       pctx.ClientInfo(),
 	}
-	// Always record the tunnel-open so passthrough/non-bridged tunnels (no
-	// plugin activity) are still visible. For a TLS-bridged call agentop folds
-	// this CONNECT event into the decrypted inner-request row.
-	return s.Sessions.AppendBucket(sid, ev)
 }
 
 // recordTunnelClosed emits the SessionResponse row for a tunnel that ended, or that

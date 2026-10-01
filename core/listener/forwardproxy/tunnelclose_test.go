@@ -502,6 +502,13 @@ func TestHandleConnect_FallOpenRedialFailureRecordsTheError(t *testing.T) {
 // bridgingProxy is a proxy whose TLS bridge terminates CONNECTs to a trusted TLS origin.
 func bridgingProxy(t *testing.T, store *session.Store) (proxyAddr, target string, bridgeCA []byte, done <-chan struct{}) {
 	t.Helper()
+	return bridgingProxyWith(t, store, nil)
+}
+
+// bridgingProxyWith is bridgingProxy with configure applied to the server before it
+// serves anything.
+func bridgingProxyWith(t *testing.T, store *session.Store, configure func(*Server)) (proxyAddr, target string, bridgeCA []byte, done <-chan struct{}) {
+	t.Helper()
 	origin := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("ok"))
 	}))
@@ -512,7 +519,11 @@ func bridgingProxy(t *testing.T, store *session.Store) (proxyAddr, target string
 		t.Fatalf("parse origin URL: %v", err)
 	}
 	engine := bridgeEngine(t, portOf(u.Host), originCA)
-	proxyAddr, done = connectProxy(t, connectServer(t, store, engine))
+	s := connectServer(t, store, engine)
+	if configure != nil {
+		configure(s)
+	}
+	proxyAddr, done = connectProxy(t, s)
 	return proxyAddr, u.Host, engine.CAPEM, done
 }
 
@@ -586,7 +597,7 @@ func TestBridgedHandler_RequestAfterTheCloseRecordsNothing(t *testing.T) {
 	s := connectServer(t, store, nil)
 	tl := s.newTunnelLog(&pipeline.Context{Direction: pipeline.Outbound, Host: "example.com:443"}, false)
 	tl.open("")
-	tl.closeUnserved() // ServeConn returned before any handler started
+	tl.finish() // ServeConn returned before any handler started
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -611,7 +622,7 @@ func TestTunnelLog_AdmittedRequestSuppressesTheClose(t *testing.T) {
 	if !tl.admit() {
 		t.Fatal("a request arriving before the close was refused")
 	}
-	tl.closeUnserved()
+	tl.finish()
 
 	if _, closes := tunnelRows(store, session.DefaultSessionID); len(closes) != 0 {
 		t.Errorf("a tunnel that served a request recorded %d close(s); want none", len(closes))

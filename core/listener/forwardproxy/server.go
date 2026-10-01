@@ -265,14 +265,16 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 		s.handleConnect(w, r)
 		return
 	}
-	s.serveOutbound(w, r, false)
+	s.serveOutbound(w, r, nil)
 }
 
 // serveOutbound runs the outbound pipeline for one decrypted/plaintext request
-// and re-originates it. isBridge=true marks requests produced by TLS bridging:
-// they are origin-form (the caller sets r.URL.Scheme/Host) and must re-originate
-// via the dedicated upstream client, never the mesh-mTLS s.Client.
-func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, isBridge bool) {
+// and re-originates it. tl is the bridged tunnel the request was decrypted from,
+// nil for a plaintext request. A non-nil tl marks requests produced by TLS
+// bridging: they are origin-form (the caller sets r.URL.Scheme/Host) and must
+// re-originate via the dedicated upstream client, never the mesh-mTLS s.Client.
+func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunnelLog) {
+	isBridge := tl != nil
 	if isBridge {
 		s.bridgedRequests.Add(1)
 	}
@@ -364,7 +366,7 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, isBridge 
 		action := s.OutboundPipeline.Run(r.Context(), pctx)
 
 		if action.Type == pipeline.Reject {
-			s.recordOutboundReject(pctx, action, s.recordingSessionID(sessionID, r.Header))
+			s.recordOutboundRejectIn(tl, pctx, action, s.recordingSessionID(sessionID, r.Header))
 			// Render as a JSON-RPC error frame when the rejected
 			// request was MCP JSON-RPC, so the agent's MCP client
 			// surfaces this as one failed tool call rather than a
@@ -409,7 +411,7 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, isBridge 
 		// operator wants to see (it carries Host, and the paired response
 		// carries StatusCode). skip_hosts traffic never reaches here (the
 		// !skipped guard above), so it stays suppressed by design.
-		s.Sessions.Append(sid, ev)
+		s.appendOutbound(tl, sid, ev)
 	}
 
 	// Propagate every header mutation the outbound pipeline made to the
@@ -762,9 +764,10 @@ func (s *Server) bridgeServe(client net.Conn, authority, host string, tl *tunnel
 	tlsbridge.ServeConn(tconn, s.bridgedHandler(authority, tl))
 	// ServeConn returns once the connection has closed. A bridged tunnel's decrypted
 	// requests answer it and agentop folds the open into the first of them, so a close row
-	// here would render as an orphan response. With no request at all there is nothing to
-	// fold into, and the open would otherwise be the one tunnel row that never finished.
-	tl.closeUnserved()
+	// there would render as an orphan response. With no recorded request at all there is
+	// nothing to fold into, so finish records the open and a close — now, or when the last
+	// handler still running returns.
+	tl.finish()
 	return true
 }
 
@@ -774,9 +777,10 @@ func (s *Server) bridgedHandler(authority string, tl *tunnelLog) http.Handler {
 		if !tl.admit() {
 			return
 		}
+		defer tl.release()
 		r.URL.Scheme = "https"
 		r.URL.Host = authority // host:port — preserves non-443 origins
-		s.serveOutbound(w, r, true)
+		s.serveOutbound(w, r, tl)
 	})
 }
 
@@ -824,6 +828,16 @@ func (s *Server) recordingSessionID(resolved string, clientHeaders http.Header) 
 		return resolved
 	}
 	return s.resolveOutboundSessionID(clientHeaders)
+}
+
+// appendOutbound records ev under sid. For a request decrypted from a bridged tunnel tl is
+// that tunnel, and the tunnel's first recorded row also records its open; see
+// tunnelLog.recordWith.
+func (s *Server) appendOutbound(tl *tunnelLog, sid string, ev pipeline.SessionEvent) {
+	if tl != nil && tl.recordWith(sid, ev) {
+		return
+	}
+	s.Sessions.Append(sid, ev)
 }
 
 // tunnelSessionID is recordingSessionID for a tunnel's own row. Under client affinity
@@ -1302,6 +1316,13 @@ func (s *Server) streamFallbackBuffered(w http.ResponseWriter, r *http.Request, 
 // plugin that didn't contribute diagnostic context, and a content-free
 // SessionDenied event would be noise without attribution.
 func (s *Server) recordOutboundReject(pctx *pipeline.Context, action pipeline.Action, sid string) {
+	s.recordOutboundRejectIn(nil, pctx, action, sid)
+}
+
+// recordOutboundRejectIn is recordOutboundReject for a request decrypted from tl, whose
+// deferred open — when the denial is the tunnel's first recorded row — goes in with it.
+// tl is nil for a plaintext request or a CONNECT.
+func (s *Server) recordOutboundRejectIn(tl *tunnelLog, pctx *pipeline.Context, action pipeline.Action, sid string) {
 	if s.Sessions == nil || pctx.Extensions.Invocations == nil {
 		return
 	}
@@ -1332,7 +1353,7 @@ func (s *Server) recordOutboundReject(pctx *pipeline.Context, action pipeline.Ac
 		},
 		Client: pctx.ClientInfo(),
 	}
-	s.Sessions.Append(sid, ev)
+	s.appendOutbound(tl, sid, ev)
 }
 
 // connectDialTimeout bounds the upstream TCP dial for a CONNECT tunnel.
@@ -1804,11 +1825,11 @@ func passthroughReason(why string) pipeline.TunnelReason {
 	return pipeline.TunnelPassthroughUnknown
 }
 
-// markBridged records a successful bridge. Its whole job is to trip the once-guard
-// with no reason attached, which is the signal agentop uses to fold the CONNECT row into
-// the decrypted request. Named because `tl.open("")` at the call site reads like an
-// oversight rather than a decision.
-func markBridged(tl *tunnelLog) { tl.open("") }
+// markBridged records a successful bridge: the open row is deferred to the first
+// decrypted request that records a row, and carries no reason, which is the signal
+// agentop uses to fold the CONNECT row into that request. Named because
+// `tl.deferOpen()` at the call site does not say why.
+func markBridged(tl *tunnelLog) { tl.deferOpen() }
 
 // clientAddr names the client end of a connection for diagnostics, tolerating a
 // nil conn or nil RemoteAddr so a logging path can never panic.
@@ -1945,10 +1966,18 @@ type tunnelLog struct {
 	bucket *session.Bucket
 	reason pipeline.TunnelReason
 
-	// served counts the decrypted requests a bridged tunnel carried. Their own response
-	// rows answer the tunnel, and agentop folds its open into the first of them, so
-	// bridgeServe records a close only when this is still zero.
-	served int
+	// deferred marks a bridged tunnel whose open row is not recorded yet. It waits for the
+	// first decrypted request that records a row, so it can land in that row's session
+	// directly before it; see recordWith. settleLocked records it on today's rule when no
+	// request ever does.
+	deferred bool
+	// answered is set once a decrypted request has recorded a row. That row answers the
+	// tunnel, and agentop folds the open into it, so no close is recorded.
+	answered bool
+	// inflight counts admitted handlers still running; done is set once ServeConn has
+	// returned. The tunnel is settled only when both say nothing more can record.
+	inflight int
+	done     bool
 }
 
 func (s *Server) newTunnelLog(pctx *pipeline.Context, skipped bool) *tunnelLog {
@@ -1993,27 +2022,90 @@ func (t *tunnelLog) closeLocked(status int, fail *pipeline.EventError, up, down 
 // once the close has been recorded. On h2 that can happen: ServeConn returns without
 // waiting for a request's handler to start, and by then the connection is closed and the
 // request's context cancelled. Serving it would record a request beside a close that says
-// the tunnel carried none.
+// the tunnel carried none. Every admit is matched by a release when the handler returns.
 func (t *tunnelLog) admit() bool {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if t.closed {
 		return false
 	}
-	t.served++
+	t.inflight++
 	return true
 }
 
-// closeUnserved records the close of a bridged tunnel no request was admitted to.
-func (t *tunnelLog) closeUnserved() {
+// release ends an admitted handler, settling the tunnel if it was the last one running
+// after ServeConn returned.
+func (t *tunnelLog) release() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.inflight--
+	t.settleLocked()
+}
+
+// finish is called once ServeConn has returned. It settles the tunnel unless an admitted
+// handler is still running; on h2 ServeConn does not wait for them, and the last release
+// settles it instead.
+func (t *tunnelLog) finish() {
 	if t.skipped {
 		return
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	if t.served == 0 {
-		t.closeLocked(http.StatusOK, nil, 0, 0)
+	t.done = true
+	t.settleLocked()
+}
+
+// settleLocked records what a bridged tunnel still owes once nothing more can record
+// under it: its open, if no request took it, and a close. A tunnel some request answered
+// owes nothing.
+func (t *tunnelLog) settleLocked() {
+	if !t.done || t.inflight > 0 || t.answered {
+		return
 	}
+	if t.deferred {
+		t.deferred, t.opened = false, true
+		t.bucket = t.s.recordTunnelOpened(t.pctx, t.reason)
+	}
+	t.closeLocked(http.StatusOK, nil, 0, 0)
+}
+
+// deferOpen marks t as a bridged tunnel whose open row waits for recordWith. A no-op once
+// the open is recorded: the transparent listener records its own before bridging.
+func (t *tunnelLog) deferOpen() {
+	if t.skipped {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if !t.opened {
+		t.deferred = true
+	}
+}
+
+// recordWith records ev under sid together with the tunnel's deferred open, and reports
+// whether it did. The open goes in directly before ev, in one store call, because agentop
+// folds a tunnel row only into the event that follows it. It takes ev's timestamp: a row
+// stamped later than the one after it reads as out of order to agentop's pager. When
+// the open is not deferred it records nothing and reports false, leaving ev to the
+// caller.
+//
+// t.mu is held across the append so that a second request multiplexed onto the same
+// tunnel cannot record between this check and the pair.
+func (t *tunnelLog) recordWith(sid string, ev pipeline.SessionEvent) bool {
+	if t.skipped || t.s.Sessions == nil {
+		return false
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.answered = true
+	if !t.deferred {
+		return false
+	}
+	t.deferred, t.opened = false, true
+	open := t.s.tunnelOpenEvent(t.pctx, "")
+	open.At = ev.At
+	t.bucket = t.s.Sessions.AppendPair(sid, open, ev)
+	return true
 }
 
 // dialError is a close row's error for a destination the proxy could not reach. The
