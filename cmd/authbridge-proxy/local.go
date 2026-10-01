@@ -301,8 +301,9 @@ cost_ledger:
 #
 # client_affinity files a request with none of these headers under the newest
 # session of the same coding agent, so with Claude Code and Bob running side by
-# side neither one's header-less calls land in the other's session. Not
-# hot-reloadable: restart after changing it.
+# side neither one's header-less calls land in the other's session. On by
+# default, so a config without the line has it too; set it to false to turn it
+# off. Not hot-reloadable: restart after changing it.
 session:
   client_affinity: true
   id_headers:

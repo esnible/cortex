@@ -948,18 +948,60 @@ listener:
 	}
 }
 
-// TestSessionConfig_ClientAffinity pins the default (off — today's attribution) and the
-// YAML key an operator writes to turn it on.
+// TestSessionConfig_ClientAffinity pins the default (on) and the YAML key an operator
+// writes to turn it off. Unset must mean on whether the key, the session block, or both
+// are missing: a config written before the key existed has neither, and it is never
+// regenerated.
 func TestSessionConfig_ClientAffinity(t *testing.T) {
-	var off, on Config
-	if err := yaml.Unmarshal([]byte("session: {}\n"), &off); err != nil {
+	tests := []struct {
+		name string
+		yaml string
+		want bool
+	}{
+		{"no session block", "mode: proxy-sidecar\n", true},
+		{"empty session block", "session: {}\n", true},
+		{"session block without the key", "session:\n  id_headers: [X-Task-Id]\n", true},
+		{"explicit true", "session:\n  client_affinity: true\n", true},
+		{"explicit false", "session:\n  client_affinity: false\n", false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var cfg Config
+			if err := yaml.Unmarshal([]byte(tt.yaml), &cfg); err != nil {
+				t.Fatal(err)
+			}
+			if got := cfg.Session.ClientAffinityEnabled(); got != tt.want {
+				t.Errorf("ClientAffinityEnabled() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+// TestLoad_PreAffinityLaptopConfigGetsClientAffinity loads a laptop config written before
+// session.client_affinity existed — no session block at all, which is what every install
+// made before it still has on disk. With affinity off, Bob Shell's header-less startup
+// probes and task-classifier completions were filed under a concurrent Claude Code session.
+func TestLoad_PreAffinityLaptopConfigGetsClientAffinity(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	content := `mode: proxy-sidecar
+listener:
+  roles: [forward]
+  bind_loopback_only: true
+  forward_proxy_addr: 127.0.0.1:47600
+  session_api_addr: 127.0.0.1:47601
+pipeline:
+  outbound:
+    plugins:
+      - name: inference-parser
+`
+	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if err := yaml.Unmarshal([]byte("session:\n  client_affinity: true\n"), &on); err != nil {
-		t.Fatal(err)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
 	}
-	if off.Session.ClientAffinity || !on.Session.ClientAffinity {
-		t.Fatalf("client_affinity: unset = %v, true = %v; want false, true",
-			off.Session.ClientAffinity, on.Session.ClientAffinity)
+	if !cfg.Session.ClientAffinityEnabled() {
+		t.Error("a config with no session block loads with client affinity off, want on")
 	}
 }

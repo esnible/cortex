@@ -894,7 +894,7 @@ func main() {
 		// the supported agents' session headers (config.SessionIDHeaders);
 		// session.id_headers: [] turns it off.
 		fpSrv.SessionIDHeaders = cfg.Session.SessionIDHeaders()
-		fpSrv.ClientAffinity = cfg.Session.ClientAffinity
+		fpSrv.ClientAffinity = cfg.Session.ClientAffinityEnabled()
 		fpHTTP, herr := bootstrap.StartHTTPServer("forward-proxy", fpSrv.Handler(), cfg.Listener.ForwardProxyAddr)
 		if herr != nil {
 			fatalf("forward-proxy listen: %v", herr)
