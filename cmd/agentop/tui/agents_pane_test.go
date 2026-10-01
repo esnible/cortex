@@ -436,15 +436,15 @@ func TestRebuildAgentsTable_RendersTheUnpricedAgentAsADash(t *testing.T) {
 	}
 	m.rebuildAgentsTable()
 	rows := m.agentsTbl.Rows()
-	if len(rows) != 2 {
-		t.Fatalf("rows = %d, want 2", len(rows))
+	if len(rows) != 3 {
+		t.Fatalf("rows = %d, want All agents and 2", len(rows))
 	}
 	// Cost is the last column; see newAgentsTable for why it is the widest.
 	const costCol = 3
-	if got := rows[1][costCol]; got != emptyCell {
+	if got := rows[2][costCol]; got != emptyCell {
 		t.Errorf("unpriced agent's COST cell = %q, want %q — $0.00 would read as free", got, emptyCell)
 	}
-	if got := rows[0][costCol]; got != "$146.36" {
+	if got := rows[1][costCol]; got != "$146.36" {
 		t.Errorf("priced agent's COST cell = %q, want %q", got, "$146.36")
 	}
 }
@@ -467,8 +467,8 @@ func TestRebuildAgentsTable_RendersTheUnpricedAgentAsADash(t *testing.T) {
 // BOTH SPELLINGS OF EACH DIRECTION, because they are two separate claims: bubbles' table binds
 // arrows and jk independently, and the help overlay advertises the pair as one binding.
 func TestAgentsPane_NavigationKeysMoveTheCursor(t *testing.T) {
-	// Three rows, so a cursor that moves can also be seen to stop: a two-row fixture cannot
-	// tell "moved one row" from "jumped to the end".
+	// Three agents, so a cursor that moves can also be seen to stop: a two-row fixture cannot
+	// tell "moved one row" from "jumped to the end". All agents above them makes four rows.
 	rows := []agentRow{
 		{label: "claude-code/2.1.270", Counts: usage.Counts{Requests: 1049, PricedRequests: 1048, CostMicros: 146_361_600}},
 		{label: "bob-shell/2.0.5", Counts: usage.Counts{Requests: 118}},
@@ -496,11 +496,11 @@ func TestAgentsPane_NavigationKeysMoveTheCursor(t *testing.T) {
 		// The clamps, which are bubbles' own behavior and are asserted so a future dispatch
 		// arm that reimplemented the movement by hand could not quietly run off either end.
 		// The two are not equally strong, and it is worth knowing which: the bottom clamp also
-		// fails outright when the arm is missing (want 2, no dispatch leaves the cursor at 0),
+		// fails outright when the arm is missing (want 3, no dispatch leaves the cursor at 0),
 		// but the top clamp's want IS the no-dispatch value, so it can only catch a hand-rolled
 		// reimplementation — never a missing arm. The five rows above are what cover dispatch.
 		{"up on the first row stays put", []string{"up"}, 0},
-		{"down past the last row stays on it", []string{"down", "down", "down", "down"}, 2},
+		{"down past the last row stays on it", []string{"down", "down", "down", "down", "down"}, 3},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			m := &model{

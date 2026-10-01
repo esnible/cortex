@@ -13,7 +13,8 @@ import (
 	"github.com/rossoctl/cortex/core/cost/usage"
 )
 
-// scopedModel is an AGENTS pane standing on the given row, with the given scope already set.
+// scopedModel is an AGENTS pane standing on the given TABLE row, with the given scope already set.
+// Row 0 is All agents, so the fixture's agents are rows 1 and 2.
 func scopedModel(t *testing.T, cursor int, scope string) *model {
 	t.Helper()
 	m := &model{
@@ -39,7 +40,7 @@ func scopedModel(t *testing.T, cursor int, scope string) *model {
 //
 // LEAVING IS PART OF THE ACTION, not a separate keystroke: the pane is a picker.
 func TestAgentsPane_EnterScopesTheRowUnderTheCursorAndLeaves(t *testing.T) {
-	m := scopedModel(t, 1, "")
+	m := scopedModel(t, 2, "")
 	m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
 	if m.agentScope != "bob-shell/2.0.5" {
 		t.Errorf("agentScope = %q, want the row under the cursor", m.agentScope)
@@ -49,14 +50,29 @@ func TestAgentsPane_EnterScopesTheRowUnderTheCursorAndLeaves(t *testing.T) {
 	}
 }
 
-// Enter on the agent ALREADY scoped clears the scope instead of re-applying it.
-//
-// ONE KEY, TWO DIRECTIONS, because there is no "all agents" row to select and the alternative
-// was a second binding that would only ever be pressed on this pane. The footer says which
-// direction the key will go — see usageFooter's [s] toggle, which is the same idea for the
-// session scope.
-func TestAgentsPane_EnterOnTheScopedAgentClearsTheScope(t *testing.T) {
+// Enter on the agent ALREADY scoped keeps it scoped. Enter means "show me the highlighted row",
+// whatever is set now: it used to toggle here, clearing the scope, so a reader re-picking the
+// agent they were on was silently handed every agent's sessions and spend instead.
+func TestAgentsPane_EnterOnTheScopedAgentKeepsTheScope(t *testing.T) {
+	m := scopedModel(t, 1, "claude-code/2.1.270")
+	m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if m.agentScope != "claude-code/2.1.270" {
+		t.Errorf("agentScope = %q, want the highlighted agent kept", m.agentScope)
+	}
+	if m.pane != paneSessions {
+		t.Errorf("Enter left the reader on %v, want the caller pane", m.pane)
+	}
+}
+
+// All agents is the first row, and Enter on it is the one way to clear the scope.
+func TestAgentsPane_EnterOnAllAgentsClearsTheScope(t *testing.T) {
 	m := scopedModel(t, 0, "claude-code/2.1.270")
+	if got := m.agentsTbl.Rows()[0][0]; got != allAgentsLabel {
+		t.Fatalf("first row = %q, want %q", got, allAgentsLabel)
+	}
+	if n := len(m.agentsTbl.Rows()); n != len(m.agents)+1 {
+		t.Errorf("%d rows for %d agents, want one per agent plus All agents", n, len(m.agents))
+	}
 	m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
 	if m.agentScope != "" {
 		t.Errorf("agentScope = %q, want cleared", m.agentScope)
@@ -384,7 +400,7 @@ func TestCostUngroupedRow_SaysNothingWhereThereIsNothingToSay(t *testing.T) {
 
 // The AGENTS pane's own title names the scope, so returning to the picker shows what is set.
 func TestAgentsPane_TitleNamesTheActiveScope(t *testing.T) {
-	m := scopedModel(t, 0, "bob-shell/2.0.5")
+	m := scopedModel(t, 2, "bob-shell/2.0.5")
 	m.width, m.height = 120, 40
 	m.layout()
 	title := strings.SplitN(m.paneView(), "\n", 2)[0]
@@ -393,24 +409,24 @@ func TestAgentsPane_TitleNamesTheActiveScope(t *testing.T) {
 	}
 }
 
-// The footer says which direction Enter will go, because one key does both.
-//
-// Without this the toggle is invisible: an operator standing on the scoped agent has no way to
-// know Enter will clear rather than re-apply. Mirrors the usage pane's [s], whose label flips
-// between "all sessions" and "this session" for the same reason.
-func TestAgentsPane_FooterSaysWhichWayEnterWillGo(t *testing.T) {
-	// Cursor on the scoped agent: Enter clears.
-	onScoped := scopedModel(t, 0, "claude-code/2.1.270")
-	if got := onScoped.helpView(); !strings.Contains(got, "all agents") {
-		t.Errorf("footer on the scoped row = %q, want it to offer clearing the scope", got)
-	}
-	// Cursor on a different agent: Enter scopes to it.
-	onOther := scopedModel(t, 1, "claude-code/2.1.270")
-	if got := onOther.helpView(); !strings.Contains(got, "scope") {
-		t.Errorf("footer on an unscoped row = %q, want it to offer scoping", got)
-	}
-	if got := onOther.helpView(); strings.Contains(got, "all agents") {
-		t.Errorf("footer on an unscoped row = %q, but Enter there scopes rather than clears", got)
+// The footer names what Enter shows: the highlighted agent on an agent row, including the one
+// already scoped, and every agent on the All agents row.
+func TestAgentsPane_FooterSaysWhatEnterWillShow(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		cursor int
+		want   string
+	}{
+		{"the scoped agent", 1, "scope to this agent"},
+		{"another agent", 2, "scope to this agent"},
+		{"All agents", 0, "all agents"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := scopedModel(t, tc.cursor, "claude-code/2.1.270")
+			if got := m.helpView(); !strings.Contains(got, tc.want) {
+				t.Errorf("footer = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 

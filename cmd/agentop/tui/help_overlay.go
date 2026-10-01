@@ -371,9 +371,8 @@ var paneKeys = map[paneID]keyGroup{
 		purpose: "coding agents seen on the wire, and what each has spent",
 		bindings: []keyBinding{
 			{"↑↓ / jk", "navigate"},
-			// One key both ways, which the footer's label flips to show. Said here too because
-			// the footer only describes the row under the cursor.
-			{"↵", "scope to this agent; again clears"},
+			// Said here too because the footer only describes the row under the cursor.
+			{"↵", "scope to this agent; All agents clears"},
 			{"esc", "back, keeping the scope"},
 		},
 		// ONE SHORT NOTE, NOT TWO LONG ONES, and the budget is real rather than stylistic: an
