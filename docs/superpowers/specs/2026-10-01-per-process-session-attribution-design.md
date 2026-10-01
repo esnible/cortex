@@ -104,6 +104,10 @@ before any decrypted request exists, so it can only use `ActiveSession()`.
   rule and a close, once `ServeConn` has returned and no admitted handler is still
   running. This replaces `closeUnserved`'s `served == 0` test, which was right only
   while the open was recorded eagerly.
+- **Built when the tunnel is marked bridged.** The open event is built then, on the
+  CONNECT's goroutine, and only stamped and appended later. On h2 a handler can outlive
+  `ServeConn` while `handleConnect` runs the CONNECT's finishers, which may write its
+  context, so a handler must not read the CONNECT's context to build the row.
 - **Out of scope:** opaque tunnels keep `tunnelSessionID`; the transparent listener's
   own open path is untouched, since nothing redirects into it on a laptop.
 - **Applies everywhere, changes nothing in-cluster.** PR 1 is not gated on scope: a
@@ -216,8 +220,8 @@ approach used on session 13cdee89.
 - **A multi-session process answers with its newest session**; tool windows wait for
   evidence.
 - **A stale OpenCode service gets a warning, not a restart.**
-- **The deferred open row is stamped at recording.** This reverses the earlier "keep the
-  CONNECT's time", for the pager reason above.
+- **The deferred open row takes its first row's time.** This reverses the earlier "keep
+  the CONNECT's time", for the pager reason above.
 - **`traceparent` is not a correlation key** — per-process in OpenCode.
 
 ## Known gaps after all four PRs
