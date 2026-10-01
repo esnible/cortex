@@ -87,22 +87,37 @@ installed_version() {
 	"${BIN_DIR}/$1" --version 2>/dev/null | awk 'NR==1{print $NF}'
 }
 
-# remove_stale_abctl deletes the abctl that releases before the rename installed.
-# agentop is the same tool under a new name, and there is no alias: an abctl left on
-# PATH still manages the same launchd/systemd unit while disagreeing with agentop about
-# which build wrote it — the skew `service status` warns about.
+# remove_stale OLD NEW deletes a binary that a release before the renames installed:
+# abctl (now agentop) and authbridge-proxy (now cortex). There are no aliases, and a
+# stale abctl left on PATH would still manage the same launchd/systemd unit while
+# disagreeing with agentop about which build wrote it.
 #
 # "Ours" is read from the module path Go embeds in every binary, not by running it: a
 # build older than --version would not answer, and a tool of someone else's that
-# happens to be called abctl is not ours to delete. Stripped release builds keep the
-# path too (v0.7.0's carries it several hundred times); every abctl release is
+# happens to share the name is not ours to delete. Stripped release builds keep the
+# path too (v0.7.0's abctl carries it several hundred times); every release is
 # post-org-move, so rossoctl/cortex is the only spelling to match.
-remove_stale_abctl() {
-	[ -f "${BIN_DIR}/abctl" ] || return 0
-	grep -qE 'github\.com/rossoctl/cortex/(authbridge/)?cmd/abctl' \
-		"${BIN_DIR}/abctl" 2>/dev/null || return 0
-	rm -f "${BIN_DIR}/abctl"
-	info "Removed ${BIN_DIR}/abctl — it is called agentop now."
+#
+# Nor while an installed service unit still names it. --install-only, or a supervisor
+# that could not take the job, leaves the pre-rename unit in place, and deleting the
+# binary under it would leave launchd or systemd starting a file that is gone. The
+# unit is searched for "/OLD" rather than the full path because both formats escape
+# paths (XML in the plist, shell quoting in the systemd unit); a rewritten unit names
+# only the new binary. `make dev-install` runs this same function, extracted from here.
+remove_stale() {
+	_old="${BIN_DIR}/$1"
+	[ -f "${_old}" ] || return 0
+	grep -qE "github\.com/rossoctl/cortex/(authbridge/)?cmd/$1" "${_old}" 2>/dev/null || return 0
+	for _unit in "${HOME}/Library/LaunchAgents/io.rossoctl.cortex.plist" \
+		"${HOME}/.config/systemd/user/cortex.service"; do
+		if grep -qF "/$1" "${_unit}" 2>/dev/null; then
+			info "Kept ${_old}: the installed service still runs it. It is called $2 now;"
+			info "  \`agentop service install\` moves the service over, then delete the old file."
+			return 0
+		fi
+	done
+	rm -f "${_old}"
+	info "Removed ${_old} — it is called $2 now."
 }
 # SUPERVISOR_NAME is the human label; SUPERVISOR_CMD is the actual command the
 # messages name, so "launchctl may not be used here" reads as the thing the user
@@ -632,7 +647,7 @@ demo_ports_busy() {
 # pid_exe_path prints the full executable path of a pid, or nothing when it cannot
 # be resolved. `ps -o comm=` is NOT usable here: on Linux `comm` is the kernel's
 # comm field — argv[0]'s basename capped at 15 chars (TASK_COMM_LEN-1) — so it
-# prints "authbridge-prox" for our 16-char binary and never a path. Only macOS
+# prints a bare name (the old 16-char one came out cut to 15) and never a path. Only macOS
 # prints a path there. The callers below compare against a full install path, so
 # a truncated name would compare unequal every time.
 #
@@ -863,9 +878,11 @@ supervisor_usable() {
 #   - a non-numeric or negative pidfile would make `kill` parse its argument wrong;
 #   - after an unclean shutdown the OS can recycle the pid onto an unrelated process
 #     of the same user, which we must not SIGTERM/SIGKILL.
-# Where `ps` can name the process we require it to be authbridge-prox(y) — the same
-# check agentop's runningPID uses, so `agentop service install` and this script agree on
-# what counts as "our proxy". Where the sandbox hides processes from `ps`, ps prints
+# Where `ps` can name the process we require its basename to be exactly cortex — the
+# same check agentop's runningPID uses, so `agentop service install` and this script agree
+# on what counts as "our proxy". Exact, not a pattern: macOS prints the full path, and
+# a path under ~/.cortex or any checkout of this repo contains the word, so a looser
+# match would claim a stranger's pid for stop_cortex to signal. Where the sandbox hides processes from `ps`, ps prints
 # nothing and the pidfile remains the only handle, so we keep the kill -0 result.
 proxy_running() {
 	_pid=$(cat "${PROXY_PIDFILE}" 2>/dev/null) || return 1
@@ -875,8 +892,8 @@ proxy_running() {
 	kill -0 "${_pid}" 2>/dev/null || return 1
 	_comm=$(ps -o comm= -p "${_pid}" 2>/dev/null) || return 0
 	[ -z "${_comm}" ] && return 0
-	case "${_comm}" in
-		*authbridge-prox*) return 0 ;;
+	case "${_comm##*/}" in
+		cortex) return 0 ;;
 		*) return 1 ;;
 	esac
 }
@@ -1164,9 +1181,10 @@ trap - EXIT
 fi # end of the skip-if-already-at-this-version guard
 fi # end of download block
 
-# Every path above leaves a agentop in BIN_DIR (the skip paths refuse to go on without
+# Every path above leaves an agentop in BIN_DIR (the skip paths refuse to go on without
 # one), so the abctl it replaces can go — including on a re-run that downloaded nothing.
-remove_stale_abctl
+# The old proxy waits until the service has been moved off it, after the start below.
+remove_stale abctl agentop
 
 # offer_path_setup adds BIN_DIR to the shell profile, with consent.
 #
@@ -1511,6 +1529,11 @@ else
 			;;
 	esac
 fi
+
+# The service now runs cortex wherever it could be set up, so the pre-rename proxy can
+# go. Where it could not (the fallback above), remove_stale finds the old unit still
+# naming it and leaves it in place.
+remove_stale authbridge-proxy cortex
 
 # tool-prune is in the config but INERT: its remove list is empty, so it does
 # nothing until a name is added. That is deliberate for an install.

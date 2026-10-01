@@ -299,8 +299,7 @@ func unloadService(goos string, p servicePaths) error {
 }
 
 // runningPID returns the pid from a pidfile only when it is alive AND is one of
-// ours. Same narrow check install.sh uses: the name is truncated to 15 characters
-// on Linux, so match a prefix rather than the full 16-character name.
+// ours — see isProxyComm. Same narrow check install.sh's proxy_running uses.
 func runningPID(pidFile string) int {
 	b, err := os.ReadFile(pidFile) //nolint:gosec // operator-supplied path
 	if err != nil {
@@ -314,10 +313,20 @@ func runningPID(pidFile string) int {
 		return 0
 	}
 	out, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "comm=").Output()
-	if err != nil || !strings.Contains(string(out), "authbridge-prox") {
+	if err != nil || !isProxyComm(string(out)) {
 		return 0 // pid recycled onto something else
 	}
 	return pid
+}
+
+// isProxyComm reports whether a `ps -o comm=` value names our proxy: its basename is
+// exactly "cortex". Not a substring, because macOS reports the full path and "cortex"
+// is also the repo's name, the product's, and ~/.cortex — a substring would claim a
+// process run from any checkout of this repo, and install stops what runningPID
+// returns. Linux reports the kernel's comm field instead, the basename capped at 15
+// characters, which "cortex" fits whole.
+func isProxyComm(comm string) bool {
+	return filepath.Base(strings.TrimSpace(comm)) == "cortex"
 }
 
 // stopPID asks politely, then waits. The proxy allows itself 15s to drain, so

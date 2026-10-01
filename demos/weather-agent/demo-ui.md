@@ -780,11 +780,11 @@ AGENT_POD=$(kubectl get pod -n team1 -l app.kubernetes.io/name=weather-service \
 
 # For envoy-sidecar mode:
 kubectl exec "$AGENT_POD" -n team1 -c envoy-proxy -- \
-  bash -c 'for f in /proc/[0-9]*/cmdline; do [ -r "$f" ] || continue; c=$(<"$f"); [[ "$c" == /usr/local/bin/authbridge* ]] && kill -USR1 "${f//[!0-9]/}" && break; done'
+  bash -c 'for f in /proc/[0-9]*/cmdline; do [ -r "$f" ] || continue; c=$(<"$f"); [[ "$c" == /usr/local/bin/cortex* ]] && kill -USR1 "${f//[!0-9]/}" && break; done'
 
 # For proxy-sidecar mode:
 kubectl exec "$AGENT_POD" -n team1 -c authbridge-proxy -- \
-  bash -c 'for f in /proc/[0-9]*/cmdline; do [ -r "$f" ] || continue; c=$(<"$f"); [[ "$c" == /usr/local/bin/authbridge* ]] && kill -USR1 "${f//[!0-9]/}" && break; done'
+  bash -c 'for f in /proc/[0-9]*/cmdline; do [ -r "$f" ] || continue; c=$(<"$f"); [[ "$c" == /usr/local/bin/cortex* ]] && kill -USR1 "${f//[!0-9]/}" && break; done'
 ```
 
 Send `SIGUSR1` again to toggle back to INFO level.

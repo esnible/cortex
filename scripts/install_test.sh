@@ -668,6 +668,17 @@ check "proxy_running: alive, ps blind (sandbox) -> running" "running" "$(with_pr
 check "proxy_running: alive, ps empty comm -> running" "running" "$(with_proxy_running 12345 0 empty)"
 check "proxy_running: alive, ps names cortex -> running" "running" "$(with_proxy_running 12345 0 cortex)"
 check "proxy_running: alive, ps names another process -> stopped" "stopped" "$(with_proxy_running 12345 0 sshd)"
+# The name is an exact basename, never a pattern: "cortex" is also in the repo's name
+# and ~/.cortex, and macOS prints a path, so a pattern would claim strangers.
+check "proxy_running: alive, macOS full path to cortex -> running" "running" \
+	"$(with_proxy_running 12345 0 /Users/u/.local/bin/cortex)"
+check "proxy_running: alive, a process under a cortex checkout -> stopped" "stopped" \
+	"$(with_proxy_running 12345 0 /Users/u/src/cortex/bin/agentop)"
+check "proxy_running: alive, a process under ~/.cortex -> stopped" "stopped" \
+	"$(with_proxy_running 12345 0 /Users/u/.cortex/bin/helper)"
+check "proxy_running: alive, cortex-envoy -> stopped" "stopped" "$(with_proxy_running 12345 0 cortex-envoy)"
+check "proxy_running: alive, the pre-rename authbridge-proxy -> stopped (clean break)" "stopped" \
+	"$(with_proxy_running 12345 0 /Users/u/.local/bin/authbridge-proxy)"
 
 # --- ensure_tmpdir: exports TMPDIR on BOTH paths (regression: unset-TMPDIR abort) ---
 #
@@ -763,7 +774,8 @@ check "svc action: exit 0 wins even with a foreign holder present" "supervised" 
 #
 # The bug this replaced: the path check used `ps -o comm=`. On Linux `comm` is the
 # kernel's comm field — argv[0]'s basename capped at 15 chars (TASK_COMM_LEN-1) —
-# so a 16-char "cortex" prints as "authbridge-prox" and NEVER as a path.
+# so the binary's name of the time, 16 characters, printed as a 15-character stub
+# and NEVER as a path.
 # Compared for equality against an install path that made every busy-port upgrade
 # race on Linux classify as foreign-proxy, and die telling the user to kill their
 # own proxy. macOS hid it completely: there `comm` does print a path.
@@ -909,22 +921,22 @@ with_port_holder_ss() { # port  ss-listing-fixture
 	sh "${TMP}/phss.sh" 2>/dev/null
 }
 fixture ssp_v4loop.txt <<'EOF'
-LISTEN 0 4096 127.0.0.1:47600 0.0.0.0:* users:(("authbridge-prox",pid=84858,fd=7))
+LISTEN 0 4096 127.0.0.1:47600 0.0.0.0:* users:(("cortex",pid=84858,fd=7))
 EOF
 check "port_holder/ss: IPv4 loopback -> pid from users:((...)) [lsof absent]" \
 	"84858 /home/u/.local/bin/cortex" "$(with_port_holder_ss 47600 "${FIXTURE}")"
 fixture ssp_v6loop.txt <<'EOF'
-LISTEN 0 4096 [::1]:47600 [::]:* users:(("authbridge-prox",pid=84858,fd=7))
+LISTEN 0 4096 [::1]:47600 [::]:* users:(("cortex",pid=84858,fd=7))
 EOF
 check "port_holder/ss: IPv6 loopback [::1] also holds the port" \
 	"84858 /home/u/.local/bin/cortex" "$(with_port_holder_ss 47600 "${FIXTURE}")"
 fixture ssp_wild.txt <<'EOF'
-LISTEN 0 4096 0.0.0.0:47600 0.0.0.0:* users:(("authbridge-prox",pid=84858,fd=7))
+LISTEN 0 4096 0.0.0.0:47600 0.0.0.0:* users:(("cortex",pid=84858,fd=7))
 EOF
 check "port_holder/ss: a wildcard bind holds the loopback port" \
 	"84858 /home/u/.local/bin/cortex" "$(with_port_holder_ss 47600 "${FIXTURE}")"
 fixture ssp_wild6.txt <<'EOF'
-LISTEN 0 4096 [::]:47600 [::]:* users:(("authbridge-prox",pid=84858,fd=7))
+LISTEN 0 4096 [::]:47600 [::]:* users:(("cortex",pid=84858,fd=7))
 EOF
 check "port_holder/ss: an IPv6 wildcard bind holds it too" \
 	"84858 /home/u/.local/bin/cortex" "$(with_port_holder_ss 47600 "${FIXTURE}")"
@@ -1015,59 +1027,97 @@ check "fingerprint of a missing CA is empty and does not abort" "survived:[]" "$
 check "fingerprint of a present CA is non-empty" "1" \
 	"$(sh "${_probe}" 2>/dev/null | grep -c 'survived:\[.\+\]' || true)"
 
-# --- remove_stale_abctl: only our own pre-rename abctl goes ---
+# --- remove_stale: only our own pre-rename binaries go, and never from under a unit ---
 #
 # The fixtures carry NUL bytes because a real Go binary does, and grep's handling of
 # binary input is the part that differs between BSD and GNU. Each one is executable
 # and would drop a sentinel if run: the decision must come from reading the file, so
-# an abctl too old to know --version (or someone else's) is never executed.
+# a build too old to know --version (or someone else's) is never executed.
 
-with_remove_stale_abctl() { # bin-dir
+with_remove_stale() { # bin-dir old new [home]
 	{
-		printf 'BIN_DIR=%s\n' "$1"
+		printf 'BIN_DIR=%s\nHOME=%s\n' "$1" "${4:-${TMP}/stale-nohome}"
 		printf 'info() { printf "%%s\\n" "$*"; }\n'
-		sed -n '/^remove_stale_abctl()/,/^}/p' "${INSTALL_SH}"
-		printf 'remove_stale_abctl\n'
+		sed -n '/^remove_stale()/,/^}/p' "${INSTALL_SH}"
+		printf 'remove_stale %s %s\n' "$2" "$3"
 	} >"${TMP}/stale.sh"
 	sh "${TMP}/stale.sh"
 }
 
-stale_abctl() { # bin-dir module-path-or-other-text
+stale_bin() { # bin-dir name module-path-or-other-text
 	mkdir -p "$1"
 	{
 		printf '#!/bin/sh\ntouch "%s/ran"\nexit 0\n' "$1"
-		printf '\000\177ELF\000path\t%s\000mod\t%s\t(devel)\000' "$2" "$2"
-	} >"$1/abctl"
-	chmod +x "$1/abctl"
+		printf '\000\177ELF\000path\t%s\000mod\t%s\t(devel)\000' "$3" "$3"
+	} >"$1/$2"
+	chmod +x "$1/$2"
 }
 
-for _mod in \
-	github.com/rossoctl/cortex/authbridge/cmd/abctl \
-	github.com/rossoctl/cortex/cmd/abctl; do
-	_bin="${TMP}/stale-$(printf '%s' "${_mod}" | tr '/.' '__')"
-	stale_abctl "${_bin}" "${_mod}"
-	_out=$(with_remove_stale_abctl "${_bin}")
-	check "our abctl ($_mod) is removed" "gone" "$([ -e "${_bin}/abctl" ] && echo kept || echo gone)"
-	check "  and says so" "1" "$(printf '%s' "${_out}" | grep -c 'agentop now' || true)"
+gone_or_kept() { [ -e "$1" ] && echo kept || echo gone; }
+
+for _case in \
+	"abctl agentop github.com/rossoctl/cortex/authbridge/cmd/abctl" \
+	"abctl agentop github.com/rossoctl/cortex/cmd/abctl" \
+	"authbridge-proxy cortex github.com/rossoctl/cortex/authbridge/cmd/authbridge-proxy" \
+	"authbridge-proxy cortex github.com/rossoctl/cortex/cmd/authbridge-proxy"; do
+	set -- ${_case}
+	_bin="${TMP}/stale-$(printf '%s' "$3" | tr '/.' '__')"
+	stale_bin "${_bin}" "$1" "$3"
+	_out=$(with_remove_stale "${_bin}" "$1" "$2")
+	check "our $1 ($3) is removed" "gone" "$(gone_or_kept "${_bin}/$1")"
+	check "  and says so" "1" "$(printf '%s' "${_out}" | grep -c "called $2 now" || true)"
 	check "  without running it" "absent" "$([ -e "${_bin}/ran" ] && echo ran || echo absent)"
 done
 
 # A different tool that shares the name — even one whose --version would print
 # "abctl vX", which is exactly what a --version check would have been fooled by.
 _bin="${TMP}/stale-foreign"
-stale_abctl "${_bin}" "example.com/someone/else/abctl"
+stale_bin "${_bin}" abctl "example.com/someone/else/abctl"
 printf 'echo abctl v1.0.0\n' >>"${_bin}/abctl"
-_out=$(with_remove_stale_abctl "${_bin}")
-check "someone else's abctl is kept" "kept" "$([ -e "${_bin}/abctl" ] && echo kept || echo gone)"
+_out=$(with_remove_stale "${_bin}" abctl agentop)
+check "someone else's abctl is kept" "kept" "$(gone_or_kept "${_bin}/abctl")"
 check "  silently" "" "${_out}"
 check "  and not run" "absent" "$([ -e "${_bin}/ran" ] && echo ran || echo absent)"
 
 _bin="${TMP}/stale-none"
 mkdir -p "${_bin}"
-check "no abctl: nothing to do, and success" "0:" "$(_o=$(with_remove_stale_abctl "${_bin}"); printf '%s:%s' "$?" "${_o}")"
+check "nothing stale: nothing to do, and success" "0:" \
+	"$(_o=$(with_remove_stale "${_bin}" authbridge-proxy cortex); printf '%s:%s' "$?" "${_o}")"
 
-check "install.sh calls remove_stale_abctl exactly once" "1" \
-	"$(grep -c '^remove_stale_abctl$' "${INSTALL_SH}" || true)"
+# The unit guard. --install-only, or a supervisor that could not take the job, leaves
+# the pre-rename unit in place, and deleting the binary under it would leave launchd
+# or systemd starting a file that is gone. Both unit formats escape paths, so a path
+# with a quote in it must still be found.
+_home="${TMP}/stale-home"
+_bin="${TMP}/stale-guarded"
+mkdir -p "${_home}/Library/LaunchAgents" "${_home}/.config/systemd/user"
+stale_bin "${_bin}" authbridge-proxy github.com/rossoctl/cortex/authbridge/cmd/authbridge-proxy
+printf '  <string>%s/authbridge-proxy</string>\n' "${_bin}" >"${_home}/Library/LaunchAgents/io.rossoctl.cortex.plist"
+_out=$(with_remove_stale "${_bin}" authbridge-proxy cortex "${_home}")
+check "a launchd unit still naming it keeps it" "kept" "$(gone_or_kept "${_bin}/authbridge-proxy")"
+check "  and says why" "1" "$(printf '%s' "${_out}" | grep -c 'still runs it' || true)"
+rm -f "${_home}/Library/LaunchAgents/io.rossoctl.cortex.plist"
+printf "ExecStart='/home/o'\\\\''brien/.local/bin/authbridge-proxy' --config x\n" >"${_home}/.config/systemd/user/cortex.service"
+_out=$(with_remove_stale "${_bin}" authbridge-proxy cortex "${_home}")
+check "a systemd unit still naming it (escaped path) keeps it" "kept" "$(gone_or_kept "${_bin}/authbridge-proxy")"
+# Once agentop has rewritten the unit, it names only cortex, and the old binary can go.
+printf "ExecStart='%s/cortex' --config x\nDescription=Cortex local proxy (cortex)\n" "${_bin}" \
+	>"${_home}/.config/systemd/user/cortex.service"
+_out=$(with_remove_stale "${_bin}" authbridge-proxy cortex "${_home}")
+check "a unit already moved to cortex lets it go" "gone" "$(gone_or_kept "${_bin}/authbridge-proxy")"
+
+check "install.sh removes the stale abctl once" "1" \
+	"$(grep -c '^remove_stale abctl agentop$' "${INSTALL_SH}" || true)"
+check "install.sh removes the stale proxy once" "1" \
+	"$(grep -c '^remove_stale authbridge-proxy cortex$' "${INSTALL_SH}" || true)"
+# ...and only after starting the service, which is what rewrites the unit.
+check "the proxy is removed after the service is started" "1" \
+	"$(awk '/^\t\t\tstart_unsupervised \|\| die/{s=NR} /^remove_stale authbridge-proxy cortex$/{r=NR} END{print (s && r > s) ? 1 : 0}' "${INSTALL_SH}")"
+# make dev-install extracts this function rather than carrying a copy.
+check "make dev-install runs install.sh's remove_stale, not a copy" "1" \
+	"$(grep -c "sed -n '/^remove_stale()/,/^}/p' scripts/install.sh" "${REPO_ROOT}/Makefile" || true)"
+check "  and the Makefile holds no ownership regex of its own" "0" \
+	"$(grep -c 'rossoctl/cortex/(authbridge/)' "${REPO_ROOT}/Makefile" || true)"
 
 printf '\n%s passed, %s failed\n' "${PASS}" "${FAIL}"
 [ "${FAIL}" = "0" ]

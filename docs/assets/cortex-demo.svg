@@ -171,7 +171,7 @@ clipPath rect{width:100000px}
 <rect class="cur cur0_0" x="16.0" y="46.0" width="8.4" height="14.0"/>
 <text class="rv rv0_1" y="76.0"><tspan x="16.0" textLength="226.8" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">Resolving newest release...</tspan></text>
 <text class="rv rv0_2" y="94.0"><tspan x="16.0" textLength="319.2" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">Downloading v0.9.3 for darwin/arm64...</tspan></text>
-<text class="rv rv0_3" y="112.0"><tspan x="16.0" textLength="462.0" lengthAdjust="spacingAndGlyphs" fill="#3fb950">Installed agentop and authbridge-proxy to ~/.cortex/bin</tspan></text>
+<text class="rv rv0_3" y="112.0"><tspan x="16.0" textLength="378.0" lengthAdjust="spacingAndGlyphs" fill="#3fb950">Installed agentop and cortex to ~/.cortex/bin</tspan></text>
 <text class="rv rv0_4" y="130.0"><tspan x="16.0" textLength="277.2" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">Setting up the launchd service...</tspan></text>
 <text class="rv rv0_5" y="148.0"></text>
 <text class="rv rv0_6" y="166.0"><tspan x="16.0" textLength="428.4" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">Adds to the &quot;env&quot; block of ~/.claude/settings.json:</tspan></text>

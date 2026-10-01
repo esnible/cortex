@@ -462,7 +462,7 @@ func serviceInstall(p servicePaths, yes, forceRestart bool, stdout, stderr io.Wr
 	if running, why := supervisorRunning(runtime.GOOS, p); !running {
 		fmt.Fprintf(stderr, "agentop: the unit loaded but the supervisor does not report it running (%s).\n"+
 			"  Something else may hold the ports — check for a Cortex you started by hand:\n"+
-			"    pgrep -fl authbridge-prox\n"+
+			"    pgrep -lx cortex\n"+
 			"  Last log lines:\n", why)
 		for _, line := range lastLines(p.logFile, 5) {
 			fmt.Fprintf(stderr, "    %s\n", line)
@@ -660,7 +660,7 @@ func serviceControl(action string, p servicePaths, stdout, stderr io.Writer) int
 		// restart that did not happen.
 		if running, why := supervisorRunning(runtime.GOOS, p); !running {
 			fmt.Fprintf(stderr, "agentop: %sed, but the supervisor does not report it running (%s).\n"+
-				"  Check for a Cortex started by hand holding the ports: pgrep -fl authbridge-prox\n", action, why)
+				"  Check for a Cortex started by hand holding the ports: pgrep -lx cortex\n", action, why)
 			for _, line := range lastLines(p.logFile, 5) {
 				fmt.Fprintf(stderr, "    %s\n", line)
 			}

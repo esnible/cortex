@@ -199,6 +199,9 @@ jobs:
           # user will look. Drop this once no supported release predates it.
           add '`agentop` was called `abctl` through v0.7.0. The installer deletes the old'
           add '`~/.local/bin/abctl`; delete one you installed by hand yourself.'
+          add '`cortex` was called `authbridge-proxy` (and `cortex-envoy`, `-cpex`, `-praxis` were'
+          add '`authbridge-*`); image and container names are unchanged. The installer removes the old'
+          add 'binary once the service no longer runs it. Stop a proxy you started by hand first.'
           add ''
           add '`cortex` ships in variants matching the container images:'
           add 'unqualified (default plugin set, matches the `authbridge` image),'

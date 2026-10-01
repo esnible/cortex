@@ -517,7 +517,7 @@ read the config that step 3 deletes.
 
 ```sh
 agentop configure claude-code status # should say "not enabled"
-pgrep -fl authbridge-prox            # should print nothing
+pgrep -lx cortex                     # should print nothing
 ls ~/.cortex 2>/dev/null             # should print nothing
 ```
 

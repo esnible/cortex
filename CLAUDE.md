@@ -83,19 +83,22 @@ complete** — apart from this rule, every remaining `kagenti` string is inside
 **abctl → agentop is complete too**, and was a clean break: no alias, no reading of
 the old on-disk names (see `docs/superpowers/specs/2026-09-30-abctl-to-agentop-rename-design.md`).
 Outside `docs/superpowers/`, `abctl` survives only in the code that deletes a
-pre-rename binary — `remove_stale_abctl` in `install.sh`, its tests, and
-`make dev-install` — in the release-notes line announcing the rename, and in this
-rule. Treat any other new one as a mistake.
+pre-rename binary — `remove_stale` in `install.sh`, its tests, and `make dev-install`
+— in the release-notes line announcing the rename, and in this rule. Treat any other
+new one as a mistake.
 
 **AuthBridge → Cortex is deliberately partial, and the boundary is the point.**
 `Cortex` is the product: this repo, the registry namespace, the laptop service,
-`~/.cortex/`. `AuthBridge` is the name of the **injected sidecar component**, and it
-survives inside artifact identifiers that other things address by name:
+`~/.cortex/`, and the sidecar binaries — `cortex`, `cortex-envoy`, `cortex-cpex`,
+`cortex-praxis`, renamed from `authbridge-*` as the same kind of clean break (see
+`docs/superpowers/specs/2026-09-30-authbridge-binaries-to-cortex-rename-design.md`).
+`AuthBridge` is the name of the **injected sidecar component**, and it survives inside
+artifact identifiers that other things address by name:
 
 | Frozen — do not rename | Where it is defined |
 |---|---|
 | `authbridge`, `authbridge-envoy`, `authbridge-lite`, `authbridge-cpex` | published image names; the operator selects images **by name** |
-| `authbridge-{proxy,envoy,cpex,praxis}` | binary names, `cmd/` dirs, Go module paths, release tarballs |
+| `authbridge-proxy` as a **container** name | **another repo's API** — the operator's `AuthBridgeProxyContainerName`. `kubectl … -c authbridge-proxy`, agentop's pod picker and the demos' sidecar detection address it. The binary inside is `cortex`; the operator sets only `Args`, so the image's entrypoint picks it |
 | `x-authbridge-{direction,secret}`, `x-authbridge-unmapped-<name>` | wire protocol |
 | `AUTHBRIDGE_*` | env vars users may already have set |
 | `authbridge-config{,-<agent>}`, `authbridge-runtime{,-config,-mtls}`, `authproxy-routes` | ConfigMaps the operator creates and mounts |
@@ -107,14 +110,22 @@ That last row is why "just rename it everywhere" is not on the table: two of the
 a CRD field and a Kubernetes annotation owned by `rossoctl/operator`. Retiring them
 needs a deprecation window and coordinated PRs in at least two repositories.
 
+Because image and container names share the binaries' old spelling, `authbridge-envoy`
+or `authbridge-cpex` in a sentence is usually the **image**, and `authbridge-proxy` the
+**container** — not a leftover. Outside those two meanings, `authbridge-proxy` survives
+only where the pre-rename binary is deleted (`remove_stale`, `make dev-install`), in
+the tests asserting it is no longer recognised as ours, and in the release notes; the
+other three old names only in this rule and the spec.
+
 **The rule for prose and comments:** say **Cortex** when the sentence is about the
-product — what it is, what it does, what a demo demonstrates. Keep **AuthBridge** when
-the phrase names a concrete artifact: a sidecar, an image, a binary, a container, that
-container's logs, a mode field, a ConfigMap, a literal UI label. Both of these are correct: "Cortex
-provides zero-trust token management", "the AuthBridge sidecar validates the JWT".
+product — what it is, what it does, what a demo demonstrates — or names one of its
+binaries. Keep **AuthBridge** when the phrase names one of the artifacts above: a
+sidecar, an image, a container, that container's logs, a mode field, a ConfigMap, a
+literal UI label. Both of these are correct: "Cortex provides zero-trust token
+management", "the AuthBridge sidecar validates the JWT".
 
 `install.sh` is the reference implementation — zero prose "AuthBridge", with
-`cortex` appearing only as the name of the binary it installs.
+`authbridge-proxy` appearing only in the code that removes the pre-rename binary.
 
 ## What Cortex Does
 

@@ -105,13 +105,6 @@ dev-install: cortex agentop ## Build from this tree, install to ~/.local/bin, re
 		{ rm -f $(DEV_BIN_DIR)/$$b.new; exit 1; }; \
 	done
 	@echo "→ installed to $(DEV_BIN_DIR)"
-	@# agentop was abctl before the rename, and there is no alias: an abctl left on PATH
-	@# still manages the same unit. Same test as install.sh's remove_stale_abctl — ours
-	@# by the module path Go embeds, never by running it.
-	@if [ -f $(DEV_BIN_DIR)/abctl ] && \
-		grep -qE 'github\.com/rossoctl/cortex/(authbridge/)?cmd/abctl' $(DEV_BIN_DIR)/abctl; then \
-		rm -f $(DEV_BIN_DIR)/abctl && echo "→ removed $(DEV_BIN_DIR)/abctl — it is called agentop now"; \
-	fi
 	@# Everything below runs by absolute path, so a missing PATH entry does not fail
 	@# this target — it fails the NEXT thing the developer types. install.sh checks the
 	@# same thing and offers to fix the shell profile; a build target should not edit
@@ -143,3 +136,11 @@ dev-install: cortex agentop ## Build from this tree, install to ~/.local/bin, re
 	@$(DEV_BIN_DIR)/agentop service install --yes --restart
 	@echo
 	@$(DEV_BIN_DIR)/agentop service status
+	@# The binaries were abctl and authbridge-proxy before the renames, and there are no
+	@# aliases. install.sh's remove_stale decides what may go (ours, and no unit still
+	@# naming it); it is extracted from there rather than copied, so there is one copy
+	@# and install_test.sh is what tests it. After the install above, so the unit has
+	@# already moved to cortex.
+	@BIN_DIR='$(DEV_BIN_DIR)'; info() { echo "→ $$*"; }; \
+		eval "$$(sed -n '/^remove_stale()/,/^}/p' scripts/install.sh)"; \
+		remove_stale abctl agentop && remove_stale authbridge-proxy cortex

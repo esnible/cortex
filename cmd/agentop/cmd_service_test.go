@@ -155,6 +155,30 @@ func TestRenderedPlistIsValid(t *testing.T) {
 	}
 }
 
+// TestIsProxyComm_ExactBasenameOnly: "cortex" is in this repo's name, the product's
+// and ~/.cortex, so anything looser than an exact basename claims processes that are
+// not the proxy — and runningPID's caller stops what it claims.
+func TestIsProxyComm_ExactBasenameOnly(t *testing.T) {
+	for _, tc := range []struct {
+		comm string
+		want bool
+	}{
+		{"cortex\n", true},                         // Linux: the kernel's comm field
+		{"/Users/u/.local/bin/cortex\n", true},     // macOS: the full path
+		{"/Users/a b/.cortex/bin/cortex", true},    // a path with a space, under ~/.cortex
+		{"/Users/u/src/cortex/bin/agentop", false}, // run from a checkout of this repo
+		{"/Users/u/.cortex/bin/agentop", false},
+		{"cortex-envoy", false},
+		{"authbridge-proxy", false}, // the pre-rename name: a clean break, not ours
+		{"authbridge-prox", false},  // ...nor its 15-character Linux stub
+		{"", false},
+	} {
+		if got := isProxyComm(tc.comm); got != tc.want {
+			t.Errorf("isProxyComm(%q) = %v, want %v", tc.comm, got, tc.want)
+		}
+	}
+}
+
 // TestRunningPID_OnlyClaimsOurOwnProcess: the pidfile can name a recycled pid, and
 // install stops whatever it reports. Stopping a stranger's process would be the
 // worst possible bug in this command.
@@ -218,7 +242,7 @@ func TestServiceStatus_NamesTheUnsupervisedCase(t *testing.T) {
 	}
 	defer func() { _ = cmd.Process.Kill() }()
 	_ = os.WriteFile(p.pidFile, []byte(strconv.Itoa(cmd.Process.Pid)), 0o600)
-	// The fixture is not named authbridge-prox, so runningPID rejects it — which is
+	// The fixture is not named cortex, so runningPID rejects it — which is
 	// itself the property TestRunningPID covers. Assert the uninstalled branch only.
 	out.Reset()
 	_ = serviceStatus(p, &out)
