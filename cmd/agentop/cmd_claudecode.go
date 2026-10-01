@@ -386,8 +386,8 @@ type claudeCodePlan struct {
 	changes      []string          // "  KEY=VALUE" per value that differs; none = already enabled
 }
 
-// planClaudeCodeEnable runs every check enable makes before it would prompt, in the
-// same order. An error is the refusal, worded to follow "agentop: ".
+// planClaudeCodeEnable runs the checks that can refuse an enable, in the order enable
+// made them. An error is the refusal, worded to follow "agentop: ".
 func planClaudeCodeEnable(settingsPath, cortexCfgPath string) (claudeCodePlan, error) {
 	want, cfg, err := wantedFromConfig(cortexCfgPath)
 	if err != nil {
@@ -431,8 +431,8 @@ func planClaudeCodeEnable(settingsPath, cortexCfgPath string) (claudeCodePlan, e
 }
 
 // printTrustFileNotes warns about CA files that do not exist yet. Command output
-// only: `agentop setup` runs enable before the proxy has minted them, and `agentop
-// doctor` is where their absence is reported.
+// only, kept out of plan and apply: a caller that applies and then starts the proxy
+// itself has nothing to warn about, because the files appear on that start.
 func printTrustFileNotes(want map[string]string, stdout io.Writer) {
 	// Both trust files are reported only when a ca_dir was configured at all.
 	// wanted() populates these keys under `if cfg.TLSBridge.CADir != ""`, so
@@ -532,28 +532,32 @@ func claudeCodeEnable2(settingsPath, cortexCfgPath, statePath string, yes bool, 
 	return 0
 }
 
-func claudeCodeDisable2(settingsPath, statePath string, yes bool, stdout, stderr io.Writer) int {
+// claudeCodeDisablePlan is what disable would remove, worked out without touching
+// anything.
+type claudeCodeDisablePlan struct {
+	settingsPath string
+	doc          map[string]any
+	present      []string // managed keys set in the file, in managedKeys order; none = nothing to do
+}
+
+func planClaudeCodeDisable(settingsPath string) (claudeCodeDisablePlan, error) {
 	doc, err := readSettings(settingsPath)
 	if err != nil {
-		fmt.Fprintf(stderr, "agentop: %v\n", err)
-		return 1
+		return claudeCodeDisablePlan{}, err
 	}
 	env := envStrings(doc)
-	var present []string
+	pl := claudeCodeDisablePlan{settingsPath: settingsPath, doc: doc}
 	for _, k := range managedKeys {
 		if _, ok := env[k]; ok {
-			present = append(present, k)
+			pl.present = append(pl.present, k)
 		}
 	}
-	if len(present) == 0 {
-		fmt.Fprintf(stdout, "Nothing to do: none of the Cortex variables are set in %s.\n", settingsPath)
-		return 0
-	}
-	fmt.Fprintf(stdout, "This will remove from %s: %s\n\n", settingsPath, strings.Join(present, ", "))
-	if !yes && !claudeCodeConfirm(stdout) {
-		fmt.Fprintln(stdout, "Not changed.")
-		return exitDeclined
-	}
+	return pl, nil
+}
+
+// applyClaudeCodeDisable puts back what enable recorded, removes what it added, and
+// deletes the record. It returns the keys restored to a value the user had set.
+func applyClaudeCodeDisable(pl claudeCodeDisablePlan, statePath string, stderr io.Writer) ([]string, error) {
 	st, sterr := readState(statePath)
 	if sterr != nil {
 		// Proceed — the user asked for this off — but say what is about to be lost.
@@ -561,12 +565,12 @@ func claudeCodeDisable2(settingsPath, statePath string, yes bool, stdout, stderr
 		fmt.Fprintf(stderr, "agentop: cannot read the record of what you had before enabling (%v).\n"+
 			"  Falling back to removing these keys outright. If you had set any of them\n"+
 			"  yourself before running enable, that value is not recoverable from here —\n"+
-			"  check %s afterwards.\n\n", sterr, settingsPath)
+			"  check %s afterwards.\n\n", sterr, pl.settingsPath)
 	}
-	raw := envRaw(doc)
+	raw := envRaw(pl.doc)
 	var restored []string
-	for _, k := range present {
-		if st != nil && st.Settings == settingsPath {
+	for _, k := range pl.present {
+		if st != nil && st.Settings == pl.settingsPath {
 			if prior, recorded := st.Prior[k]; recorded {
 				if prior == nil {
 					delete(raw, k)
@@ -584,17 +588,39 @@ func claudeCodeDisable2(settingsPath, statePath string, yes bool, stdout, stderr
 	}
 	// Drop an env block we just emptied rather than leaving "env": {} behind.
 	if len(raw) == 0 {
-		delete(doc, "env")
+		delete(pl.doc, "env")
 	}
-	if err := writeSettings(settingsPath, doc); err != nil {
+	if err := writeSettings(pl.settingsPath, pl.doc); err != nil {
+		return nil, err
+	}
+	if statePath != "" {
+		_ = os.Remove(statePath)
+	}
+	return restored, nil
+}
+
+func claudeCodeDisable2(settingsPath, statePath string, yes bool, stdout, stderr io.Writer) int {
+	pl, err := planClaudeCodeDisable(settingsPath)
+	if err != nil {
+		fmt.Fprintf(stderr, "agentop: %v\n", err)
+		return 1
+	}
+	if len(pl.present) == 0 {
+		fmt.Fprintf(stdout, "Nothing to do: none of the Cortex variables are set in %s.\n", settingsPath)
+		return 0
+	}
+	fmt.Fprintf(stdout, "This will remove from %s: %s\n\n", settingsPath, strings.Join(pl.present, ", "))
+	if !yes && !claudeCodeConfirm(stdout) {
+		fmt.Fprintln(stdout, "Not changed.")
+		return exitDeclined
+	}
+	restored, err := applyClaudeCodeDisable(pl, statePath, stderr)
+	if err != nil {
 		fmt.Fprintf(stderr, "agentop: %v\n", err)
 		return 1
 	}
 	if len(restored) > 0 {
 		fmt.Fprintf(stdout, "\nRestored to the value(s) you had before: %s\n", strings.Join(restored, ", "))
-	}
-	if statePath != "" {
-		_ = os.Remove(statePath)
 	}
 	fmt.Fprintf(stdout, "\nDisabled. Claude Code no longer routes through Cortex.\n")
 	return 0

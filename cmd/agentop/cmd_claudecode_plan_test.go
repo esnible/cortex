@@ -53,7 +53,10 @@ func TestPlanClaudeCodeEnable_RefusesAForeignValue(t *testing.T) {
 }
 
 func TestApplyClaudeCodeEnable_WritesThePlanAndRecordsPrior(t *testing.T) {
-	settings, cfg := fixture(t, `{"env":{"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC":"1"}}`)
+	// A stale Cortex port, which isCortexValue lets enable replace. The prior value
+	// then differs from the one written, so recording either is distinguishable.
+	const stale = "http://127.0.0.1:47699"
+	settings, cfg := fixture(t, `{"env":{"HTTPS_PROXY":"`+stale+`"}}`)
 	state := filepath.Join(t.TempDir(), "state.json")
 	pl, err := planClaudeCodeEnable(settings, cfg)
 	if err != nil {
@@ -69,14 +72,61 @@ func TestApplyClaudeCodeEnable_WritesThePlanAndRecordsPrior(t *testing.T) {
 			t.Errorf("%s = %q, want %q", k, env[k], v)
 		}
 	}
+	// 47600 is the fixture's forward_proxy_addr.
+	if env[envProxy] != "http://127.0.0.1:47600" {
+		t.Errorf("%s = %q, want the stale value replaced by http://127.0.0.1:47600", envProxy, env[envProxy])
+	}
 	st, err := readState(state)
+	if err != nil || st == nil {
+		t.Fatalf("no readable state record at %s (err %v)", state, err)
+	}
+	if p := st.Prior[envProxy]; p == nil || *p != stale {
+		t.Errorf("prior %s not recorded as the user's %q: %v", envProxy, stale, p)
+	}
+	if p, ok := st.Prior[envNoTelem]; !ok || p != nil {
+		t.Errorf("prior %s should be recorded as absent", envNoTelem)
+	}
+}
+
+func TestPlanApplyClaudeCodeDisable_RestoresWhatTheUserHad(t *testing.T) {
+	// A stale Cortex port that enable replaces, so the user's value and the one
+	// enable leaves behind differ: a skipped restore cannot pass for a restore.
+	const stale = "http://127.0.0.1:47699"
+	settings, cfg := fixture(t, `{"env":{"HTTPS_PROXY":"`+stale+`"}}`)
+	state := filepath.Join(t.TempDir(), "state.json")
+	var out, errb bytes.Buffer
+	if code := claudeCodeEnable2(settings, cfg, state, true, &out, &errb); code != 0 {
+		t.Fatalf("enable failed: %s", errb.String())
+	}
+	if got := readEnv(t, settings)[envProxy]; got == stale {
+		t.Fatalf("fixture: enable left %s at the stale %q, so a restore is unobservable", envProxy, got)
+	}
+	before, _ := os.ReadFile(settings)
+	pl, err := planClaudeCodeDisable(settings)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if p := st.Prior[envNoTelem]; p == nil || *p != "1" {
-		t.Errorf("prior %s not recorded as the user's \"1\": %v", envNoTelem, p)
+	if after, _ := os.ReadFile(settings); !bytes.Equal(before, after) {
+		t.Error("planning a disable changed the settings file")
 	}
-	if p, ok := st.Prior[envProxy]; !ok || p != nil {
-		t.Errorf("prior %s should be recorded as absent", envProxy)
+	if len(pl.present) != len(managedKeys) {
+		t.Errorf("present = %q, want every managed key", pl.present)
+	}
+	restored, err := applyClaudeCodeDisable(pl, state, &errb)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(restored, ",") != envProxy {
+		t.Errorf("restored = %q, want only %s", restored, envProxy)
+	}
+	env := readEnv(t, settings)
+	if env[envProxy] != stale {
+		t.Errorf("%s = %q after disable, want the user's own %q put back", envProxy, env[envProxy], stale)
+	}
+	if _, ok := env[envNoTelem]; ok {
+		t.Errorf("%s survived disable", envNoTelem)
+	}
+	if _, err := os.Stat(state); err == nil {
+		t.Error("the state record survived disable")
 	}
 }
