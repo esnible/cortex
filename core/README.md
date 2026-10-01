@@ -80,6 +80,7 @@ Framework, not here:
 |---------|---------|
 | `tlsconfig/` | Builds `*crypto/tls.Config` values. Every importer aliases it `authtls`, because `crypto/tls` owns the bare name |
 | `tlsbridge/` | The outbound TLS bridge — forges a certificate so plaintext interception can continue past a CONNECT |
+| `peerproc/` | Names the process at the other end of a TCP connection this process accepted, the process listening on an address, and a process's parents — macOS's kernel TCP table, Linux's `/proc`. No caller yet: per-process session attribution (#1187) will use it |
 | `storage/` | The `Store` interface and its provider registry. The Redis driver lives at `storage/redis/`, its own nested module, so its dependency stays out of `core` |
 | `memstore/` | A generic, process-scoped, TTL key→value store, intentionally semantics-free. Contrast `storage/`, which is the cross-pod persistent one |
 | `llmclient/` | Small helper for calling OpenAI-compatible endpoints |

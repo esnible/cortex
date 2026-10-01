@@ -66,6 +66,30 @@ jobs:
       - name: Test
         run: go test -v -race -cover ./...
 
+  # core/peerproc reads the macOS kernel's TCP table by byte offset and checks its record
+  # sizes against the layout it was written for, so only a macOS runner exercises that
+  # code. The Linux job above covers the /proc implementation.
+  go-ci-core-macos:
+    name: Go CI (core peerproc, macOS)
+    runs-on: macos-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: core
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+        with:
+          go-version-file: core/go.mod
+          cache-dependency-path: core/go.sum
+
+      - name: Vet
+        run: go vet ./peerproc/...
+
+      - name: Test
+        run: go test -v -race ./peerproc/...
+
   # The plugin-profile guards live in their own module, so no other job runs
   # them. They have to run on every PR: plugins are all opt-in, and a plugin
   # missing from every profile produces no build error — it just silently

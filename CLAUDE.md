@@ -163,6 +163,8 @@ cortex/
 │   ├── memstore/                     #   Process-scoped TTL map (vs storage/, persistent)
 │   ├── bootstrap/                    #   Process startup: logging, health, stats servers
 │   ├── tlsconfig/  tlsbridge/        #   Builds tls.Config values; forges bridge certs
+│   ├── peerproc/                     #   Which process holds a TCP connection
+│   │                                 #   (macOS pcblist_n, Linux /proc)
 │   └── storage/redis/                #   Redis driver for the storage.Store interface
 │                                     #   (its own module, nested but not part of core)
 │
