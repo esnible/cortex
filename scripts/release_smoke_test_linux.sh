@@ -80,30 +80,10 @@ assert_contains() {
 	fi
 }
 
-# The CLI's name just installed, which is only ever in doubt on the FIRST
-# install below: INSTALL_TAG can resolve to a release from before the
-# abctl->agentop rename (confirmed still live today — testing v0.8.0 itself
-# again resolves its "older" release to the pre-rename v0.7.0), in which case
-# that release's own install.sh installs abctl, not agentop. Every step after
-# the upgrade installs TAG itself, which is always current by construction
-# (it is the thing under test), so only this one call site needs to detect
-# rather than assume.
-detect_cli() {
-	if [ -x "${AGENTOP}" ]; then
-		printf '%s\n' "${AGENTOP}"
-	elif [ -x "${HOME}/.local/bin/abctl" ]; then
-		printf '%s\n' "${HOME}/.local/bin/abctl"
-	else
-		echo "FAIL: neither agentop nor abctl found in ~/.local/bin after install" >&2
-		exit 1
-	fi
-}
-
 assert_healthy() {
-	# assert_healthy <cli-path>
 	out="$(mktemp "${TMP_DIR}/status.XXXXXX")"
-	"$1" service status | tee "${out}"
-	assert_contains "${out}" "healthy:" "$1 service status did not report healthy"
+	"${AGENTOP}" service status | tee "${out}"
+	assert_contains "${out}" "healthy:" "agentop service status did not report healthy"
 }
 
 # Confirms the systemd unit is actually running the binary just installed, not
@@ -208,10 +188,19 @@ fi
 
 log "Testing ${TAG} (upgrading from: ${OLDER_TAG:-none found; first release})"
 
+# No compatibility path for a pre-rename INSTALL_TAG (e.g. re-testing v0.8.0
+# itself, whose own "older" release resolves to the pre-rename v0.7.0):
+# matches this repo's own clean-break policy for the abctl->agentop rename
+# ("no alias, no compatibility code" — see
+# docs/superpowers/specs/2026-09-30-abctl-to-agentop-rename-design.md). If
+# INSTALL_TAG predates the rename, this fails here with a plain
+# "command not found" rather than a clearer message — accepted, since it only
+# affects re-testing that one already-superseded release, a cost that stops
+# being reachable at all once a newer stable release exists to upgrade from.
 INSTALL_TAG="${OLDER_TAG:-${TAG}}"
 log "Fresh install: ${INSTALL_TAG}"
 install_cortex "${INSTALL_TAG}"
-assert_healthy "$(detect_cli)"
+assert_healthy
 
 if [ -n "${OLDER_TAG}" ]; then
 	# A marker only this test writes, to prove config survives the upgrade
@@ -222,9 +211,7 @@ if [ -n "${OLDER_TAG}" ]; then
 	log "Upgrade: ${INSTALL_TAG} -> ${TAG}"
 	install_cortex "${TAG}"
 	assert_contains "${CFG}" "${marker}" "config marker did not survive the upgrade"
-	# TAG is always current by construction from here on, so the plain
-	# AGENTOP path is safe without detect_cli.
-	assert_healthy "${AGENTOP}"
+	assert_healthy
 	assert_running_binary_is_current
 	assert_running_version_is "${expected_version}"
 fi
