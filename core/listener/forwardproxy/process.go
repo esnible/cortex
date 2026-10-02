@@ -6,7 +6,10 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"strconv"
+	"strings"
 	"sync"
+	"time"
 
 	"github.com/rossoctl/cortex/core/peerproc"
 	"github.com/rossoctl/cortex/core/session"
@@ -29,7 +32,24 @@ type connProcKey struct{}
 type connProc struct {
 	once  sync.Once
 	chain []session.Proc
+
+	// mu guards listeners: which process listens behind each loopback destination this
+	// connection's requests went to, for selfTraffic.
+	mu        sync.Mutex
+	listeners map[netip.AddrPort]listenerSeen
 }
+
+// listenerSeen is one cached ListenerOwner answer.
+type listenerSeen struct {
+	proc  peerproc.Proc
+	found bool
+	at    time.Time
+}
+
+// listenerTTL is how long a connection trusts a cached listener answer. Short, because a
+// service can restart; whether the listener is an agent's is re-asked on every request,
+// since a service becomes one only when it first names a session.
+const listenerTTL = 30 * time.Second
 
 // ConnContext is the forward proxy's http.Server ConnContext. It gives each client
 // connection an empty slot for its process chain and nothing else: it runs on the accept
@@ -95,4 +115,88 @@ func (s *Server) lookupChain(r *http.Request) []session.Proc {
 		chain[i] = session.Proc{PID: p.PID, Start: p.Start.UnixNano(), Exe: p.Exe}
 	}
 	return chain
+}
+
+// selfTraffic reports whether r is an agent talking to its own service on this host: a
+// plain-HTTP request to a loopback listener held by an agent's own process — one that has
+// named a session through its own header, which an MCP or model server never does —
+// running the same executable as the client. OpenCode's TUI polling its background service
+// is the case it exists for: about 1.3 requests a second of the agent's own UI, sent
+// nowhere. Comparing executables alone would hide a node-based agent's calls to any local
+// node server, which is why the listener must be an agent's.
+func (s *Server) selfTraffic(r *http.Request, chain []session.Proc) bool {
+	if len(chain) == 0 || chain[0].Exe == "" {
+		return false
+	}
+	cp := connProcOf(r.Context())
+	if cp == nil {
+		return false
+	}
+	for _, dest := range loopbackDests(r) {
+		l, ok := s.listenerBehind(cp, dest)
+		if !ok {
+			continue
+		}
+		if l.Exe != chain[0].Exe || !s.Sessions.IsAgentProcess(session.Proc{PID: l.PID, Start: l.Start.UnixNano()}) {
+			return false
+		}
+		s.noteSelfTraffic(chain[0].Exe, dest, l.PID)
+		return true
+	}
+	return false
+}
+
+func (s *Server) listenerBehind(cp *connProc, dest netip.AddrPort) (peerproc.Proc, bool) {
+	now := time.Now()
+	cp.mu.Lock()
+	seen, ok := cp.listeners[dest]
+	cp.mu.Unlock()
+	if ok && now.Sub(seen.at) < listenerTTL {
+		return seen.proc, seen.found
+	}
+	p, err := s.Processes.ListenerOwner(dest, s.Sessions.ProcessHints(maxHints)...)
+	seen = listenerSeen{proc: p, found: err == nil, at: now}
+	cp.mu.Lock()
+	if cp.listeners == nil {
+		cp.listeners = make(map[netip.AddrPort]listenerSeen, 1)
+	}
+	cp.listeners[dest] = seen
+	cp.mu.Unlock()
+	return seen.proc, seen.found
+}
+
+// loopbackDests is where r goes when that is this host: its address when the URL names a
+// loopback one, both loopbacks for "localhost" — the proxy has not dialled yet, so which
+// one the name resolves to is not known — and nothing otherwise.
+func loopbackDests(r *http.Request) []netip.AddrPort {
+	host, port := r.URL.Hostname(), r.URL.Port()
+	if port == "" {
+		port = "80"
+	}
+	n, err := strconv.ParseUint(port, 10, 16)
+	if err != nil {
+		return nil
+	}
+	if strings.EqualFold(host, "localhost") {
+		return []netip.AddrPort{
+			netip.AddrPortFrom(netip.AddrFrom4([4]byte{127, 0, 0, 1}), uint16(n)),
+			netip.AddrPortFrom(netip.IPv6Loopback(), uint16(n)),
+		}
+	}
+	a, err := netip.ParseAddr(host)
+	if err != nil || !a.IsLoopback() {
+		return nil
+	}
+	return []netip.AddrPort{netip.AddrPortFrom(a.Unmap(), uint16(n))}
+}
+
+// noteSelfTraffic says once, at INFO, which program's traffic to which local service is
+// not being recorded — a row that silently stops appearing is the thing nobody can debug —
+// and every time at DEBUG.
+func (s *Server) noteSelfTraffic(exe string, dest netip.AddrPort, pid int32) {
+	if _, seen := s.selfTrafficSeen.LoadOrStore(exe+" "+dest.String(), struct{}{}); !seen {
+		slog.Info("forward-proxy: not recording an agent's traffic to its own service on this host",
+			"exe", exe, "service", dest.String(), "service_pid", pid)
+	}
+	slog.Debug("forward-proxy: agent self-traffic forwarded without recording", "exe", exe, "service", dest.String())
 }

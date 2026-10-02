@@ -397,3 +397,80 @@ func TestProcessAttribution_ABridgedTunnelsRequestsUseItsProcess(t *testing.T) {
 		t.Errorf("s1 = %s, want the agent's request and the curl tunnel's two", got)
 	}
 }
+
+const opencodeExe = "/Users/x/.opencode/bin/opencode"
+
+// countPath is how many request events with path were recorded, in any session.
+func countPath(store *session.Store, path string) int {
+	n := 0
+	for _, sum := range store.ListSessions() {
+		for _, p := range recordedPaths(store, sum.ID) {
+			if p == path {
+				n++
+			}
+		}
+	}
+	return n
+}
+
+// OpenCode's TUI polls its own background service through the proxy. Once the service has
+// named a session — so it is an agent's own process — and runs the TUI's executable, that
+// polling is forwarded without a row.
+func TestSelfTraffic_AnAgentPollingItsOwnServiceIsForwardedButNotRecorded(t *testing.T) {
+	procs := newFakeProcs(fproc(500, 1, opencodeExe), fproc(510, 60, opencodeExe))
+	store := session.New(0, 0, 0)
+	defer store.Close()
+	proxyURL, backendURL, hits := newProcessProxy(t, store, procs, func(s *Server) {
+		s.SessionIDHeaders = append(s.SessionIDHeaders, "X-Opencode-Session-Id")
+	})
+	procs.listens(t, backendURL, 500) // the service listens where the TUI polls
+	tui, svc := procs.clientFor(proxyURL, 510), procs.clientFor(proxyURL, 500)
+
+	sendAs(t, tui, backendURL+"/api/info", "opencode/latest/2.0.21/cli", "", "")
+	sendAs(t, svc, backendURL+"/zen/v1/chat/completions", "opencode/latest/2.0.21/cli", "X-Opencode-Session-Id", "ses_1")
+	sendAs(t, tui, backendURL+"/api/info", "opencode/latest/2.0.21/cli", "", "")
+
+	if got := hits.Load(); got != 3 {
+		t.Errorf("the backend received %d requests, want all 3 forwarded", got)
+	}
+	if n := countPath(store, "/api/info"); n != 1 {
+		t.Errorf("%d /api/info rows recorded; want only the one before the service named a session", n)
+	}
+	if got := strings.Join(recordedPaths(store, "ses_1"), ","); got != "/zen/v1/chat/completions" {
+		t.Errorf("ses_1 = %s, want the service's inference request", got)
+	}
+}
+
+// Bob runs under node, and so does the local MCP server it calls. Same executable — but the
+// server never names a session, so it is no agent's and its traffic stays visible.
+func TestSelfTraffic_ANodeAgentsCallsToALocalNodeServerAreRecorded(t *testing.T) {
+	procs := newFakeProcs(fproc(900, 60, "/usr/bin/node"), fproc(910, 60, "/usr/bin/node"))
+	store := session.New(0, 0, 0)
+	defer store.Close()
+	proxyURL, backendURL, _ := newProcessProxy(t, store, procs, nil)
+	procs.listens(t, backendURL, 910)
+	bob := procs.clientFor(proxyURL, 900)
+
+	sendAs(t, bob, backendURL+"/inference", "bob-shell/2.0.5", session.BobSessionHeader, "task-1")
+	sendAs(t, bob, backendURL+"/mcp", "bob-shell/2.0.5", "", "")
+	if got := strings.Join(recordedPaths(store, "task-1"), ","); got != "/inference,/mcp" {
+		t.Errorf("task-1 = %s, want the MCP call recorded beside the inference", got)
+	}
+}
+
+// Another program calling an agent's service — curl, agentop — is not the agent talking to
+// itself, and is recorded.
+func TestSelfTraffic_AnotherProgramCallingTheServiceIsRecorded(t *testing.T) {
+	procs := newFakeProcs(fproc(500, 1, opencodeExe), fproc(520, 60, "/usr/bin/curl"))
+	store := session.New(0, 0, 0)
+	defer store.Close()
+	proxyURL, backendURL, _ := newProcessProxy(t, store, procs, func(s *Server) {
+		s.SessionIDHeaders = append(s.SessionIDHeaders, "X-Opencode-Session-Id")
+	})
+	procs.listens(t, backendURL, 500)
+	sendAs(t, procs.clientFor(proxyURL, 500), backendURL+"/zen/v1/chat/completions", "", "X-Opencode-Session-Id", "ses_1")
+	sendAs(t, procs.clientFor(proxyURL, 520), backendURL+"/api/info", "curl/8.7.1", "", "")
+	if n := countPath(store, "/api/info"); n != 1 {
+		t.Errorf("curl's call to the service: %d rows, want 1", n)
+	}
+}

@@ -122,6 +122,9 @@ type Server struct {
 	// process; the condition is a supported chain shape, not an error.
 	bufferedFallbackOnce sync.Once
 
+	// selfTrafficSeen holds the (executable, service) pairs selfTraffic has announced.
+	selfTrafficSeen sync.Map
+
 	// Bridge-health counters. When the TLS bridge is enabled but the client
 	// does not trust its CA, every HTTPS request opens a CONNECT tunnel and
 	// nothing is ever decrypted: the pipeline sees opaque tunnels, every
@@ -332,6 +335,12 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 	var chain []session.Proc
 	if !skipped {
 		chain = s.clientChain(r)
+	}
+
+	// An agent talking to its own service on this host is forwarded the way a skip_hosts
+	// destination is: no pipeline, no row. See selfTraffic.
+	if !skipped && !isBridge && s.selfTraffic(r, chain) {
+		skipped = true
 	}
 
 	// Finisher dispatch runs after every exit path. RunFinish is a
