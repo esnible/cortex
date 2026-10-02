@@ -247,7 +247,7 @@ The bottom-footer rate indicator (`3.2 events/sec`) is a live events-per-second 
 
 Press `/` in Sessions or Events to open a substring filter. Filters apply to:
 
-- **Sessions pane**: session ID substring.
+- **Sessions pane**: session ID, title, or agent substring.
 - **Events pane**: matches across `host`, `method`, `proto`, `A2A parts content`, `LLM completion`, `MCP error message`, caller `subject` / `clientId`.
 
 `Esc` to cancel, `Enter` to commit. Press `/` again and clear with `Esc` to remove the filter.

@@ -307,7 +307,7 @@ func (m *model) rebuildSessionsTable() {
 		// A scope lists only sessions the server names an agent for, and an adopted pending bucket
 		// lives on under the session that adopted it. Other is the exception: a session the server
 		// no longer lists names no agent, which is that row's definition.
-		if (m.filter != "" && !strings.Contains(id, m.filter)) || (scope != "" && scope != otherAgents) || adopted[id] {
+		if !m.sessionMatchesFilter(id, noServedTitle, "") || (scope != "" && scope != otherAgents) || adopted[id] {
 			continue
 		}
 		cached := m.events[id]
@@ -403,7 +403,7 @@ func (m *model) cachedOnlySessionIDs() []string {
 // sessionListed reports whether the sessions table shows s: the filter, and under an agent scope
 // only the sessions of that agent — under Other, every session that names no recognised agent.
 func (m *model) sessionListed(s session.SessionSummary, scope string) bool {
-	if m.filter != "" && !strings.Contains(s.ID, m.filter) {
+	if !m.sessionMatchesFilter(s.ID, s.Title, s.Agent) {
 		return false
 	}
 	switch scope {
@@ -413,6 +413,18 @@ func (m *model) sessionListed(s session.SessionSummary, scope string) bool {
 		return inOtherAgents(s)
 	}
 	return s.Agent == scope
+}
+
+// sessionMatchesFilter reports whether the filter is a case-insensitive substring of the full
+// session id, the agent, or the title the TITLE cell shows (untruncated). Title goes last, being
+// the only one that costs a lookup.
+func (m *model) sessionMatchesFilter(id, served, agent string) bool {
+	if m.filter == "" {
+		return true
+	}
+	q := strings.ToLower(m.filter)
+	has := func(s string) bool { return strings.Contains(strings.ToLower(s), q) }
+	return has(id) || has(agent) || has(m.sessionTitleFor(id, served))
 }
 
 // sessionsListTwoAgents reports whether the listed sessions name two or more agents, which is when

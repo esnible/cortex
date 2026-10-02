@@ -475,6 +475,8 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 		// Snapshot for Esc. Taken here rather than derived on the way out, because by
 		// then the input has already been edited and the original is gone.
 		m.filterBeforeEdit = m.filter
+		// One input serves every pane, so the hint is chosen per pane at open.
+		m.filterInput.Placeholder = filterPlaceholder(m.pane)
 		m.filterInput.Focus()
 		return nil
 
@@ -954,6 +956,17 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 		return cmd
 	}
 	return nil
+}
+
+// filterPlaceholder names what `/` matches on pane p (#867).
+func filterPlaceholder(p paneID) string {
+	switch p {
+	case paneSessions:
+		return "filter on SESSION, TITLE, or AGENT…"
+	case paneEvents:
+		return "PLUGIN, METHOD, etc., filter…"
+	}
+	return "filter…"
 }
 
 // refreshActivePane rebuilds the current pane's component after a filter change.
