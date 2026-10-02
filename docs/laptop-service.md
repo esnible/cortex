@@ -67,14 +67,15 @@ request. Bob, our internal coding agent (not the `bob` demo user), is grouped th
 way, by the `X-Task-Id` it sets, but its buckets are named with a task id rather than a
 session uuid, so one bucket covers however long Bob reuses that task. Note that
 `X-Task-Id` is a generic name: traffic from anything else that sends it will be grouped
-under its value too. Traffic that carries no such header falls back to the previous
-behavior — the most recently active session, or the `default` bucket. In practice
+under its value too. Traffic that carries no such header is filed by the process that
+sent it (see below), and where that has no answer falls back to the previous behavior —
+the most recently active session, or the `default` bucket. In practice
 `default` collects Claude Code's own connectivity probe (`HEAD /api/hello`) and anything
 else that egresses through the proxy without announcing a session.
 
 Some limitations worth knowing:
 
-- **Header-less requests are attributed by agent, not by session.** MCP tool calls,
+- **Where the process lookup has no answer, header-less requests go by agent.** MCP tool calls,
   Claude Code's WebFetch, and Bob's startup probes and task-classifier completions carry
   no session header. Filed by timing alone — under whichever session was most recently
   active — they are right when sessions take turns and wrong when two agents run side by
@@ -96,13 +97,16 @@ Some limitations worth knowing:
   kernel which process opened each connection, and files a request with no session
   header under the session of that process or of its nearest ancestor that named one —
   so `gh`, `git` and `curl` run by an agent's shell, its `WebFetch` and its MCP calls land
-  in the agent's session, including opaque tunnels that cannot be decrypted, and a process
-  of no agent (your own terminal's `curl`) lands in `default` while an agent is active. An
+  in the agent's session, including opaque tunnels that cannot be decrypted. A process of
+  no agent (your own terminal's `curl`) lands in `default` while any agent has named a
+  session in the last five minutes, and otherwise in the most recently active session. An
   agent talking to its own service on this machine — OpenCode's TUI and its background
-  service — is forwarded without being recorded; the first time, Cortex logs which. It is
-  `session.process_attribution`: `auto` (the default) means on for this loopback-only
-  install and off in a cluster; `on` and `off` force it. Where the lookup is unavailable it
-  logs one warning at startup and client affinity applies. Not hot-reloadable.
+  service — is forwarded without being recorded once that service has named a session;
+  until then it is recorded, and the first time it is skipped Cortex logs which program
+  and service. It is `session.process_attribution`: `auto` (the default) means on for this
+  loopback-only install and off in a cluster; `on` and `off` force it. Where the lookup is
+  unavailable it logs one warning at startup and client affinity applies. Not
+  hot-reloadable.
 - **Agents other than Claude Code and Bob need to be named.** Set `session.id_headers`
   to a list of headers to consult in precedence order if you run a client with its own
   session header; naming any replaces the built-in list rather than adding to it. An

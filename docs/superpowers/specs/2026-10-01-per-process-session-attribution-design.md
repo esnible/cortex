@@ -67,7 +67,8 @@ Each recorded row takes the first answer that applies:
      claimer for itself and its descendants, so a `claude -p` started from a Claude
      session's shell does not inherit its parent's session.
    - **No claimer yet, but some process in the chain has sent a known coding agent's
-     User-Agent:** a pending bucket for that agent's **root** — the topmost such process —
+     User-Agent:** a pending bucket for that agent's **root** — the topmost process of an
+     unbroken run of that agent's processes —
      adopted by the first session any process under that root claims.
    - **No agent in the chain:** `default` while some agent has claimed a session within
      the last 5 minutes, else `ActiveSession()`. Your terminal's `curl` is no agent's.
@@ -171,9 +172,10 @@ the client process `(PID, start)` as well as against the agent name `Claim` uses
 Per process the store keeps the sessions it has claimed, each with when it was last
 active; a descendant's binding; and, for pending buckets, the agent root. Nothing asks the
 kernel whether a process exited: a process is keyed by PID and start time, so a reused PID
-is a new process, and the table is pruned instead — a process not seen for 24 hours is
-dropped, and past 4,096 entries the least recently seen quarter goes, processes that never
-named a session first. A claim on a session that has left the store is forgotten after a
+is a new process, and the table is pruned instead: once it reaches 4,096 entries,
+processes not heard from for 24 hours are dropped, and if that frees nothing, the least
+recently seen quarter goes, processes that never named a session first. A claim on a
+session that has left the store is forgotten after a
 minute. The existing `adopted` map — never pruned before — loses a session's records when
 that session is evicted. A pending bucket is per agent process — `pending:<agent>@<pid>.<start>`
 — so two windows of one agent starting at once do not share one; client affinity's agent-wide
