@@ -4,7 +4,7 @@
 //
 // It answers three questions — who holds the client end of a connection, who listens on
 // an address, and who a process's parents are — from the kernel's own tables: on macOS
-// the net.inet.tcp.pcblist_n sysctl, kinfo_proc and kern.procargs2; on Linux /proc. Pure
+// the net.inet.tcp.pcblist_n sysctl and kinfo_proc; on Linux /proc. Pure
 // Go, no cgo, no root. It sees only what the caller may inspect: on Linux another user's
 // process, or one in another PID namespace, is not found.
 //
@@ -31,8 +31,7 @@ type Proc struct {
 	// it must not be compared across Resolvers or persisted.
 	Start time.Time
 	// Exe is the absolute, symlink-resolved path of the process's executable, or "" when
-	// it is not known: the caller may not read it, or — on macOS, where only the path
-	// handed to execve is available — the process was started through a relative path.
+	// it is not known: the caller may not read it.
 	Exe string
 }
 

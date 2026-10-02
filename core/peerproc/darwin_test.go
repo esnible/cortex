@@ -3,11 +3,18 @@
 package peerproc
 
 import (
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"net/netip"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
+	"unsafe"
+
+	"golang.org/x/sys/unix"
 )
 
 // fakePCB is one TCP pcb as pcbBuffer writes it: an xinpcb_n then its xsocket_n.
@@ -16,6 +23,7 @@ type fakePCB struct {
 	laddr, faddr    netip.AddrPort
 	pid             int32
 	opts            uint32 // so_options
+	state           uint16 // so_state
 	vflag           byte
 	inpLen, sockLen int
 }
@@ -63,6 +71,7 @@ func pcbBufferWithCount(count uint32, pcbs ...fakePCB) []byte {
 		le.PutUint32(sock, uint32(sl))
 		le.PutUint32(sock[4:], xsoSocket)
 		le.PutUint32(sock[soOptions:], p.opts)
+		le.PutUint16(sock[soState:], p.state)
 		le.PutUint32(sock[soLastPID:], uint32(p.pid))
 		rcv := make([]byte, 32)
 		le.PutUint32(rcv, 32)
@@ -160,6 +169,12 @@ func listening(addr string, pid int32, vflag byte) fakePCB {
 
 const dualStack = inpIPv4 | inpIPv6
 
+// unheld is p after its process has closed it: still in the table, with the pid that held it.
+func unheld(p fakePCB) fakePCB {
+	p.state |= ssNoFDRef
+	return p
+}
+
 // pickListenerCases list pcbs in buffer order, which is the kernel's: newest first.
 // want 0 is ErrNotFound.
 var pickListenerCases = []struct {
@@ -212,6 +227,8 @@ var pickListenerCases = []struct {
 		[]fakePCB{listening("127.0.0.1:80", 0, 0), listening("0.0.0.0:80", 1, 0)}, "127.0.0.1:80", 1},
 	{"a listener whose pid is 0 is not found",
 		[]fakePCB{listening("127.0.0.1:80", 0, 0)}, "127.0.0.1:80", 0},
+	{"a listener no process holds is passed over",
+		[]fakePCB{unheld(listening("127.0.0.1:80", 2, 0)), listening("0.0.0.0:80", 1, 0)}, "127.0.0.1:80", 1},
 	{"nothing on the port",
 		[]fakePCB{listening("127.0.0.1:81", 2, 0), listening("0.0.0.0:81", 1, 0)}, "127.0.0.1:80", 0},
 }
@@ -234,5 +251,101 @@ func TestPickListener_PassesOnALayoutError(t *testing.T) {
 	buf := pcbBuffer(fakePCB{laddr: netip.MustParseAddrPort("127.0.0.1:80"), faddr: netip.MustParseAddrPort("0.0.0.0:0"), pid: 1, inpLen: inpcbLen + 8})
 	if _, err := pickListener(buf, netip.MustParseAddrPort("127.0.0.1:80")); err == nil || errors.Is(err, ErrNotFound) {
 		t.Errorf("err = %v, want walkPCBs's layout error", err)
+	}
+}
+
+// connected is the client end of 127.0.0.1:5000 to 127.0.0.1:80, held by pid.
+func connected(pid int32) fakePCB {
+	return fakePCB{laddr: netip.MustParseAddrPort("127.0.0.1:5000"), faddr: netip.MustParseAddrPort("127.0.0.1:80"), pid: pid, opts: 0x8}
+}
+
+// connPIDCases list pcbs in buffer order. want 0 is ErrNotFound.
+var connPIDCases = []struct {
+	name string
+	pcbs []fakePCB
+	want int32
+}{
+	{"a connection its process holds", []fakePCB{connected(5)}, 5},
+	{"a connection its process has closed", []fakePCB{unheld(connected(5))}, 0},
+	{"a closed entry does not hide a held one", []fakePCB{unheld(connected(5)), connected(6)}, 6},
+	{"a connection whose pid is 0", []fakePCB{connected(0)}, 0},
+}
+
+func TestConnPID(t *testing.T) {
+	client, server := netip.MustParseAddrPort("127.0.0.1:5000"), netip.MustParseAddrPort("127.0.0.1:80")
+	for _, tc := range connPIDCases {
+		t.Run(tc.name, func(t *testing.T) {
+			pid, err := connPID(pcbBuffer(tc.pcbs...), client, server)
+			switch {
+			case tc.want == 0 && !errors.Is(err, ErrNotFound):
+				t.Errorf("connPID = %d, %v; want ErrNotFound", pid, err)
+			case tc.want != 0 && (err != nil || pid != tc.want):
+				t.Errorf("connPID = %d, %v; want %d", pid, err, tc.want)
+			}
+		})
+	}
+}
+
+// With PEERPROC_TEST_EXEC_PATH set, the child overwrites the exec path the kernel copied
+// into its memory at exec with that value, before TestMain runs. The kernel places it just
+// before argv[0]'s string, as "executable_path=" and the path, NUL-terminated and
+// NUL-padded; a child that does not find os.Args[0] there leaves it alone.
+func init() {
+	fake := os.Getenv("PEERPROC_TEST_EXEC_PATH")
+	if fake == "" {
+		return
+	}
+	arg0 := unsafe.Pointer(unsafe.StringData(os.Args[0]))
+	at := func(i int) *byte { return (*byte)(unsafe.Add(arg0, i)) }
+	end := -1
+	for end > -64 && *at(end) == 0 {
+		end--
+	}
+	start := end
+	for start > end-4096 && *at(start - 1) != 0 {
+		start--
+	}
+	path := bytes.TrimPrefix(unsafe.Slice(at(start), end-start+1), []byte("executable_path="))
+	if string(path) == os.Args[0] && len(fake) <= len(path) {
+		clear(path)
+		copy(path, fake)
+	}
+}
+
+// Exe is not something a process can say about itself. kern.procargs2 reads the exec
+// path back from the process's own memory, where the process can rewrite it.
+func TestExe_IgnoresWhatTheProcessWritesOverItsExecPath(t *testing.T) {
+	r := newResolver(t)
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	real, err := filepath.EvalSymlinks(self)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln := listen(t, "tcp", "127.0.0.1:0")
+	cmd := exec.Command(self)
+	cmd.Env = append(os.Environ(), "PEERPROC_TEST_DIAL="+ln.Addr().String(), "PEERPROC_TEST_EXEC_PATH=/usr/bin/true")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
+	client, server := ends(acceptOne(t, ln))
+
+	// The child dials only after its init has run, so the rewrite has happened by now.
+	b, err := unix.SysctlRaw("kern.procargs2", cmd.Process.Pid)
+	if err != nil || len(b) < 5 {
+		t.Fatalf("kern.procargs2: %d bytes, %v", len(b), err)
+	}
+	if said, _, _ := bytes.Cut(b[4:], []byte{0}); string(said) != "/usr/bin/true" {
+		t.Fatalf("the child's exec path reads %q after its rewrite, want \"/usr/bin/true\"", said)
+	}
+	p, err := r.ConnOwner(client, server)
+	if err != nil || p.PID != int32(cmd.Process.Pid) {
+		t.Fatalf("ConnOwner = %+v, %v; want the child %d", p, err, cmd.Process.Pid)
+	}
+	if p.Exe != real {
+		t.Errorf("Exe %q, want %q", p.Exe, real)
 	}
 }

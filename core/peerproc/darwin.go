@@ -7,8 +7,8 @@ import (
 	"encoding/binary"
 	"fmt"
 	"net/netip"
-	"path/filepath"
 	"time"
+	"unsafe"
 
 	"golang.org/x/sys/unix"
 )
@@ -35,6 +35,7 @@ const (
 	inpLaddr = 64
 
 	soOptions = 20 // u_int32: the socket's SO_* options
+	soState   = 26 // short: the socket's SS_* state
 	soLastPID = 68 // pid_t: the last process to use the socket
 
 	// soAcceptConn is SO_ACCEPTCONN, which listen(2) sets. A socket bound to a port but
@@ -42,6 +43,12 @@ const (
 	// apart. On the live kernel so_options reads 0x6 on a listener, 0x8 on a client
 	// socket, 0xc on an accepted one and 0 on a socket that is only bound.
 	soAcceptConn = 0x2
+
+	// ssNoFDRef is SS_NOFDREF: no file descriptor refers to the socket. A connection its
+	// process has closed stays in the table a while with so_last_pid unchanged. On the live
+	// kernel so_state reads 0x102 on an open client socket, 0x13b once its process has
+	// closed it and 0x2131 once the server end has closed too.
+	ssNoFDRef = 0x1
 
 	// inp_vflag. A listener on [::] without IPV6_V6ONLY — Go's default for "tcp" with no
 	// host — carries both.
@@ -56,7 +63,7 @@ func newPlatform() (Resolver, error) { return darwin{}, nil }
 // pcb is what this package reads from one xinpcb_n and its xsocket_n.
 type pcb struct {
 	laddr, faddr netip.AddrPort
-	pid          int32
+	pid          int32 // 0 when no process holds the socket, or none was recorded
 	vflag        byte
 	wildcard     bool // the local address is all zero: 0.0.0.0 or [::]
 	listening    bool // SO_ACCEPTCONN
@@ -98,7 +105,9 @@ func walkPCBs(buf []byte, fn func(pcb) bool) error {
 				return fmt.Errorf("pcblist_n: xsocket_n is %d bytes, want %d", l, socketLen)
 			}
 			if cur != nil {
-				cur.pid = int32(le.Uint32(rec[soLastPID:]))
+				if le.Uint16(rec[soState:])&ssNoFDRef == 0 {
+					cur.pid = int32(le.Uint32(rec[soLastPID:]))
+				}
 				cur.listening = le.Uint32(rec[soOptions:])&soAcceptConn != 0
 				if fn(*cur) {
 					return nil
@@ -179,15 +188,13 @@ func pickListener(buf []byte, addr netip.AddrPort) (int32, error) {
 	return 0, ErrNotFound
 }
 
-// findPID walks the live table for the first pcb match accepts.
-func findPID(match func(pcb) bool) (int32, error) {
-	buf, err := unix.SysctlRaw("net.inet.tcp.pcblist_n")
-	if err != nil {
-		return 0, err
-	}
+// connPID is the pid holding the client end of the connection between client and server,
+// from a pcblist_n buffer. ErrNotFound when no process holds it.
+func connPID(buf []byte, client, server netip.AddrPort) (int32, error) {
+	client, server = unmapAddrPort(client), unmapAddrPort(server)
 	var pid int32
-	err = walkPCBs(buf, func(p pcb) bool {
-		if match(p) {
+	err := walkPCBs(buf, func(p pcb) bool {
+		if p.pid > 0 && p.laddr == client && p.faddr == server {
 			pid = p.pid
 			return true
 		}
@@ -196,15 +203,18 @@ func findPID(match func(pcb) bool) (int32, error) {
 	if err != nil {
 		return 0, err
 	}
-	if pid <= 0 {
+	if pid == 0 {
 		return 0, ErrNotFound
 	}
 	return pid, nil
 }
 
 func (darwin) ConnOwner(client, server netip.AddrPort, _ ...int32) (Proc, error) {
-	client, server = unmapAddrPort(client), unmapAddrPort(server)
-	pid, err := findPID(func(p pcb) bool { return p.laddr == client && p.faddr == server })
+	buf, err := unix.SysctlRaw("net.inet.tcp.pcblist_n")
+	if err != nil {
+		return Proc{}, err
+	}
+	pid, err := connPID(buf, client, server)
 	if err != nil {
 		return Proc{}, err
 	}
@@ -240,28 +250,24 @@ func procInfo(pid int32) (Proc, error) {
 	}, nil
 }
 
-// exePath reads kern.procargs2, which begins with argc and then the path the process
-// was executed from, NUL-terminated. "" when the caller may not read it — another
-// user's process, or one that has exited.
+// The proc_info call and flavor that read the path of a process's executable.
+const (
+	procInfoCallPIDInfo    = 2    // PROC_INFO_CALL_PIDINFO
+	procPIDPathInfo        = 11   // PROC_PIDPATHINFO
+	procPIDPathInfoMaxSize = 4096 // PROC_PIDPATHINFO_MAXSIZE
+)
+
+// exePath is the path of the file the process is executing, as the kernel records it.
+// "" when the kernel does not give one, as for a process that has exited.
 func exePath(pid int32) string {
-	b, err := unix.SysctlRaw("kern.procargs2", int(pid))
-	if err != nil || len(b) < 5 {
+	buf := make([]byte, procPIDPathInfoMaxSize)
+	_, _, errno := unix.Syscall6(unix.SYS_PROC_INFO, procInfoCallPIDInfo, uintptr(pid), procPIDPathInfo, 0,
+		uintptr(unsafe.Pointer(&buf[0])), uintptr(len(buf)))
+	if errno != 0 {
 		return ""
 	}
-	path := b[4:]
-	if i := bytes.IndexByte(path, 0); i >= 0 {
-		path = path[:i]
+	if i := bytes.IndexByte(buf, 0); i >= 0 {
+		buf = buf[:i]
 	}
-	// procargs2 holds what the caller passed to execve, unresolved. A relative path cannot
-	// be resolved without that process's working directory at the time, so it is reported
-	// as unknown rather than compared as text; an absolute one is resolved through its
-	// symlinks, which is what Linux's /proc/<pid>/exe already gives.
-	p := string(path)
-	if !filepath.IsAbs(p) {
-		return ""
-	}
-	if r, err := filepath.EvalSymlinks(p); err == nil {
-		return r
-	}
-	return p
+	return string(buf)
 }

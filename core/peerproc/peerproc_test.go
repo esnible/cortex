@@ -223,6 +223,29 @@ func TestConnOwner_UnknownConnectionIsNotFound(t *testing.T) {
 	}
 }
 
+// A connection whose client end has been closed is held by no process, though the kernel
+// keeps it in its table a while.
+func TestConnOwner_ClosedConnectionIsNotFound(t *testing.T) {
+	r := newResolver(t)
+	for name, closeServer := range map[string]bool{"client closed": false, "both ends closed": true} {
+		t.Run(name, func(t *testing.T) {
+			ln := listen(t, "tcp", "127.0.0.1:0")
+			c := dial(t, "tcp", ln.Addr().String())
+			s := acceptOne(t, ln)
+			client, server := ends(s)
+			_ = c.Close()
+			if closeServer {
+				_, _ = io.Copy(io.Discard, s)
+				_ = s.Close()
+			}
+
+			if p, err := r.ConnOwner(client, server); !errors.Is(err, ErrNotFound) {
+				t.Errorf("ConnOwner = %+v, %v; want ErrNotFound", p, err)
+			}
+		})
+	}
+}
+
 func TestListenerOwner_UnknownPortIsNotFound(t *testing.T) {
 	r := newResolver(t)
 	ln := listen(t, "tcp", "127.0.0.1:0")
@@ -324,17 +347,35 @@ func TestConnOwner_ExeIsResolvedOrUnknown(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	link := filepath.Join(t.TempDir(), "via-link")
+	dir := t.TempDir()
+	link := filepath.Join(dir, "via-link")
 	if err := os.Symlink(self, link); err != nil {
 		t.Fatal(err)
 	}
+	moved, other := filepath.Join(dir, "moved-link"), filepath.Join(dir, "other")
+	if err := os.Symlink(self, moved); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(other, nil, 0o755); err != nil {
+		t.Fatal(err)
+	}
 	cases := map[string]struct {
-		cmd     func() *exec.Cmd
-		allowed func(exe string) bool
+		cmd   func() *exec.Cmd
+		after func(t *testing.T) // runs once the child has dialled
 	}{
 		"through a symlink": {
-			cmd:     func() *exec.Cmd { return exec.Command(link) },
-			allowed: func(exe string) bool { return exe == real },
+			cmd: func() *exec.Cmd { return exec.Command(link) },
+		},
+		"through a symlink retargeted after it started": {
+			cmd: func() *exec.Cmd { return exec.Command(moved) },
+			after: func(t *testing.T) {
+				if err := os.Remove(moved); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(other, moved); err != nil {
+					t.Fatal(err)
+				}
+			},
 		},
 		"by a relative path": {
 			cmd: func() *exec.Cmd {
@@ -342,7 +383,6 @@ func TestConnOwner_ExeIsResolvedOrUnknown(t *testing.T) {
 				c.Dir = filepath.Dir(self)
 				return c
 			},
-			allowed: func(exe string) bool { return exe == "" || exe == real },
 		},
 	}
 	for name, tc := range cases {
@@ -355,13 +395,16 @@ func TestConnOwner_ExeIsResolvedOrUnknown(t *testing.T) {
 			}
 			t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
 			client, server := ends(acceptOne(t, ln))
+			if tc.after != nil {
+				tc.after(t)
+			}
 
 			p, err := r.ConnOwner(client, server)
 			if err != nil || p.PID != int32(cmd.Process.Pid) {
 				t.Fatalf("ConnOwner = %+v, %v; want the child %d", p, err, cmd.Process.Pid)
 			}
-			if !tc.allowed(p.Exe) {
-				t.Errorf("Exe %q; want %q (or \"\" where the platform cannot know)", p.Exe, real)
+			if p.Exe != real {
+				t.Errorf("Exe %q; want %q", p.Exe, real)
 			}
 		})
 	}
