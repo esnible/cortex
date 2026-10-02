@@ -20,8 +20,10 @@ import (
 
 // fakeSupervisor stubs launchctl, systemctl, loginctl and lsof with one shared bit of
 // state: bootstrap/restart loads the job, bootout/disable unloads it, and print /
-// is-active report it. It returns the path of that state file, which exists exactly
-// while the fake job is loaded, so newServiceSceneServing can follow it.
+// is-active / is-enabled report it. It returns the path of that state file, which
+// exists exactly while the fake job is loaded, so newServiceSceneServing can follow
+// it. launchctl disable and enable add and remove <that path>.disabled, as launchd's
+// per-user disabled database records them.
 //
 // The four stubs go through installStub, whose reachability check is load-bearing here:
 // the label is the REAL io.rossoctl.cortex, so a test that fell through to the real
@@ -40,12 +42,15 @@ case "$1" in
   bootstrap) : > '`+loaded+`' ;;
   bootout) if [ -f '`+loaded+`' ]; then rm -f '`+loaded+`'; exit 0; fi
            echo 'Boot-out failed: 3: No such process' >&2; exit 3 ;;
+  enable) rm -f '`+loaded+`.disabled' ;;
+  disable) : > '`+loaded+`.disabled' ;;
 esac
 exit 0
 `)
 	installStub(t, "systemctl", `#!/bin/sh
 case "$*" in
   *is-active*) if [ -f '`+loaded+`' ]; then echo active; exit 0; fi; echo inactive; exit 3 ;;
+  *is-enabled*) if [ -f '`+loaded+`' ]; then echo enabled; exit 0; fi; echo disabled; exit 1 ;;
   *restart*) : > '`+loaded+`' ;;
   *disable*) rm -f '`+loaded+`' ;;
 esac

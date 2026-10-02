@@ -345,3 +345,19 @@ func TestMultiLineErrorsKeepTheirIndent(t *testing.T) {
 		t.Errorf("an error's second line is printed flush left:\n%s", out)
 	}
 }
+
+func TestTildeTextShortensOnlyWholeHomePaths(t *testing.T) {
+	env := &setupEnv{home: "/Users/al"}
+	for in, want := range map[string]string{
+		"open /Users/al/.cortex/ca.pem: denied": "open ~/.cortex/ca.pem: denied",
+		"/Users/al":                             "~",
+		"see '/Users/al/x' and /Users/al/y":     "see '~/x' and ~/y",
+		"/Users/alice/.cortex":                  "/Users/alice/.cortex",
+		"/srv/Users/al/x":                       "/srv/Users/al/x",
+		"nothing here":                          "nothing here",
+	} {
+		if got := env.tildeText(in); got != want {
+			t.Errorf("tildeText(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

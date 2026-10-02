@@ -2,11 +2,13 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -417,4 +419,80 @@ exit 0
 			t.Errorf("our own background proxy read as supervised: %+v advice=%+v %v", p, p.advice, prob)
 		}
 	})
+}
+
+// serviceLoaded asks the supervisor, not the unit file: the service step's undo
+// stops the job again only when it was not loaded before.
+func TestServiceLoadedFollowsTheSupervisor(t *testing.T) {
+	loaded := fakeSupervisor(t)
+	if serviceLoaded(runtimeGOOS()) {
+		t.Error("a job the supervisor does not have read as loaded")
+	}
+	if err := os.WriteFile(loaded, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !serviceLoaded(runtimeGOOS()) {
+		t.Error("a loaded job read as not loaded")
+	}
+}
+
+// A failed start shows what that start wrote to the log, not an older run's
+// lines: from where the log ended before it, the last logTailLines, the first
+// labelled proxy.log in the checklist's label column.
+func TestLogTailIsWhatTheStartWrote(t *testing.T) {
+	env := newTestSetupEnv(t)
+	log := filepath.Join(env.home, "proxy.log")
+	if got := logTail(env, log, markLog(log)); got != nil {
+		t.Errorf("no log: %q", got)
+	}
+	if err := os.WriteFile(log, []byte("old run\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m := markLog(log)
+	if got := logTail(env, log, m); got != nil {
+		t.Errorf("nothing written since the mark: %q", got)
+	}
+	f, err := os.OpenFile(log, os.O_APPEND|os.O_WRONLY, 0o600) //nolint:gosec
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = f.WriteString("one\n\ntwo " + env.home + "/x\nthree\nfour\nfive\nsix\n")
+	_ = f.Close()
+	want := []string{"proxy.log    two ~/x", "             three", "             four", "             five", "             six"}
+	if got := logTail(env, log, m); !slices.Equal(got, want) {
+		t.Errorf("tail = %q, want %q", got, want)
+	}
+	// Rotated: runServiceInstall renames a long log away, so the start writes a new one.
+	if err := os.Rename(log, log+".1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(log, []byte("fresh\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := logTail(env, log, m); !slices.Equal(got, []string{"proxy.log    fresh"}) {
+		t.Errorf("after a rotation, tail = %q", got)
+	}
+}
+
+// An unsupervised proxy that exits at once shows its own log lines too.
+func TestServiceStepUnsupervisedFailureShowsTheLog(t *testing.T) {
+	fakeNoSupervisor(t)
+	env := serviceEnv(t, func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusServiceUnavailable) })
+	if _, prob := (serviceStep{}).plan(env); prob != nil || !env.unsupervised {
+		t.Fatalf("plan: %v unsupervised=%v", prob, env.unsupervised)
+	}
+	log := filepath.Join(env.cortexDir, "proxy.log")
+	if err := os.WriteFile(log, []byte("an older run\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeExe(t, filepath.Join(env.binDir, "cortex"), "#!/bin/sh\necho \"cortex: open $HOME/.cortex/ca/ca.pem: permission denied\" >&2\nexit 1\n")
+	_, _, err := serviceStep{}.apply(env, nil)
+	var se stepError
+	if !errors.As(err, &se) {
+		t.Fatalf("err = %v", err)
+	}
+	want := []string{"see ~/.cortex/proxy.log", "proxy.log    cortex: open ~/.cortex/ca/ca.pem: permission denied"}
+	if se.reason != "the proxy exited immediately" || !slices.Equal(se.detail, want) {
+		t.Errorf("failure = %q %q, want detail %q", se.reason, se.detail, want)
+	}
 }

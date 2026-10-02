@@ -52,6 +52,7 @@ type setupEnv struct {
 	onSuccess    []func() // run once every step has applied
 
 	configPinsChanged bool // the config step added listener pins, so the service must restart
+	startedBackground bool // the service step started a background proxy, so the ending says how to stop it
 }
 
 func (e *setupEnv) configPath() string  { return filepath.Join(e.cortexDir, "config.yaml") }
@@ -64,6 +65,37 @@ func (e *setupEnv) tilde(p string) string {
 		return p
 	}
 	return filepath.Join("~", rel)
+}
+
+// tildeText is s with each path under HOME shown as ~/…, for the lines setup
+// passes on from elsewhere: a log, or service install's own messages. HOME counts
+// only as a whole path, so /Users/al does not shorten /Users/alice.
+func (e *setupEnv) tildeText(s string) string {
+	if e.home == "" || e.home == "/" {
+		return s
+	}
+	var b strings.Builder
+	for {
+		i := strings.Index(s, e.home)
+		if i < 0 {
+			b.WriteString(s)
+			return b.String()
+		}
+		j := i + len(e.home)
+		whole := (i == 0 || !isPathByte(s[i-1])) && (j == len(s) || s[j] == '/' || !isPathByte(s[j]))
+		b.WriteString(s[:i])
+		if whole {
+			b.WriteString("~")
+		} else {
+			b.WriteString(e.home)
+		}
+		s = s[j:]
+	}
+}
+
+func isPathByte(c byte) bool {
+	return c == '/' || c == '.' || c == '_' || c == '-' ||
+		'0' <= c && c <= '9' || 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z'
 }
 
 // stepPlan is what one step would do, worked out before anything changes.

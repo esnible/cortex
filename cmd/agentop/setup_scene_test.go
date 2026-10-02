@@ -30,8 +30,9 @@ func stageDir(t *testing.T, cortexScript string) string {
 }
 
 // cortexStub is a stand-in cortex for setup's tests: --version, the built-in
-// config writer (with a health_addr the test serves), and a long-running
-// --supervise for the unsupervised path. Its config is deliberately unpinned, as
+// config writer (with a health_addr the test serves), a long-running
+// --supervise for the unsupervised path, and --fake-start, the line a
+// runningCortex load logs. Its config is deliberately unpinned, as
 // an old built-in one would be, so the config step's migrations have work to do.
 func cortexStub(healthAddr string) string {
 	return `#!/bin/sh
@@ -54,6 +55,7 @@ EOF
       chmod 600 "$HOME/.cortex/config.yaml"
     fi ;;
   "--local --supervise") exec sleep 300 ;;
+  --fake-start) echo "cortex stub: listening on 127.0.0.1:47600" ;;
   *) echo "cortex stub: unexpected $*" >&2; exit 2 ;;
 esac
 `

@@ -1,11 +1,13 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"errors"
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
@@ -152,6 +154,21 @@ func supervisedHolder(pidFile string, pid int) bool {
 	return !running
 }
 
+// serviceLoaded reports whether the supervisor has our job: in launchd's domain,
+// running or not, or active or enabled under systemd. `agentop service stop`
+// leaves neither; a crash-looping job is either. Unlike supervisorRunning it asks
+// once, rather than waiting for the job to come up.
+func serviceLoaded(goos string) bool {
+	if goos == "darwin" {
+		target := "gui/" + strconv.Itoa(os.Getuid()) + "/" + launchdLabel
+		return exec.Command("launchctl", "print", target).Run() == nil
+	}
+	if exec.Command("systemctl", "--user", "is-active", "--quiet", systemdUnit).Run() == nil {
+		return true
+	}
+	return exec.Command("systemctl", "--user", "is-enabled", "--quiet", systemdUnit).Run() == nil
+}
+
 // parentPID is ps's ppid for pid, and whether ps answered.
 func parentPID(pid int) (int, bool) {
 	out, err := exec.Command("ps", "-o", "ppid=", "-p", strconv.Itoa(pid)).Output()
@@ -178,13 +195,24 @@ func (s serviceStep) apply(env *setupEnv, act *checklist.Running) (string, undo,
 	if err != nil {
 		return "", undo{}, err
 	}
+	// A unit on disk whose job the supervisor does not have is what `agentop service
+	// stop` leaves. The install below loads the job, so the undo stops it again; the
+	// stop needs no binary, as the binaries undo runs after this one.
+	stopped := unitSnap.existed && !env.priorService && !serviceLoaded(env.goos)
 	u := undo{label: "the service", fn: func() error {
 		if !unitSnap.existed {
 			_ = unloadService(env.goos, sp) // best effort: a failed load may have left nothing
 		}
-		return errors.Join(unitSnap.restore(), stampSnap.restore())
+		err := errors.Join(unitSnap.restore(), stampSnap.restore())
+		if stopped {
+			err = errors.Join(err, controlService(env.goos, "stop", sp, io.Discard))
+		}
+		return err
 	}, manual: "agentop service uninstall"}
-	if unitSnap.existed {
+	switch {
+	case stopped:
+		u.manual = "agentop service stop"
+	case unitSnap.existed:
 		u.manual = "agentop service install --restart"
 	}
 	if env.priorService {
@@ -206,10 +234,23 @@ func (s serviceStep) apply(env *setupEnv, act *checklist.Running) (string, undo,
 	// The config step ran the pins migration, so runServiceInstall's own finds
 	// nothing to do and would skip the restart that puts the new pins live.
 	restart := env.opts.restart || env.configPinsChanged
+	mark := markLog(sp.logFile)
 	res := runServiceInstall(sp, adoptablePID(sp), restart, false, &out, &errb)
 	if res.exit != 0 {
+		// Read now, before the rollback brings the previous Cortex back to write
+		// after them: these are the new version's lines.
 		reason, detail := lastAgentopError(errb.String())
-		return "", u, stepError{reason: reason, detail: detail}
+		for i, d := range detail {
+			if d == "Last log lines:" { // runServiceInstall's own tail, of the whole log
+				detail = detail[:i]
+				break
+			}
+		}
+		for i := range detail {
+			detail[i] = env.tildeText(detail[i])
+		}
+		detail = append(detail, logTail(env, sp.logFile, mark)...)
+		return "", u, stepError{reason: env.tildeText(reason), detail: detail}
 	}
 	detail := supervisorName(env.goos)
 	switch {
@@ -237,7 +278,15 @@ func (serviceStep) applyUnsupervised(env *setupEnv) (string, undo, error) {
 			return err
 		}
 	}
+	logPath := filepath.Join(env.cortexDir, "proxy.log")
+	mark := markLog(logPath)
 	pid, healthy, err := startUnsupervised(bin, env.cortexDir, health)
+	var se stepError
+	if errors.As(err, &se) {
+		// The proxy exited: show what it wrote, as a supervised start's failure does.
+		se.detail = append([]string{"see " + env.tilde(logPath)}, logTail(env, logPath, mark)...)
+		err = se
+	}
 	u := undo{label: "the background proxy", fn: func() error {
 		if alive(pid) {
 			if err := stopPID(pid); err != nil {
@@ -249,10 +298,66 @@ func (serviceStep) applyUnsupervised(env *setupEnv) (string, undo, error) {
 	if err != nil {
 		return "", u, err
 	}
+	env.startedBackground = true
 	if healthy {
 		return "in the background · healthy", u, nil
 	}
 	return "in the background · not answering yet; see " + env.tilde(filepath.Join(env.cortexDir, "proxy.log")), u, nil
+}
+
+// logTailLines caps the proxy.log rows under a failed start.
+const logTailLines = 5
+
+// logMark is where the proxy log ended before a start, so that a failure shows
+// what the start wrote rather than an older run's lines.
+type logMark struct {
+	fi   os.FileInfo // nil when there was no log
+	size int64
+}
+
+func markLog(path string) logMark {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return logMark{}
+	}
+	return logMark{fi: fi, size: fi.Size()}
+}
+
+// logTail is the last logTailLines non-blank lines the log at path gained since
+// m, as checklist detail rows: the first labelled proxy.log in the label column,
+// HOME shown as ~. A log rotated or truncated since m is read whole. It is nil
+// when the start wrote nothing or there is no log.
+func logTail(env *setupEnv, path string, m logMark) []string {
+	f, err := os.Open(path) //nolint:gosec // the service's own log
+	if err != nil {
+		return nil
+	}
+	defer func() { _ = f.Close() }()
+	if fi, err := f.Stat(); err == nil && m.fi != nil && os.SameFile(fi, m.fi) && fi.Size() >= m.size {
+		if _, err := f.Seek(m.size, io.SeekStart); err != nil {
+			return nil
+		}
+	}
+	var ring []string
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+	for sc.Scan() {
+		if l := strings.TrimRight(sc.Text(), " \t\r"); strings.TrimSpace(l) != "" {
+			ring = append(ring, l)
+			if len(ring) > logTailLines {
+				ring = ring[1:]
+			}
+		}
+	}
+	var rows []string
+	for i, l := range ring {
+		label := "" // the checklist's label column is 12 wide
+		if i == 0 {
+			label = "proxy.log"
+		}
+		rows = append(rows, fmt.Sprintf("%-12s %s", label, env.tildeText(l)))
+	}
+	return rows
 }
 
 // lastAgentopError picks runServiceInstall's failure out of what it wrote to
