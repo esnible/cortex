@@ -604,9 +604,9 @@ overwrite a value someone else set, such as a corporate proxy, and names the
 Cortex's own, such as a proxy at an older Cortex address. The first run records
 the nine in `~/.cortex/opencode-state.json`, counting Cortex's values as absent,
 and `disable` removes them rather than putting an old Cortex address back.
-Without that record, `disable` removes only Cortex's values, and names any other
-value it leaves. Declined, or with no terminal to ask on, both write nothing and
-exit **3**. `--yes` skips the question, `--config PATH` reads another Cortex
+`disable` changes only Cortex's values, whatever the record says: one set some
+other way, even after `enable`, is left alone and named. Declined, or with no
+terminal to ask on, both write nothing and exit **3**. `--yes` skips the question, `--config PATH` reads another Cortex
 config, and `--opencode BIN` names the CLI when it is neither on `PATH` nor in
 `~/.opencode/bin`.
 

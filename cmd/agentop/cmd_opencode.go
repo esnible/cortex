@@ -87,8 +87,9 @@ value someone else set and leaves every other variable alone; the only values it
 replaces are Cortex's own, such as a proxy at an older Cortex address. Its first
 run records the nine in ~/.cortex/opencode-state.json, counting Cortex's values as
 absent, so disable removes them rather than putting an old Cortex address back.
-Without that record, disable removes only Cortex's values and leaves any other
-alone. status shows the nine and the running service, and changes nothing.
+disable changes only Cortex's values: one set some other way, even after enable,
+is left alone and named. status shows the nine and the running service, and
+changes nothing.
 
 Neither enable nor disable restarts a running service, because that ends every
 OpenCode session using it. A running service keeps the environment it started
@@ -319,7 +320,7 @@ func openCodeEnable(bin, cortexCfgPath, statePath string, yes bool, stdout, stde
 	for _, k := range pl.changes {
 		fmt.Fprintf(stdout, "  %s=%s\n", k, pl.want[k])
 	}
-	fmt.Fprint(stdout, "Nothing else changes; agentop configure opencode disable puts back what was there.\n\n")
+	fmt.Fprint(stdout, "Nothing else changes; agentop configure opencode disable removes them again.\n\n")
 	if !yes && !opencodeConfirm(stdout) {
 		fmt.Fprintln(stdout, "Not changed.")
 		return exitDeclined
@@ -340,12 +341,13 @@ type openCodeDisablePlan struct {
 	st      *managedState // enable's record; nil when there is none, it is unreadable, or it is not OpenCode's
 	stErr   error         // why the record could not be read
 	present []string      // keys disable changes, in openCodeKeys order; none = nothing to do
-	left    []string      // keys it leaves: no record of them, and not a value Cortex set
+	left    []string      // keys it leaves: their values are not Cortex's
 }
 
 // planOpenCodeDisable sorts the managed keys set in the service environment into those
 // disable changes and those it leaves. want is what enable would set, empty when the
-// Cortex config cannot be read.
+// Cortex config cannot be read. The record decides only what a changed key goes back
+// to, never whether it is changed.
 func planOpenCodeDisable(bin, statePath string, want map[string]string) (openCodeDisablePlan, error) {
 	env, err := openCodeServiceEnv(bin)
 	if err != nil {
@@ -361,10 +363,9 @@ func planOpenCodeDisable(bin, statePath string, want map[string]string) (openCod
 		if !ok {
 			continue
 		}
-		// A key the record names was enable's to change. One it does not name is
-		// removed only if its value is Cortex's: with nothing to say otherwise, any
-		// other value is someone else's, and removing it would lose it.
-		if _, recorded := openCodePrior(st, k); recorded || openCodeIsOurs(k, v, want) {
+		// Only a value that is Cortex's, whatever the record says: one set some other
+		// way, even after enable, is someone else's, and changing it would lose it.
+		if openCodeIsOurs(k, v, want) {
 			pl.present = append(pl.present, k)
 		} else {
 			pl.left = append(pl.left, k)
@@ -373,8 +374,9 @@ func planOpenCodeDisable(bin, statePath string, want map[string]string) (openCod
 	return pl, nil
 }
 
-// applyOpenCodeDisable puts back what enable recorded, unsets the rest of the keys it
-// changes, and deletes the record. It returns the keys restored to a recorded value.
+// applyOpenCodeDisable changes the keys the plan found holding Cortex's values: each goes
+// back to a value enable recorded, or is unset. Then it deletes the record. It returns
+// the keys restored to a recorded value.
 //
 // The record is deleted only once every key is done, so a failure part way leaves it
 // for the next disable, which then finishes the job.
@@ -390,13 +392,13 @@ func applyOpenCodeDisable(pl openCodeDisablePlan, statePath string, stderr io.Wr
 	var restored []string
 	for _, k := range pl.present {
 		var err error
-		if prior, _ := openCodePrior(pl.st, k); prior != nil {
+		if prior := openCodePrior(pl.st, k); prior != nil {
 			_, err = openCodeRun(pl.bin, "service", "set", "env", k, *prior)
 			if err == nil {
 				restored = append(restored, k)
 			}
 		} else {
-			// Absent before enable, or Cortex's with no record: removing it is all that is left.
+			// Absent before enable, or no record of it: removing it is all that is left.
 			_, err = openCodeRun(pl.bin, "service", "unset", "env", k)
 		}
 		if err != nil {
@@ -407,14 +409,13 @@ func applyOpenCodeDisable(pl openCodeDisablePlan, statePath string, stderr io.Wr
 	return restored, nil
 }
 
-// openCodePrior is what st recorded for k before enable: the value, nil when k was
-// absent, and whether st recorded k at all.
-func openCodePrior(st *managedState, k string) (*string, bool) {
+// openCodePrior is the value st recorded for k before enable, or nil when k was absent
+// or there is no record.
+func openCodePrior(st *managedState, k string) *string {
 	if st == nil {
-		return nil, false
+		return nil
 	}
-	p, ok := st.Prior[k]
-	return p, ok
+	return st.Prior[k]
 }
 
 func openCodeDisable(bin, cortexCfgPath, statePath string, yes bool, stdout, stderr io.Writer) int {

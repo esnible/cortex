@@ -200,7 +200,7 @@ func TestConfigureOpenCode_EnableOnAnEmptyEnvironment(t *testing.T) {
 		lines.WriteString("  " + k + "=" + want[k] + "\n")
 	}
 	block := "Sets in OpenCode's background-service environment (opencode service set env):\n" + lines.String() +
-		"Nothing else changes; agentop configure opencode disable puts back what was there.\n"
+		"Nothing else changes; agentop configure opencode disable removes them again.\n"
 	if !strings.Contains(out, block) {
 		t.Errorf("stdout lacks the change block:\n%s\nwant it to contain:\n%s", out, block)
 	}
@@ -418,6 +418,65 @@ func TestConfigureOpenCode_DisableLeavesAValueCortexDidNotSet(t *testing.T) {
 		}
 		if out != left {
 			t.Errorf("stdout = %q, want only %q", out, left)
+		}
+	})
+	// The record says HTTPS_PROXY was absent before enable, but someone has set it
+	// since. It is theirs now, and disable leaves it.
+	t.Run("replaced after enable", func(t *testing.T) {
+		f := &openCodeCLI{}
+		home := stubOpenCodeCLI(t, f)
+		if code, _, errOut := runOC("enable", "--yes"); code != 0 {
+			t.Fatalf("enable: exit %d: %s", code, errOut)
+		}
+		f.env["HTTPS_PROXY"] = "http://corp:3128"
+		f.calls = nil
+		code, out, errOut := runOC("disable", "--yes")
+		if code != 0 {
+			t.Fatalf("disable: exit %d: %s", code, errOut)
+		}
+		if want := map[string]string{"HTTPS_PROXY": "http://corp:3128"}; !maps.Equal(f.env, want) {
+			t.Errorf("service env = %v, want only the user's HTTPS_PROXY", f.env)
+		}
+		var unsets []string
+		for _, k := range openCodeKeyOrder[1:] {
+			unsets = append(unsets, "service unset env "+k)
+		}
+		if !slices.Equal(f.writes(), unsets) {
+			t.Errorf("writes =\n%s\nwant\n%s", strings.Join(f.writes(), "\n"), strings.Join(unsets, "\n"))
+		}
+		if !strings.Contains(out, left) {
+			t.Errorf("stdout lacks %q:\n%s", left, out)
+		}
+		if strings.Contains(out, "This will remove from OpenCode's service environment: HTTPS_PROXY") {
+			t.Errorf("the removal list names the key it leaves:\n%s", out)
+		}
+		if _, err := os.Stat(openCodeStatePath(home)); !os.IsNotExist(err) {
+			t.Errorf("state file survived disable: %v", err)
+		}
+	})
+	// A recorded value is put back only over Cortex's. Over someone else's, putting it
+	// back would lose theirs.
+	t.Run("recorded value, replaced after enable", func(t *testing.T) {
+		f := &openCodeCLI{}
+		home := stubOpenCodeCLI(t, f)
+		maps.Copy(f.env, openCodeWant(home))
+		f.env["NODE_EXTRA_CA_CERTS"] = "/theirs/ca.pem"
+		if err := os.WriteFile(openCodeStatePath(home),
+			[]byte(`{"settings":"opencode service env","prior":{"NODE_EXTRA_CA_CERTS":"/my/ca.pem"}}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		code, out, errOut := runOC("disable", "--yes")
+		if code != 0 {
+			t.Fatalf("disable: exit %d: %s", code, errOut)
+		}
+		if want := map[string]string{"NODE_EXTRA_CA_CERTS": "/theirs/ca.pem"}; !maps.Equal(f.env, want) {
+			t.Errorf("service env = %v, want %v", f.env, want)
+		}
+		if line := "  NODE_EXTRA_CA_CERTS left as \"/theirs/ca.pem\": it is not a value Cortex set.\n"; !strings.Contains(out, line) {
+			t.Errorf("stdout lacks %q:\n%s", line, out)
+		}
+		if strings.Contains(out, "Restored") {
+			t.Errorf("restored over someone else's value:\n%s", out)
 		}
 	})
 	t.Run("a record that lacks the key", func(t *testing.T) {
