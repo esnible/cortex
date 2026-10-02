@@ -20,6 +20,8 @@ import (
 type fakeOpenCode struct {
 	status    string // what `opencode service status` prints
 	statusErr error
+	getEnv    string // what `opencode service get env` prints; "" is not JSON, so it fails
+	getEnvErr error
 	pid       int32 // the listener's pid, unless listener is set
 	listenErr error
 	listener  func(netip.AddrPort) (int32, error) // overrides pid and listenErr
@@ -42,11 +44,15 @@ func stubOpenCode(t *testing.T, f *fakeOpenCode) {
 	openCodeRun = func(bin string, args ...string) (string, error) {
 		f.bins = append(f.bins, bin)
 		f.runs = append(f.runs, strings.Join(args, " "))
-		if got := strings.Join(args, " "); got != "service status" {
-			t.Errorf("ran opencode %s; the probe should only ask for the service status", got)
+		switch got := strings.Join(args, " "); got {
+		case "service status":
+			return f.status, f.statusErr
+		case "service get env":
+			return f.getEnv, f.getEnvErr
+		default:
+			t.Errorf("ran opencode %s; only service status and service get env change nothing", got)
 			return "", errors.New("unexpected command")
 		}
-		return f.status, f.statusErr
 	}
 	openCodeListener = func(addr netip.AddrPort) (int32, error) {
 		f.lookups = append(f.lookups, addr)
@@ -364,15 +370,58 @@ func TestOpenCodeRun(t *testing.T) {
 	}
 }
 
+// agentop's own proxy and CA variables do not reach the CLI, so a service the CLI starts
+// or restarts does not inherit them either. /bin/sh -c env stands in for opencode and
+// prints the environment it was given; everything else in agentop's reaches it.
+func TestOpenCodeRun_LeavesOutAgentopsProxyAndCAVariables(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("uses /bin/sh")
+	}
+	t.Setenv("HOME", t.TempDir())
+	for _, k := range openCodeKeys {
+		t.Setenv(k, "/from/agentop")
+	}
+	t.Setenv("OPENCODE_UNRELATED", "kept")
+	out, err := openCodeRun("/bin/sh", "-c", "env")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, kv := range strings.Split(out, "\n") {
+		if k, _, _ := strings.Cut(kv, "="); slices.Contains(openCodeKeys, k) {
+			t.Errorf("the CLI was given %s", kv)
+		}
+	}
+	if !slices.Contains(strings.Split(out, "\n"), "OPENCODE_UNRELATED=kept") {
+		t.Errorf("the CLI lost the rest of the environment:\n%s", out)
+	}
+}
+
 const openCodeWarning = "agentop: warning: OpenCode's background service (pid 4242) is not using Cortex.\n" +
 	"  It sends all of OpenCode's traffic and keeps the environment it started with,\n" +
 	"  so this session bypasses Cortex. To route it through Cortex for good:\n" +
-	"    agentop configure opencode enable   # stops the service, ending every OpenCode session using it\n"
+	"    agentop configure opencode enable   # restarts the service, interrupting every OpenCode session using it\n"
+
+// openCodeRestartWarning is the warning when the service environment already routes
+// OpenCode through Cortex and only the running service predates it.
+const openCodeRestartWarning = "agentop: warning: OpenCode's background service (pid 4242) is not using Cortex.\n" +
+	"  It sends all of OpenCode's traffic and keeps the environment it started with. Its\n" +
+	"  configuration already routes it through Cortex, so restarting it is enough:\n" +
+	"    opencode service restart   # interrupts every OpenCode session using the service\n"
 
 func TestWarnOpenCodeService(t *testing.T) {
-	inject := map[string]string{"HTTPS_PROXY": "http://127.0.0.1:47600"}
+	inject := map[string]string{
+		"HTTPS_PROXY": "http://127.0.0.1:47600", "https_proxy": "http://127.0.0.1:47600",
+		"NODE_EXTRA_CA_CERTS": "/home/u/.cortex/ca/ca.crt",
+	}
 	running := func(env []string, envErr error) *fakeOpenCode {
 		return &fakeOpenCode{status: "http://127.0.0.1:49374", pid: 4242, env: env, envErr: envErr}
+	}
+	// configured is a running service off Cortex whose service environment, as `service
+	// get env` prints it, is getEnv.
+	configured := func(getEnv string) *fakeOpenCode {
+		f := running([]string{"PATH=/usr/bin"}, nil)
+		f.getEnv = getEnv
+		return f
 	}
 	for _, tc := range []struct {
 		name      string
@@ -408,6 +457,39 @@ func TestWarnOpenCodeService(t *testing.T) {
 			// The user is already managing the service; the warning would be noise.
 			name: "a service command", argv: []string{"opencode", "service", "restart"},
 			fake: running([]string{"PATH=/usr/bin"}, nil),
+		},
+		{
+			// A foreground server of its own, running under exec's environment.
+			name: "serve", argv: []string{"opencode", "serve", "--port", "4096"},
+			fake: running([]string{"PATH=/usr/bin"}, nil),
+		},
+		{
+			// Every key exec sets already holds its value there, the proxy in another
+			// spelling of the same listener: only the running service predates it.
+			name: "configured, the service predates it", argv: []string{"opencode"},
+			fake: configured(`{"HTTPS_PROXY":"http://localhost:47600","https_proxy":"http://127.0.0.1:47600",` +
+				`"NODE_EXTRA_CA_CERTS":"/home/u/.cortex/ca/ca.crt","OTHER":"x"}`),
+			want: openCodeRestartWarning, wantProbe: true,
+		},
+		{
+			name: "configured but for a CA", argv: []string{"opencode"},
+			fake: configured(`{"HTTPS_PROXY":"http://127.0.0.1:47600","https_proxy":"http://127.0.0.1:47600",` +
+				`"NODE_EXTRA_CA_CERTS":"/elsewhere/ca.crt"}`),
+			want: openCodeWarning, wantProbe: true,
+		},
+		{
+			name: "configured but for a key", argv: []string{"opencode"},
+			fake: configured(`{"HTTPS_PROXY":"http://127.0.0.1:47600","NODE_EXTRA_CA_CERTS":"/home/u/.cortex/ca/ca.crt"}`),
+			want: openCodeWarning, wantProbe: true,
+		},
+		{
+			name: "service get env fails", argv: []string{"opencode"},
+			fake: func() *fakeOpenCode {
+				f := configured("")
+				f.getEnvErr = errors.New("opencode service get env: exit status 1")
+				return f
+			}(),
+			want: openCodeWarning, wantProbe: true,
 		},
 		{
 			name: "environment withheld", argv: []string{"opencode"},
@@ -458,7 +540,7 @@ func TestWarnOpenCodeService_ProbesAnExplicitPath(t *testing.T) {
 	}
 	var stderr bytes.Buffer
 	warnOpenCodeService([]string{bin, "run", "hi"}, map[string]string{"HTTPS_PROXY": "http://127.0.0.1:47600"}, &stderr)
-	if !slices.Equal(f.bins, []string{bin}) {
+	if len(f.bins) == 0 || slices.ContainsFunc(f.bins, func(b string) bool { return b != bin }) {
 		t.Errorf("probed %v, want the path given", f.bins)
 	}
 	if stderr.String() != openCodeWarning {
@@ -491,7 +573,7 @@ func TestRunExec_WarnsAboutOpenCodeServiceAndStillRuns(t *testing.T) {
 	if out.String() != openCodeWarning+"ran\n" {
 		t.Errorf("output = %q, want the warning and then the child's output", out.String())
 	}
-	if !slices.Equal(f.bins, []string{bin}) {
+	if len(f.bins) == 0 || slices.ContainsFunc(f.bins, func(b string) bool { return b != bin }) {
 		t.Errorf("probed %v, want the opencode on PATH", f.bins)
 	}
 }

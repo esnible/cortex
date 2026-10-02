@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -36,6 +37,11 @@ var openCodeRun = func(bin string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), openCodeTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, bin, args...) //nolint:gosec // bin is the opencode CLI, found or named by the caller
+	// agentop's own proxy and CA variables do not reach OpenCode's CLI. The CLI talks to its
+	// service over loopback through any proxy it inherits, and a service it starts or restarts
+	// inherits them as well, so after disable a restart from a shell with HTTPS_PROXY set would
+	// leave the service on Cortex.
+	cmd.Env = openCodeCLIEnv(os.Environ())
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	// Bounds how long Wait waits for the output pipes once the CLI has exited or been
@@ -54,6 +60,19 @@ var openCodeRun = func(bin string, args ...string) (string, error) {
 		return "", fmt.Errorf("%s: %w", what, err)
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+// openCodeCLIEnv is env, a list of "NAME=value" strings, without the nine variables
+// enable manages (openCodeKeys).
+func openCodeCLIEnv(env []string) []string {
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		if k, _, _ := strings.Cut(kv, "="); slices.Contains(openCodeKeys, k) {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
 }
 
 // findOpenCode is the opencode binary: on PATH, else ~/.opencode/bin/opencode, where
@@ -216,14 +235,20 @@ func parseProxyURL(s string) *url.URL {
 // just means no warning. A service that is not running needs none either, because the
 // child starts it with exec's environment, under whatever service.json's env sets.
 // `opencode service …` commands are skipped: the user is already managing the service,
-// and the warning would be noise. Only a command whose own name is opencode is
-// recognised, so one run through a wrapper such as `env opencode` or an alias gets no
-// check.
+// and the warning would be noise. `opencode serve` is skipped too: it is a foreground
+// server that runs under exec's own environment. Only a command whose own name is
+// opencode is recognised, so one run through a wrapper such as `env opencode` or an
+// alias gets no check.
+//
+// The warning names the fix. When the service environment already holds every value
+// exec sets (openCodeEnvHolds), only the running service predates it, and restarting
+// it is enough; otherwise, including when that environment cannot be read, it names
+// configure opencode enable.
 func warnOpenCodeService(cmdArgs []string, inject map[string]string, stderr io.Writer) {
 	if len(cmdArgs) == 0 || filepath.Base(cmdArgs[0]) != "opencode" {
 		return
 	}
-	if len(cmdArgs) > 1 && cmdArgs[1] == "service" {
+	if len(cmdArgs) > 1 && (cmdArgs[1] == "service" || cmdArgs[1] == "serve") {
 		return
 	}
 	// The binary the child will run, found as runChild finds it: a path is used as
@@ -244,10 +269,43 @@ func warnOpenCodeService(cmdArgs []string, inject map[string]string, stderr io.W
 			"  If it was started without Cortex, OpenCode's traffic bypasses Cortex.\n", svc.EnvErr)
 		return
 	}
-	if !sameProxy(svc.Proxy, inject[envProxy]) {
-		fmt.Fprintf(stderr, "agentop: warning: OpenCode's background service (pid %d) is not using Cortex.\n"+
-			"  It sends all of OpenCode's traffic and keeps the environment it started with,\n"+
-			"  so this session bypasses Cortex. To route it through Cortex for good:\n"+
-			"    agentop configure opencode enable   # stops the service, ending every OpenCode session using it\n", svc.PID)
+	if sameProxy(svc.Proxy, inject[envProxy]) {
+		return
 	}
+	if openCodeEnvHolds(bin, inject) {
+		fmt.Fprintf(stderr, "agentop: warning: OpenCode's background service (pid %d) is not using Cortex.\n"+
+			"  It sends all of OpenCode's traffic and keeps the environment it started with. Its\n"+
+			"  configuration already routes it through Cortex, so restarting it is enough:\n"+
+			"    opencode service restart   # interrupts every OpenCode session using the service\n", svc.PID)
+		return
+	}
+	fmt.Fprintf(stderr, "agentop: warning: OpenCode's background service (pid %d) is not using Cortex.\n"+
+		"  It sends all of OpenCode's traffic and keeps the environment it started with,\n"+
+		"  so this session bypasses Cortex. To route it through Cortex for good:\n"+
+		"    agentop configure opencode enable   # restarts the service, interrupting every OpenCode session using it\n", svc.PID)
+}
+
+// openCodeEnvHolds reports whether OpenCode's service environment, as `opencode service
+// get env` prints it, already holds every value in inject: a proxy variable a proxy on
+// the same listener (sameProxy), any other the same text. False when that environment
+// cannot be read.
+func openCodeEnvHolds(bin string, inject map[string]string) bool {
+	env, err := openCodeServiceEnv(bin)
+	if err != nil {
+		return false
+	}
+	for k, want := range inject {
+		cur, ok := env[k]
+		switch {
+		case !ok:
+			return false
+		case openCodeCanonicalKey(k) == envProxy:
+			if !sameProxy(cur, want) {
+				return false
+			}
+		case cur != want:
+			return false
+		}
+	}
+	return true
 }

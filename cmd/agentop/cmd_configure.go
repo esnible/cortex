@@ -15,7 +15,8 @@ Usage:
   agentop configure bob disable [--yes] [--settings PATH] [--config PATH]
   agentop configure bob status  [--settings PATH] [--config PATH]
   agentop configure bobshell enable | disable | status
-  agentop configure opencode enable | disable | status [--yes] [--config PATH]
+  agentop configure opencode enable | disable [--yes] [--config PATH] [--opencode BIN]
+  agentop configure opencode status [--config PATH] [--opencode BIN]
   agentop configure codex
 
 Agents:

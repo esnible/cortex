@@ -33,24 +33,40 @@ var openCodeKeyOrder = []string{
 // env` prints and `service set env` / `unset env` change, whether the service runs and
 // on which port, and the environment its process started with. Like OpenCode 2.0.21,
 // it stops the running service on every `service set env` and `service unset env`,
-// unless keepsRunning is set.
+// unless keepsRunning is set, and `service restart` starts it again from its service
+// environment: a new pid, one more than the last, whose environment is PATH plus the
+// service environment, unless restartKeepsEnv is set.
 type openCodeCLI struct {
-	env          map[string]string
-	running      bool
-	keepsRunning bool  // the service survives `set env` and `unset env`: an OpenCode that does not stop it
-	statusErr    error // what `service status` fails with
-	port         int
-	pid          int32
-	listenErr    error    // what openCodeListener fails with for a running service
-	procEnv      []string // what openCodeEnviron returns for the service's pid
-	procErr      error
-	getEnv       *string // when set, what `service get env` prints instead of env as JSON
-	failSet      string  // a key whose `service set env` fails
-	answer       bool    // what opencodeConfirm answers
+	env             map[string]string
+	running         bool
+	keepsRunning    bool  // the service survives `set env` and `unset env`: an OpenCode that does not stop it
+	statusErr       error // what `service status` fails with
+	port            int
+	pid             int32
+	listenErr       error    // what openCodeListener fails with for a running service
+	procEnv         []string // what openCodeEnviron returns for the service's pid
+	procErr         error
+	getEnv          *string // when set, what `service get env` prints instead of env as JSON
+	failSet         string  // a key whose `service set env` fails
+	failUnset       string  // a key whose `service unset env` fails
+	restartErr      error   // what `service restart` fails with
+	restartKeepsEnv bool    // `service restart` leaves procEnv as it was
+	answer          bool    // what opencodeConfirm answers
 
 	calls    []string // every command, its arguments space-joined
 	prompts  int
 	atPrompt string // stdout as it stood when opencodeConfirm was last asked
+}
+
+// restarts is how many times `service restart` ran.
+func (f *openCodeCLI) restarts() int {
+	n := 0
+	for _, c := range f.calls {
+		if c == "service restart" {
+			n++
+		}
+	}
+	return n
 }
 
 // writes is the calls that changed the service environment, in order.
@@ -120,7 +136,24 @@ func stubOpenCodeCLI(t *testing.T, f *openCodeCLI) string {
 			if !f.keepsRunning {
 				f.running = false
 			}
+			if args[3] == f.failUnset {
+				return "", fmt.Errorf("opencode service unset env %s: exit status 1", args[3])
+			}
 			delete(f.env, args[3])
+			return "", nil
+		case slices.Equal(args, []string{"service", "restart"}):
+			if f.restartErr != nil {
+				f.running = false
+				return "", f.restartErr
+			}
+			f.running = true
+			f.pid++
+			if !f.restartKeepsEnv {
+				f.procEnv = []string{"PATH=/usr/bin"}
+				for _, k := range slices.Sorted(maps.Keys(f.env)) {
+					f.procEnv = append(f.procEnv, k+"="+f.env[k])
+				}
+			}
 			return "", nil
 		}
 		t.Errorf("ran opencode %s, which the fake does not answer", strings.Join(args, " "))
@@ -188,18 +221,32 @@ func runOC(args ...string) (code int, stdout, stderr string) {
 	return code, out.String(), errb.String()
 }
 
-const openCodeOldEnvNote = "OpenCode's background service (pid 4242) is running with its old environment.\n" +
-	"  It picks this up when it restarts: opencode service restart   # ends every OpenCode session using it\n"
-
-// The lines about the stop OpenCode's CLI makes when the service environment changes:
-// before the prompt when the service runs, before it when that cannot be told, and after
-// the change once the service is stopped.
+// openCodeOldEnvNote is the line for a service running with its old environment: the
+// one the fake started with, pid 4242, and the one `service restart` started, 4243.
 const (
-	openCodeStopNote = "OpenCode's background service is running (pid 4242). Changing its environment stops it,\n" +
-		"  which ends every OpenCode session using it; OpenCode starts it again, with the new\n" +
-		"  environment, the next time you run it.\n"
-	openCodeMaybeStopNote = "If OpenCode's background service is running, changing its environment stops it, which\n" +
-		"  ends every OpenCode session using it.\n"
+	openCodeOldEnvNote = "OpenCode's background service (pid 4242) is running with its old environment.\n" +
+		"  It picks this up when it restarts: opencode service restart   # interrupts every OpenCode session using it\n"
+	openCodeOldEnvNoteRestarted = "OpenCode's background service (pid 4243) is running with its old environment.\n" +
+		"  It picks this up when it restarts: opencode service restart   # interrupts every OpenCode session using it\n"
+)
+
+// The lines about the restart a change to the service environment makes: before the
+// prompt when the service runs, with a pid and without one, and when that cannot be
+// told; and after the restart, by what the restarted service turned out to use.
+const (
+	openCodeRestartNote = "OpenCode's background service is running (pid 4242). Changing its environment restarts it,\n" +
+		"  which interrupts every OpenCode session using it; an open OpenCode reconnects to it.\n"
+	openCodeRestartNoPIDNote = "OpenCode's background service is running. Changing its environment restarts it, which\n" +
+		"  interrupts every OpenCode session using it; an open OpenCode reconnects to it.\n"
+	openCodeMaybeRestartNote = "If OpenCode's background service is running, changing its environment restarts it, which\n" +
+		"  interrupts every OpenCode session using it.\n"
+
+	openCodeRestartedOnCortex  = "OpenCode's background service was restarted (pid 4243) and is using Cortex.\n"
+	openCodeRestartedOffCortex = "OpenCode's background service was restarted (pid 4243) and no longer uses Cortex.\n"
+	openCodeRestartedUnchecked = "OpenCode's background service was restarted (pid 4243); its environment could not be checked.\n"
+
+	// What the lines this replaced said: the change stopped the service, and nothing
+	// started it again.
 	openCodeStoppedNote = "OpenCode's background service is stopped; it starts with the new environment the next time you run OpenCode.\n"
 )
 
@@ -215,9 +262,10 @@ func TestConfigureOpenCode_EnableOnAnEmptyEnvironment(t *testing.T) {
 	if !maps.Equal(f.env, want) {
 		t.Errorf("service env =\n%v\nwant\n%v", f.env, want)
 	}
-	// One set per key, in the brief's order.
+	// One set per key: the CA variables first, then the proxy, each in the brief's order,
+	// so a failure part way never leaves the proxy set without its CA.
 	var sets []string
-	for _, k := range openCodeKeyOrder {
+	for _, k := range append(slices.Clone(openCodeKeyOrder[4:]), openCodeKeyOrder[:4]...) {
 		sets = append(sets, "service set env "+k+" "+want[k])
 	}
 	if !slices.Equal(f.writes(), sets) {
@@ -229,7 +277,7 @@ func TestConfigureOpenCode_EnableOnAnEmptyEnvironment(t *testing.T) {
 		lines.WriteString("  " + k + "=" + want[k] + "\n")
 	}
 	block := "Sets in OpenCode's background-service environment (opencode service set env):\n" + lines.String() +
-		"Nothing else changes; agentop configure opencode disable removes them again.\n"
+		"Nothing else in that environment changes; agentop configure opencode disable removes them again.\n"
 	if !strings.Contains(out, block) {
 		t.Errorf("stdout lacks the change block:\n%s\nwant it to contain:\n%s", out, block)
 	}
@@ -372,6 +420,9 @@ func TestConfigureOpenCode_DisableDoesNotPutCortexBack(t *testing.T) {
 	if strings.Contains(out, "Restored") {
 		t.Errorf("restored a Cortex value:\n%s", out)
 	}
+	if strings.Contains(out, "\n\n\n") {
+		t.Errorf("two blank lines in a row:\n%q", out)
+	}
 	if _, err := os.Stat(openCodeStatePath(home)); !os.IsNotExist(err) {
 		t.Errorf("state file survived disable: %v", err)
 	}
@@ -425,6 +476,9 @@ func TestConfigureOpenCode_DisableRestoresARecordedValue(t *testing.T) {
 	}
 	if !strings.Contains(out, "Restored to the value(s) you had before: NODE_EXTRA_CA_CERTS\n") {
 		t.Errorf("stdout lacks the restored list:\n%s", out)
+	}
+	if strings.Contains(out, "\n\n\n") {
+		t.Errorf("two blank lines in a row:\n%q", out)
 	}
 	if _, err := os.Stat(openCodeStatePath(home)); !os.IsNotExist(err) {
 		t.Errorf("state file survived disable: %v", err)
@@ -768,31 +822,37 @@ func TestConfigureOpenCode_StatusWithoutACortexConfig(t *testing.T) {
 	}
 }
 
-// The service line once enable, disable or status is done. A service still running
-// after enable or disable changed its environment is one that survives the change
-// (keepsRunning), so each case that needs one sets it; the stop itself, and the lines
-// about it, are TestConfigureOpenCode_ChangingTheEnvironmentStopsTheService's.
+// The service line once enable, disable or status is done. enable and disable restart a
+// service that was running before their change, so their line is about the restarted
+// one; the restart itself, and the lines before it, are
+// TestConfigureOpenCode_ChangingTheEnvironmentRestartsTheService's.
 func TestConfigureOpenCode_ServiceNote(t *testing.T) {
 	cortexEnv := []string{"PATH=/usr/bin", "HTTPS_PROXY=http://localhost:47600"}
 	for _, tc := range []struct {
-		name    string
-		action  string
-		enabled bool // enable first
-		fake    *openCodeCLI
-		want    string // a line the output must contain; "" = no service line after the change
+		name     string
+		action   string
+		enabled  bool // enable first
+		fake     *openCodeCLI
+		want     string // a line the output must contain; "" = no service line after the change
+		restarts int    // how many times the action runs `service restart`
 	}{
 		{
 			name: "enabled, service without a proxy", action: "enable",
-			fake: &openCodeCLI{running: true, keepsRunning: true, procEnv: []string{"PATH=/usr/bin"}}, want: openCodeOldEnvNote,
+			fake: &openCodeCLI{running: true, procEnv: []string{"PATH=/usr/bin"}}, want: openCodeRestartedOnCortex, restarts: 1,
 		},
 		{
 			name: "enabled, service on another proxy", action: "enable",
-			fake: &openCodeCLI{running: true, keepsRunning: true, procEnv: []string{"HTTPS_PROXY=http://corp:3128"}}, want: openCodeOldEnvNote,
+			fake: &openCodeCLI{running: true, procEnv: []string{"HTTPS_PROXY=http://corp:3128"}}, want: openCodeRestartedOnCortex, restarts: 1,
 		},
 		{
-			name: "enabled, service on Cortex", action: "enable",
-			fake: &openCodeCLI{running: true, keepsRunning: true, procEnv: cortexEnv},
-			want: "OpenCode's background service (pid 4242) is using Cortex.\n",
+			// The CLI did not stop it; it is restarted all the same.
+			name: "enabled, service survives the change", action: "enable",
+			fake: &openCodeCLI{running: true, keepsRunning: true, procEnv: []string{"PATH=/usr/bin"}}, want: openCodeRestartedOnCortex, restarts: 1,
+		},
+		{
+			name: "enabled, the restart keeps the old environment", action: "enable",
+			fake: &openCodeCLI{running: true, restartKeepsEnv: true, procEnv: []string{"PATH=/usr/bin"}},
+			want: openCodeOldEnvNoteRestarted, restarts: 1,
 		},
 		{
 			name: "already enabled, service without a proxy", action: "enable", enabled: true,
@@ -800,12 +860,13 @@ func TestConfigureOpenCode_ServiceNote(t *testing.T) {
 		},
 		{name: "enabled, service stopped", action: "enable", fake: &openCodeCLI{}},
 		{
-			name: "disabled, service still on Cortex", action: "disable", enabled: true,
-			fake: &openCodeCLI{running: true, keepsRunning: true, procEnv: cortexEnv}, want: openCodeOldEnvNote,
+			name: "disabled, service on Cortex", action: "disable", enabled: true,
+			fake: &openCodeCLI{running: true, keepsRunning: true, procEnv: cortexEnv}, want: openCodeRestartedOffCortex, restarts: 1,
 		},
 		{
-			name: "disabled, service off Cortex", action: "disable", enabled: true,
-			fake: &openCodeCLI{running: true, keepsRunning: true, procEnv: []string{"PATH=/usr/bin"}},
+			name: "disabled, the restart keeps the old environment", action: "disable", enabled: true,
+			fake: &openCodeCLI{running: true, keepsRunning: true, restartKeepsEnv: true, procEnv: cortexEnv},
+			want: openCodeOldEnvNoteRestarted, restarts: 1,
 		},
 		{
 			name: "status, enabled, service without a proxy", action: "status", enabled: true,
@@ -826,6 +887,8 @@ func TestConfigureOpenCode_ServiceNote(t *testing.T) {
 			want: "OpenCode's background service is not running.\n",
 		},
 		{
+			// Nobody can say it was running, so it is not restarted, and the line says
+			// what to do.
 			name: "service status fails", action: "enable",
 			fake: &openCodeCLI{statusErr: errors.New("opencode service status: exit status 1")},
 			want: "Could not check OpenCode's running service (opencode service status: exit status 1); " +
@@ -834,22 +897,29 @@ func TestConfigureOpenCode_ServiceNote(t *testing.T) {
 		{
 			name: "status, service status fails", action: "status",
 			fake: &openCodeCLI{statusErr: errors.New("opencode service status: exit status 1")},
-			want: "Could not check OpenCode's running service (opencode service status: exit status 1); " +
-				"restart it to be sure: opencode service restart\n",
+			want: "Could not check OpenCode's background service (opencode service status: exit status 1).\n",
 		},
 		{
 			name: "environment withheld", action: "enable",
-			fake: &openCodeCLI{running: true, keepsRunning: true, procErr: fmt.Errorf("%w: pid 4242's environment is withheld", peerproc.ErrNotFound)},
-			want: "Could not check OpenCode's running service (reading the environment of pid 4242: " +
-				"peerproc: not found: pid 4242's environment is withheld); restart it to be sure: opencode service restart\n",
+			fake: &openCodeCLI{running: true, procErr: fmt.Errorf("%w: pid 4242's environment is withheld", peerproc.ErrNotFound)},
+			want: openCodeRestartedUnchecked, restarts: 1,
+		},
+		{
+			name: "status, environment withheld", action: "status",
+			fake: &openCodeCLI{running: true, procErr: fmt.Errorf("%w: pid 4242's environment is withheld", peerproc.ErrNotFound)},
+			want: "Could not check OpenCode's background service (reading the environment of pid 4242: " +
+				"peerproc: not found: pid 4242's environment is withheld).\n",
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			stubOpenCodeCLI(t, tc.fake)
 			if tc.enabled {
+				running := tc.fake.running
+				tc.fake.running = false // so the setup enable has no service to restart
 				if code, _, errOut := runOC("enable", "--yes"); code != 0 {
 					t.Fatalf("enable: exit %d: %s", code, errOut)
 				}
+				tc.fake.running = running
 			}
 			tc.fake.calls = nil
 			args := []string{tc.action}
@@ -863,13 +933,16 @@ func TestConfigureOpenCode_ServiceNote(t *testing.T) {
 			if tc.want != "" && !strings.Contains(out, tc.want) {
 				t.Errorf("stdout =\n%s\nwant it to contain\n%s", out, tc.want)
 			}
-			if after := strings.Replace(out, openCodeStopNote, "", 1); tc.want == "" && strings.Contains(after, "OpenCode's background service") {
+			if after := strings.Replace(out, openCodeRestartNote, "", 1); tc.want == "" && strings.Contains(after, "OpenCode's background service") {
 				t.Errorf("stdout has a service line it should not:\n%s", out)
 			}
+			if n := tc.fake.restarts(); n != tc.restarts {
+				t.Errorf("ran service restart %d times, want %d; calls %v", n, tc.restarts, tc.fake.calls)
+			}
 			for _, c := range tc.fake.calls {
-				for _, verb := range []string{"service restart", "service stop", "service start"} {
+				for _, verb := range []string{"service stop", "service start"} {
 					if strings.HasPrefix(c, verb) {
-						t.Errorf("ran opencode %s: agentop runs no restart, stop or start", c)
+						t.Errorf("ran opencode %s: agentop runs no stop or start", c)
 					}
 				}
 			}
@@ -877,22 +950,27 @@ func TestConfigureOpenCode_ServiceNote(t *testing.T) {
 	}
 }
 
-// OpenCode's CLI stops the running service whenever its environment changes, which ends
-// every OpenCode session using it. enable and disable say so before the prompt, and
-// under --yes before the change; once the change is made they say the service is
-// stopped and starts with the new environment. A service that was not running gets
-// neither line, and one the CLI cannot report on gets the hedged one.
-func TestConfigureOpenCode_ChangingTheEnvironmentStopsTheService(t *testing.T) {
+// OpenCode's CLI stops the running service whenever its environment changes, and an
+// open OpenCode starts it again before the change lands. So enable and disable say,
+// before the prompt and under --yes before the change, that the change restarts a
+// running service; then, after their last write, they restart it once and say what the
+// restarted service uses. A service that was not running is not restarted and gets no
+// line, and one the CLI cannot report on gets the hedged line and no restart.
+func TestConfigureOpenCode_ChangingTheEnvironmentRestartsTheService(t *testing.T) {
 	statusErr := errors.New("opencode service status: exit status 1")
 	const couldNotCheck = "Could not check OpenCode's running service (opencode service status: exit status 1); " +
 		"restart it to be sure: opencode service restart\n"
+	const restartFailed = "agentop: could not restart OpenCode's background service (opencode service restart: exit status 1).\n" +
+		"  It is stopped; it starts with the new environment the next time you run OpenCode, or now: opencode service start\n"
 	for _, action := range []string{"enable", "disable"} {
 		// The environment the service started with is the one the change replaces.
 		procEnv := []string{"PATH=/usr/bin"}
-		closing := "Enabled — OpenCode's service uses Cortex from its next start.\n"
+		closing, restarted := "Enabled — OpenCode's service uses Cortex from its next start.\n", "Enabled.\n"
+		restartedLine := openCodeRestartedOnCortex
 		if action == "disable" {
 			procEnv = []string{"HTTPS_PROXY=http://127.0.0.1:47600"}
-			closing = "\nDisabled. OpenCode's service no longer routes through Cortex from its next start.\n"
+			closing, restarted = "Disabled. OpenCode's service no longer routes through Cortex from its next start.\n", "Disabled.\n"
+			restartedLine = openCodeRestartedOffCortex
 		}
 		for _, tc := range []struct {
 			name          string
@@ -900,25 +978,31 @@ func TestConfigureOpenCode_ChangingTheEnvironmentStopsTheService(t *testing.T) {
 			keepsRunning  bool
 			statusErr     error
 			listenErr     error
+			restartErr    error
 			yes           bool
 			before, after string // the line before the change and the one after it; "" = none
+			stderr        string
 		}{
-			{name: "running", running: true, before: openCodeStopNote, after: openCodeStoppedNote},
-			{name: "running, --yes", running: true, yes: true, before: openCodeStopNote, after: openCodeStoppedNote},
+			{name: "running", running: true, before: openCodeRestartNote, after: restartedLine},
+			{name: "running, --yes", running: true, yes: true, before: openCodeRestartNote, after: restartedLine},
 			{name: "not running"},
 			{name: "not running, --yes", yes: true},
-			{name: "service status fails", statusErr: statusErr, before: openCodeMaybeStopNote, after: couldNotCheck},
-			{name: "service status fails, --yes", statusErr: statusErr, yes: true, before: openCodeMaybeStopNote, after: couldNotCheck},
-			// Running, but no process is found on its port, so there is no pid to name.
+			{name: "service status fails", statusErr: statusErr, before: openCodeMaybeRestartNote, after: couldNotCheck},
+			{name: "service status fails, --yes", statusErr: statusErr, yes: true, before: openCodeMaybeRestartNote, after: couldNotCheck},
+			// Running, but no process is found on its port, so there is no pid to name,
+			// before the restart or after it.
 			{name: "running, no pid", running: true, listenErr: peerproc.ErrNotFound, yes: true,
-				before: openCodeMaybeStopNote, after: openCodeStoppedNote},
-			// An OpenCode whose CLI does not stop the service: it is still running with
-			// the environment the change replaced, and the note says to restart it.
-			{name: "survives the change", running: true, keepsRunning: true, yes: true, before: openCodeStopNote, after: openCodeOldEnvNote},
+				before: openCodeRestartNoPIDNote,
+				after:  "OpenCode's background service was restarted; its environment could not be checked.\n"},
+			// An OpenCode whose CLI does not stop the service is restarted all the same.
+			{name: "survives the change", running: true, keepsRunning: true, yes: true, before: openCodeRestartNote, after: restartedLine},
+			// The change succeeded, so the exit status is still 0.
+			{name: "the restart fails", running: true, yes: true, restartErr: errors.New("opencode service restart: exit status 1"),
+				before: openCodeRestartNote, stderr: restartFailed},
 		} {
 			t.Run(action+", "+tc.name, func(t *testing.T) {
 				f := &openCodeCLI{running: tc.running, keepsRunning: tc.keepsRunning, statusErr: tc.statusErr,
-					listenErr: tc.listenErr, procEnv: procEnv, answer: true}
+					listenErr: tc.listenErr, restartErr: tc.restartErr, procEnv: procEnv, answer: true}
 				home := stubOpenCodeCLI(t, f)
 				if action == "disable" {
 					maps.Copy(f.env, openCodeWant(home))
@@ -931,11 +1015,19 @@ func TestConfigureOpenCode_ChangingTheEnvironmentStopsTheService(t *testing.T) {
 				if code != 0 {
 					t.Fatalf("exit %d: %s", code, errOut)
 				}
-				i := strings.Index(out, closing)
-				if i < 0 {
-					t.Fatalf("stdout lacks %q:\n%s", closing, out)
+				wasRunning := tc.running && tc.statusErr == nil
+				end := closing
+				if wasRunning {
+					end = restarted
 				}
-				before, after := out[:i], out[i+len(closing):]
+				i := strings.Index(out, end)
+				if i < 0 {
+					t.Fatalf("stdout lacks %q:\n%s", end, out)
+				}
+				before, after := out[:i], out[i+len(end):]
+				if wasRunning && strings.Contains(out, closing) {
+					t.Errorf("a restarted service got the next-start line:\n%s", out)
+				}
 
 				if tc.before == "" {
 					if strings.Contains(out, "OpenCode's background service") {
@@ -951,28 +1043,94 @@ func TestConfigureOpenCode_ChangingTheEnvironmentStopsTheService(t *testing.T) {
 				} else if f.prompts != 1 || !strings.HasSuffix(f.atPrompt, tc.before+"\n") {
 					t.Errorf("prompted %d times, with stdout then\n%s\nwant one prompt, straight after\n%s", f.prompts, f.atPrompt, tc.before)
 				}
-				if tc.after != "" && !strings.Contains(after, tc.after) {
-					t.Errorf("stdout after the change lacks\n%s\ngot:\n%s", tc.after, after)
+				if after != tc.after {
+					t.Errorf("stdout after the closing line =\n%s\nwant\n%s", after, tc.after)
 				}
-				if tc.after != openCodeStoppedNote && strings.Contains(out, openCodeStoppedNote) {
-					t.Errorf("said the service is stopped when it was not seen to stop:\n%s", out)
+				if errOut != tc.stderr {
+					t.Errorf("stderr =\n%s\nwant\n%s", errOut, tc.stderr)
+				}
+				if strings.Contains(out, openCodeStoppedNote) {
+					t.Errorf("still says the service is stopped and starts with the next run:\n%s", out)
 				}
 
-				// The service is asked about before anything is written, and asked again after.
+				// The service is asked about before anything is written. A service that
+				// was running is restarted once, after the last write, and asked about
+				// again after that.
+				writes := f.writes()
 				first := slices.Index(f.calls, "service status")
-				last := slices.Index(f.calls, f.writes()[len(f.writes())-1])
-				if first < 0 || first > slices.Index(f.calls, f.writes()[0]) || !slices.Contains(f.calls[last:], "service status") {
-					t.Errorf("calls = %v, want service status before the first write and after the last", f.calls)
+				if first < 0 || first > slices.Index(f.calls, writes[0]) {
+					t.Errorf("calls = %v, want service status before the first write", f.calls)
 				}
-				if f.running != (tc.running && tc.keepsRunning) {
-					t.Errorf("running = %v after the change", f.running)
+				last := slices.Index(f.calls, writes[len(writes)-1])
+				if !wasRunning {
+					if n := f.restarts(); n != 0 {
+						t.Errorf("restarted a service that was not seen running; calls %v", f.calls)
+					}
+					return
+				}
+				if n := f.restarts(); n != 1 {
+					t.Fatalf("ran service restart %d times, want once; calls %v", n, f.calls)
+				}
+				r := slices.Index(f.calls, "service restart")
+				if r < last {
+					t.Errorf("calls = %v, want the restart after the last write", f.calls)
+				}
+				if tc.restartErr == nil && !slices.Contains(f.calls[r:], "service status") {
+					t.Errorf("calls = %v, want service status after the restart", f.calls)
 				}
 			})
 		}
 	}
 }
 
-// Declining after the stop line changes nothing, so the service keeps running.
+// With a running service, a run with nothing to change neither warns about a restart,
+// nor asks, nor restarts it: enable a second time, and disable with only a value Cortex
+// did not set.
+func TestConfigureOpenCode_NothingToChangeLeavesARunningServiceAlone(t *testing.T) {
+	notes := []string{openCodeRestartNote, openCodeRestartNoPIDNote, openCodeMaybeRestartNote}
+	t.Run("enable, already enabled", func(t *testing.T) {
+		f := &openCodeCLI{}
+		home := stubOpenCodeCLI(t, f)
+		maps.Copy(f.env, openCodeWant(home))
+		f.running, f.procEnv = true, []string{"PATH=/usr/bin", "HTTPS_PROXY=http://127.0.0.1:47600"}
+		code, out, errOut := runOC("enable")
+		if code != 0 {
+			t.Fatalf("exit %d: %s", code, errOut)
+		}
+		want := "Already enabled: OpenCode's service environment routes it through Cortex.\n" +
+			"OpenCode's background service (pid 4242) is using Cortex.\n"
+		if out != want {
+			t.Errorf("stdout =\n%s\nwant\n%s", out, want)
+		}
+		for _, n := range notes {
+			if strings.Contains(out, n) {
+				t.Errorf("printed a restart note with nothing to change:\n%s", out)
+			}
+		}
+		if f.prompts != 0 || f.restarts() != 0 || len(f.writes()) != 0 {
+			t.Errorf("prompted %d times, restarted %d times, wrote %v, with nothing to change", f.prompts, f.restarts(), f.writes())
+		}
+	})
+	t.Run("disable, only a value Cortex did not set", func(t *testing.T) {
+		f := &openCodeCLI{env: map[string]string{"HTTPS_PROXY": "http://corp:3128"}, running: true, procEnv: []string{"PATH=/usr/bin"}}
+		stubOpenCodeCLI(t, f)
+		code, out, errOut := runOC("disable")
+		if code != 0 {
+			t.Fatalf("exit %d: %s", code, errOut)
+		}
+		want := "  HTTPS_PROXY left as \"http://corp:3128\": it is not a value Cortex set. " +
+			"Remove it yourself: opencode service unset env HTTPS_PROXY\n"
+		if out != want {
+			t.Errorf("stdout =\n%s\nwant\n%s", out, want)
+		}
+		if f.prompts != 0 || f.restarts() != 0 || len(f.writes()) != 0 {
+			t.Errorf("prompted %d times, restarted %d times, wrote %v, with nothing to change", f.prompts, f.restarts(), f.writes())
+		}
+	})
+}
+
+// Declining after the restart line changes nothing, so the service keeps running and is
+// not restarted.
 func TestConfigureOpenCode_DecliningLeavesTheServiceRunning(t *testing.T) {
 	for _, action := range []string{"enable", "disable"} {
 		t.Run(action, func(t *testing.T) {
@@ -985,8 +1143,8 @@ func TestConfigureOpenCode_DecliningLeavesTheServiceRunning(t *testing.T) {
 			if code != exitDeclined {
 				t.Errorf("exit %d, want %d", code, exitDeclined)
 			}
-			if f.prompts != 1 || !strings.HasSuffix(f.atPrompt, openCodeStopNote+"\n") {
-				t.Errorf("prompted %d times, with stdout then\n%s\nwant one prompt, straight after the stop line", f.prompts, f.atPrompt)
+			if f.prompts != 1 || !strings.HasSuffix(f.atPrompt, openCodeRestartNote+"\n") {
+				t.Errorf("prompted %d times, with stdout then\n%s\nwant one prompt, straight after the restart line", f.prompts, f.atPrompt)
 			}
 			if !strings.HasSuffix(out, "Not changed.\n") {
 				t.Errorf("stdout = %q, want it to end with Not changed.", out)
@@ -996,6 +1154,9 @@ func TestConfigureOpenCode_DecliningLeavesTheServiceRunning(t *testing.T) {
 			}
 			if !f.running {
 				t.Errorf("a declined %s stopped the service", action)
+			}
+			if n := f.restarts(); n != 0 {
+				t.Errorf("a declined %s restarted the service %d times", action, n)
 			}
 		})
 	}
@@ -1008,8 +1169,9 @@ func TestConfigureOpenCode_DecliningLeavesTheServiceRunning(t *testing.T) {
 func TestConfigureOpenCode_StatusServiceLineFollowsTheConfiguredProxy(t *testing.T) {
 	onCortex := []string{"HTTPS_PROXY=http://localhost:47600"}
 	offCortex := []string{"PATH=/usr/bin"}
-	const usingButNotConfigured = "OpenCode's background service (pid 4242) is using Cortex, but its service environment does not route it there:\n" +
-		"  a restart takes it off Cortex. agentop configure opencode enable keeps it on.\n"
+	const usingButNotConfigured = "OpenCode's background service (pid 4242) is using Cortex, but its service environment does not route it there,\n" +
+		"  so its next start will not use Cortex. To keep it on Cortex:\n" +
+		"    agentop configure opencode enable   # restarts the service, interrupting every OpenCode session using it\n"
 	for _, tc := range []struct {
 		name    string
 		env     func(home string) map[string]string
@@ -1067,10 +1229,10 @@ func TestConfigureOpenCode_StatusServiceLineFollowsTheConfiguredProxy(t *testing
 	}
 }
 
-// With Cortex's config unreadable, disable compares a service still running after the
-// change with the HTTPS_PROXY it took out: that is what a service started under the old
-// environment uses. The service survives the change (keepsRunning) so there is one to
-// compare.
+// With Cortex's config unreadable, disable compares the restarted service with the
+// HTTPS_PROXY it took out: that is what a service started under the old environment
+// uses. The restart keeps the environment the service had (restartKeepsEnv), so the
+// comparison has both answers to give.
 func TestConfigureOpenCode_DisableWithoutACortexConfig(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
@@ -1081,11 +1243,12 @@ func TestConfigureOpenCode_DisableWithoutACortexConfig(t *testing.T) {
 		{"service off it", []string{"PATH=/usr/bin"}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			f := &openCodeCLI{running: true, keepsRunning: true, procEnv: tc.procEnv}
+			f := &openCodeCLI{restartKeepsEnv: true, procEnv: tc.procEnv}
 			home := stubOpenCodeCLI(t, f)
 			if code, _, errOut := runOC("enable", "--yes"); code != 0 {
 				t.Fatalf("enable: exit %d: %s", code, errOut)
 			}
+			f.running = true
 			if err := os.Remove(filepath.Join(home, ".cortex", "config.yaml")); err != nil {
 				t.Fatal(err)
 			}
@@ -1096,8 +1259,11 @@ func TestConfigureOpenCode_DisableWithoutACortexConfig(t *testing.T) {
 			if len(f.env) != 0 {
 				t.Errorf("service env = %v, want it empty", f.env)
 			}
-			if got := strings.Contains(out, openCodeOldEnvNote); got != tc.note {
-				t.Errorf("restart note = %v, want %v:\n%s", got, tc.note, out)
+			if got := strings.Contains(out, openCodeOldEnvNoteRestarted); got != tc.note {
+				t.Errorf("old-environment line = %v, want %v:\n%s", got, tc.note, out)
+			}
+			if got := strings.Contains(out, openCodeRestartedOffCortex); got == tc.note {
+				t.Errorf("no-longer-uses-Cortex line = %v, want %v:\n%s", got, !tc.note, out)
 			}
 		})
 	}
@@ -1140,23 +1306,87 @@ func TestConfigureOpenCode_GetEnvMustBeAnObjectOfStrings(t *testing.T) {
 }
 
 // A set that fails part way leaves the record, so disable can still put back what
-// was there, and says which keys did change.
+// was there, and says which keys did change. The CA variables are set first, so a
+// failure on the first of them leaves no proxy set: the proxy is never set without the
+// CA that lets OpenCode trust it.
 func TestConfigureOpenCode_EnableFailingPartWay(t *testing.T) {
-	f := &openCodeCLI{failSet: "NODE_EXTRA_CA_CERTS"}
+	t.Run("on the first CA variable", func(t *testing.T) {
+		f := &openCodeCLI{failSet: "NODE_EXTRA_CA_CERTS"}
+		home := stubOpenCodeCLI(t, f)
+		code, out, errOut := runOC("enable", "--yes")
+		if code != 1 {
+			t.Errorf("exit %d, want 1", code)
+		}
+		if strings.Contains(out, "Enabled") {
+			t.Errorf("reported success:\n%s", out)
+		}
+		if want := "agentop: opencode service set env NODE_EXTRA_CA_CERTS: exit status 1\n"; errOut != want {
+			t.Errorf("stderr = %q, want %q", errOut, want)
+		}
+		for _, k := range openCodeKeyOrder[:4] {
+			if v, ok := f.env[k]; ok {
+				t.Errorf("%s = %q: a proxy key was set without its CA", k, v)
+			}
+		}
+		if st, err := readState(openCodeStatePath(home)); err != nil || st == nil {
+			t.Errorf("record = %v, %v; want it kept for disable", st, err)
+		}
+	})
+	// Part way, with the service running before: the writes so far stopped it, and it is
+	// not restarted, because its environment is half changed.
+	t.Run("on the proxy, service running", func(t *testing.T) {
+		f := &openCodeCLI{failSet: "HTTPS_PROXY", running: true, procEnv: []string{"PATH=/usr/bin"}}
+		stubOpenCodeCLI(t, f)
+		code, out, errOut := runOC("enable", "--yes")
+		if code != 1 {
+			t.Errorf("exit %d, want 1", code)
+		}
+		if strings.Contains(out, "Enabled") {
+			t.Errorf("reported success:\n%s", out)
+		}
+		want := "agentop: opencode service set env HTTPS_PROXY: exit status 1\n" +
+			"  Already set: NODE_EXTRA_CA_CERTS, SSL_CERT_FILE, GIT_SSL_CAINFO, REQUESTS_CA_BUNDLE, CURL_CA_BUNDLE. " +
+			"agentop configure opencode disable undoes them\n" +
+			"  OpenCode's background service is stopped; re-run this command to finish.\n"
+		if errOut != want {
+			t.Errorf("stderr =\n%s\nwant\n%s", errOut, want)
+		}
+		if n := f.restarts(); n != 0 {
+			t.Errorf("restarted the service %d times after a failed change", n)
+		}
+	})
+	// Not running before: nothing was stopped, so nothing is said about it.
+	t.Run("on the proxy, service not running", func(t *testing.T) {
+		f := &openCodeCLI{failSet: "HTTPS_PROXY"}
+		stubOpenCodeCLI(t, f)
+		_, _, errOut := runOC("enable", "--yes")
+		if !strings.Contains(errOut, "Already set: ") || strings.Contains(errOut, "is stopped") {
+			t.Errorf("stderr = %q, want the keys already set and nothing about a stopped service", errOut)
+		}
+	})
+}
+
+// An unset that fails part way says the same about a service that was running, and does
+// not restart it either.
+func TestConfigureOpenCode_DisableFailingPartWay(t *testing.T) {
+	f := &openCodeCLI{failUnset: "HTTP_PROXY", running: true, procEnv: []string{"HTTPS_PROXY=http://127.0.0.1:47600"}}
 	home := stubOpenCodeCLI(t, f)
-	code, out, errOut := runOC("enable", "--yes")
+	maps.Copy(f.env, openCodeWant(home))
+	code, out, errOut := runOC("disable", "--yes")
 	if code != 1 {
 		t.Errorf("exit %d, want 1", code)
 	}
-	if strings.Contains(out, "Enabled") {
+	if strings.Contains(out, "Disabled") {
 		t.Errorf("reported success:\n%s", out)
 	}
-	if !strings.Contains(errOut, "opencode service set env NODE_EXTRA_CA_CERTS: exit status 1") ||
-		!strings.Contains(errOut, "HTTPS_PROXY, HTTP_PROXY, https_proxy, http_proxy") {
-		t.Errorf("stderr = %q, want the failure and the keys already set", errOut)
+	want := "agentop: opencode service unset env HTTP_PROXY: exit status 1\n" +
+		"  Run agentop configure opencode disable again to finish\n" +
+		"  OpenCode's background service is stopped; re-run this command to finish.\n"
+	if errOut != want {
+		t.Errorf("stderr =\n%s\nwant\n%s", errOut, want)
 	}
-	if st, err := readState(openCodeStatePath(home)); err != nil || st == nil {
-		t.Errorf("record = %v, %v; want it kept for disable", st, err)
+	if n := f.restarts(); n != 0 {
+		t.Errorf("restarted the service %d times after a failed change", n)
 	}
 }
 
@@ -1186,6 +1416,30 @@ func TestConfigureOpenCode_Usage(t *testing.T) {
 				t.Errorf("usage on stdout = %v, want %v:\n%s", got, tc.onStdout, out.String())
 			}
 		})
+	}
+}
+
+// The usage gives each action the flags it takes, so status shows no --yes, and says
+// what a change does to a running service: one restart, after it.
+func TestOpenCodeUsage_SynopsisAndRestart(t *testing.T) {
+	if want := "  agentop configure opencode enable | disable [--yes] [--config PATH] [--opencode BIN]\n" +
+		"  agentop configure opencode status [--config PATH] [--opencode BIN]\n\n"; !strings.Contains(openCodeUsage, want) {
+		t.Errorf("openCodeUsage lacks %q", want)
+	}
+	prose := strings.Join(strings.Fields(openCodeUsage), " ")
+	for _, want := range []string{
+		"enable and disable restart it once after their change, which interrupts every OpenCode session using it; " +
+			"an open OpenCode reconnects to it.",
+		"(--yes skips the question, not the warning)",
+	} {
+		if !strings.Contains(prose, want) {
+			t.Errorf("openCodeUsage lacks %q", want)
+		}
+	}
+	for _, stale := range []string{"ends every OpenCode session", "keeps the environment it started with, and each says"} {
+		if strings.Contains(prose, stale) {
+			t.Errorf("openCodeUsage still says %q", stale)
+		}
 	}
 }
 
@@ -1229,7 +1483,8 @@ func TestConfigure_OpenCodeReachesRunOpenCode(t *testing.T) {
 
 // configure's own usage names the new command and no longer sends OpenCode users to exec.
 func TestConfigureUsage_OpenCodePersists(t *testing.T) {
-	if want := "  agentop configure opencode enable | disable | status [--yes] [--config PATH]\n" +
+	if want := "  agentop configure opencode enable | disable [--yes] [--config PATH] [--opencode BIN]\n" +
+		"  agentop configure opencode status [--config PATH] [--opencode BIN]\n" +
 		"  agentop configure codex\n"; !strings.Contains(configureUsage, want) {
 		t.Errorf("configureUsage lacks %q", want)
 	}
