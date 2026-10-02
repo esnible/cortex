@@ -298,9 +298,10 @@ func TestCharacterize_ServiceLifecycle(t *testing.T) {
 			"Cortex will no longer start at login. Claude Code stops working whenever\n"+
 			"the proxy is not running — `agentop configure claude-code disable` removes that\n"+
 			"dependency.\n\n"+
-			"\nRemoved. Cortex is stopped; Claude Code will fail until it runs again.\n"+
+			"\nRemoved. Cortex is stopped; Claude Code and OpenCode will fail until it runs again.\n"+
 			"  Set it up again with:  agentop service install\n"+
 			"  Or unwire Claude Code: agentop configure claude-code disable\n"+
+			"  Or unwire OpenCode:    agentop configure opencode disable\n"+
 			"  The config and CA are untouched in $HOME/.cortex\n", "")
 	wantFile(t, sc.p.unitFile, false, "after uninstall")
 	wantFile(t, sc.p.stampFile, false, "after uninstall")
@@ -381,9 +382,10 @@ func TestCharacterize_ServiceInteractiveAccept(t *testing.T) {
 				"the proxy is not running — `agentop configure claude-code disable` removes that\n"+
 				"dependency.\n\n"+
 				"Apply? [y/N] "+
-				"\nRemoved. Cortex is stopped; Claude Code will fail until it runs again.\n"+
+				"\nRemoved. Cortex is stopped; Claude Code and OpenCode will fail until it runs again.\n"+
 				"  Set it up again with:  agentop service install\n"+
 				"  Or unwire Claude Code: agentop configure claude-code disable\n"+
+				"  Or unwire OpenCode:    agentop configure opencode disable\n"+
 				"  The config and CA are untouched in $HOME/.cortex\n", "")
 		wantFile(t, sc.p.unitFile, false, "after an accepted uninstall")
 		wantFile(t, sc.p.stampFile, false, "after an accepted uninstall")

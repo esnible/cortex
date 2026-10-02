@@ -402,10 +402,12 @@ func TestConfigureOpenCode_DisableRestoresARecordedValue(t *testing.T) {
 	}
 }
 
-// With no record of a key, disable removes it only when the value is Cortex's. A value
-// someone else set is left, and said so, before anything is asked.
+// disable changes a key only when its value is Cortex's, whatever the record says. A
+// value someone else set is left, and said so with the command that removes it, before
+// anything is asked.
 func TestConfigureOpenCode_DisableLeavesAValueCortexDidNotSet(t *testing.T) {
-	const left = "  HTTPS_PROXY left as \"http://corp:3128\": it is not a value Cortex set.\n"
+	const left = "  HTTPS_PROXY left as \"http://corp:3128\": it is not a value Cortex set. " +
+		"Remove it yourself: opencode service unset env HTTPS_PROXY\n"
 	t.Run("no record, nothing else set", func(t *testing.T) {
 		f := &openCodeCLI{env: map[string]string{"HTTPS_PROXY": "http://corp:3128"}}
 		stubOpenCodeCLI(t, f)
@@ -472,7 +474,8 @@ func TestConfigureOpenCode_DisableLeavesAValueCortexDidNotSet(t *testing.T) {
 		if want := map[string]string{"NODE_EXTRA_CA_CERTS": "/theirs/ca.pem"}; !maps.Equal(f.env, want) {
 			t.Errorf("service env = %v, want %v", f.env, want)
 		}
-		if line := "  NODE_EXTRA_CA_CERTS left as \"/theirs/ca.pem\": it is not a value Cortex set.\n"; !strings.Contains(out, line) {
+		if line := "  NODE_EXTRA_CA_CERTS left as \"/theirs/ca.pem\": it is not a value Cortex set. " +
+			"Remove it yourself: opencode service unset env NODE_EXTRA_CA_CERTS\n"; !strings.Contains(out, line) {
 			t.Errorf("stdout lacks %q:\n%s", line, out)
 		}
 		if strings.Contains(out, "Restored") {
@@ -503,6 +506,56 @@ func TestConfigureOpenCode_DisableLeavesAValueCortexDidNotSet(t *testing.T) {
 			t.Errorf("stdout lacks %q:\n%s", left, out)
 		}
 	})
+}
+
+// Cortex's proxy is recognised by its listener, not its spelling. A config moved from
+// ":8081" (written as localhost) to "127.0.0.1:8081" names the same listener, so
+// disable removes all nine; leaving the proxies would keep OpenCode on Cortex while
+// saying it was disabled.
+func TestConfigureOpenCode_DisableRecognisesTheListenerInAnotherSpelling(t *testing.T) {
+	f := &openCodeCLI{}
+	home := stubOpenCodeCLI(t, f)
+	writeOpenCodeCortexCfg(t, home, strings.Replace(cortexCfg, `"127.0.0.1:47600"`, `":8081"`, 1))
+	if code, _, errOut := runOC("enable", "--yes"); code != 0 {
+		t.Fatalf("enable: exit %d: %s", code, errOut)
+	}
+	if got := f.env["HTTPS_PROXY"]; got != "http://localhost:8081" {
+		t.Fatalf("HTTPS_PROXY = %q, want http://localhost:8081, or the edit below proves nothing", got)
+	}
+	writeOpenCodeCortexCfg(t, home, strings.Replace(cortexCfg, `"127.0.0.1:47600"`, `"127.0.0.1:8081"`, 1))
+
+	code, out, errOut := runOC("disable", "--yes")
+	if code != 0 {
+		t.Fatalf("disable: exit %d: %s", code, errOut)
+	}
+	if len(f.env) != 0 {
+		t.Errorf("service env after disable = %v, want all nine unset", f.env)
+	}
+	if strings.Contains(out, "left as") {
+		t.Errorf("left Cortex's own proxy:\n%s", out)
+	}
+	if !strings.Contains(out, "Disabled. OpenCode's service no longer routes through Cortex from its next start.\n") {
+		t.Errorf("stdout lacks the closing line:\n%s", out)
+	}
+}
+
+// The default listener spelled as IPv6 loopback is Cortex's too: enable replaces it
+// rather than refusing it, and disable removes it.
+func TestConfigureOpenCode_IPv6LoopbackProxyIsCortexs(t *testing.T) {
+	f := &openCodeCLI{env: map[string]string{"https_proxy": "http://[::1]:47600"}}
+	home := stubOpenCodeCLI(t, f)
+	if code, _, errOut := runOC("enable", "--yes"); code != 0 {
+		t.Fatalf("enable: exit %d: %s", code, errOut)
+	}
+	if !maps.Equal(f.env, openCodeWant(home)) {
+		t.Errorf("service env after enable = %v, want Cortex's nine", f.env)
+	}
+	if code, _, errOut := runOC("disable", "--yes"); code != 0 {
+		t.Fatalf("disable: exit %d: %s", code, errOut)
+	}
+	if len(f.env) != 0 {
+		t.Errorf("service env after disable = %v, want it empty", f.env)
+	}
 }
 
 func TestConfigureOpenCode_DisableWithNothingSet(t *testing.T) {
@@ -552,8 +605,8 @@ func TestConfigureOpenCode_DisableWithoutAUsableRecord(t *testing.T) {
 					t.Errorf("%q: with no usable record every key is unset", w)
 				}
 			}
-			warned := strings.Contains(errOut, "cannot read the record of what you had before enabling") &&
-				strings.Contains(errOut, "not recoverable")
+			warned := strings.Contains(errOut, "cannot read the record") &&
+				strings.Contains(errOut, "written into the record by hand")
 			if warned != tc.warns {
 				t.Errorf("warned = %v, want %v; stderr: %q", warned, tc.warns, errOut)
 			}

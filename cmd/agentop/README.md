@@ -605,10 +605,11 @@ Cortex's own, such as a proxy at an older Cortex address. The first run records
 the nine in `~/.cortex/opencode-state.json`, counting Cortex's values as absent,
 and `disable` removes them rather than putting an old Cortex address back.
 `disable` changes only Cortex's values, whatever the record says: one set some
-other way, even after `enable`, is left alone and named. Declined, or with no
-terminal to ask on, both write nothing and exit **3**. `--yes` skips the question, `--config PATH` reads another Cortex
-config, and `--opencode BIN` names the CLI when it is neither on `PATH` nor in
-`~/.opencode/bin`.
+other way, even after `enable`, is left alone and named, with the `opencode
+service unset env` that removes it. Declined, or with no terminal to ask on, both
+write nothing and exit **3**. `--yes` skips the question, `--config PATH` reads
+another Cortex config, and `--opencode BIN` names the CLI when it is neither on
+`PATH` nor in `~/.opencode/bin`.
 
 Neither verb restarts a running service, because that ends every OpenCode session
 using it. Both compare the proxy in the environment the service's process started
@@ -621,7 +622,8 @@ that it is using Cortex although its service environment does not route it there
 so a restart would take it off, which is how a service started under `agentop
 exec` looks. Otherwise `status` says the service is not running, or, without a
 readable Cortex config, gives its pid and proxy. When the service's environment
-cannot be read, the line says it could not check rather than guessing.
+cannot be read, or `opencode service status` fails, the line says it could not
+check rather than guessing.
 
 ## Panes
 

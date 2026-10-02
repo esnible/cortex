@@ -568,9 +568,10 @@ func serviceUninstall(p servicePaths, yes bool, stdout, stderr io.Writer) int {
 	// Not "start it yourself with a backgrounded proxy": running unsupervised is no
 	// longer a mode this tool offers, and on macOS a hand-started proxy gets no crash
 	// recovery at all. Point back at the supported path.
-	fmt.Fprintf(stdout, "\nRemoved. Cortex is stopped; Claude Code will fail until it runs again.\n"+
+	fmt.Fprintf(stdout, "\nRemoved. Cortex is stopped; Claude Code and OpenCode will fail until it runs again.\n"+
 		"  Set it up again with:  agentop service install\n"+
 		"  Or unwire Claude Code: agentop configure claude-code disable\n"+
+		"  Or unwire OpenCode:    agentop configure opencode disable\n"+
 		"  The config and CA are untouched in %s\n", filepath.Dir(p.configFile))
 	return 0
 }

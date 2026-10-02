@@ -20,9 +20,11 @@ import (
 // writes the variables there, and only through the opencode CLI.
 
 const (
-	// opencodeStateRel records what each variable held in OpenCode's service environment
-	// before enable, so disable can put it back. Not clientstate.RelPath: that file is
-	// Claude Code's, and cortex reads it back to check Claude Code's CA.
+	// opencodeStateRel is enable's record of what the nine variables held before it ran.
+	// enable only ever replaces Cortex's own values, and records those as absent, so the
+	// record holds nothing for disable to put back unless a value is written into it by
+	// hand. Not clientstate.RelPath: that file is Claude Code's, and cortex reads it back
+	// to check Claude Code's CA.
 	opencodeStateRel = ".cortex/opencode-state.json"
 	// opencodeStateSettings is the record's Settings field. Claude Code's record names
 	// the settings file it describes; OpenCode's environment is reached through its
@@ -45,11 +47,16 @@ func openCodeCanonicalKey(k string) string {
 	return k
 }
 
-// openCodeIsOurs reports whether v, the value of k, is Cortex's: the value enable
-// sets, or one isCortexValue recognises. Asked under the canonical name, so a lowercase
-// proxy an earlier enable wrote for an older Cortex address counts as Cortex's.
+// openCodeIsOurs reports whether v, the value of k, is Cortex's: the value enable sets,
+// for a proxy key any spelling of the same listener (sameProxy: localhost, 127.0.0.1
+// and ::1 are one host), or one isCortexValue recognises. isCortexValue is asked under
+// the canonical name, so a lowercase proxy an earlier enable wrote for an older Cortex
+// address counts as Cortex's.
 func openCodeIsOurs(k, v string, want map[string]string) bool {
 	if w, ok := want[k]; ok && v == w {
+		return true
+	}
+	if openCodeCanonicalKey(k) == envProxy && sameProxy(v, want[k]) {
 		return true
 	}
 	return isCortexValue(openCodeCanonicalKey(k), v)
@@ -269,9 +276,10 @@ func planOpenCodeEnable(bin, cortexCfgPath string) (openCodePlan, error) {
 	return pl, nil
 }
 
-// applyOpenCodeEnable records what the keys held, then sets each one that differs.
-// Failing to record is a warning, as it is for claude-code: the change still happens,
-// and disable then removes the keys rather than restoring them.
+// applyOpenCodeEnable records what the keys held, then sets each one that differs. A
+// value it replaces is always Cortex's, the plan having refused any other, so every key
+// is recorded as absent. Failing to record is a warning, as it is for claude-code, and
+// the change still happens: disable removes Cortex's values without a record.
 func applyOpenCodeEnable(pl openCodePlan, statePath string, stderr io.Writer) error {
 	st := managedState{Settings: opencodeStateSettings, Prior: map[string]*string{}}
 	for _, k := range openCodeKeys {
@@ -285,8 +293,9 @@ func applyOpenCodeEnable(pl openCodePlan, statePath string, stderr io.Writer) er
 		}
 	}
 	if err := writeState(statePath, st); err != nil {
-		fmt.Fprintf(stderr, "agentop: could not record OpenCode's prior values (%v); disable will remove\n"+
-			"  these variables rather than restore any you had set yourself\n", err)
+		fmt.Fprintf(stderr, "agentop: could not record OpenCode's prior values (%v).\n"+
+			"  Enabling anyway: every value this replaces is Cortex's, and disable removes\n"+
+			"  those without a record.\n", err)
 	}
 	for i, k := range pl.changes {
 		if _, err := openCodeRun(pl.bin, "service", "set", "env", k, pl.want[k]); err != nil {
@@ -382,12 +391,11 @@ func planOpenCodeDisable(bin, statePath string, want map[string]string) (openCod
 // for the next disable, which then finishes the job.
 func applyOpenCodeDisable(pl openCodeDisablePlan, statePath string, stderr io.Writer) ([]string, error) {
 	if pl.stErr != nil {
-		// Proceed, as claude-code does: the user asked for this off. But say what is
-		// about to be lost.
-		fmt.Fprintf(stderr, "agentop: cannot read the record of what you had before enabling (%v).\n"+
-			"  Falling back to removing these keys outright. If you had set any of them\n"+
-			"  yourself before running enable, that value is not recoverable from here —\n"+
-			"  check opencode service get env afterwards.\n\n", pl.stErr)
+		// Proceed, as claude-code does: the user asked for this off. enable never
+		// records a value of the user's, so only one written in by hand can be lost.
+		fmt.Fprintf(stderr, "agentop: cannot read the record of what OpenCode's service environment held before enable (%v).\n"+
+			"  Removing Cortex's values without it. enable records none of yours, so this\n"+
+			"  loses nothing unless a value was written into the record by hand.\n\n", pl.stErr)
 	}
 	var restored []string
 	for _, k := range pl.present {
@@ -438,7 +446,8 @@ func openCodeDisable(bin, cortexCfgPath, statePath string, yes bool, stdout, std
 		fmt.Fprintf(stdout, "This will remove from OpenCode's service environment: %s\n", strings.Join(pl.present, ", "))
 	}
 	for _, k := range pl.left {
-		fmt.Fprintf(stdout, "  %s left as %q: it is not a value Cortex set.\n", k, pl.env[k])
+		fmt.Fprintf(stdout, "  %s left as %q: it is not a value Cortex set. Remove it yourself: opencode service unset env %s\n",
+			k, pl.env[k], k)
 	}
 	if len(pl.present) == 0 {
 		return 0
