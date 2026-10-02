@@ -52,6 +52,22 @@ release. Pin or override with `--ref`
 **Full install guide:** [Cortex on your laptop](https://www.rossoctl.dev/docs/dev/get-started/laptop)
 — prerequisites, step-by-step walkthrough, service management and troubleshooting.
 
+## Uninstall
+
+```sh
+agentop configure claude-code disable --yes && agentop service uninstall --yes
+```
+
+Claude Code goes straight to the API again, and Cortex stops and no longer starts at
+login. Your config, CA and cost history stay in `~/.cortex`, so
+`agentop service install && agentop configure claude-code enable` brings it back as it was.
+
+Restart any `claude` that was already running: it still points at Cortex.
+`claude --resume` picks the conversation back up.
+
+To delete everything, see [Remove it](./docs/laptop-service.md#remove-it). If
+`agentop` itself is gone, [remove it by hand](./docs/laptop-service.md#if-agentop-is-already-gone).
+
 ## Feedback
 
 > [!NOTE]
