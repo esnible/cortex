@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"net/netip"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -473,4 +474,86 @@ func TestSelfTraffic_AnotherProgramCallingTheServiceIsRecorded(t *testing.T) {
 	if n := countPath(store, "/api/info"); n != 1 {
 		t.Errorf("curl's call to the service: %d rows, want 1", n)
 	}
+}
+
+// loopbackDests is the scope of the self-traffic rule: only a request to this host can be
+// an agent talking to its own service. A remote host on the port an agent's service holds
+// is not — and a real lookup would answer it, since a wildcard listener matches every
+// address on its port.
+func TestLoopbackDests(t *testing.T) {
+	v4, v6 := netip.MustParseAddr("127.0.0.1"), netip.IPv6Loopback()
+	for _, tc := range []struct {
+		url  string
+		want []netip.AddrPort
+	}{
+		{"http://127.0.0.1:8080/x", []netip.AddrPort{netip.AddrPortFrom(v4, 8080)}},
+		{"http://127.0.0.5:8080/x", []netip.AddrPort{netip.AddrPortFrom(netip.MustParseAddr("127.0.0.5"), 8080)}},
+		{"http://[::1]:8080/x", []netip.AddrPort{netip.AddrPortFrom(v6, 8080)}},
+		{"http://[::ffff:127.0.0.1]:8080/x", []netip.AddrPort{netip.AddrPortFrom(v4, 8080)}},
+		{"http://LOCALHOST:8080/x", []netip.AddrPort{netip.AddrPortFrom(v4, 8080), netip.AddrPortFrom(v6, 8080)}},
+		{"http://127.0.0.1/x", []netip.AddrPort{netip.AddrPortFrom(v4, 80)}},
+		{"https://127.0.0.1/x", []netip.AddrPort{netip.AddrPortFrom(v4, 443)}},
+		{"http://10.0.0.1:8080/x", nil},
+		{"http://example.com:8080/x", nil},
+		{"http://127.0.0.1:99999/x", nil},
+		{"/x", nil}, // origin-form: no host to judge
+	} {
+		u, err := url.Parse(tc.url)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := loopbackDests(&http.Request{URL: u}); !slices.Equal(got, tc.want) {
+			t.Errorf("loopbackDests(%s) = %v, want %v", tc.url, got, tc.want)
+		}
+	}
+}
+
+// A process whose executable could not be read is no evidence of anything: two of them do
+// not run "the same" program, so the TUI's polling stays recorded.
+func TestSelfTraffic_AnUnknownExecutableIsNeverSelfTraffic(t *testing.T) {
+	procs := newFakeProcs(fproc(500, 1, ""), fproc(510, 60, ""))
+	store := session.New(0, 0, 0)
+	defer store.Close()
+	proxyURL, backendURL, _ := newProcessProxy(t, store, procs, func(s *Server) {
+		s.SessionIDHeaders = append(s.SessionIDHeaders, "X-Opencode-Session-Id")
+	})
+	procs.listens(t, backendURL, 500)
+	tui, svc := procs.clientFor(proxyURL, 510), procs.clientFor(proxyURL, 500)
+
+	sendAs(t, svc, backendURL+"/zen/v1/chat/completions", "opencode/latest/2.0.21/cli", "X-Opencode-Session-Id", "ses_1")
+	sendAs(t, tui, backendURL+"/api/info", "opencode/latest/2.0.21/cli", "", "")
+	if n := countPath(store, "/api/info"); n != 1 {
+		t.Errorf("%d /api/info rows recorded, want 1: an unknown executable matched another", n)
+	}
+}
+
+// A request a bridged tunnel decrypted is what its tunnel's open row waits for
+// (tunnelLog.recordWith); skipping it would strand that open. So a bridged request is
+// never self-traffic, even to an agent's own service.
+func TestSelfTraffic_ABridgedRequestIsRecorded(t *testing.T) {
+	procs := newFakeProcs(fproc(500, 1, opencodeExe), fproc(510, 60, opencodeExe))
+	store := session.New(0, 0, 0)
+	defer store.Close()
+	origin := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok")) }))
+	t.Cleanup(origin.Close)
+	originCA := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: origin.Certificate().Raw})
+	u, err := url.Parse(origin.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := bridgeEngine(t, portOf(u.Host), originCA)
+	proxyURL, backendURL, _ := newProcessProxy(t, store, procs, func(s *Server) {
+		s.TLSBridge = engine
+		s.SessionIDHeaders = append(s.SessionIDHeaders, "X-Opencode-Session-Id")
+	})
+	procs.listens(t, origin.URL, 500) // the service holds the port the tunnel goes to
+	sendAs(t, procs.clientFor(proxyURL, 500), backendURL+"/zen/v1/chat/completions", "", "X-Opencode-Session-Id", "ses_1")
+
+	raw, br, _ := connectAs(t, procs, proxyURL, u.Host, 510)
+	tc := bridgedTLS(t, raw, br, u.Host, engine.CAPEM)
+	req, _ := http.NewRequest(http.MethodGet, "https://"+hostOnly(u.Host)+"/api/info", nil)
+	bridgedRoundTrip(t, tc, req)
+	_ = tc.Close()
+
+	eventually(t, func() bool { return countPath(store, "/api/info") == 1 }, "the bridged request's row")
 }

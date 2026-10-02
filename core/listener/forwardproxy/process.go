@@ -146,6 +146,9 @@ func (s *Server) selfTraffic(r *http.Request, chain []session.Proc) bool {
 	return false
 }
 
+// listenerBehind is which process listens at dest, asked of the kernel at most once per
+// listenerTTL on each connection. A miss is cached the same way: nothing listening, or a
+// listener the lookup cannot name, is trusted for as long as a hit.
 func (s *Server) listenerBehind(cp *connProc, dest netip.AddrPort) (peerproc.Proc, bool) {
 	now := time.Now()
 	cp.mu.Lock()
@@ -172,6 +175,9 @@ func loopbackDests(r *http.Request) []netip.AddrPort {
 	host, port := r.URL.Hostname(), r.URL.Port()
 	if port == "" {
 		port = "80"
+		if strings.EqualFold(r.URL.Scheme, "https") {
+			port = "443"
+		}
 	}
 	n, err := strconv.ParseUint(port, 10, 16)
 	if err != nil {
@@ -198,5 +204,5 @@ func (s *Server) noteSelfTraffic(exe string, dest netip.AddrPort, pid int32) {
 		slog.Info("forward-proxy: not recording an agent's traffic to its own service on this host",
 			"exe", exe, "service", dest.String(), "service_pid", pid)
 	}
-	slog.Debug("forward-proxy: agent self-traffic forwarded without recording", "exe", exe, "service", dest.String())
+	slog.Debug("forward-proxy: agent self-traffic forwarded without recording", "exe", exe, "service", dest.String(), "service_pid", pid)
 }
