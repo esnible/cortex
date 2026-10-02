@@ -4,18 +4,22 @@ package peerproc
 
 import (
 	"errors"
+	"fmt"
+	"io"
 	"net"
 	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"syscall"
 	"testing"
 	"time"
 )
 
-// TestMain doubles as the dialer the child-process test runs: with PEERPROC_TEST_DIAL
+// TestMain doubles as the two child processes the tests run. With PEERPROC_TEST_DIAL
 // set, the test binary dials that address, holds the connection until the other end
-// closes it, and exits.
+// closes it, and exits. With PEERPROC_TEST_LISTEN set, it listens on that address,
+// writes "ready" to stdout, and holds the listener until its stdin reaches EOF.
 func TestMain(m *testing.M) {
 	if addr := os.Getenv("PEERPROC_TEST_DIAL"); addr != "" {
 		c, err := net.Dial("tcp", addr)
@@ -23,6 +27,16 @@ func TestMain(m *testing.M) {
 			os.Exit(2)
 		}
 		_, _ = c.Read(make([]byte, 1))
+		os.Exit(0)
+	}
+	if addr := os.Getenv("PEERPROC_TEST_LISTEN"); addr != "" {
+		ln, err := net.Listen("tcp", addr)
+		if err != nil {
+			os.Exit(2)
+		}
+		fmt.Println("ready")
+		_, _ = io.Copy(io.Discard, os.Stdin)
+		_ = ln.Close()
 		os.Exit(0)
 	}
 	os.Exit(m.Run())
@@ -172,6 +186,31 @@ func TestListenerOwner_NamesTheListener(t *testing.T) {
 	}
 	if p.PID != int32(os.Getpid()) {
 		t.Errorf("pid %d, want %d", p.PID, os.Getpid())
+	}
+}
+
+// A socket bound to a port but not listening on it takes no connections, so it is no
+// one's listener. macOS keeps it in the same table as the listeners, with no foreign
+// port either; only its SO_ACCEPTCONN flag tells them apart.
+func TestListenerOwner_IgnoresABoundSocketThatIsNotListening(t *testing.T) {
+	r := newResolver(t)
+	fd, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_STREAM, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	syscall.CloseOnExec(fd)
+	t.Cleanup(func() { _ = syscall.Close(fd) })
+	if err := syscall.Bind(fd, &syscall.SockaddrInet4{Addr: [4]byte{127, 0, 0, 1}}); err != nil {
+		t.Fatal(err)
+	}
+	sa, err := syscall.Getsockname(fd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), uint16(sa.(*syscall.SockaddrInet4).Port))
+
+	if p, err := r.ListenerOwner(addr); !errors.Is(err, ErrNotFound) {
+		t.Errorf("ListenerOwner(%s) over a bound, non-listening socket = %+v, %v; want ErrNotFound", addr, p, err)
 	}
 }
 

@@ -34,8 +34,17 @@ const (
 	inpFaddr = 48 // a 16-byte union; an IPv4 address is its last 4 bytes
 	inpLaddr = 64
 
+	soOptions = 20 // u_int32: the socket's SO_* options
 	soLastPID = 68 // pid_t: the last process to use the socket
 
+	// soAcceptConn is SO_ACCEPTCONN, which listen(2) sets. A socket bound to a port but
+	// never listened on also has foreign port 0, so this flag is what tells a listener
+	// apart. On the live kernel so_options reads 0x6 on a listener, 0x8 on a client
+	// socket, 0xc on an accepted one and 0 on a socket that is only bound.
+	soAcceptConn = 0x2
+
+	// inp_vflag. A listener on [::] without IPV6_V6ONLY — Go's default for "tcp" with no
+	// host — carries both.
 	inpIPv4 = 0x1
 	inpIPv6 = 0x2
 )
@@ -48,6 +57,9 @@ func newPlatform() (Resolver, error) { return darwin{}, nil }
 type pcb struct {
 	laddr, faddr netip.AddrPort
 	pid          int32
+	vflag        byte
+	wildcard     bool // the local address is all zero: 0.0.0.0 or [::]
+	listening    bool // SO_ACCEPTCONN
 }
 
 // walkPCBs calls fn for each TCP pcb in a pcblist_n buffer until fn returns true. It
@@ -87,6 +99,7 @@ func walkPCBs(buf []byte, fn func(pcb) bool) error {
 			}
 			if cur != nil {
 				cur.pid = int32(le.Uint32(rec[soLastPID:]))
+				cur.listening = le.Uint32(rec[soOptions:])&soAcceptConn != 0
 				if fn(*cur) {
 					return nil
 				}
@@ -99,20 +112,71 @@ func walkPCBs(buf []byte, fn func(pcb) bool) error {
 }
 
 // parseInpcb reads an xinpcb_n's addresses. A socket marked IPv4 — including an IPv6
-// socket connected to an IPv4-mapped address, which the kernel re-marks — keeps its
-// addresses in the last 4 bytes of each union.
+// socket connected to an IPv4-mapped address, which the kernel re-marks, and a
+// dual-stack [::] listener, marked both — keeps its addresses in the last 4 bytes of
+// each union.
 func parseInpcb(rec []byte) pcb {
 	fport := binary.BigEndian.Uint16(rec[inpFport:])
 	lport := binary.BigEndian.Uint16(rec[inpLport:])
+	vflag := rec[inpVflag]
 	var fa, la netip.Addr
-	if rec[inpVflag]&inpIPv4 != 0 {
+	if vflag&inpIPv4 != 0 {
 		fa = netip.AddrFrom4([4]byte(rec[inpFaddr+12 : inpFaddr+16]))
 		la = netip.AddrFrom4([4]byte(rec[inpLaddr+12 : inpLaddr+16]))
 	} else {
 		fa = netip.AddrFrom16([16]byte(rec[inpFaddr : inpFaddr+16])).Unmap()
 		la = netip.AddrFrom16([16]byte(rec[inpLaddr : inpLaddr+16])).Unmap()
 	}
-	return pcb{laddr: netip.AddrPortFrom(la, lport), faddr: netip.AddrPortFrom(fa, fport)}
+	return pcb{
+		laddr:    netip.AddrPortFrom(la, lport),
+		faddr:    netip.AddrPortFrom(fa, fport),
+		vflag:    vflag,
+		wildcard: [16]byte(rec[inpLaddr:inpLaddr+16]) == [16]byte{},
+	}
+}
+
+// pickListener is the pid of the listener a connection to addr reaches, chosen from a
+// pcblist_n buffer in the order the kernel's own lookup uses:
+//
+//  1. a listener bound to exactly addr;
+//  2. else a wildcard listener of addr's family — for an IPv4 addr a 0.0.0.0 listener
+//     before a dual-stack [::] one, whichever is newer.
+//
+// Sockets that are not listening, and any whose pid is unknown, are passed over. Where
+// SO_REUSEPORT lets several listeners share a rank the kernel takes the newest exact
+// bind but the oldest wildcard, and so does this: the table lists sockets newest first,
+// so the first exact match is final while each wildcard match replaces the one before.
+// ErrNotFound when no listener matches.
+func pickListener(buf []byte, addr netip.AddrPort) (int32, error) {
+	addr = unmapAddrPort(addr)
+	v4 := addr.Addr().Is4()
+	var exact, wild, dualStack int32
+	err := walkPCBs(buf, func(p pcb) bool {
+		if !p.listening || p.pid <= 0 || p.laddr.Port() != addr.Port() {
+			return false
+		}
+		switch {
+		case !p.wildcard:
+			if p.laddr.Addr() == addr.Addr() {
+				exact = p.pid
+				return true
+			}
+		case v4 && p.vflag&inpIPv4 != 0 && p.vflag&inpIPv6 != 0:
+			dualStack = p.pid
+		case v4 && p.vflag&inpIPv4 != 0, !v4 && p.vflag&inpIPv6 != 0:
+			wild = p.pid
+		}
+		return false
+	})
+	if err != nil {
+		return 0, err
+	}
+	for _, pid := range []int32{exact, wild, dualStack} {
+		if pid != 0 {
+			return pid, nil
+		}
+	}
+	return 0, ErrNotFound
 }
 
 // findPID walks the live table for the first pcb match accepts.
@@ -148,11 +212,11 @@ func (darwin) ConnOwner(client, server netip.AddrPort, _ ...int32) (Proc, error)
 }
 
 func (darwin) ListenerOwner(addr netip.AddrPort) (Proc, error) {
-	addr = unmapAddrPort(addr)
-	pid, err := findPID(func(p pcb) bool {
-		return p.faddr.Port() == 0 && p.laddr.Port() == addr.Port() &&
-			(p.laddr.Addr() == addr.Addr() || p.laddr.Addr().IsUnspecified())
-	})
+	buf, err := unix.SysctlRaw("net.inet.tcp.pcblist_n")
+	if err != nil {
+		return Proc{}, err
+	}
+	pid, err := pickListener(buf, addr)
 	if err != nil {
 		return Proc{}, err
 	}

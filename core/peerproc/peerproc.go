@@ -43,8 +43,22 @@ type Resolver interface {
 	// scanning every process. ErrNotFound when no process the caller may inspect holds
 	// it, which includes a connection that has already closed.
 	ConnOwner(client, server netip.AddrPort, hints ...int32) (Proc, error)
-	// ListenerOwner is the process listening on addr, matched on port and on the
-	// address or a wildcard bind. ErrNotFound when none is.
+	// ListenerOwner is the process listening on the socket a connection to addr would
+	// reach, chosen on addr's port in the kernel's order:
+	//
+	//  1. a listener bound to exactly addr;
+	//  2. else a wildcard listener of addr's family: 0.0.0.0 for IPv4, [::] for IPv6;
+	//  3. else, for an IPv4 addr only, a [::] listener, which takes IPv4 too unless it
+	//     set IPV6_V6ONLY. macOS records that flag and skips such a listener; Linux's
+	//     /proc does not, so there this answer can name a listener that would refuse
+	//     the connection.
+	//
+	// A socket bound but not listening never counts, nor does one whose owner the kernel
+	// did not record (pid 0 on macOS, no inode on Linux). Where SO_REUSEPORT lets several
+	// listeners share a rank, macOS names the one its kernel picks — the newest exact
+	// bind, the oldest wildcard — and Linux, which spreads connections across such a
+	// group, names one of them. ErrNotFound when no listener matches, or the one chosen
+	// belongs to a process the caller may not inspect.
 	ListenerOwner(addr netip.AddrPort) (Proc, error)
 	// Ancestry is pid followed by its parents, nearest first, stopping before PID 1 and
 	// after max entries (at least one). A parent that cannot be read ends the walk;

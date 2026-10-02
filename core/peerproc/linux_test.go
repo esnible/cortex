@@ -3,6 +3,7 @@
 package peerproc
 
 import (
+	"bufio"
 	"encoding/binary"
 	"net"
 	"net/netip"
@@ -110,6 +111,38 @@ func TestReadBootTime(t *testing.T) {
 	}
 }
 
+func TestPickListener(t *testing.T) {
+	lst := func(addr string, inode uint64) tcpEntry {
+		return tcpEntry{local: netip.MustParseAddrPort(addr), listen: true, inode: inode}
+	}
+	cases := []struct {
+		name  string
+		es    []tcpEntry
+		query string
+		want  uint64 // the chosen entry's inode; 0 is none
+	}{
+		{"an exact bind after a wildcard", []tcpEntry{lst("0.0.0.0:80", 1), lst("127.0.0.1:80", 2)}, "127.0.0.1:80", 2},
+		{"an exact bind before a wildcard", []tcpEntry{lst("127.0.0.1:80", 2), lst("0.0.0.0:80", 1)}, "127.0.0.1:80", 2},
+		{"an exact IPv6 bind beside an IPv4 wildcard", []tcpEntry{lst("0.0.0.0:80", 1), lst("[::1]:80", 2)}, "[::1]:80", 2},
+		{"an IPv4 wildcard does not answer IPv6", []tcpEntry{lst("0.0.0.0:80", 1)}, "[::1]:80", 0},
+		{"[::] answers IPv6", []tcpEntry{lst("0.0.0.0:80", 1), lst("[::]:80", 3)}, "[::1]:80", 3},
+		{"0.0.0.0 before [::], for IPv4", []tcpEntry{lst("[::]:80", 3), lst("0.0.0.0:80", 1)}, "127.0.0.1:80", 1},
+		{"[::] for IPv4 as a last resort", []tcpEntry{lst("[::1]:80", 2), lst("[::]:80", 3)}, "127.0.0.1:80", 3},
+		{"an IPv4-mapped query is an IPv4 one", []tcpEntry{lst("127.0.0.1:80", 2)}, "[::ffff:127.0.0.1]:80", 2},
+		{"a socket not listening", []tcpEntry{{local: netip.MustParseAddrPort("127.0.0.1:80"), inode: 4}}, "127.0.0.1:80", 0},
+		{"an entry with no inode is passed over", []tcpEntry{lst("127.0.0.1:80", 0), lst("0.0.0.0:80", 1)}, "127.0.0.1:80", 1},
+		{"nothing on the port", []tcpEntry{lst("127.0.0.1:81", 2), lst("0.0.0.0:81", 1)}, "127.0.0.1:80", 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			e, ok := pickListener(tc.es, netip.MustParseAddrPort(tc.query))
+			if got := map[bool]uint64{true: e.inode}[ok]; got != tc.want {
+				t.Errorf("pickListener(%s) chose inode %d (found %v), want %d", tc.query, e.inode, ok, tc.want)
+			}
+		})
+	}
+}
+
 // A wildcard bind answers for every address on its port. Linux-only: on macOS a test
 // binary listening on every interface can raise the firewall prompt.
 func TestListenerOwner_MatchesAWildcardBind(t *testing.T) {
@@ -120,6 +153,59 @@ func TestListenerOwner_MatchesAWildcardBind(t *testing.T) {
 	p, err := r.ListenerOwner(netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), port))
 	if err != nil || p.PID != int32(os.Getpid()) {
 		t.Errorf("ListenerOwner(127.0.0.1:%d) over a 0.0.0.0 bind = %+v, %v", port, p, err)
+	}
+}
+
+// listenInChild starts this test binary as a child process listening on addr (see
+// TestMain) and returns its pid once the listener is up.
+func listenInChild(t *testing.T, addr string) int32 {
+	t.Helper()
+	self, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(self)
+	cmd.Env = append(os.Environ(), "PEERPROC_TEST_LISTEN="+addr)
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = stdin.Close(); _ = cmd.Process.Kill(); _ = cmd.Wait() })
+	if line, err := bufio.NewReader(stdout).ReadString('\n'); err != nil || line != "ready\n" {
+		t.Fatalf("child listening on %s said %q, %v; want \"ready\"", addr, line, err)
+	}
+	return int32(cmd.Process.Pid)
+}
+
+// A connection reaches the listener bound to its exact address before any wildcard, and
+// never a wildcard of the other family: here a child on [::1]:P beside this process on
+// 0.0.0.0:P. Taking the first match named this process for both. Linux-only, as it
+// binds a wildcard.
+func TestListenerOwner_NamesTheListenerAConnectionReaches(t *testing.T) {
+	probe, err := net.Listen("tcp6", "[::1]:0")
+	if err != nil {
+		t.Skipf("cannot bind [::1]: %v", err)
+	}
+	_ = probe.Close()
+	r := newResolver(t)
+	ln := listen(t, "tcp4", "0.0.0.0:0")
+	port := uint16(ln.Addr().(*net.TCPAddr).Port)
+	v6 := netip.AddrPortFrom(netip.IPv6Loopback(), port)
+	v4 := netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), port)
+	child := listenInChild(t, v6.String())
+
+	if p, err := r.ListenerOwner(v6); err != nil || p.PID != child {
+		t.Errorf("ListenerOwner(%s) = %+v, %v; want the child %d bound there", v6, p, err, child)
+	}
+	if p, err := r.ListenerOwner(v4); err != nil || p.PID != int32(os.Getpid()) {
+		t.Errorf("ListenerOwner(%s) = %+v, %v; want this process %d, on 0.0.0.0", v4, p, err, os.Getpid())
 	}
 }
 

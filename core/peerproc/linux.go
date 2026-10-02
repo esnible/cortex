@@ -133,18 +133,50 @@ func (l *linux) ConnOwner(client, server netip.AddrPort, hints ...int32) (Proc, 
 }
 
 func (l *linux) ListenerOwner(addr netip.AddrPort) (Proc, error) {
-	addr = unmapAddrPort(addr)
 	es, err := l.entries()
 	if err != nil {
 		return Proc{}, err
 	}
+	e, ok := pickListener(es, addr)
+	if !ok {
+		return Proc{}, ErrNotFound
+	}
+	return l.inodeOwner(e.inode, nil)
+}
+
+// pickListener is the listening entry a connection to addr reaches, in the order the
+// kernel's own lookup uses (__inet_lookup_listener tries the exact address before the
+// wildcard, and scores an IPv4 socket above a dual-stack IPv6 one):
+//
+//  1. a listener bound to exactly addr;
+//  2. else a wildcard listener of addr's family: 0.0.0.0 for IPv4, [::] for IPv6;
+//  3. else, for an IPv4 addr only, a [::] listener. That takes IPv4 unless it set
+//     IPV6_V6ONLY, which /proc/net/tcp6 does not show, so this rank is a guess.
+//
+// An entry with no inode is passed over. A rank shared by several entries is an
+// SO_REUSEPORT group the kernel balances connections across; this takes the first.
+func pickListener(es []tcpEntry, addr netip.AddrPort) (tcpEntry, bool) {
+	addr = unmapAddrPort(addr)
+	var best tcpEntry
+	rank := 0
 	for _, e := range es {
-		if e.listen && e.inode != 0 && e.local.Port() == addr.Port() &&
-			(e.local.Addr() == addr.Addr() || e.local.Addr().IsUnspecified()) {
-			return l.inodeOwner(e.inode, nil)
+		if !e.listen || e.inode == 0 || e.local.Port() != addr.Port() {
+			continue
+		}
+		la, r := e.local.Addr(), 0
+		switch {
+		case la == addr.Addr():
+			r = 3
+		case la.IsUnspecified() && la.Is4() == addr.Addr().Is4():
+			r = 2
+		case la.IsUnspecified() && addr.Addr().Is4():
+			r = 1
+		}
+		if r > rank {
+			best, rank = e, r
 		}
 	}
-	return Proc{}, ErrNotFound
+	return best, rank > 0
 }
 
 func (l *linux) Ancestry(pid int32, max int) ([]Proc, error) { return ancestry(l.procInfo, pid, max) }

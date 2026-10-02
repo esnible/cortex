@@ -4,16 +4,19 @@ package peerproc
 
 import (
 	"encoding/binary"
+	"errors"
 	"net/netip"
 	"strings"
 	"testing"
 )
 
 // fakePCB is one TCP pcb as pcbBuffer writes it: an xinpcb_n then its xsocket_n.
-// Zero lengths mean the real ones.
+// Zero lengths mean the real ones; a zero vflag is derived from laddr's family.
 type fakePCB struct {
 	laddr, faddr    netip.AddrPort
 	pid             int32
+	opts            uint32 // so_options
+	vflag           byte
 	inpLen, sockLen int
 }
 
@@ -39,20 +42,27 @@ func pcbBufferWithCount(count uint32, pcbs ...fakePCB) []byte {
 		le.PutUint32(inp[4:], xsoInpcb)
 		binary.BigEndian.PutUint16(inp[inpFport:], p.faddr.Port())
 		binary.BigEndian.PutUint16(inp[inpLport:], p.laddr.Port())
+		vflag := p.vflag
 		if p.laddr.Addr().Is4() {
-			inp[inpVflag] = inpIPv4
+			if vflag == 0 {
+				vflag = inpIPv4
+			}
 			f4, l4 := p.faddr.Addr().As4(), p.laddr.Addr().As4()
 			copy(inp[inpFaddr+12:], f4[:])
 			copy(inp[inpLaddr+12:], l4[:])
 		} else {
-			inp[inpVflag] = inpIPv6
+			if vflag == 0 {
+				vflag = inpIPv6
+			}
 			f6, l6 := p.faddr.Addr().As16(), p.laddr.Addr().As16()
 			copy(inp[inpFaddr:], f6[:])
 			copy(inp[inpLaddr:], l6[:])
 		}
+		inp[inpVflag] = vflag
 		sock := make([]byte, (sl+7)&^7)
 		le.PutUint32(sock, uint32(sl))
 		le.PutUint32(sock[4:], xsoSocket)
+		le.PutUint32(sock[soOptions:], p.opts)
 		le.PutUint32(sock[soLastPID:], uint32(p.pid))
 		rcv := make([]byte, 32)
 		le.PutUint32(rcv, 32)
@@ -134,5 +144,95 @@ func TestWalkPCBs_IgnoresTheTrailerWhateverTheSocketCount(t *testing.T) {
 		if err != nil || n != 1 {
 			t.Errorf("trailer count %d: visited %d pcbs, err %v; want 1 and nil", count, n, err)
 		}
+	}
+}
+
+// listening is a listener on addr ("127.0.0.1:80", "[::]:80"), as the kernel records
+// one: SO_ACCEPTCONN set and no foreign address. vflag 0 derives it from the address.
+func listening(addr string, pid int32, vflag byte) fakePCB {
+	ap := netip.MustParseAddrPort(addr)
+	none := netip.IPv6Unspecified()
+	if ap.Addr().Is4() {
+		none = netip.IPv4Unspecified()
+	}
+	return fakePCB{laddr: ap, faddr: netip.AddrPortFrom(none, 0), pid: pid, opts: soAcceptConn | 0x4, vflag: vflag}
+}
+
+const dualStack = inpIPv4 | inpIPv6
+
+// pickListenerCases list pcbs in buffer order, which is the kernel's: newest first.
+// want 0 is ErrNotFound.
+var pickListenerCases = []struct {
+	name  string
+	pcbs  []fakePCB
+	query string
+	want  int32
+}{
+	{"an exact bind before a wildcard",
+		[]fakePCB{listening("127.0.0.1:80", 2, 0), listening("0.0.0.0:80", 1, 0)}, "127.0.0.1:80", 2},
+	{"an exact bind after a wildcard",
+		[]fakePCB{listening("0.0.0.0:80", 1, 0), listening("127.0.0.1:80", 2, 0)}, "127.0.0.1:80", 2},
+	{"an exact IPv6 bind beside an IPv4 wildcard",
+		[]fakePCB{listening("0.0.0.0:80", 1, 0), listening("[::1]:80", 2, 0)}, "[::1]:80", 2},
+	{"an IPv4 wildcard does not answer IPv6",
+		[]fakePCB{listening("0.0.0.0:80", 1, 0)}, "[::1]:80", 0},
+	{"a v6-only wildcard does not answer IPv4",
+		[]fakePCB{listening("[::]:80", 1, inpIPv6)}, "127.0.0.1:80", 0},
+	{"a v6-only wildcard answers IPv6",
+		[]fakePCB{listening("[::]:80", 1, inpIPv6)}, "[::1]:80", 1},
+	{"a dual-stack wildcard answers IPv4",
+		[]fakePCB{listening("[::]:80", 3, dualStack)}, "127.0.0.1:80", 3},
+	{"a dual-stack wildcard answers IPv6",
+		[]fakePCB{listening("[::]:80", 3, dualStack)}, "[::1]:80", 3},
+	{"an IPv4-mapped query is an IPv4 one",
+		[]fakePCB{listening("127.0.0.1:80", 2, 0)}, "[::ffff:127.0.0.1]:80", 2},
+	// The kernel prefers a 0.0.0.0 listener over a dual-stack [::] one for IPv4 whichever
+	// is newer; macOS lets the two share a port without SO_REUSEPORT.
+	{"0.0.0.0 before a newer dual-stack [::], for IPv4",
+		[]fakePCB{listening("[::]:80", 3, dualStack), listening("0.0.0.0:80", 1, 0)}, "127.0.0.1:80", 1},
+	{"0.0.0.0 before an older dual-stack [::], for IPv4",
+		[]fakePCB{listening("0.0.0.0:80", 1, 0), listening("[::]:80", 3, dualStack)}, "127.0.0.1:80", 1},
+	{"a dual-stack [::] beside 0.0.0.0, for IPv6",
+		[]fakePCB{listening("[::]:80", 3, dualStack), listening("0.0.0.0:80", 1, 0)}, "[::1]:80", 3},
+	// SO_REUSEPORT: the newest exact bind, the oldest wildcard.
+	{"the newest of two exact binds",
+		[]fakePCB{listening("127.0.0.1:80", 8, 0), listening("127.0.0.1:80", 7, 0)}, "127.0.0.1:80", 8},
+	{"the oldest of two wildcards",
+		[]fakePCB{listening("0.0.0.0:80", 6, 0), listening("0.0.0.0:80", 5, 0)}, "127.0.0.1:80", 5},
+	{"a socket only bound is no listener, though its foreign port is 0",
+		[]fakePCB{{laddr: netip.MustParseAddrPort("127.0.0.1:80"), faddr: netip.MustParseAddrPort("0.0.0.0:0"), pid: 4}},
+		"127.0.0.1:80", 0},
+	{"a socket only bound does not hide the wildcard listener",
+		[]fakePCB{{laddr: netip.MustParseAddrPort("127.0.0.1:80"), faddr: netip.MustParseAddrPort("0.0.0.0:0"), pid: 4},
+			listening("0.0.0.0:80", 1, 0)}, "127.0.0.1:80", 1},
+	{"a connected socket is no listener",
+		[]fakePCB{{laddr: netip.MustParseAddrPort("127.0.0.1:80"), faddr: netip.MustParseAddrPort("127.0.0.1:5000"), pid: 4, opts: 0xc}},
+		"127.0.0.1:80", 0},
+	{"a listener whose pid is 0 is passed over",
+		[]fakePCB{listening("127.0.0.1:80", 0, 0), listening("0.0.0.0:80", 1, 0)}, "127.0.0.1:80", 1},
+	{"a listener whose pid is 0 is not found",
+		[]fakePCB{listening("127.0.0.1:80", 0, 0)}, "127.0.0.1:80", 0},
+	{"nothing on the port",
+		[]fakePCB{listening("127.0.0.1:81", 2, 0), listening("0.0.0.0:81", 1, 0)}, "127.0.0.1:80", 0},
+}
+
+func TestPickListener(t *testing.T) {
+	for _, tc := range pickListenerCases {
+		t.Run(tc.name, func(t *testing.T) {
+			pid, err := pickListener(pcbBuffer(tc.pcbs...), netip.MustParseAddrPort(tc.query))
+			switch {
+			case tc.want == 0 && !errors.Is(err, ErrNotFound):
+				t.Errorf("pickListener(%s) = %d, %v; want ErrNotFound", tc.query, pid, err)
+			case tc.want != 0 && (err != nil || pid != tc.want):
+				t.Errorf("pickListener(%s) = %d, %v; want %d", tc.query, pid, err, tc.want)
+			}
+		})
+	}
+}
+
+func TestPickListener_PassesOnALayoutError(t *testing.T) {
+	buf := pcbBuffer(fakePCB{laddr: netip.MustParseAddrPort("127.0.0.1:80"), faddr: netip.MustParseAddrPort("0.0.0.0:0"), pid: 1, inpLen: inpcbLen + 8})
+	if _, err := pickListener(buf, netip.MustParseAddrPort("127.0.0.1:80")); err == nil || errors.Is(err, ErrNotFound) {
+		t.Errorf("err = %v, want walkPCBs's layout error", err)
 	}
 }
