@@ -211,7 +211,7 @@ func (darwin) ConnOwner(client, server netip.AddrPort, _ ...int32) (Proc, error)
 	return procInfo(pid)
 }
 
-func (darwin) ListenerOwner(addr netip.AddrPort) (Proc, error) {
+func (darwin) ListenerOwner(addr netip.AddrPort, _ ...int32) (Proc, error) {
 	buf, err := unix.SysctlRaw("net.inet.tcp.pcblist_n")
 	if err != nil {
 		return Proc{}, err

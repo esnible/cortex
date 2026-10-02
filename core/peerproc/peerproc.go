@@ -57,9 +57,9 @@ type Resolver interface {
 	// did not record (pid 0 on macOS, no inode on Linux). Where SO_REUSEPORT lets several
 	// listeners share a rank, macOS names the one its kernel picks — the newest exact
 	// bind, the oldest wildcard — and Linux, which spreads connections across such a
-	// group, names one of them. ErrNotFound when no listener matches, or the one chosen
-	// belongs to a process the caller may not inspect.
-	ListenerOwner(addr netip.AddrPort) (Proc, error)
+	// group, names one of them. hints are as ConnOwner's. ErrNotFound when no listener
+	// matches, or the one chosen belongs to a process the caller may not inspect.
+	ListenerOwner(addr netip.AddrPort, hints ...int32) (Proc, error)
 	// Ancestry is pid followed by its parents, nearest first, stopping before PID 1 and
 	// after max entries (at least one). A parent that cannot be read ends the walk;
 	// only an unreadable pid itself is ErrNotFound.
@@ -123,7 +123,7 @@ func selfTest(r Resolver) error {
 	if p.PID != self {
 		return fmt.Errorf("ConnOwner named pid %d, want %d", p.PID, self)
 	}
-	if p, err = r.ListenerOwner(server); err != nil {
+	if p, err = r.ListenerOwner(server, self); err != nil {
 		return fmt.Errorf("ListenerOwner: %w", err)
 	}
 	if p.PID != self {

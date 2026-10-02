@@ -5,12 +5,14 @@ package peerproc
 import (
 	"bufio"
 	"encoding/binary"
+	"errors"
 	"net"
 	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -41,8 +43,8 @@ func TestParseProcNetTCP_IPv4(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []tcpEntry{
-		{local: netip.MustParseAddrPort("127.0.0.1:47500"), remote: netip.MustParseAddrPort("127.0.0.1:8080"), inode: 123456},
-		{local: netip.MustParseAddrPort("0.0.0.0:8080"), remote: netip.MustParseAddrPort("0.0.0.0:0"), listen: true, inode: 654321},
+		{local: netip.MustParseAddrPort("127.0.0.1:47500"), remote: netip.MustParseAddrPort("127.0.0.1:8080"), uid: 1000, inode: 123456},
+		{local: netip.MustParseAddrPort("0.0.0.0:8080"), remote: netip.MustParseAddrPort("0.0.0.0:0"), listen: true, uid: 1000, inode: 654321},
 	}
 	if len(es) != len(want) {
 		t.Fatalf("%d entries, want %d (the garbage line skipped): %+v", len(es), len(want), es)
@@ -63,8 +65,8 @@ func TestParseProcNetTCP_IPv6AndMapped(t *testing.T) {
 		t.Fatal(err)
 	}
 	want := []tcpEntry{
-		{local: netip.MustParseAddrPort("[::1]:8081"), remote: netip.MustParseAddrPort("[::1]:47501"), inode: 777},
-		{local: netip.MustParseAddrPort("127.0.0.1:47502"), remote: netip.MustParseAddrPort("127.0.0.1:8082"), inode: 888},
+		{local: netip.MustParseAddrPort("[::1]:8081"), remote: netip.MustParseAddrPort("[::1]:47501"), uid: 1000, inode: 777},
+		{local: netip.MustParseAddrPort("127.0.0.1:47502"), remote: netip.MustParseAddrPort("127.0.0.1:8082"), uid: 1000, inode: 888},
 	}
 	if len(es) != len(want) {
 		t.Fatalf("%d entries, want %d: %+v", len(es), len(want), es)
@@ -73,6 +75,34 @@ func TestParseProcNetTCP_IPv6AndMapped(t *testing.T) {
 		if es[i] != want[i] {
 			t.Errorf("entry %d = %+v, want %+v", i, es[i], want[i])
 		}
+	}
+}
+
+// Another user's socket cannot be attributed — their /proc/<pid>/fd is unreadable — so
+// owner answers ErrNotFound without scanning /proc. The socket is one this process
+// holds, named by its real inode with this process as the hint, so a lookup that did
+// run would find it.
+func TestOwner_SkipsAnotherUsersSocketUnlessRoot(t *testing.T) {
+	ln := listen(t, "tcp", "127.0.0.1:0")
+	f, err := ln.(*net.TCPListener).File()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	var st syscall.Stat_t
+	if err := syscall.Fstat(int(f.Fd()), &st); err != nil {
+		t.Fatal(err)
+	}
+	self := []int32{int32(os.Getpid())}
+
+	if p, err := (&linux{euid: 1000}).owner(tcpEntry{uid: 2000, inode: st.Ino}, self); !errors.Is(err, ErrNotFound) {
+		t.Errorf("euid 1000, socket uid 2000: owner = %+v, %v; want ErrNotFound without a lookup", p, err)
+	}
+	if p, err := (&linux{euid: 2000}).owner(tcpEntry{uid: 2000, inode: st.Ino}, self); err != nil || p.PID != self[0] {
+		t.Errorf("euid 2000, socket uid 2000: owner = %+v, %v; want this process", p, err)
+	}
+	if p, err := (&linux{euid: 0}).owner(tcpEntry{uid: 2000, inode: st.Ino}, self); err != nil || p.PID != self[0] {
+		t.Errorf("euid 0, socket uid 2000: owner = %+v, %v; want this process, root may read every fd", p, err)
 	}
 }
 

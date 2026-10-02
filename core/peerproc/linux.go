@@ -22,6 +22,7 @@ const clockTicks = 100
 
 type linux struct {
 	bootTime time.Time
+	euid     uint32
 }
 
 func newPlatform() (Resolver, error) {
@@ -29,13 +30,14 @@ func newPlatform() (Resolver, error) {
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrUnsupported, err)
 	}
-	return &linux{bootTime: bt}, nil
+	return &linux{bootTime: bt, euid: uint32(os.Geteuid())}, nil
 }
 
 // tcpEntry is one line of /proc/net/tcp or /proc/net/tcp6.
 type tcpEntry struct {
 	local, remote netip.AddrPort
 	listen        bool
+	uid           uint32 // the socket's owner
 	inode         uint64
 }
 
@@ -55,11 +57,12 @@ func parseProcNetTCP(r io.Reader) ([]tcpEntry, error) {
 		}
 		local, err1 := parseHexAddrPort(f[1])
 		remote, err2 := parseHexAddrPort(f[2])
-		inode, err3 := strconv.ParseUint(f[9], 10, 64)
-		if err1 != nil || err2 != nil || err3 != nil {
+		uid, err3 := strconv.ParseUint(f[7], 10, 32)
+		inode, err4 := strconv.ParseUint(f[9], 10, 64)
+		if err1 != nil || err2 != nil || err3 != nil || err4 != nil {
 			continue
 		}
-		out = append(out, tcpEntry{local: local, remote: remote, listen: f[3] == "0A", inode: inode})
+		out = append(out, tcpEntry{local: local, remote: remote, listen: f[3] == "0A", uid: uint32(uid), inode: inode})
 	}
 	return out, sc.Err()
 }
@@ -126,13 +129,13 @@ func (l *linux) ConnOwner(client, server netip.AddrPort, hints ...int32) (Proc, 
 	}
 	for _, e := range es {
 		if !e.listen && e.inode != 0 && e.local == client && e.remote == server {
-			return l.inodeOwner(e.inode, hints)
+			return l.owner(e, hints)
 		}
 	}
 	return Proc{}, ErrNotFound
 }
 
-func (l *linux) ListenerOwner(addr netip.AddrPort) (Proc, error) {
+func (l *linux) ListenerOwner(addr netip.AddrPort, hints ...int32) (Proc, error) {
 	es, err := l.entries()
 	if err != nil {
 		return Proc{}, err
@@ -141,7 +144,7 @@ func (l *linux) ListenerOwner(addr netip.AddrPort) (Proc, error) {
 	if !ok {
 		return Proc{}, ErrNotFound
 	}
-	return l.inodeOwner(e.inode, nil)
+	return l.owner(e, hints)
 }
 
 // pickListener is the listening entry a connection to addr reaches, in the order the
@@ -180,6 +183,21 @@ func pickListener(es []tcpEntry, addr netip.AddrPort) (tcpEntry, bool) {
 }
 
 func (l *linux) Ancestry(pid int32, max int) ([]Proc, error) { return ancestry(l.procInfo, pid, max) }
+
+// owner is the process holding e's socket. Only root may read another user's
+// /proc/<pid>/fd, so a socket another uid owns cannot be attributed by anyone else, and
+// learning that by scanning every process is the slow path — ~23 ms across 503
+// processes — which the usual other local server, Ollama under its own user or
+// docker-proxy as root, would take on every lookup. The uid column is the socket's
+// creator: a process that created a socket and then changed uid is reported not found,
+// which leaves the request recorded rather than hidden. A caller with CAP_SYS_PTRACE
+// but not euid 0 could have read those fds and is treated like any other user.
+func (l *linux) owner(e tcpEntry, hints []int32) (Proc, error) {
+	if l.euid != 0 && e.uid != l.euid {
+		return Proc{}, ErrNotFound
+	}
+	return l.inodeOwner(e.inode, hints)
+}
 
 // inodeOwner finds the process holding socket inode: the hints first, then every
 // process. A socket shared across a fork is held by both processes, and the first one
