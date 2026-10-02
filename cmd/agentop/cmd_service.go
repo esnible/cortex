@@ -50,9 +50,9 @@ Usage:
 
 install hands the proxy to the OS supervisor — a launchd user agent on macOS, a
 systemd user unit on Linux — so it restarts on failure and comes back at login.
-Claude Code depends on the proxy being up once "agentop configure claude-code enable"
-has run,
-and nothing else keeps it up.
+Claude Code and OpenCode depend on the proxy being up once "agentop configure
+claude-code enable" or "agentop configure opencode enable" has run, and nothing
+else keeps it up.
 
 stop/start/restart exist so there is never a reason to reach for launchctl,
 systemctl, kill or pkill: under a supervisor a plain kill is undone within seconds,
@@ -282,8 +282,8 @@ func serviceInstall(p servicePaths, yes, forceRestart bool, stdout, stderr io.Wr
 	if !yes {
 		fmt.Fprintf(stdout, "This will install a %s that runs:\n  %s --config %s\n\n",
 			supervisorName(runtime.GOOS), p.binary, p.configFile)
-		fmt.Fprintf(stdout, "It restarts on failure and starts at login, so Claude Code keeps working\n"+
-			"after a crash or a reboot. Unit file: %s\n\n", p.unitFile)
+		fmt.Fprintf(stdout, "It restarts on failure and starts at login, so Claude Code and OpenCode keep\n"+
+			"working after a crash or a reboot. Unit file: %s\n\n", p.unitFile)
 	}
 
 	// Adopt rather than collide. Two copies cannot share the ports, and the
@@ -555,9 +555,9 @@ func serviceUninstall(p servicePaths, yes bool, stdout, stderr io.Writer) int {
 		return 0
 	}
 	fmt.Fprintf(stdout, "This will stop and remove the %s at:\n  %s\n\n", supervisorName(runtime.GOOS), p.unitFile)
-	fmt.Fprintf(stdout, "Cortex will no longer start at login. Claude Code stops working whenever\n"+
-		"the proxy is not running — `agentop configure claude-code disable` removes that\n"+
-		"dependency.\n\n")
+	fmt.Fprintf(stdout, "Cortex will no longer start at login. Claude Code and OpenCode stop working\n"+
+		"whenever the proxy is not running — `agentop configure claude-code disable` and\n"+
+		"`agentop configure opencode disable` remove that dependency.\n\n")
 	if !yes && !serviceConfirm(stdout) {
 		fmt.Fprintln(stdout, "Not changed.")
 		return exitDeclined
@@ -568,9 +568,10 @@ func serviceUninstall(p servicePaths, yes bool, stdout, stderr io.Writer) int {
 	// Not "start it yourself with a backgrounded proxy": running unsupervised is no
 	// longer a mode this tool offers, and on macOS a hand-started proxy gets no crash
 	// recovery at all. Point back at the supported path.
-	fmt.Fprintf(stdout, "\nRemoved. Cortex is stopped; Claude Code will fail until it runs again.\n"+
+	fmt.Fprintf(stdout, "\nRemoved. Cortex is stopped; Claude Code and OpenCode will fail until it runs again.\n"+
 		"  Set it up again with:  agentop service install\n"+
 		"  Or unwire Claude Code: agentop configure claude-code disable\n"+
+		"  Or unwire OpenCode:    agentop configure opencode disable\n"+
 		"  The config and CA are untouched in %s\n", filepath.Dir(p.configFile))
 	return 0
 }
@@ -647,10 +648,10 @@ func serviceStatus(p servicePaths, stdout io.Writer) int {
 		fmt.Fprintf(stdout, "healthy: %s\n", p.healthURL)
 		return 0
 	}
-	// Installed but not serving is the state worth naming loudly: Claude Code is
-	// pointed at a proxy that is not answering.
+	// Installed but not serving is the state worth naming loudly: a configured Claude
+	// Code or OpenCode is pointed at a proxy that is not answering.
 	fmt.Fprintf(stdout, "NOT answering %s\n", p.healthURL)
-	fmt.Fprintf(stdout, "  Claude Code will fail while this is true. Last log lines:\n")
+	fmt.Fprintf(stdout, "  Claude Code and OpenCode will fail while this is true. Last log lines:\n")
 	for _, line := range lastLines(p.logFile, 5) {
 		fmt.Fprintf(stdout, "    %s\n", line)
 	}

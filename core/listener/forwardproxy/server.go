@@ -98,8 +98,8 @@ type Server struct {
 	// client-supplied session id to bucket events under. The first one
 	// present and usable wins; when none is, bucketing falls back to
 	// ActiveSession() and then the default bucket, exactly as before.
-	// Empty disables header-based bucketing. See config.SessionConfig
-	// SessionIDHeaders for the default and how to turn it off.
+	// Empty disables header-based bucketing. See config.SessionConfig's
+	// SessionIDHeaders and SessionIDHeadersFor for the defaults and how to turn it off.
 	SessionIDHeaders []string
 
 	// ClientAffinity files a request that carries no session header under the newest

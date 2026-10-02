@@ -39,7 +39,7 @@ OpenCode isolated through its own `XDG_*` directories.
 |---|---|
 | OpenCode's process model | A background service, `opencode serve --service`, on a **fixed port (49374)** — one per user. The first client spawns it; when that client exits it is reparented to PID 1, and every later client reuses it. |
 | Who sends OpenCode's traffic | **The service, for every session**: inference, `webfetch`, the model catalog, and local-model probes every 30 s. `bash`-tool commands are its direct children. Clients only call the service's `/api/*` over loopback, through the proxy, because `agentop exec` sets no `NO_PROXY`. |
-| OpenCode's session id | On inference: `x-opencode-session-id`, plus `X-Session-Id`, `x-session-affinity`, `x-opencode-session`, all carrying the same `ses_…` value. Nothing on any CONNECT, not even a User-Agent. `traceparent` is per-process — identical across sessions — so it cannot tell sessions apart. |
+| OpenCode's session id | On inference: `x-opencode-session-id`, plus `X-Session-Id`, `x-session-affinity`, `x-opencode-session`, all carrying the same `ses_…` value (measured on sessions with no parent or fork). Nothing on any CONNECT, not even a User-Agent. `traceparent` is per-process — identical across sessions — so it cannot tell sessions apart. |
 | Two concurrent OpenCode sessions | One service PID served both. Each tool's traffic fell between its own session's `finish_reason: tool_calls` response and that session's next request, so at each tool call the owning session was the process's most recently active one. |
 | OpenCode's environment | The service keeps **its first client's environment**. Started without the proxy, it bypassed Cortex entirely, even for a later `agentop exec -- opencode`. |
 | Claude Code | One process, one session at a time. `Bash` children (`curl` → `bash` → `claude`) descend from it; `WebFetch` and MCP run in-process, header-less. A nested `claude -p` sends header-less MCP calls before its own first header. |
@@ -214,13 +214,35 @@ approach used on session 13cdee89.
 - `ParseUserAgent` learns `opencode/<channel>/<version>/<client>`, where the version is
   the third segment, and `knownClients` gains `opencode`. Today the User-Agent parses to
   no name at all, so OpenCode is "Other agent".
-- `X-Opencode-Session-Id` joins the default `id_headers`, so OpenCode's inference rows
-  land in OpenCode's own sessions, and its service claims them.
+- `X-Session-Id` joins the default `id_headers` on laptop installs (`bind_loopback_only`),
+  as `process_attribution: auto` is; the in-cluster default is unchanged, because
+  X-Session-Id is generic (the IBAC demo agent sends it with an id it minted). On a laptop
+  the default then matches the list the laptop installer writes, and OpenCode's inference
+  rows land in OpenCode's sessions, which its service claims. OpenCode sends its session's
+  affinity id there (the parent's for a subagent, the source's for a fork), so a subagent
+  joins its parent's session.
 - `docs/agents/opencode.md`, linked from the README, as every supported agent has.
-- `agentop exec -- opencode` reads the running service's PID from OpenCode's
-  `service.json` and **warns** when that process lacks the proxy environment, naming the
-  fix (`opencode service restart` under `agentop exec`). It does not restart the service
-  itself: that would cut the user's other OpenCode sessions.
+- **`agentop configure opencode enable | disable | status`** routes OpenCode through Cortex
+  persistently. OpenCode's background service, not the process you run, sends all of
+  OpenCode's traffic, and it keeps an environment of its own: `opencode service set env
+  NAME VALUE` writes it to `service.json`'s `env`, and on start the service takes those
+  values over what it inherited (verified on 2.0.21: a client started with a dead proxy
+  spawned a service pointed at Cortex). Enable sets the proxy and CA variables `agentop
+  exec` sets, through the `opencode` CLI, and records prior values in
+  `~/.cortex/opencode-state.json`, a Cortex-shaped prior as absent; it refuses to
+  overwrite a value someone else set, and disable changes only Cortex's values. OpenCode's
+  CLI stops a running service whenever its environment changes (verified on 2.0.21; it
+  stops only the service its own config started), and an open OpenCode window starts it
+  again before the change lands. So enable and disable say so before acting and ask, and
+  when the service was running they restart it once after all their writes (`opencode
+  service restart`, which applies the service environment); that interrupts every
+  OpenCode session using it, and an open window reconnects.
+- **`agentop exec -- opencode` warns** when a service is already running without Cortex's
+  proxy: it finds the service by its port (`opencode service status`), its PID with
+  `peerproc.ListenerOwner`, and reads that process's environment with a new
+  `peerproc.Environ` (macOS `kern.procargs2`, Linux `/proc/<pid>/environ`, same user only).
+  `service.json` holds a password, a port and the `env` block, but no PID, which is why the
+  original plan to read the PID from it could not work.
 
 ## Decisions recorded
 
@@ -237,7 +259,24 @@ approach used on session 13cdee89.
   and never runs on a laptop.
 - **A multi-session process answers with its newest session**; tool windows wait for
   evidence.
-- **A stale OpenCode service gets a warning, not a restart.**
+- **A stale OpenCode service gets a warning from `agentop exec`, not a restart.**
+- **configure opencode changes the service environment through OpenCode's CLI, and warns
+  first.** Rejected: editing service.json directly to spare the running service, which
+  bypasses the CLI's ownership of that file.
+- **OpenCode is grouped by X-Session-Id**, its affinity id, so a subagent or fork joins its
+  parent's session as Claude Code's do, on laptop installs (`bind_loopback_only`), as
+  `process_attribution: auto` is; the in-cluster default is unchanged, because
+  X-Session-Id is generic (the IBAC demo agent sends it with an id it minted). Rejected:
+  X-Opencode-Session-Id, a row per subagent, which the laptop installer's list did not
+  read.
+- **configure opencode restarts a running service once, after its writes**: an open
+  OpenCode window restarts the service the moment the CLI stops it, before the change
+  lands. Rejected: only advising a restart.
+- **OpenCode is configured through its service's own environment**, not by `agentop exec`
+  alone: the service outlives its clients and keeps the environment of whichever started
+  it, so `agentop exec -- opencode` does nothing for a service already running.
+- **The stale-service check reads the running process's environment**, not the config: a
+  service started before `configure opencode enable` has the config but not the values.
 - **The deferred open row takes its first row's time.** This reverses the earlier "keep
   the CONNECT's time", for the pager reason above.
 - **`traceparent` is not a correlation key** — per-process in OpenCode.

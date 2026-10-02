@@ -67,9 +67,18 @@ request. Bob, our internal coding agent (not the `bob` demo user), is grouped th
 way, by the `X-Task-Id` it sets, but its buckets are named with a task id rather than a
 session uuid, so one bucket covers however long Bob reuses that task. Note that
 `X-Task-Id` is a generic name: traffic from anything else that sends it will be grouped
-under its value too. Traffic that carries no such header is filed by the process that
-sent it (see below), and where that has no answer falls back to the previous behavior —
-the most recently active session, or the `default` bucket. In practice
+under its value too. [OpenCode](agents/opencode.md) is grouped by the `X-Session-Id` its
+background service sets, and its buckets are named with OpenCode's `ses_…` session ids.
+OpenCode puts its session's affinity id there: the parent session's id for a subagent
+and the source session's for a fork, so a subagent or fork is filed under the session it
+belongs to, as Claude Code's subagents are. Cortex reads `X-Session-Id` on a laptop
+install: it is in the list the installer writes, and in the built-in default wherever
+every listener binds loopback (`listener.bind_loopback_only`). A cluster deployment's
+default does not read it, because it is a generic name as well, which Pi (Inflection AI)
+and similar frameworks send too. OpenCode also sends `X-Opencode-Session-Id`, the
+session's own id, which is not read. Traffic that carries no such header is filed by the
+process that sent it (see below), and where that has no answer falls back to the previous
+behavior — the most recently active session, or the `default` bucket. In practice
 `default` collects Claude Code's own connectivity probe (`HEAD /api/hello`) and anything
 else that egresses through the proxy without announcing a session.
 
@@ -107,11 +116,11 @@ Some limitations worth knowing:
   loopback-only install and off in a cluster; `on` and `off` force it. Where the lookup is
   unavailable it logs one warning at startup and client affinity applies. Not
   hot-reloadable.
-- **Agents other than Claude Code and Bob need to be named.** Set `session.id_headers`
-  to a list of headers to consult in precedence order if you run a client with its own
-  session header; naming any replaces the built-in list rather than adding to it. An
-  explicit empty list (`session.id_headers: []`) turns grouping off and puts everything
-  back in one bucket.
+- **Agents other than Claude Code, Bob and OpenCode need to be named.** Set
+  `session.id_headers` to a list of headers to consult in precedence order if you run a
+  client with its own session header; naming any replaces the built-in list rather than
+  adding to it. An explicit empty list (`session.id_headers: []`) turns grouping off and
+  puts everything back in one bucket.
 - **Bucket names are taken on trust.** The id comes from the client's own header and is
   not authenticated, so a client can name any bucket — including another session's, or a
   stream of ids nobody owns, which evicts real buckets once there are more than
@@ -349,7 +358,10 @@ agentop service stop
 ```
 
 Claude Code fails while Cortex is stopped, because its settings still point at the
-proxy. Either start Cortex again or unwire Claude Code (below).
+proxy. So does OpenCode once `agentop configure opencode enable` has configured it,
+because its background service's environment points there too. Either start Cortex
+again or unwire them: Claude Code as below, OpenCode with
+`agentop configure opencode disable`.
 
 **A running session cannot route around a stopped Cortex.** `HTTPS_PROXY` is fixed in
 its environment when it starts, so it has no way to fall back to a direct connection,
@@ -458,7 +470,7 @@ The other reasons you may see, and what each one asks of you:
 | `passthrough-nontls` | The bytes were not a TLS handshake, so there was nothing to terminate. | no |
 | `skip-cached` | An earlier handshake for this host failed, so it is not intercepted for **anyone** for a short window. Any failed handshake seeds this, not only a CA rejection — the seeding failure logged its own reason. The window starts at 30s and lengthens only if **rejections** keep coming — a hang-up or a cipher mismatch seeds it but never escalates it; the first client that *does* trust the CA clears it immediately. | find the earlier failure in `proxy.log` and fix that client |
 | `bridge-disabled` | No TLS bridge is configured. | only if you wanted one |
-| `client-hung-up` | The client vanished mid-handshake. Often a cancelled request; not evidence about trust, which is why it carries no advice. | usually no |
+| `client-hung-up` | The client vanished mid-handshake. Often a cancelled request; not evidence about trust, which is why it carries no advice. OpenCode hangs up rather than rejecting the CA; see [its page](agents/opencode.md#ca-trust). | usually no |
 | `handshake-failed` | Some other handshake failure — a version, cipher or ALPN mismatch, or Cortex failing to mint a certificate. | check `error=` in the log |
 | `origin-unverified` | **Cortex** could not verify the destination's certificate, so it declined to vouch for it. Bridging would have meant terminating TLS for a server we could not authenticate. | investigate the destination |
 | `dial-failed` | Cortex could not reach the destination at all — a DNS failure, a refused connection or a timeout — so no tunnel opened. Its response row is a `502` whose `error` carries the dial error. | check the destination and the network path to it |
@@ -521,19 +533,24 @@ enable` puts it back.
 ### Remove it
 
 ```sh
-agentop configure claude-code disable # 1. unwire Claude Code
-agentop service uninstall             # 2. stop it and remove the service
-rm -rf ~/.cortex                      # 3. config, CA, logs, cost history, agentop's UI settings
+agentop configure claude-code disable    # 1. unwire Claude Code
+agentop configure opencode disable --yes # 2. unwire OpenCode, if you configured it
+agentop service uninstall                # 3. stop it and remove the service
+rm -rf ~/.cortex                         # 4. config, CA, logs, cost history, agentop's UI settings
 rm -f ~/.local/bin/agentop ~/.local/bin/cortex
 ```
 
-Order matters for the first two: `agentop configure claude-code disable` needs to
-read the config that step 3 deletes.
+Order matters: steps 1 and 2 come before step 4, which deletes the config.
+`agentop configure claude-code disable` needs it, and `agentop configure opencode
+disable` uses it to recognise Cortex's values, falling back to their shape without it.
+Step 2 exits 1 when OpenCode is not installed, so it is a line of its own rather than
+chained to the others with `&&`.
 
 #### Check nothing is left
 
 ```sh
 agentop configure claude-code status # should say "not enabled"
+agentop configure opencode status    # if you use OpenCode: every variable Cortex set should say (unset)
 pgrep -lx cortex                     # should print nothing
 ls ~/.cortex 2>/dev/null             # should print nothing
 ```
@@ -613,3 +630,8 @@ nothing to do with Cortex — with `error setting certificate verify locations`,
 machine you believe you have just cleaned. `agentop configure claude-code disable` removes all
 seven in the right order, which is why it is step 1 above; this list is only for when
 that binary is already gone.
+
+If you configured OpenCode, its background service's environment holds the same kind of
+variables. Remove the ones that point at Cortex with the `opencode` CLI, as
+[Undoing it by hand](agents/opencode.md#undoing-it-by-hand) shows, also before
+`rm -rf ~/.cortex`.

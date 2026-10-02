@@ -43,6 +43,21 @@ const ClaudeCodeSessionHeader = "X-Claude-Code-Session-Id"
 // directly from these constants, and a raw map literal does not.
 const BobSessionHeader = "X-Task-Id"
 
+// SessionIDHeader is the generic request header OpenCode, Pi (Inflection AI) and similar
+// frameworks set to name the session a request belongs to. OpenCode (verified on 2.0.21)
+// sends its session's AFFINITY id here — the parent session's id for a subagent, the source
+// session's for a fork, else its own — so a subagent's and a fork's requests join the
+// conversation they belong to, the way Claude Code's subagents share their parent's session
+// id. OpenCode also sends X-Opencode-Session-Id, the session's own id; that one is not read,
+// so a subagent does not get a row of its own.
+//
+// UNNAMESPACED, like BobSessionHeader: any client that sends it captures a bucket named after
+// its value. Unlike BobSessionHeader it is read by default only on a loopback-only install
+// (config.SessionConfig.SessionIDHeadersFor): in a cluster an agent may send it for its own
+// reasons, as the IBAC demo's does, and filing its calls by it would take them away from the
+// session that holds its user's intent. Canonical casing, for the same reason as the others.
+const SessionIDHeader = "X-Session-Id"
+
 // IDFromHeaders returns the first usable session id found in h among names,
 // in order, or "" when none is present. Callers treat "" as "fall back to
 // whatever bucketing you did before" — never as an error, so a client that

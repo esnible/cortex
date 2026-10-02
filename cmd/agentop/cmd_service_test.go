@@ -339,6 +339,36 @@ func TestServiceStatus_NamesTheUnsupervisedCase(t *testing.T) {
 	}
 }
 
+// TestServiceUsage_NamesTheAgentsThatDependOnTheProxy: once configured, OpenCode depends on
+// the proxy being up as Claude Code does, and the usage says so beside it.
+func TestServiceUsage_NamesTheAgentsThatDependOnTheProxy(t *testing.T) {
+	prose := strings.Join(strings.Fields(serviceUsage), " ")
+	want := `Claude Code and OpenCode depend on the proxy being up once "agentop configure claude-code enable" ` +
+		`or "agentop configure opencode enable" has run, and nothing else keeps it up.`
+	if !strings.Contains(prose, want) {
+		t.Errorf("serviceUsage lacks %q", want)
+	}
+}
+
+// TestServiceStatus_NotAnsweringNamesTheAgentsThatFail: an installed proxy that does not
+// answer its health check fails every agent configured to use it, OpenCode as well as
+// Claude Code.
+func TestServiceStatus_NotAnsweringNamesTheAgentsThatFail(t *testing.T) {
+	p := servicePathsFixture(t)
+	if err := os.WriteFile(p.unitFile, []byte("unit"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var out bytes.Buffer
+	if code := serviceStatus(p, &out); code != 1 {
+		t.Errorf("exit = %d, want 1 for a proxy that is not answering", code)
+	}
+	want := "NOT answering " + p.healthURL + "\n" +
+		"  Claude Code and OpenCode will fail while this is true. Last log lines:\n"
+	if !strings.Contains(out.String(), want) {
+		t.Errorf("status =\n%s\nwant it to contain\n%s", out.String(), want)
+	}
+}
+
 // TestWaitHealthy_TimesOut: install claims success only after the health endpoint
 // answers, because a supervisor reports "loaded" for a proxy that is crash-looping.
 func TestWaitHealthy_TimesOut(t *testing.T) {

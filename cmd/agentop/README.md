@@ -578,6 +578,77 @@ Bob/User/settings.json`). Elsewhere `--settings PATH` is required rather than
 guessed — writing a proxy setting into a file nothing reads is a silent no-op,
 which is worse than a refusal that names the flag.
 
+## Routing OpenCode through Cortex (`agentop configure opencode`)
+
+OpenCode does not send its traffic from the process you run. One background
+service per user, `opencode serve --service`, sends every session's requests: the
+first client starts it, later clients reuse it, and it outlives them with the
+environment it started with. So `agentop exec -- opencode` changes nothing for a
+service that is already running, and warns when it finds one running without
+Cortex. The service also keeps an environment of its own, set with `opencode
+service set env`, which it takes over the one it inherited. That is where
+`enable` puts the routing:
+
+```sh
+agentop configure opencode enable    # set the nine variables in the service's environment
+agentop configure opencode disable   # remove them again
+agentop configure opencode status    # the nine, and the running service
+```
+
+`enable` and `disable` take `[--yes] [--config PATH] [--opencode BIN]`; `status` takes
+`[--config PATH] [--opencode BIN]` and no `--yes`, since it changes nothing.
+
+The nine are the ones `agentop exec` sets (the table above), derived from
+`~/.cortex/config.yaml` as `configure claude-code enable` derives them. Every
+change goes through the `opencode` CLI: `enable` makes one `set env` per variable
+that differs, CA variables first so the proxy is never set without its CA, and
+`disable` one `unset env` (or a `set env` putting back a recorded value) per
+variable it changes. Nothing else in the service's environment is touched.
+`enable` refuses to overwrite a value someone else set, such as a corporate
+proxy, and names the `opencode service unset env` that removes it. So the only values it replaces are
+Cortex's own, such as a proxy at an older Cortex address. The first run records
+the nine in `~/.cortex/opencode-state.json`, counting Cortex's values as absent,
+and `disable` removes them rather than putting an old Cortex address back.
+`disable` changes only Cortex's values, whatever the record says: one set some
+other way, even after `enable`, is left alone and named, with the `opencode
+service unset env` that removes it. Declined, or with no terminal to ask on, both
+write nothing and exit **3**. `--yes` skips the question, `--config PATH` reads
+another Cortex config, and `--opencode BIN` names the CLI when it is neither on
+`PATH` nor in `~/.opencode/bin`.
+
+Changing the service's environment through OpenCode's CLI stops a running
+service, and an open OpenCode can start it again straight away, before the change
+lands, with the environment it had. So when the service was running, `enable` and
+`disable` restart it once, after their last change, with `opencode service
+restart`, which starts it with its service environment. That interrupts every
+OpenCode session using it, and an open OpenCode reconnects to it. When there is
+something to change they say first that the service is running and that the
+change restarts it, with its pid, and ask; when whether it runs cannot be told,
+they say only that the change stops it if it is. `--yes` skips the question, not
+the warning. After the restart they say whether the service's proxy matches the
+change, judged by the environment its new process started with; when it does
+not, they name `opencode service restart`. A restart that fails is reported: the
+service may be stopped, or running with its old environment, and `opencode
+service restart` applies the change. The command still exits 0, because the
+change itself succeeded. A change that fails part way is not followed by a
+restart, and they say the service may be stopped. A service that was not running
+starts with the new environment the next time you run OpenCode.
+
+`status` changes nothing. It judges the running service by the proxy a restart
+would give it, the one its service environment names, and prints one of: that it
+is using Cortex; that it is not; that it is running with its old environment,
+with the restart command, when a restart would put it on Cortex; or that it is
+using Cortex although its service environment does not route it there, so its
+next start will not use Cortex, which is how a service started under `agentop
+exec` looks, with `enable` named to keep it on Cortex. Otherwise `status` says the
+service is not running, or, without a readable Cortex config, gives its pid and
+proxy. When the service's process or environment cannot be read, or `opencode
+service status` fails, the line says it could not check rather than guessing.
+
+[OpenCode's page](../../docs/agents/opencode.md) covers the rest: how to undo this by
+hand, what OpenCode needs to trust Cortex's CA, what Cortex records for it, what was
+verified, and its known issues.
+
 ## Panes
 
 The UI has these panes. `Enter` drills in; `Esc` backs out.
@@ -1205,9 +1276,9 @@ becomes worth showing, so a remembered dismissal would go stale then.
 
 **Agents the proxy does not recognise share one row, `Other`**, listed last. The
 proxy names an agent only from a User-Agent it recognises (`claude-code`,
-`bob-shell`, `ibm-bob`); anything else is reported under its raw User-Agent, and
-one program can send several — the IBM Bob IDE was three rows before it was
-recognised, and none of them could reach its session ([#1210]). Picking `Other`
+`bob-shell`, `ibm-bob`, `opencode`); anything else is reported under its raw
+User-Agent, and one program can send several — the IBM Bob IDE was three rows before
+it was recognised, and none of them could reach its session ([#1210]). Picking `Other`
 lists every session that names no recognised agent, including the `default` and
 `pending:` buckets and sessions only agentop's cache still holds, so every listed
 session belongs to exactly one row. An `Other` row that only sessions put there —

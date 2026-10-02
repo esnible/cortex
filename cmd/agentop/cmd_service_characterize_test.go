@@ -235,8 +235,8 @@ func TestCharacterize_ServiceInstall_Declined(t *testing.T) {
 	sc.install(t, false, false).check(t, exitDeclined,
 		"This will install a <supervisor> that runs:\n"+
 			"  $HOME/bin/cortex --config $HOME/.cortex/config.yaml\n\n"+
-			"It restarts on failure and starts at login, so Claude Code keeps working\n"+
-			"after a crash or a reboot. Unit file: $HOME/unit\n\n"+
+			"It restarts on failure and starts at login, so Claude Code and OpenCode keep\n"+
+			"working after a crash or a reboot. Unit file: $HOME/unit\n\n"+
 			"Undo with: agentop service uninstall\n\n"+
 			"Apply? [y/N] Not changed.\n", "")
 	if _, err := os.Stat(sc.p.unitFile); err == nil {
@@ -295,12 +295,13 @@ func TestCharacterize_ServiceLifecycle(t *testing.T) {
 
 	sc.uninstall(t, true).check(t, 0,
 		"This will stop and remove the <supervisor> at:\n  $HOME/unit\n\n"+
-			"Cortex will no longer start at login. Claude Code stops working whenever\n"+
-			"the proxy is not running — `agentop configure claude-code disable` removes that\n"+
-			"dependency.\n\n"+
-			"\nRemoved. Cortex is stopped; Claude Code will fail until it runs again.\n"+
+			"Cortex will no longer start at login. Claude Code and OpenCode stop working\n"+
+			"whenever the proxy is not running — `agentop configure claude-code disable` and\n"+
+			"`agentop configure opencode disable` remove that dependency.\n\n"+
+			"\nRemoved. Cortex is stopped; Claude Code and OpenCode will fail until it runs again.\n"+
 			"  Set it up again with:  agentop service install\n"+
 			"  Or unwire Claude Code: agentop configure claude-code disable\n"+
+			"  Or unwire OpenCode:    agentop configure opencode disable\n"+
 			"  The config and CA are untouched in $HOME/.cortex\n", "")
 	wantFile(t, sc.p.unitFile, false, "after uninstall")
 	wantFile(t, sc.p.stampFile, false, "after uninstall")
@@ -318,9 +319,9 @@ func TestCharacterize_ServiceUninstall_Declined(t *testing.T) {
 	answerPrompt(t, &serviceConfirm, "n\n")
 	sc.uninstall(t, false).check(t, exitDeclined,
 		"This will stop and remove the <supervisor> at:\n  $HOME/unit\n\n"+
-			"Cortex will no longer start at login. Claude Code stops working whenever\n"+
-			"the proxy is not running — `agentop configure claude-code disable` removes that\n"+
-			"dependency.\n\n"+
+			"Cortex will no longer start at login. Claude Code and OpenCode stop working\n"+
+			"whenever the proxy is not running — `agentop configure claude-code disable` and\n"+
+			"`agentop configure opencode disable` remove that dependency.\n\n"+
 			"Apply? [y/N] Not changed.\n", "")
 	wantFile(t, sc.p.unitFile, true, "after a declined uninstall")
 	wantFile(t, loaded, true, "after a declined uninstall (the job must stay loaded)")
@@ -331,8 +332,8 @@ func TestCharacterize_ServiceUninstall_Declined(t *testing.T) {
 const (
 	wantAcceptStdout = "This will install a <supervisor> that runs:\n" +
 		"  $HOME/bin/cortex --config $HOME/.cortex/config.yaml\n\n" +
-		"It restarts on failure and starts at login, so Claude Code keeps working\n" +
-		"after a crash or a reboot. Unit file: $HOME/unit\n\n" +
+		"It restarts on failure and starts at login, so Claude Code and OpenCode keep\n" +
+		"working after a crash or a reboot. Unit file: $HOME/unit\n\n" +
 		"Undo with: agentop service uninstall\n\n" +
 		"Apply? [y/N] " +
 		"Updated $HOME/.cortex/config.yaml (previous kept as $HOME/.cortex/config.yaml.before-agentop-migrate):\n" +
@@ -377,13 +378,14 @@ func TestCharacterize_ServiceInteractiveAccept(t *testing.T) {
 		answerPrompt(t, &serviceConfirm, "y\n")
 		sc.uninstall(t, false).check(t, 0,
 			"This will stop and remove the <supervisor> at:\n  $HOME/unit\n\n"+
-				"Cortex will no longer start at login. Claude Code stops working whenever\n"+
-				"the proxy is not running — `agentop configure claude-code disable` removes that\n"+
-				"dependency.\n\n"+
+				"Cortex will no longer start at login. Claude Code and OpenCode stop working\n"+
+				"whenever the proxy is not running — `agentop configure claude-code disable` and\n"+
+				"`agentop configure opencode disable` remove that dependency.\n\n"+
 				"Apply? [y/N] "+
-				"\nRemoved. Cortex is stopped; Claude Code will fail until it runs again.\n"+
+				"\nRemoved. Cortex is stopped; Claude Code and OpenCode will fail until it runs again.\n"+
 				"  Set it up again with:  agentop service install\n"+
 				"  Or unwire Claude Code: agentop configure claude-code disable\n"+
+				"  Or unwire OpenCode:    agentop configure opencode disable\n"+
 				"  The config and CA are untouched in $HOME/.cortex\n", "")
 		wantFile(t, sc.p.unitFile, false, "after an accepted uninstall")
 		wantFile(t, sc.p.stampFile, false, "after an accepted uninstall")

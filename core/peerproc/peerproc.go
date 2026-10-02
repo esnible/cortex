@@ -7,6 +7,7 @@
 // the net.inet.tcp.pcblist_n sysctl and kinfo_proc; on Linux /proc. Pure
 // Go, no cgo, no root. It sees only what the caller may inspect: on Linux another user's
 // process, or one in another PID namespace, is not found.
+// Environ also reads the environment a process started with.
 //
 // New runs a self-test and returns an error instead of a Resolver when lookups do not
 // work here, so a caller can fall back once at startup rather than failing per request.
@@ -66,6 +67,17 @@ type Resolver interface {
 	// ErrNotFound when pid itself cannot be read, or is 1 or below.
 	Ancestry(pid int32, max int) ([]Proc, error)
 }
+
+// Environ is the environment process pid was exec'd with, as "NAME=value" strings. It is
+// the start-time environment: a change the process made through setenv does not show. A
+// process that wrote over its own argument memory (Node's process.title, setproctitle) can
+// show no environment at all, so an empty result means unknown, not absent.
+//
+// It returns ErrNotFound when the environment cannot be read: another user's process, one
+// that has exited, a Linux process that is not dumpable, or, on macOS, a process whose
+// environment the kernel withholds (every Apple system process, and some others). It
+// returns ErrUnsupported on platforms with no implementation.
+func Environ(pid int32) ([]string, error) { return environ(pid) }
 
 var (
 	// ErrNotFound means no socket or process matched that the caller may inspect.

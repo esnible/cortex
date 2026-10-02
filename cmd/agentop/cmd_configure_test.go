@@ -53,12 +53,12 @@ func TestClaudeCodeUnknownAction_StillErrors(t *testing.T) {
 // the exec command. That is the point of the table: the change request that introduced
 // these messages carried a copy-paste slip in two of the three ("Persistent Bob
 // configuration" under codex, "run Codex" under opencode), and a per-agent assertion
-// is what catches that class of error. Bob has since grown a real implementation and
-// left this table — see TestConfigure_BobShellReachesTheSameLogic.
+// is what catches that class of error. Bob and OpenCode have since grown real
+// implementations and left this table — see TestConfigure_BobShellReachesTheSameLogic
+// and TestConfigure_OpenCodeReachesRunOpenCode.
 func TestConfigure_ComingSoonAgents(t *testing.T) {
 	for _, tc := range []struct{ agent, display, product string }{
 		{"codex", "Codex", "Codex"},
-		{"opencode", "OpenCode", "OpenCode"},
 	} {
 		t.Run(tc.agent, func(t *testing.T) {
 			var out, errb bytes.Buffer
@@ -266,9 +266,9 @@ func TestConfigure_BobAndBobShellAreDifferentAgents(t *testing.T) {
 
 // comingSoon's two parameters land in three distinct places.
 //
-// The table above cannot show this: both surviving agents pass a display name that
-// matches their binary but for case, so a body that dropped one and reused the
-// other would satisfy every assertion there. Two deliberately dissimilar values
+// The table above cannot show this: the agent left in it passes a display name that
+// matches its binary but for case, so a body that dropped one and reused the other
+// would satisfy every assertion there. Two deliberately dissimilar values
 // here, so each slot is pinned by a string that can only have come from its own
 // parameter.
 //

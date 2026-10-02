@@ -3,3 +3,5 @@
 package peerproc
 
 func newPlatform() (Resolver, error) { return nil, ErrUnsupported }
+
+func environ(int32) ([]string, error) { return nil, ErrUnsupported }

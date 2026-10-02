@@ -298,3 +298,13 @@ func TestConnOwner_ExeOfARemovedBinaryIsItsPath(t *testing.T) {
 		t.Errorf("Exe %q after the binary was removed, want %q", p.Exe, agent)
 	}
 }
+
+func TestSplitNUL(t *testing.T) {
+	got := splitNUL([]byte("A=1\x00B=two=2\x00\x00"))
+	if strings.Join(got, "|") != "A=1|B=two=2" {
+		t.Errorf("splitNUL = %q", got)
+	}
+	if got := splitNUL(nil); len(got) != 0 {
+		t.Errorf("splitNUL(nil) = %q", got)
+	}
+}
