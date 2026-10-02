@@ -252,6 +252,21 @@ func (s specificity) beats(o specificity) bool {
 	}
 }
 
+// outranksOnHost is beats with the model axis removed, for the one ranking that must not read a
+// model: an endpoint's unit. It reports false when the two tie on host, and the caller breaks that
+// tie on the host pattern — beats would fall through to the model fields instead, so the length of
+// a model name in one block could decide which unit another block's host bills in.
+func (s specificity) outranksOnHost(o specificity) bool {
+	switch {
+	case s.namedHost != o.namedHost:
+		return s.namedHost
+	case s.exactHost != o.exactHost:
+		return s.exactHost
+	default:
+		return s.hostLen > o.hostLen
+	}
+}
+
 // NewTable compiles entries into a table, rejecting rows that cannot mean
 // anything useful.
 func NewTable(entries []Entry, mults ...MultiplierRule) (*Table, error) {
@@ -457,11 +472,15 @@ func (t *Table) CurrencyFor(endpoint, model string) string {
 }
 
 // unitFor is the unit an endpoint bills in: that of the best row whose host covers it — bestRow's
-// ranking minus the model test — or USD when none does.
+// ranking with the model axis removed — or USD when none does.
 //
 // Provenance first, so a configured row for this gateway decides over a bundled one; bundled rows
 // are all USD, so an endpoint no configured block covers is USD, which is every deployment that has
 // configured no unit. Config.entries refuses two blocks that name the same host in different units.
+//
+// So the most specific block covering a host decides its unit, and a block that omits `unit:`
+// decides USD for its hosts. Two different patterns of equal host rank — *.bob.ibm.com and
+// api.*.ibm.com — are decided by the pattern that sorts first, never by a model name.
 func (t *Table) unitFor(endpoint string) string {
 	if best := t.bestRowForHost(endpoint); best != nil {
 		return best.currency
@@ -474,6 +493,12 @@ func (t *Table) unitFor(endpoint string) string {
 //
 // Only unitFor uses it. It must never be used to pick RATES: a row reached without matching the
 // model is the wrong row to price from, which is what bestRow's own comment is about.
+//
+// RANKED ON THE HOST ALONE, tie-broken on the host pattern. Rows Build produces that share one
+// pattern at one provenance agree on their unit — Config.entries refuses them otherwise, and
+// bundled rows are all USD — so which of them is kept cannot change the answer. A table built
+// directly with NewTable is not held to that, so the last tie breaks on the unit itself, keeping
+// the answer independent of row order as specificity's final tie-break does.
 func (t *Table) bestRowForHost(endpoint string) *row {
 	var best *row
 	for i := range t.rows {
@@ -481,11 +506,25 @@ func (t *Table) bestRowForHost(endpoint string) *row {
 		if !matchHost(r.host, endpoint) {
 			continue
 		}
-		if best == nil || r.prov > best.prov || (r.prov == best.prov && r.spec.beats(best.spec)) {
+		if best == nil || r.prov > best.prov || (r.prov == best.prov && hostRowBeats(r, best)) {
 			best = r
 		}
 	}
 	return best
+}
+
+// hostRowBeats reports whether r outranks best for the endpoint's unit at one provenance.
+func hostRowBeats(r, best *row) bool {
+	if r.spec.outranksOnHost(best.spec) {
+		return true
+	}
+	if best.spec.outranksOnHost(r.spec) {
+		return false
+	}
+	if r.host != best.host {
+		return r.host < best.host
+	}
+	return r.currency < best.currency
 }
 
 // Resolve returns the rates for one (endpoint, model) pair and where they came
