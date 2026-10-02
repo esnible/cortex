@@ -76,7 +76,7 @@ type openCodeService struct {
 	Running bool   // `opencode service status` named a URL rather than "stopped"
 	Port    int    // its port, when Running
 	PID     int32  // its process, 0 when the lookup failed
-	Proxy   string // HTTPS_PROXY (else https_proxy) in its environment; "" when unset
+	Proxy   string // the proxy Bun reads from its environment (see environProxy); "" when none
 	EnvErr  error  // why PID or Proxy could not be read; nil when both were
 }
 
@@ -118,7 +118,7 @@ func probeOpenCodeService(bin string) (openCodeService, error) {
 
 	// 127.0.0.1 first, and [::1] only when nothing is found there: ListenerOwner
 	// already counts a wildcard or dual-stack listener for an IPv4 address, so what
-	// the second lookup adds is a service bound to [::1] alone.
+	// the second lookup adds is a service bound to IPv6 alone.
 	pid, err := openCodeListener(netip.AddrPortFrom(netip.AddrFrom4([4]byte{127, 0, 0, 1}), uint16(port)))
 	if errors.Is(err, peerproc.ErrNotFound) {
 		pid, err = openCodeListener(netip.AddrPortFrom(netip.IPv6Loopback(), uint16(port)))
@@ -156,13 +156,21 @@ func openCodeStatusPort(out string) (int, error) {
 	return 0, fmt.Errorf("opencode service status printed %q, which is neither \"stopped\" nor a URL with a port", out)
 }
 
-// environProxy is the value of the first of HTTPS_PROXY and https_proxy present in env,
-// a list of "NAME=value" strings, or "" when neither is.
+// environProxy is the HTTPS proxy in env, a list of "NAME=value" strings, as OpenCode
+// would use it: the first non-empty value of https_proxy, then HTTPS_PROXY, or "" when
+// neither has one.
+//
+// That is Bun's order, and OpenCode runs on Bun: its env loader reads the lowercase name
+// first and treats an empty value as unset. Reading the names the other way would name a
+// proxy the service does not use whenever the two disagree.
 func environProxy(env []string) string {
-	for _, name := range []string{"HTTPS_PROXY", "https_proxy"} {
+	for _, name := range []string{"https_proxy", "HTTPS_PROXY"} {
 		for _, kv := range env {
 			if k, v, ok := strings.Cut(kv, "="); ok && k == name {
-				return v
+				if v != "" {
+					return v
+				}
+				break
 			}
 		}
 	}
@@ -188,7 +196,8 @@ func parseProxyURL(s string) *url.URL {
 	if s == "" {
 		return nil
 	}
-	// Without this, url.Parse reads the host of "127.0.0.1:47600" as a scheme.
+	// Without this, url.Parse rejects "127.0.0.1:47600" and reads "localhost:47600" as
+	// scheme "localhost".
 	if !strings.Contains(s, "://") {
 		s = "http://" + s
 	}
@@ -205,14 +214,26 @@ func parseProxyURL(s string) *url.URL {
 // It only ever writes to stderr. The child runs whatever it finds, and nothing here
 // can fail the command: an opencode agentop cannot find, or a status it cannot read,
 // just means no warning. A service that is not running needs none either, because the
-// child starts it with the environment exec gives it.
+// child starts it with exec's environment, under whatever service.json's env sets.
+// `opencode service …` commands are skipped: the user is already managing the service,
+// and advice to restart it would be noise. Only a command whose own name is opencode is
+// recognised, so one run through a wrapper such as `env opencode` or an alias gets no
+// check.
 func warnOpenCodeService(cmdArgs []string, inject map[string]string, stderr io.Writer) {
 	if len(cmdArgs) == 0 || filepath.Base(cmdArgs[0]) != "opencode" {
 		return
 	}
-	bin, err := findOpenCode()
-	if err != nil {
+	if len(cmdArgs) > 1 && cmdArgs[1] == "service" {
 		return
+	}
+	// The binary the child will run, found as runChild finds it: a path is used as
+	// given, a bare name is searched for on PATH. When that fails, findOpenCode tries
+	// PATH and then the installer's directory.
+	bin, err := exec.LookPath(cmdArgs[0])
+	if err != nil {
+		if bin, err = findOpenCode(); err != nil {
+			return
+		}
 	}
 	svc, err := probeOpenCodeService(bin)
 	if err != nil || !svc.Running {

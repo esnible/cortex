@@ -100,7 +100,7 @@ func TestProbeOpenCodeService_Running(t *testing.T) {
 	f := &fakeOpenCode{
 		status: "http://127.0.0.1:49374",
 		pid:    4242,
-		env:    []string{"PATH=/usr/bin", "HTTPS_PROXY=http://127.0.0.1:47600", "https_proxy=http://other:1"},
+		env:    []string{"PATH=/usr/bin", "HTTPS_PROXY=http://127.0.0.1:47600"},
 	}
 	stubOpenCode(t, f)
 	svc, err := probeOpenCodeService("/fake/opencode")
@@ -132,6 +132,33 @@ func TestProbeOpenCodeService_LowercaseProxyOnly(t *testing.T) {
 	}
 	if svc.Proxy != "http://localhost:47600" {
 		t.Errorf("Proxy = %q, want the lowercase https_proxy", svc.Proxy)
+	}
+}
+
+// The service runs on Bun, which reads https_proxy before HTTPS_PROXY and skips an
+// empty value. The probe must name the proxy Bun will use, not the one Go would.
+func TestProbeOpenCodeService_ProxyInBunsOrder(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		env  []string
+		want string
+	}{
+		{"lowercase wins", []string{"HTTPS_PROXY=http://127.0.0.1:47600", "https_proxy=http://corp:3128"}, "http://corp:3128"},
+		{"empty uppercase is skipped", []string{"HTTPS_PROXY=", "https_proxy=http://127.0.0.1:47600"}, "http://127.0.0.1:47600"},
+		{"empty lowercase falls through", []string{"https_proxy=", "HTTPS_PROXY=http://127.0.0.1:47600"}, "http://127.0.0.1:47600"},
+		{"both empty", []string{"https_proxy=", "HTTPS_PROXY="}, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := &fakeOpenCode{status: "http://127.0.0.1:49374", pid: 4242, env: tc.env}
+			stubOpenCode(t, f)
+			svc, err := probeOpenCodeService("/fake/opencode")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if svc.Proxy != tc.want || svc.EnvErr != nil {
+				t.Errorf("svc = %+v, want Proxy %q", svc, tc.want)
+			}
+		})
 	}
 }
 
@@ -369,8 +396,19 @@ func TestWarnOpenCodeService(t *testing.T) {
 			fake: running([]string{"PATH=/usr/bin", "HOME=/Users/someone"}, nil), want: openCodeWarning, wantProbe: true,
 		},
 		{
-			name: "another proxy", argv: []string{"/opt/homebrew/bin/opencode"},
+			name: "another proxy", argv: []string{"opencode"},
 			fake: running([]string{"HTTPS_PROXY=http://proxy.corp:3128"}, nil), want: openCodeWarning, wantProbe: true,
+		},
+		{
+			// Bun takes https_proxy first, so this service is not using Cortex.
+			name: "lowercase proxy is another", argv: []string{"opencode"},
+			fake: running([]string{"HTTPS_PROXY=http://127.0.0.1:47600", "https_proxy=http://corp:3128"}, nil),
+			want: openCodeWarning, wantProbe: true,
+		},
+		{
+			// The user is already managing the service; advice to restart it is noise.
+			name: "a service command", argv: []string{"opencode", "service", "restart"},
+			fake: running([]string{"PATH=/usr/bin"}, nil),
 		},
 		{
 			name: "environment withheld", argv: []string{"opencode"},
@@ -406,8 +444,32 @@ func TestWarnOpenCodeService(t *testing.T) {
 	}
 }
 
+// An opencode run by path is probed at that path, even where findOpenCode would find
+// nothing: the binary the user named is the one whose service matters.
+func TestWarnOpenCodeService_ProbesAnExplicitPath(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("exec bits")
+	}
+	f := &fakeOpenCode{status: "http://127.0.0.1:49374", pid: 4242, env: []string{"PATH=/usr/bin"}}
+	stubOpenCode(t, f)
+	t.Setenv("PATH", t.TempDir())
+	bin := filepath.Join(t.TempDir(), "opencode")
+	if err := os.WriteFile(bin, []byte("#!/bin/sh\nexit 99\n"), 0o755); err != nil { //nolint:gosec // test fixture
+		t.Fatal(err)
+	}
+	var stderr bytes.Buffer
+	warnOpenCodeService([]string{bin, "run", "hi"}, map[string]string{"HTTPS_PROXY": "http://127.0.0.1:47600"}, &stderr)
+	if !slices.Equal(f.bins, []string{bin}) {
+		t.Errorf("probed %v, want the path given", f.bins)
+	}
+	if stderr.String() != openCodeWarning {
+		t.Errorf("stderr = %q, want the warning", stderr.String())
+	}
+}
+
 // Wired into runExec: the warning comes before the child, and the child still runs
-// and decides the exit status. The opencode here is a script on PATH, not OpenCode.
+// and decides the exit status. One buffer takes both streams, so their order shows.
+// The opencode here is a script on PATH, not OpenCode.
 func TestRunExec_WarnsAboutOpenCodeServiceAndStillRuns(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("uses /bin/sh")
@@ -422,16 +484,13 @@ func TestRunExec_WarnsAboutOpenCodeServiceAndStillRuns(t *testing.T) {
 	}
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	var stdout, stderr bytes.Buffer
-	code := runExec([]string{"--cortex-stats-url", execStats(t, cfgPath), "--", "opencode"}, &stdout, &stderr)
+	var out bytes.Buffer
+	code := runExec([]string{"--cortex-stats-url", execStats(t, cfgPath), "--", "opencode"}, &out, &out)
 	if code != 7 {
-		t.Errorf("exit %d, want the child's 7; stderr: %s", code, stderr.String())
+		t.Errorf("exit %d, want the child's 7; output: %s", code, out.String())
 	}
-	if stdout.String() != "ran\n" {
-		t.Errorf("stdout = %q, want the child's output", stdout.String())
-	}
-	if !strings.Contains(stderr.String(), openCodeWarning) {
-		t.Errorf("stderr = %q, want the warning", stderr.String())
+	if out.String() != openCodeWarning+"ran\n" {
+		t.Errorf("output = %q, want the warning and then the child's output", out.String())
 	}
 	if !slices.Equal(f.bins, []string{bin}) {
 		t.Errorf("probed %v, want the opencode on PATH", f.bins)
