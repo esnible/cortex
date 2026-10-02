@@ -56,15 +56,21 @@ release. Pin or override with `--ref`
 ## Uninstall
 
 ```sh
+agentop configure opencode disable --yes
 agentop configure claude-code disable --yes && agentop service uninstall --yes
 ```
 
-Claude Code goes straight to the API again, and Cortex stops and no longer starts at
-login. Your config, CA and cost history stay in `~/.cortex`, so
-`agentop service install && agentop configure claude-code enable` brings it back as it was.
+The first line is for OpenCode. It exits 1 when OpenCode is not installed, so it is a
+line of its own rather than chained with `&&`.
+
+Claude Code and OpenCode go straight to their APIs again, and Cortex stops and no longer
+starts at login. Your config, CA and cost history stay in `~/.cortex`, so
+`agentop service install && agentop configure claude-code enable` brings it back as it was
+(and `agentop configure opencode enable` for OpenCode).
 
 Restart any `claude` that was already running: it still points at Cortex.
-`claude --resume` picks the conversation back up.
+`claude --resume` picks the conversation back up. OpenCode needs no restart from you:
+`disable` restarts its background service when it finds it running.
 
 To delete everything, see [Remove it](./docs/laptop-service.md#remove-it). If
 `agentop` itself is gone, [remove it by hand](./docs/laptop-service.md#if-agentop-is-already-gone).

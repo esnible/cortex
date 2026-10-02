@@ -1,7 +1,7 @@
 # OpenCode
 
 [OpenCode](https://opencode.ai/) is a supported agent. Cortex recognises its User-Agent,
-groups its traffic by OpenCode's own session id and parses its inference.
+groups its traffic by OpenCode's session id and parses its inference.
 `agentop configure opencode` routes it through Cortex and takes that out again.
 
 One fact shapes all of it: OpenCode's traffic does not leave from the `opencode` you run.
@@ -24,8 +24,9 @@ of OpenCode's `service.json`. That file is `$XDG_CONFIG_HOME/opencode/service.js
 `~/.config/opencode/service.json` when `XDG_CONFIG_HOME` is unset. When the service
 starts, those values take precedence over the environment it inherited, so the routing
 goes there and not into a shell profile. `enable` sets nine variables in that block,
-each with its own `opencode service set env NAME VALUE` call. agentop never edits the
-file itself. These are the nine variables `agentop exec` sets, chosen for the reasons
+with one `opencode service set env NAME VALUE` call per variable that differs, the CA
+variables before the proxy. agentop never edits the file itself. These are the nine
+variables `agentop exec` sets, chosen for the reasons
 [its section](../../cmd/agentop/README.md#running-one-command-through-cortex-agentop-exec)
 gives. The addresses come from `~/.cortex/config.yaml`:
 
@@ -68,27 +69,42 @@ restart be Cortex's? The line is one of:
 - it is using Cortex;
 - it is running with its old environment, and `opencode service restart` would put it
   on Cortex;
-- it is using Cortex, but its service environment does not route it there, so a restart
-  would take it off Cortex. A service started under `agentop exec` looks like this, and
-  `enable` keeps it on Cortex;
+- it is using Cortex, but its service environment does not route it there, so its next
+  start will not use Cortex. A service started under `agentop exec` looks like this, and
+  `enable` keeps it on Cortex, restarting it to do so;
 - it is not using Cortex;
 - it is not running;
-- it could not check, because the service's environment cannot be read or
+- it could not check, because the service's process or environment cannot be read or
   `opencode service status` failed.
 
 If the Cortex config cannot be read, `status` prints the variables and the service's pid
 and proxy, with no verdict. `status` changes nothing.
 
-**Changing the environment stops the service.** Changing the service environment
-through OpenCode's CLI stops a running service, which ends every OpenCode session using
-it. This was seen on OpenCode 2.0.21, for both `set env` and `unset env`; the CLI stops
-only the service its own config started, which is yours. So when `enable` or `disable`
-has something to change, it says first that the service is running, with its pid, or
-that it may be when that cannot be told, and then asks. OpenCode starts the service
-again, with the new environment, the next time you run it, and both commands say so
-once the change has stopped it. If the service is still running afterwards, they say
-when it has its old environment. `status` changes nothing, so it never stops the
-service.
+**Changing the environment restarts the service.** OpenCode's CLI stops a running
+service on every change to its environment. This was seen on OpenCode 2.0.21, for both
+`set env` and `unset env`; the CLI stops only the service its own config started, which
+is yours. An open OpenCode window can start the service again within a second, before
+the change lands, and then it comes back with the environment it had. That is why
+`enable` and `disable` restart it themselves:
+
+- When there is something to change, they say first that the service is running, with
+  its pid when it can be found, or that it may be when `opencode service status` fails,
+  and then ask.
+- If the service was running, they restart it once, after the last change, with
+  `opencode service restart`, which starts it with its service environment. The restart
+  interrupts every OpenCode session using the service, and an open OpenCode reconnects
+  to it. Then they say whether the restarted service is using Cortex (after `enable`) or
+  no longer uses it (after `disable`).
+- If the restart fails, they say so and name `opencode service start`. The change
+  stands, and they exit 0.
+- If a change fails part way, they do not restart the service. They say it is stopped,
+  and running the command again finishes the change.
+- A service that was not running is left alone, and it starts with the new environment
+  the next time you run OpenCode. When `opencode service status` fails, they cannot tell
+  whether it was running, so they do not restart it; if it still cannot be checked
+  afterwards, they say to restart it to be sure.
+
+`status` changes nothing, so it never stops or restarts the service.
 
 `enable` and `disable` both show what they will change and ask before doing it. `--yes`
 skips the question, but not the line about the service. If you decline, or there is no
@@ -96,13 +112,38 @@ terminal to ask on, they change nothing and exit 3. `--config PATH` reads a diff
 Cortex config. `--opencode BIN` names the CLI when it is neither on `PATH` nor in
 `~/.opencode/bin`.
 
-**Undoing it by hand**, without agentop: check what the service environment holds, unset
-each of the nine that holds Cortex's value, and delete the record. The first `unset env`
-stops a running service, ending every OpenCode session using it, and OpenCode starts it
-again without Cortex the next time you run it.
+**`agentop exec -- opencode` instead.** This routes OpenCode only when it is the command
+that starts the service. The service then keeps `exec`'s environment, so later clients
+that reuse it go through Cortex too, until the service restarts. When the service is
+stopped, a proxy already set in `service.json` beats `exec`'s environment, because the
+service it starts takes those values over the ones it inherits. A service that is already
+running without Cortex is not changed, and `exec` warns that it is not using Cortex. The
+warning names one of two fixes:
+
+- When the service environment already holds every value `exec` sets, only the running
+  service predates it, and restarting it is enough: `opencode service restart`.
+- Otherwise, including when that environment cannot be read, it names `enable`, which
+  restarts the service.
+
+Either restart interrupts every OpenCode session using the service. When the service is
+running but its process or its environment cannot be read, `exec` prints a note that it
+could not check instead. The command runs in every case. Three kinds of command get no
+check: `opencode service …` commands, `opencode serve`, which is a foreground server that
+runs under `exec`'s own environment, and `opencode` run through a wrapper such as
+`env opencode`.
+
+### Undoing it by hand
+
+Without agentop: list what the service environment holds, then unset only those of the
+nine that point at Cortex: a proxy on Cortex's address, or one of Cortex's CA files
+(under `~/.cortex/ca` unless you moved its `ca_dir`). Leave any that point elsewhere:
+they are not Cortex's. Then delete the record. The first `unset env` stops a running
+service, and an open OpenCode may start it again with the old environment, so restart it
+once you are done; that interrupts every OpenCode session using it.
 
 ```sh
 opencode service get env
+# Only for those of the nine that point at Cortex:
 opencode service unset env HTTPS_PROXY
 opencode service unset env HTTP_PROXY
 opencode service unset env https_proxy
@@ -112,17 +153,9 @@ opencode service unset env SSL_CERT_FILE
 opencode service unset env GIT_SSL_CAINFO
 opencode service unset env REQUESTS_CA_BUNDLE
 opencode service unset env CURL_CA_BUNDLE
+opencode service restart   # if the service was running
 rm -f ~/.cortex/opencode-state.json
 ```
-
-**`agentop exec -- opencode` instead.** This routes OpenCode only when it is the command
-that starts the service. The service then keeps `exec`'s environment, so later clients
-that reuse it go through Cortex too, until the service restarts. A service that is
-already running without Cortex is not changed. In that case `exec` warns that the
-service is not using Cortex and names `enable`, which stops the service, ending every
-OpenCode session using it. It also prints a note when it cannot check the service. Two
-cases get no check at all: `opencode service …` commands, and `opencode` run through a
-wrapper such as `env opencode`.
 
 ## CA trust
 
@@ -156,8 +189,8 @@ is written around. `client-hung-up` records a client that closed the connection
 mid-handshake without sending a TLS alert, which is what OpenCode does here. That page
 lists `client-hung-up` as usually needing no action. When it repeats for OpenCode's
 inference host, missing trust is the likely cause. The fix is to put the CA variables in
-the environment the service starts with: run `enable`. The change stops a running
-service, and OpenCode starts it again with the CA variables the next time you run it.
+the environment the service starts with: run `enable`. If the service is running,
+`enable` restarts it once the variables are set, so it comes back trusting the CA.
 
 ## What Cortex shows for it
 
@@ -167,11 +200,16 @@ same User-Agent, `opencode/<channel>/<version>/<client>` (for example
 from the field after the channel. OpenCode therefore gets its own row in agentop's
 agents pane instead of sharing `Other`.
 
-**Its own sessions.** On its inference requests the service sends OpenCode's session id
-(`ses_…`, the id that appears in the TUI's URLs) in `X-Opencode-Session-Id`. Each
-OpenCode session is a bucket named with that id. The header is in the default
-`session.id_headers`. If you set that list yourself, include it, because naming any
-header replaces the built-in list.
+**Its own sessions.** On its inference requests the service sends a session id
+(`ses_…`, the form that appears in the TUI's URLs) in `X-Session-Id`, and Cortex groups
+by it. OpenCode sends its session's affinity id there: the parent session's id for a
+subagent, the source session's for a fork, and otherwise the session's own. So a
+subagent or a fork is filed under the session it belongs to, with one row and one cost,
+as Claude Code's subagents are. OpenCode also sends `X-Opencode-Session-Id`, the
+session's own id, and Cortex does not read it. `X-Session-Id` is in the default
+`session.id_headers`, and the laptop installer's config lists it too. If you set that
+list yourself, include `X-Session-Id`, because naming any header replaces the built-in
+list.
 
 **Typed inference.** These requests are parsed in the OpenAI dialect (model, messages,
 tools and the response):
@@ -213,10 +251,34 @@ recorded. See
 ## Verified depth
 
 Tested live with OpenCode 2.0.21 on macOS 26.6 (arm64) and Cortex built from the change
-that added this page, using OpenCode Zen's models, which ran without a key.
+that added this page, using OpenCode Zen's models, which ran without a key. This was
+exercised:
+
+- `enable` refusing a value someone else set, setting the nine variables, and printing
+  the macOS note;
+- `status` saying the service `is using Cortex.` and `is not using Cortex.`;
+- `disable` emptying the service environment;
+- an `opencode run` with no proxy variables of its own, recorded under the `opencode`
+  agent and one `ses_…` session, with no `default` row;
+- the `exec` warning, with the command still running, in the single form it had before
+  the restart-is-enough form was added;
+- no warning for `agentop exec -- opencode service status`;
+- the CA experiment in [CA trust](#ca-trust);
+- `set env` and `unset env` stopping the service;
+- an open TUI starting the service again without the new environment, which is why
+  agentop restarts it;
+- the earlier `enable --yes` and `disable --yes`, which let the CLI stop the service and
+  printed that it starts with the new environment the next time OpenCode runs; a plain
+  client then started it on Cortex.
+
+Restarting the service once after the change is unit-tested, not tested live.
 
 Not tested live:
 
+- **Grouping by `X-Session-Id`.** The live run grouped OpenCode by
+  `X-Opencode-Session-Id`, the session's own id. For a session with no parent and no fork
+  source, `X-Session-Id` carries the same id. Grouping by `X-Session-Id`, and a subagent
+  or fork joining its parent's session, were not run.
 - **Linux.** agentop's code paths and the process lookup's are unit-tested on Linux in a
   container, but OpenCode itself was not run there.
 - **Other OpenCode versions.** The User-Agent shape and the session header were captured
@@ -229,28 +291,28 @@ Not tested live:
 ## Known issues
 
 - **One service holds several sessions.** The service's header-less traffic goes under
-  whichever of its sessions was most recently active. Two sessions whose tool calls
-  overlap can take each other's rows. A new session's header-less traffic goes under
-  the previous session until the new session's first request names it.
+  the session its own requests named last. Two sessions whose tool calls overlap can
+  take each other's rows. A new session's header-less traffic goes under the previous
+  session until the new session's first request names it.
 - **Before the service names its first session**, its requests go to a pending bucket,
   `pending:opencode@<pid>.<start>`, once one of them has identified the process as
   OpenCode by its User-Agent. The bucket is named for the topmost OpenCode process in
   the service's chain of parents, usually the service itself. The first session the
   service names adopts the bucket, unless that session already holds events. In that
   case the bucket stays a row of its own.
-- **Changing the service environment stops the service.** When `enable` or `disable`
-  changes it, OpenCode's CLI stops a running service, which ends every OpenCode session
-  using it; both say so and ask first. OpenCode starts the service again, with the new
-  environment, the next time you run it. `agentop exec -- opencode` reaches the service
-  only when that command starts it, because the service keeps the environment it
-  started with ([Enable and revert](#enable-and-revert)).
+- **Changing the service environment restarts the service.** When `enable` or `disable`
+  changes it and the service is running, they restart it once, which interrupts every
+  OpenCode session using it; an open OpenCode reconnects to it. Both say so first, and
+  ask unless given `--yes`. `agentop exec -- opencode` reaches the service only when
+  that command starts it, because the service keeps the environment it started with
+  ([Enable and revert](#enable-and-revert)).
 - **Probes of local model servers that are not running.** The service probes local model
   servers on every cycle; on 2.0.21 these included `:1234` (LM Studio's port) and
   `:8000`. With nothing listening there, each probe is recorded in the service's session
   as a request with no response. Once [#1223](https://github.com/rossoctl/cortex/pull/1223)
   merges, each probe instead appears as a `502` response row with `upstream_refused`,
   every cycle.
-- **`X-Session-Id` is not read.** OpenCode also sends its session id in that header. The
-  name is generic, so Cortex reads `X-Opencode-Session-Id` instead. Adding
-  `X-Session-Id` to `session.id_headers` would group traffic from any client that sends
-  it.
+- **`X-Session-Id` is a generic name.** Pi (Inflection AI) and similar frameworks send
+  it too, and traffic from any client that sends it is grouped under its value.
+- **Rows recorded before this release** keep the raw label `opencode/latest/2.0.21/cli`
+  and show under `Other` until they age out.

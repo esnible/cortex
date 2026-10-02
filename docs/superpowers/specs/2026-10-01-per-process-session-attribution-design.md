@@ -214,8 +214,10 @@ approach used on session 13cdee89.
 - `ParseUserAgent` learns `opencode/<channel>/<version>/<client>`, where the version is
   the third segment, and `knownClients` gains `opencode`. Today the User-Agent parses to
   no name at all, so OpenCode is "Other agent".
-- `X-Opencode-Session-Id` joins the default `id_headers`, so OpenCode's inference rows
-  land in OpenCode's own sessions, and its service claims them.
+- `X-Session-Id` joins the default `id_headers`, so the default matches the list the
+  laptop installer writes and OpenCode's inference rows land in OpenCode's sessions, which
+  its service claims. OpenCode sends its session's affinity id there (the parent's for a
+  subagent, the source's for a fork), so a subagent joins its parent's session.
 - `docs/agents/opencode.md`, linked from the README, as every supported agent has.
 - **`agentop configure opencode enable | disable | status`** routes OpenCode through Cortex
   persistently. OpenCode's background service, not the process you run, sends all of
@@ -224,11 +226,14 @@ approach used on session 13cdee89.
   values over what it inherited (verified on 2.0.21: a client started with a dead proxy
   spawned a service pointed at Cortex). Enable sets the proxy and CA variables `agentop
   exec` sets, through the `opencode` CLI, and records prior values in
-  `~/.cortex/opencode-state.json` so disable can restore them; it refuses to overwrite a
-  value someone else set. OpenCode's CLI stops a running service whenever its environment
-  changes (verified on 2.0.21; it stops only the service its own config started), which
-  ends every OpenCode session using it. So enable and disable say so before acting and
-  ask, and the service starts with the new environment the next time OpenCode runs.
+  `~/.cortex/opencode-state.json`, a Cortex-shaped prior as absent; it refuses to
+  overwrite a value someone else set, and disable changes only Cortex's values. OpenCode's
+  CLI stops a running service whenever its environment changes (verified on 2.0.21; it
+  stops only the service its own config started), and an open OpenCode window starts it
+  again before the change lands. So enable and disable say so before acting and ask, and
+  when the service was running they restart it once after all their writes (`opencode
+  service restart`, which applies the service environment); that interrupts every
+  OpenCode session using it, and an open window reconnects.
 - **`agentop exec -- opencode` warns** when a service is already running without Cortex's
   proxy: it finds the service by its port (`opencode service status`), its PID with
   `peerproc.ListenerOwner`, and reads that process's environment with a new
@@ -251,10 +256,16 @@ approach used on session 13cdee89.
   and never runs on a laptop.
 - **A multi-session process answers with its newest session**; tool windows wait for
   evidence.
-- **A stale OpenCode service gets a warning, not a restart.**
-- **configure opencode warns, then lets OpenCode's CLI stop the service.** Rejected: editing
-  service.json directly to spare the running service, which bypasses the CLI's ownership
-  of that file.
+- **A stale OpenCode service gets a warning from `agentop exec`, not a restart.**
+- **configure opencode changes the service environment through OpenCode's CLI, and warns
+  first.** Rejected: editing service.json directly to spare the running service, which
+  bypasses the CLI's ownership of that file.
+- **OpenCode is grouped by X-Session-Id**, its affinity id, so a subagent or fork joins its
+  parent's session as Claude Code's do. Rejected: X-Opencode-Session-Id, a row per
+  subagent, which the laptop installer's list did not read.
+- **configure opencode restarts a running service once, after its writes**: an open
+  OpenCode window restarts the service the moment the CLI stops it, before the change
+  lands. Rejected: only advising a restart.
 - **OpenCode is configured through its service's own environment**, not by `agentop exec`
   alone: the service outlives its clients and keeps the environment of whichever started
   it, so `agentop exec -- opencode` does nothing for a service already running.
