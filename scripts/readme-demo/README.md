@@ -64,7 +64,7 @@ animation runs, which is why none of this uses JavaScript.
   nine states on top of each other.
 - **Fixtures must carry real `Tools` and `Messages` arrays, not just the counts.**
   `sessionapi.summarizeEvent` recomputes `ToolCount = len(Tools)` and then nils the
-  array, so counts alone arrive as zero, and the `CONTEXT(1M)` fold skips any
+  array, so counts alone arrive as zero, and the `CTX(1M)` fold skips any
   response with no manifest. Same for `AgentRole: main`.
 - **Do not drop Bubble Tea commands that miss their deadline.** Their goroutines
   hold the model's timer chain; dropping them permanently stops the 2s sessions
@@ -77,4 +77,4 @@ animation runs, which is why none of this uses JavaScript.
   ending *now* on a continuous axis, so its bars slide with the current second.
   That one state is elided from the staleness check; its contract is asserted
   structurally instead. Everything else is compared byte for byte, with nothing
-  masked — masking digits once made `CONTEXT(1M)` and `CONTEXT(2M)` compare equal.
+  masked — masking digits once made `CTX(1M)` and `CTX(2M)` compare equal.

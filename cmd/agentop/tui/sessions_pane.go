@@ -24,21 +24,22 @@ import (
 // resize: fitting the LIVE columns would be cumulative, and a terminal that got narrower once
 // would keep its narrowed columns after being widened again.
 //
-// These widths sum to 88 declared columns, or 104 rendered once bubbles adds its two of padding
+// These widths sum to 84 declared columns, or 100 rendered once bubbles adds its two of padding
 // per cell, which is why they are fitted rather than used as-is — see fitTableColumns.
 //
-// THIS PARAGRAPH HAS CARRIED WRONG NUMBERS TWICE: 104/116 before a rebase, then 98/114 after one
-// replaced ACTIVE with CONTEXT(1M). Both were stale rather than mistaken, which is the failure
-// mode to expect here — any column added or resized moves them, and nothing recomputes them.
+// THIS PARAGRAPH HAS CARRIED WRONG NUMBERS THREE TIMES: 104/116 before a rebase, 98/114 after one
+// replaced ACTIVE with the context column, then 88/104 until that column's heading went from
+// CONTEXT(1M) to CTX(1M). Each was stale rather than mistaken, which is the failure mode to
+// expect here — any column added or resized moves them, and nothing recomputes them.
 //
 // TITLE is the widest optional column, and it is dropped rather than shrunk when the terminal
 // cannot seat it — see sessionsShowTitle, which decides after the money columns so that
 // widening the window never takes a column away. Where TITLE does render, fitTableColumns
 // shrinks the widest column rather than dropping any, so it and SESSION pay for each other:
-// measured, SESSION is 12 at 100 columns and 14 from 116 up. A 12-character id prefix still
+// measured, SESSION is 12 at 97 columns and 14 from 100 up. A 12-character id prefix still
 // distinguishes sessions in practice, and an unnamed session is what this column exists to fix.
 //
-// A terminal WIDER than 104 rendered is handled by sessionsColumnsFor rather than here:
+// A terminal WIDER than 100 rendered is handled by sessionsColumnsFor rather than here:
 // fitTableColumns only ever shrinks, so these declared widths are simultaneously the
 // narrow-terminal budget and the wide-terminal ceiling, and titles are mostly directory paths
 // with nothing to gain from a ceiling of 24 when there are spare columns on the screen.
@@ -69,7 +70,7 @@ func sessionsColumns() []table.Column {
 		// check on the other.
 		{Title: "COST", Width: 10},
 		{Title: "SAVED", Width: 10},
-		// CONTEXT(1M) replaces an ACTIVE column that carried a ● for a flag nobody acted on.
+		// CTX(1M) replaces an ACTIVE column that carried a ● for a flag nobody acted on.
 		// UPDATED already says whether a session is live, in seconds rather than as a dot.
 		//
 		// The denominator is IN THE TITLE because it is fixed at one million and a gauge with
@@ -82,9 +83,16 @@ func sessionsColumns() []table.Column {
 // contextColumnTitle names the column and its denominator together.
 //
 // The width follows the title rather than the gauge: the gauge scales to whatever the fitter
-// leaves, and a column narrower than its own heading would have bubbles truncate the heading to
-// "CONTEXT(1…", which states no scale at all.
-const contextColumnTitle = "CONTEXT(1M)"
+// leaves, and a column narrower than its own heading would have bubbles truncate the heading,
+// losing the "(1M)" first — the one part that states a scale.
+//
+// SEVEN COLUMNS, BECAUSE A DECLARED WIDTH IS NOT A FITTED ONE. The heading was CONTEXT(1M), declared
+// at exactly its eleven columns so it "could not" be clipped — but fitTableColumns shrinks the
+// widest column against one global floor of four, and at eleven this was often the widest. It was
+// clipped at widths 45-58, which no declared width can prevent; seven clears every width from 45 to
+// 200, and TestSessionsHeaders_CarryNoANSIUnderAForcedColourProfile holds it to that with no
+// exemption. Any column added to this table moves the fit, so that sweep is what keeps it true.
+const contextColumnTitle = "CTX(1M)"
 
 // contextWindowTokens is the denominator every gauge is drawn against.
 //
@@ -108,7 +116,7 @@ const contextWindowTokens = 1_000_000
 // the flag on here: the sessions table is a []table.Column whose cells are built inline against
 // each column's fitted width, so the set is named instead.
 //
-// CONTEXT(1M) is here for its EMPTY cell rather than its full one. Every gauge is exactly the
+// CTX(1M) is here for its EMPTY cell rather than its full one. Every gauge is exactly the
 // column's width, so where one sits is moot — but an unknown context renders as the same em dash
 // COST and SAVED use, and a reader scanning for "nothing known here" should find all three in
 // one vertical line.
@@ -159,9 +167,10 @@ func alignSessionsHeaders(cols []table.Column) []table.Column {
 // width at the declared layout.
 //
 // 11, and the arithmetic an earlier revision gave for it was wrong. It said "the columns TITLE
-// does not displace render 67 wide, and 67 + 11 + 2 is 80" — 67 is right, but the gate does not
-// add up declared widths any more: it asks the fitter what TITLE is left with, and the fitter
-// narrows the two wider columns before it touches TITLE. So the real threshold is 73, not 80.
+// does not displace render 67 wide, and 67 + 11 + 2 is 80" — 67 was right then (63 since the
+// context heading became CTX(1M)), but the gate does not add up declared widths any more: it asks
+// the fitter what TITLE is left with, and the fitter narrows the two wider columns before it
+// touches TITLE. So the real threshold is lower than that sum — 69, measured.
 //
 // 11 is the narrowest cell where a left-truncated path still says which session it is:
 // "…claudesessions" fits, where 8 columns give a leaf fragment identifying nothing. Picked for
@@ -171,8 +180,9 @@ func alignSessionsHeaders(cols []table.Column) []table.Column {
 // Re-derived once already. It was 14 until main replaced ACTIVE with CONTEXT(1M), which widened
 // that base by three and pushed TITLE's threshold to 83 — caught by
 // TestSessionsShowTitle_RendersAtTheCommonWidth, which exists because an earlier revision let a
-// 20-column error through with nothing asserting the threshold. Any future column added to this
-// table moves this number again, and that test is what says so.
+// 20-column error through with nothing asserting the threshold. Shortening that heading to
+// CTX(1M) took four columns back out, moving the threshold from 73 to 69. Any future column
+// added to this table moves this number again, and that test is what says so.
 //
 // Narrow for a path, deliberately: truncLeft keeps the TAIL, so 14 columns of
 // "…s/claudesessions" still says which session this is, where the same 14 from the left would
@@ -1431,7 +1441,8 @@ const sessionMoneyCellMin = 9
 // "$0.00" for a sub-cent figure, read from the other end, and the rule this file states fifty
 // lines above sessionMoneyCell forbids it in both directions.
 //
-// The cost is real and measured: the columns now disappear below 73 columns, where an ordinary
+// The cost is real and measured: on this floor alone the columns disappear below 71 columns
+// (TITLE, which they yield to, keeps them out until 93 — see sessionsShowTitle), where an ordinary
 // "$36.58" would still have fitted. Dropping a whole column is this file's stated answer to
 // not being able to render a cell honestly, and a reader who cannot see COST at all goes
 // looking for the width; one who sees "—" against a session that definitely spent money
@@ -1556,8 +1567,8 @@ func sessionsShowTitle(termWidth int) bool {
 	// paragraph is live.
 	//
 	// What the function does: TITLE is granted when the FITTED set leaves it its floor, measured
-	// without the money columns because those are what yield to it. TITLE renders from 73; COST
-	// and SAVED are absent from 73 to 96 and return at 97, where the whole set holds every
+	// without the money columns because those are what yield to it. TITLE renders from 69; COST
+	// and SAVED are absent from 69 to 92 and return at 93, where the whole set holds every
 	// minimum at once.
 	//
 	// Why in that order: TITLE is the column this pane gained and the only one whose absence
@@ -1573,8 +1584,8 @@ func sessionsShowTitle(termWidth int) bool {
 	//
 	// Measured WITHOUT the money columns, because they are what yields: this gate is decided
 	// first and sessionsShowMoney reads it, so COST and SAVED take only what is left once a
-	// legible title has its room. They are absent from 73 to 96 for that reason and return at
-	// 97, where the full set holds every minimum at once.
+	// legible title has its room. They are absent from 69 to 92 for that reason and return at
+	// 93, where the full set holds every minimum at once.
 	keep := make([]table.Column, 0, len(sessionsColumns()))
 	for _, c := range sessionsColumns() {
 		switch headerTitle(c) {

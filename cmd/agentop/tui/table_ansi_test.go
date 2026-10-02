@@ -114,11 +114,16 @@ func TestSessionsHeaders_CarryNoANSIUnderAForcedColourProfile(t *testing.T) {
 	t.Cleanup(func() { lipgloss.SetColorProfile(restore) })
 
 	// EVERY WIDTH THE TABLE CLAIMS TO WORK AT, not a handful. Hand-picked widths is how a
-	// clipped heading survived: "CONTEXT(1M)" was declared at exactly its own eleven columns so
-	// it could not be clipped, and the FITTER — which shrinks the widest column against one
-	// global floor of four — squeezed it to ten at 80 and eight at 50, two sizes this list did
-	// not name. The title is STILL eleven columns — shortening it is #1094, not this PR — so
-	// the sweep exempts that one column and holds every other heading to its fitted width.
+	// clipped heading survived: the context column's "CONTEXT(1M)" was declared at exactly its
+	// own eleven columns so it could not be clipped, and the FITTER — which shrinks the widest
+	// column against one global floor of four — squeezed it to ten at 80 and eight at 50, two
+	// sizes this list did not name. This sweep then exempted that one column until #1094
+	// shortened the heading to CTX(1M); it now holds EVERY heading to its fitted width.
+	//
+	// The clipped set is a property of the whole column set, not of one column — adding TITLE
+	// moved it from 24 widths to 14 — so a column added anywhere can bring a clip back, and this
+	// sweep is what catches it. CTX(1M) was measured clear at every width here with no rows, with
+	// untitled and titled rows, and with the AGENT column two agents bring in.
 	//
 	// FROM 45 UP, because below that every column reaches that floor and headings clip starting
 	// with SESSION. That is the regime fitTableColumns documents as "the terminal is simply too
@@ -132,31 +137,6 @@ func TestSessionsHeaders_CarryNoANSIUnderAForcedColourProfile(t *testing.T) {
 		for i, c := range m.sessionsTbl.Columns() {
 			if strings.ContainsRune(c.Title, 0x1b) {
 				t.Errorf("width %d column %d heading carries an escape: %q", width, i, c.Title)
-			}
-			// THE CONTEXT COLUMN IS EXEMPT, AND THAT IS A DEFECT ON RECORD RATHER THAN A RULE.
-			// contextColumnTitle is declared at exactly its eleven columns so the heading "cannot"
-			// be clipped — but a declared width is not a fitted one, and fitTableColumns shrinks
-			// the widest column against ONE global floor of four. Measured on this tree: clipped
-			// at 14 widths, 45-58.
-			//
-			// THAT SET USED TO BE 24 WIDTHS — 45-58 and 73-82, including the 78 an earlier README
-			// sample was rendered at — and #1056's TITLE column changed the fit under it, which is
-			// the point: the clip is a property of the whole column set, so any column added
-			// anywhere moves it. #1082 has since landed and left the title at its eleven columns,
-			// so the exemption is still needed and no longer waits on anything.
-			//
-			// TRACKED AS #1094, which is what this exemption now waits on. It used to say "delete
-			// this when #1082 lands"; #1082 landed and left the title alone, so that condition could
-			// never fire — an exemption retiring on a PR with no reason to touch it is permanent by
-			// accident.
-			//
-			// Not fixed here because the fix is not the rename: eight comments across app.go,
-			// styles.go, detail_fetch.go and three test files name the column by its literal
-			// heading, and the README names it in prose and in a rendered sample. #1094 carries the
-			// measurement that makes it safe — "CTX(1M)" at seven columns clears all 156 widths this
-			// sweep walks, under all three data conditions.
-			if headerTitle(c) == contextColumnTitle {
-				continue
 			}
 			if c.Width > 0 && lipgloss.Width(c.Title) > c.Width {
 				t.Errorf("width %d column %d heading %q is %d columns in a %d-wide column",

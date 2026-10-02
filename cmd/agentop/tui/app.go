@@ -399,7 +399,7 @@ type model struct {
 	// Data caches.
 	sessions []session.SessionSummary
 	// events was labelled a ring buffer and has never been one. Nothing trims an entry in
-	// place; every write is one of six, and the CONTEXT(1M) gauge folds forward off this map,
+	// place; every write is one of six, and the CTX(1M) gauge folds forward off this map,
 	// so each one owes contextRun an action. The full inventory, because the gauge reads an
 	// unchanged LENGTH as "nothing new to fold" and two of these change content without
 	// changing length:
@@ -426,7 +426,7 @@ type model struct {
 	// dash — corrected in contextRun, and only visible when the next /v1/sessions poll happened
 	// to repaint. See TestSessionsTable_ASnapshotRepaintsTheGaugeItFilled.
 	events map[string][]pipeline.SessionEvent // sessionID → every event held for it
-	// contextRun is the CONTEXT(1M) gauge's answer per session, folded forward as events
+	// contextRun is the CTX(1M) gauge's answer per session, folded forward as events
 	// arrive rather than recomputed from the whole slice — see sessionContextFor. The row
 	// loop asks for every session on every rebuild, and a rebuild happens on every streamed
 	// event, so a full scan there is O(events) per session per event. It REMEMBERS THE WINNING
@@ -1628,7 +1628,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.pane == paneEvents && m.selectedSess == msg.id {
 			m.rebuildEventsTable()
 		}
-		// AND THE SESSIONS ROW, because the rebase above changed this session's CONTEXT(1M)
+		// AND THE SESSIONS ROW, because the rebase above changed this session's CTX(1M)
 		// figure and the table holds BAKED cells — rebuildSessionsTable renders each gauge to a
 		// string once and View() reprints whatever was baked, so a figure nothing repaints is
 		// still the dash it just disproved.

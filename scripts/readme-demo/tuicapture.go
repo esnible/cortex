@@ -229,7 +229,7 @@ func NewCapturer(f Fixture, cols, rows int, ledgerDir string) (*Capturer, error)
 // warm fills the model's per-session event caches by drilling into each session
 // and backing out again.
 //
-// CONTEXT(1M) and the per-session token totals fold the model's own event cache,
+// CTX(1M) and the per-session token totals fold the model's own event cache,
 // which a session only fills when its events arrive — over the stream while the
 // viewer watches, or in the snapshot a drill-in fetches. The generator uses the
 // drill-in, because the alternative is to record events AFTER the server is up so
@@ -290,7 +290,7 @@ func (c *Capturer) build(f Fixture) []pendingEvent {
 			}})
 			// The response carries the token split, the cost record, AND the
 			// tool count and main-agent role: sessions_context.go folds the
-			// CONTEXT(1M) gauge from responses only, skipping any response with
+			// CTX(1M) gauge from responses only, skipping any response with
 			// no tool manifest (a one-shot title call) or marked subagent. Omit
 			// either and the gauge stays a dash.
 			turn = append(turn, pendingEvent{s.ID, pipeline.SessionEvent{
@@ -303,7 +303,7 @@ func (c *Capturer) build(f Fixture) []pendingEvent {
 					// The manifest and the conversation must be present as
 					// ARRAYS, not just as counts: summarizeEvent recomputes both
 					// counts from len() and then nils the arrays, so counts alone
-					// arrive as zero and the CONTEXT(1M) fold skips the response.
+					// arrive as zero and the CTX(1M) fold skips the response.
 					Tools:            tools(t.Tools),
 					Messages:         conversation(s.ID, t.Messages),
 					ToolCount:        t.Tools,
@@ -393,7 +393,7 @@ func (c *Capturer) record(id string, e pipeline.SessionEvent) {
 // running and holds the only handle on the model's timer chain. Dropping it —
 // which an earlier version of this pump did — kills the 2s sessions refresh
 // permanently, and the table then shows whichever snapshot existed when the
-// model started, with CONTEXT(1M) stuck on a dash. Keeping the channel and
+// model started, with CTX(1M) stuck on a dash. Keeping the channel and
 // reading it later is the entire fix.
 func (c *Capturer) settle(d time.Duration) {
 	deadline := time.Now().Add(d)

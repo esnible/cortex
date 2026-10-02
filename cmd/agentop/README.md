@@ -604,7 +604,7 @@ agentop is for, and the other three are surfaces you visit and leave.
   on a given session. The column does not say which source it used. Numerics are
   right-aligned so the digits line up between rows.
 
-  `CONTEXT(1M)` is a gauge, not a figure: how full the **conversation's**
+  `CTX(1M)` is a gauge, not a figure: how full the **conversation's**
   context was on its latest turn, against a fixed one-million-token window. The
   brackets are the scale, drawn on every row, so a nearly-empty session reads
   as empty-out-of-something rather than as a blank cell — and an em dash, which
@@ -692,31 +692,30 @@ agentop is for, and the other three are surfaces you visit and leave.
   the durable cost ledger and survives restarts. `[?]` states both facts; the
   title deliberately does not, since no single span is true of every row.
 
-  Rendered at 100 columns, which is the narrowest terminal that carries every
-  column at once:
+  Rendered at 100 columns, where every column has its declared width; 93 is the
+  narrowest terminal that carries them all at once:
 
   ```
   agentop · http://localhost:9094
   LAST 1H    TODAY   7 DAYS    MONTH
     $4.04   $18.80  $216.44  $703.18
   ────────────────────────────────────────────────────────────────────────────────────────────────────
-   SESSION       TITLE        UPDATED         EVENTS      TOKENS        COST      SAVED~  CONTEXT(1M)
-   ctx-abc-123…  …pend-spans  3s ago              42       48.2k       $0.12       $0.01  ▕███████▎ ▏
-   ctx-def-567…  weather-ag…  18m ago             15        1.2k      <$0.01           —  ▕▏        ▏
-   ctx-ghi-901…               42m ago              7        2.9k           —           —  ▕███▊     ▏
-   default                    1h ago               8           —           —           —            —
+   SESSION         TITLE        UPDATED           EVENTS      TOKENS        COST      SAVED~  CTX(1M)
+   ctx-abc-123-4…  …pend-spans  3s ago                42       48.2k       $0.12       $0.01  ▕████ ▏
+   ctx-def-567-4…  weather-ag…  18m ago               15        1.2k      <$0.01           —  ▕▏    ▏
+   ctx-ghi-901-4…               42m ago                7        2.9k           —           —  ▕██   ▏
+   default                      1h ago                 8           —           —           —        —
 
   ● connected  2.1 events/sec   feedback: https://github.com/rossoctl/cortex/issues/new/choose
   [↑↓] nav  [↵] drill  [u] usage  [$] spend  [/] filter  [p] pause  [P] pipeline  [?] keys  [q] quit
   ```
 
   The two money columns are dropped entirely on a terminal too narrow to show a
-  sub-cent charge honestly — below 97 columns — rather than rounded to `$0.00`
-  or blanked. A charge under a cent reads `<$0.01`. That floor was 73 until the
-  `TITLE` column arrived and moved it to 97: `TITLE` is fitted first and the money
-  columns yield to it, so from 73 to 96 the table carries `TITLE` and no money, and
-  at 97 the whole set holds every minimum at once. `sessionsShowMoney` states the
-  arithmetic.
+  sub-cent charge honestly — below 93 columns — rather than rounded to `$0.00`
+  or blanked. A charge under a cent reads `<$0.01`. `TITLE` is fitted first and
+  the money columns yield to it, so from 69 to 92 the table carries `TITLE` and no
+  money, and at 93 the whole set holds every minimum at once. Any column added or
+  resized moves these numbers; `sessionsShowMoney` states the arithmetic.
 
   `SAVED~` carries the tilde in its **heading** rather than on every row: a
   saving is always an estimate, so the caveat belongs to the column rather than

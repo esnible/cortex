@@ -76,7 +76,7 @@ func TestSessionsPane_CachedOnlyRowCarriesTheTitle(t *testing.T) {
 	}
 	// Asserted alongside TITLE because a short row shows up here first: a missing cell earlier
 	// in the row is what makes this one wrong. The marker rides in UPDATED since ACTIVE was
-	// replaced by CONTEXT(1M).
+	// replaced by CTX(1M).
 	if got := strings.TrimSpace(sessionsCell(t, m, row, "UPDATED")); got != cachedMarker {
 		t.Errorf("cached-only marker = %q, want %q — cells have shifted: %v", got, cachedMarker, row)
 	}
@@ -470,7 +470,7 @@ func TestSessionsShowTitle_RendersAtTheCommonWidth(t *testing.T) {
 			titles(sessionsColumnsFor(80)))
 	}
 	// And both are present at SOME width — found by sweeping rather than by naming one. The
-	// literal was 82 and went stale the moment main added CONTEXT(1M), which is the third time
+	// literal was 82 and went stale the moment main added CTX(1M), which is the third time
 	// a hardcoded width in this file has had to be re-derived; the property worth asserting is
 	// that such a width exists and is close to 80, not what it happens to be today.
 	both := -1

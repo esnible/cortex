@@ -433,7 +433,7 @@ func TestSessionContextFor_ThePickerReleaseKeepsTheFigure(t *testing.T) {
 	}
 }
 
-// heldContextCell is the CONTEXT(1M) cell of one session's row AS THE TABLE HOLDS IT.
+// heldContextCell is the CTX(1M) cell of one session's row AS THE TABLE HOLDS IT.
 //
 // Read off Rows() rather than recomputed, because that is the whole distinction the three tests
 // below exist for: bubbles/table stores the strings rebuildSessionsTable baked and View() reprints
