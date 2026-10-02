@@ -271,14 +271,21 @@ exercised:
   printed that it starts with the new environment the next time OpenCode runs; a plain
   client then started it on Cortex.
 
-Restarting the service once after the change is unit-tested, not tested live.
+Then, on the final change, with an OpenCode TUI open:
+
+- `enable --yes` warned with the running service's pid, restarted it once, and reported
+  it `is using Cortex.`; the restarted service carried the proxy and CA variables, and the
+  open TUI kept its connection;
+- `disable --yes` restarted it once more and reported it `no longer uses Cortex.`; the
+  restarted service had no proxy variable, although the shell agentop ran in exported one;
+- an `opencode run` was grouped by `X-Session-Id` into one `ses_…` session under the
+  `opencode` agent, with no `default` row.
 
 Not tested live:
 
-- **Grouping by `X-Session-Id`.** The live run grouped OpenCode by
-  `X-Opencode-Session-Id`, the session's own id. For a session with no parent and no fork
-  source, `X-Session-Id` carries the same id. Grouping by `X-Session-Id`, and a subagent
-  or fork joining its parent's session, were not run.
+- **A subagent or fork joining its parent's session.** For a session with no parent and
+  no fork source, `X-Session-Id` carries the session's own id, which is the case that was
+  run.
 - **Linux.** agentop's code paths and the process lookup's are unit-tested on Linux in a
   container, but OpenCode itself was not run there.
 - **Other OpenCode versions.** The User-Agent shape and the session header were captured
