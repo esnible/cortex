@@ -1,0 +1,98 @@
+# Release Smoke Test (Linux) — #957
+#
+# Installs a just-published release exactly as a real user would (curl | sh,
+# downloading from GitHub Releases — there is no "install from a local build"
+# mode), then exercises the systemd install/upgrade/uninstall path for real.
+#
+# Triggers on Release Binaries finishing, not on the tag/main push directly:
+# that guarantees the release assets this pulls from already exist, rather
+# than racing the upload.
+#
+# arm64: out of scope here. No real arm64 GitHub-hosted runner exists in this
+# org, and no arm64-execution pattern exists anywhere in this repo's CI today
+# (build.yaml's QEMU usage builds container images for arm64 but never runs
+# one) — extending that to install.sh/agentop would be new infrastructure, not
+# a small addition to this workflow.
+#
+# Deliberately not covered: driving a real request through the proxy and
+# asserting a parsed event with a non-zero token count (#957's third
+# checklist bullet). That needs the unattended/headless capture path from
+# #955, which does not exist yet.
+name: Release Smoke Test (Linux)
+
+on:
+  workflow_run:
+    # Must be byte-identical to release-binaries.yaml's own `name:` (lowercase
+    # "binaries") — workflow_run matches on name, not file path, and a mismatch
+    # fails silently: no run is ever created, nothing goes red.
+    workflows: ["Release binaries"]
+    types: [completed]
+
+permissions:
+  contents: read
+
+jobs:
+  linux-smoke-test:
+    name: Linux install/upgrade/uninstall smoke test
+    # event == 'push' excludes Release Binaries' workflow_dispatch dry runs,
+    # which build but never publish — nothing would exist yet to install.
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
+          persist-credentials: false
+
+      # A tag push's workflow_run.head_branch is the tag itself; a push to main
+      # (the rolling channel release-binaries.yaml just updated) reports "main" —
+      # mapped here to the same CHANNEL_TAG install.sh itself uses.
+      - name: Determine the tag under test
+        id: tag
+        env:
+          BRANCH: ${{ github.event.workflow_run.head_branch }}
+        run: |
+          branch="${BRANCH}"
+          case "${branch}" in
+            v*) tag="${branch}" ;;
+            main) tag="main-latest" ;;
+            *)
+              echo "::error::unexpected trigger branch/tag: ${branch}"
+              exit 1
+              ;;
+          esac
+          echo "tag=${tag}" >>"${GITHUB_OUTPUT}"
+
+      # Same enable-linger + wait-for-bus recipe ci.yaml's agentop leg already uses
+      # for the real-systemd integration test (#1076) — proven to work on GitHub's
+      # ubuntu-latest runners. The runner has no interactive login, so nothing has
+      # started a systemd --user session yet; enable-linger asks logind to start
+      # and keep one running. install.sh's systemd install path needs that same
+      # live session, or it hits the same "no reachable systemd --user session"
+      # refusal cmd_service_systemd_integration_test.go's requireRealSystemd
+      # guards against.
+      - name: Enable a systemd --user session
+        run: |
+          sudo loginctl enable-linger "$(whoami)"
+          rt="/run/user/$(id -u)"
+          for i in $(seq 1 30); do
+            [ -S "${rt}/bus" ] && break
+            sleep 1
+          done
+          echo "XDG_RUNTIME_DIR=${rt}" >>"${GITHUB_ENV}"
+          XDG_RUNTIME_DIR="${rt}" systemctl --user show-environment || \
+            echo "::warning::systemd --user session not reachable after enable-linger; the smoke test will report why"
+
+      - name: Run the Linux release smoke test
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SMOKE_TEST_TAG: ${{ steps.tag.outputs.tag }}
+          # Anchors the post-upgrade version check to the exact commit that
+          # triggered THIS run, not whatever main-latest happens to point at
+          # by the time the assertion executes — a later merge can re-point
+          # the tag and clobber its assets while this job is still running.
+          SMOKE_TEST_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: sh scripts/release_smoke_test_linux.sh "${SMOKE_TEST_TAG}" "${SMOKE_TEST_SHA}"
