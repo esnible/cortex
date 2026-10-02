@@ -350,6 +350,10 @@ func TestPruneProcs_EvictsToolsBeforeAgents(t *testing.T) {
 	tool := []Proc{{PID: maxProcs + 1, Start: int64(maxProcs+1) * 1000}}
 	_ = s.SessionForProcess(tool, "")
 
+	if want := maxProcs - maxProcs/4 + 1; len(s.procs) != want {
+		t.Fatalf("%d processes after the trigger insert, want %d: no prune ran", len(s.procs), want)
+	}
+
 	// Step 4: Verify the agent process (claimed, oldest) survived
 	// because unclaimed (tool) processes are evicted first
 	agentKey := agent[0].key()
