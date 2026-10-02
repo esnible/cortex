@@ -1164,7 +1164,8 @@ const emptyCostCell = "—"
 //
 // DISTINCT FROM emptyCostCell, which says nothing could price this traffic. This says the traffic
 // was priced and the figures cannot be added, which is a different fact with a different fix — the
-// first wants a pricing entry, the second wants --by currency.
+// first wants a pricing entry, the second wants --by currency. On the currency axis itself it marks
+// a row that is not one unit, and writeCostBreakdown says so instead of prescribing that axis again.
 const mixedCostCell = "(mixed)"
 
 // writeCostBreakdown prints one row per label, costliest first.
@@ -1215,6 +1216,7 @@ func writeCostBreakdown(snap *usage.Snapshot, stdout io.Writer, requested usage.
 	byUnit := requested == usage.GroupCurrency
 	unit, labelled := windowUnit(snap)
 	fmt.Fprintf(stdout, "\n  %-34s %10s %10s %14s\n", strings.ToUpper(asked), "REQUESTS", "TOKENS", "COST")
+	var withheld []string
 	for _, label := range labels {
 		c := series[label]
 		cost := emptyCostCell
@@ -1228,6 +1230,7 @@ func writeCostBreakdown(snap *usage.Snapshot, stdout io.Writer, requested usage.
 			cost = costIn(float64(c.CostMicros)/1e6, unit)
 		default:
 			cost = mixedCostCell
+			withheld = append(withheld, label)
 		}
 		fmt.Fprintf(stdout, "  %-34s %10s %10s %14s\n",
 			label, plainCount(c.Requests), compactTokens(c.Tokens), cost)
@@ -1239,6 +1242,17 @@ func writeCostBreakdown(snap *usage.Snapshot, stdout io.Writer, requested usage.
 		fmt.Fprintf(stdout,
 			"  ! these rows hold %s, which cannot be added — use --by currency for a figure per unit\n",
 			strings.Join(snap.Currencies, " and "))
+	}
+	// ON THE currency AXIS THAT ADVICE WOULD POINT AT ITSELF, so a withheld cell there gets its own
+	// sentence. Only a row whose label is not a reported unit is withheld on this axis — in practice
+	// the (other) band ledger.Fold caps a window past usage.MaxSeriesInResponse units into — and
+	// "use --by currency" is what the reader just did.
+	//
+	// GATED ON THE CELLS WITHHELD, NOT ON labelled. Every window this axis exists for is mixed, and
+	// a table whose rows are all real units has nothing to explain.
+	if byUnit && len(withheld) > 0 {
+		fmt.Fprintf(stdout, "  ! %s may hold more than one unit, which cannot be added\n",
+			strings.Join(withheld, " and "))
 	}
 	// The table's own shortfall, said where the table is. This is the case cmd_cost.go's older
 	// comment predicted: "a table summing to less than the headline above it with nothing to
