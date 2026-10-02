@@ -289,6 +289,12 @@ func TestAncestry_UnknownPIDIsNotFound(t *testing.T) {
 	if _, err := r.Ancestry(1<<30, 4); !errors.Is(err, ErrNotFound) {
 		t.Errorf("err = %v, want ErrNotFound", err)
 	}
+	// The walk stops before PID 1, so 1 and below have no ancestry at all.
+	for _, pid := range []int32{1, 0, -1} {
+		if _, err := r.Ancestry(pid, 4); !errors.Is(err, ErrNotFound) {
+			t.Errorf("Ancestry(%d): err = %v, want ErrNotFound", pid, err)
+		}
+	}
 }
 
 // The per-connection cost the proxy will pay on a connection's first request.

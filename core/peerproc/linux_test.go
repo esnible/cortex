@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -103,6 +104,23 @@ func TestOwner_SkipsAnotherUsersSocketUnlessRoot(t *testing.T) {
 	}
 	if p, err := (&linux{euid: 0}).owner(tcpEntry{uid: 2000, inode: st.Ino}, self); err != nil || p.PID != self[0] {
 		t.Errorf("euid 0, socket uid 2000: owner = %+v, %v; want this process, root may read every fd", p, err)
+	}
+}
+
+// The full scan runs newest process first; /proc's own listing is in name order.
+func TestProcPIDs_HighestFirst(t *testing.T) {
+	root := t.TempDir()
+	for _, name := range []string{"1", "10", "9", "200", "self", "net", "0"} {
+		if err := os.Mkdir(filepath.Join(root, name), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	pids, err := procPIDs(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []int32{200, 10, 9, 1}; !slices.Equal(pids, want) {
+		t.Errorf("procPIDs = %v, want %v", pids, want)
 	}
 }
 

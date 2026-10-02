@@ -11,6 +11,7 @@ import (
 	"io"
 	"net/netip"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -215,20 +216,35 @@ func (l *linux) inodeOwner(inode uint64, hints []int32) (Proc, error) {
 			return l.procInfo(pid)
 		}
 	}
-	dirs, err := os.ReadDir("/proc")
+	pids, err := procPIDs("/proc")
 	if err != nil {
 		return Proc{}, err
 	}
-	for _, d := range dirs {
-		n, err := strconv.ParseInt(d.Name(), 10, 32)
-		if err != nil || tried[int32(n)] {
-			continue
-		}
-		if holds(int32(n), target) {
-			return l.procInfo(int32(n))
+	for _, pid := range pids {
+		if !tried[pid] && holds(pid, target) {
+			return l.procInfo(pid)
 		}
 	}
 	return Proc{}, ErrNotFound
+}
+
+// procPIDs is every process directory under root, highest pid first. The kernel hands
+// out pids in rising order until it wraps, so that is roughly newest first — and a
+// client that has just started, the usual reason a hint misses, is found early.
+func procPIDs(root string) ([]int32, error) {
+	dirs, err := os.ReadDir(root)
+	if err != nil {
+		return nil, err
+	}
+	var pids []int32
+	for _, d := range dirs {
+		if n, err := strconv.ParseInt(d.Name(), 10, 32); err == nil && n > 0 {
+			pids = append(pids, int32(n))
+		}
+	}
+	slices.Sort(pids)
+	slices.Reverse(pids)
+	return pids, nil
 }
 
 // holds reports whether pid has an open fd on target. A process the caller may not

@@ -26,7 +26,9 @@ type Proc struct {
 	PID  int32
 	PPID int32
 	// Start is when the process started. PIDs are reused, so PID and Start together
-	// name one process for its whole lifetime.
+	// name one process for its whole lifetime. Start is comparable between lookups made
+	// through one Resolver; on Linux it is derived from a boot time read once in New, so
+	// it must not be compared across Resolvers or persisted.
 	Start time.Time
 	// Exe is the absolute, symlink-resolved path of the process's executable, or "" when
 	// it is not known: the caller may not read it, or — on macOS, where only the path
@@ -61,8 +63,8 @@ type Resolver interface {
 	// matches, or the one chosen belongs to a process the caller may not inspect.
 	ListenerOwner(addr netip.AddrPort, hints ...int32) (Proc, error)
 	// Ancestry is pid followed by its parents, nearest first, stopping before PID 1 and
-	// after max entries (at least one). A parent that cannot be read ends the walk;
-	// only an unreadable pid itself is ErrNotFound.
+	// after max entries (at least one). A parent that cannot be read ends the walk.
+	// ErrNotFound when pid itself cannot be read, or is 1 or below.
 	Ancestry(pid int32, max int) ([]Proc, error)
 }
 
@@ -74,8 +76,8 @@ var (
 )
 
 // New returns this host's Resolver once it has checked that the Resolver works: it dials
-// a listener of its own and requires both lookups to name this process. Any failure is
-// ErrUnsupported, wrapped with what went wrong.
+// a listener of its own and requires both lookups to name this process, and ConnOwner to
+// name its parent too. Any failure is ErrUnsupported, wrapped with what went wrong.
 func New() (Resolver, error) {
 	r, err := newPlatform()
 	if err != nil {
@@ -122,6 +124,11 @@ func selfTest(r Resolver) error {
 	}
 	if p.PID != self {
 		return fmt.Errorf("ConnOwner named pid %d, want %d", p.PID, self)
+	}
+	// The parent pid checks the process-record parsing (kinfo_proc, /proc/<pid>/stat)
+	// that the pid alone does not reach.
+	if ppid := int32(os.Getppid()); p.PPID != ppid {
+		return fmt.Errorf("ConnOwner named parent pid %d, want %d", p.PPID, ppid)
 	}
 	if p, err = r.ListenerOwner(server, self); err != nil {
 		return fmt.Errorf("ListenerOwner: %w", err)
