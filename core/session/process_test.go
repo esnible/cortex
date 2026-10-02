@@ -1,0 +1,247 @@
+package session
+
+import (
+	"fmt"
+	"testing"
+	"time"
+
+	"github.com/rossoctl/cortex/core/pipeline"
+)
+
+// procTestClock is a store clock tests move by hand, so "most recently active" and the
+// ambiguity window never depend on how fast the machine is.
+type procTestClock struct{ t time.Time }
+
+func (c *procTestClock) now() time.Time          { return c.t }
+func (c *procTestClock) advance(d time.Duration) { c.t = c.t.Add(d) }
+
+func newProcStore() (*Store, *procTestClock) {
+	clk := &procTestClock{t: time.Unix(1_700_000_000, 0)}
+	return New(0, 0, 0, WithClock(clk.now)), clk
+}
+
+// pchain is a process chain, nearest first. Each pid's start time is derived from it, so
+// the same pid always names the same process unless a test says otherwise.
+func pchain(pids ...int32) []Proc {
+	out := make([]Proc, len(pids))
+	for i, pid := range pids {
+		out[i] = Proc{PID: pid, Start: int64(pid) * 1000, Exe: fmt.Sprintf("/bin/p%d", pid)}
+	}
+	return out
+}
+
+// recordIn appends one request to id a second after the last, as the listener does once
+// it has resolved where the request goes.
+func recordIn(s *Store, clk *procTestClock, id string) {
+	clk.advance(time.Second)
+	s.Append(id, pipeline.SessionEvent{At: clk.now(), Direction: pipeline.Outbound, Phase: pipeline.SessionRequest})
+}
+
+// A tool an agent's shell runs belongs to the session that ran it, and keeps it when the
+// agent moves on (/clear); a tool started after the move gets the new one.
+func TestSessionForProcess_AToolJoinsTheSessionOfTheAgentThatRanIt(t *testing.T) {
+	s, clk := newProcStore()
+	defer s.Close()
+	claude := pchain(100, 50)
+	s.ClaimProcess("s1", "claude-code", claude)
+	recordIn(s, clk, "s1")
+
+	curl := pchain(300, 200, 100, 50) // curl ← bash ← claude ← login shell
+	if got := s.SessionForProcess(curl, ""); got != "s1" {
+		t.Fatalf("tool of the agent: %q, want s1", got)
+	}
+	s.ClaimProcess("s2", "claude-code", claude)
+	recordIn(s, clk, "s2")
+	if got := s.SessionForProcess(curl, ""); got != "s1" {
+		t.Errorf("a tool still running moved to %q after the agent named s2; want it kept in s1", got)
+	}
+	if got := s.SessionForProcess(pchain(301, 200, 100, 50), ""); got != "s2" {
+		t.Errorf("a tool started after the move: %q, want s2", got)
+	}
+}
+
+// A nested agent — claude -p run from another session's shell — is an agent of its own:
+// before its first header its calls wait in its own pending bucket, which its session
+// adopts, and neither agent takes the other's session.
+func TestSessionForProcess_ANestedAgentIsNotFiledUnderItsParent(t *testing.T) {
+	s, clk := newProcStore()
+	defer s.Close()
+	outer := pchain(100, 50)
+	s.ClaimProcess("outer", "claude-code", outer)
+	recordIn(s, clk, "outer")
+	nested := pchain(400, 200, 100, 50) // claude -p ← bash ← claude
+
+	// Its first request is a CONNECT, which carries no User-Agent: it looks like any
+	// tool of the outer session until a request names the agent.
+	if got := s.SessionForProcess(nested, ""); got != "outer" {
+		t.Fatalf("before it identifies: %q, want outer", got)
+	}
+	pending := s.SessionForProcess(nested, "claude-code")
+	if want := PendingProcessID("claude-code", 400); pending != want {
+		t.Fatalf("once it identifies: %q, want its own pending bucket %q", pending, want)
+	}
+	recordIn(s, clk, pending)
+	s.ClaimProcess("inner", "claude-code", nested)
+	if v := s.View("inner"); v == nil || len(v.Events) != 1 {
+		t.Errorf("inner = %+v, want the adopted pre-header call", v)
+	}
+	recordIn(s, clk, "inner")
+	if got := s.SessionForProcess(nested, "claude-code"); got != "inner" {
+		t.Errorf("nested agent: %q, want inner", got)
+	}
+	if got := s.SessionForProcess(outer, "claude-code"); got != "outer" {
+		t.Errorf("outer agent: %q, want outer", got)
+	}
+}
+
+// One process serving several sessions — OpenCode's background service — answers with the
+// one most recently active, and a tool it spawns keeps that answer.
+func TestSessionForProcess_ASharedServiceAnswersWithItsNewestSession(t *testing.T) {
+	s, clk := newProcStore()
+	defer s.Close()
+	svc := pchain(500)
+	s.ClaimProcess("a", "", svc)
+	recordIn(s, clk, "a")
+	s.ClaimProcess("b", "", svc)
+	recordIn(s, clk, "b")
+	recordIn(s, clk, "a") // a spoke last
+
+	if got := s.SessionForProcess(svc, ""); got != "a" {
+		t.Fatalf("service: %q, want a, its most recently active session", got)
+	}
+	child := pchain(600, 500)
+	if got := s.SessionForProcess(child, ""); got != "a" {
+		t.Fatalf("its tool: %q, want a", got)
+	}
+	recordIn(s, clk, "b")
+	if got := s.SessionForProcess(child, ""); got != "a" {
+		t.Errorf("its tool moved to %q when the other session spoke; want it kept in a", got)
+	}
+}
+
+// A process of no agent is no agent's: default while an agent is active, and "" — so
+// ActiveSession() answers as before — once none has spoken for the ambiguity window.
+func TestSessionForProcess_AProcessOfNoAgent(t *testing.T) {
+	s, clk := newProcStore()
+	defer s.Close()
+	tool := pchain(700, 60)
+	if got := s.SessionForProcess(tool, ""); got != "" {
+		t.Fatalf("no agent yet: %q, want \"\"", got)
+	}
+	s.ClaimProcess("s1", "claude-code", pchain(100, 50))
+	recordIn(s, clk, "s1")
+	if got := s.SessionForProcess(tool, ""); got != DefaultSessionID {
+		t.Errorf("an agent is active: %q, want default", got)
+	}
+	clk.advance(ambiguityWindow + time.Second)
+	if got := s.SessionForProcess(pchain(701, 60), ""); got != "" {
+		t.Errorf("no agent for longer than the window: %q, want \"\"", got)
+	}
+}
+
+func TestSessionForProcess_AReusedPIDIsANewProcess(t *testing.T) {
+	s, clk := newProcStore()
+	defer s.Close()
+	s.ClaimProcess("s1", "claude-code", []Proc{{PID: 100, Start: 1}})
+	recordIn(s, clk, "s1")
+	if got := s.SessionForProcess([]Proc{{PID: 100, Start: 2}}, ""); got == "s1" {
+		t.Error("a new process with a reused pid inherited the old one's session")
+	}
+}
+
+// A claim is made before the request that carried the header is recorded, so a request
+// that arrives in between must not make the store forget it.
+func TestSessionForProcess_AClaimSurvivesUntilItsSessionIsRecorded(t *testing.T) {
+	s, clk := newProcStore()
+	defer s.Close()
+	s.ClaimProcess("s1", "claude-code", pchain(100))
+	_ = s.SessionForProcess(pchain(300, 100), "")
+	recordIn(s, clk, "s1")
+	if got := s.SessionForProcess(pchain(301, 100), ""); got != "s1" {
+		t.Errorf("after the session was recorded: %q, want s1", got)
+	}
+}
+
+// Bob runs as `node bob` above `node bob`. Whichever of the two sends the calls before
+// the first X-Task-Id, the first session adopts them, and both answer with it after.
+func TestClaimProcess_ALauncherAndItsWorkerAreOneAgent(t *testing.T) {
+	launcher, worker := pchain(820, 50), pchain(821, 820, 50)
+	for name, preHeader := range map[string][]Proc{"launcher": launcher, "worker": worker} {
+		t.Run(name, func(t *testing.T) {
+			s, clk := newProcStore()
+			defer s.Close()
+			_ = s.SessionForProcess(launcher, "bob-shell") // the launcher identifies as Bob too
+			pending := s.SessionForProcess(preHeader, "bob-shell")
+			recordIn(s, clk, pending)
+			s.ClaimProcess("task-1", "bob-shell", worker)
+			if v := s.View("task-1"); v == nil || len(v.Events) != 1 {
+				t.Fatalf("task-1 = %+v, want the adopted pre-header call from %s", v, pending)
+			}
+			recordIn(s, clk, "task-1")
+			for who, c := range map[string][]Proc{"launcher": launcher, "worker": worker} {
+				if got := s.SessionForProcess(c, "bob-shell"); got != "task-1" {
+					t.Errorf("%s after the claim: %q, want task-1", who, got)
+				}
+			}
+		})
+	}
+}
+
+func TestSessionForProcess_TheProcessTableIsBounded(t *testing.T) {
+	s, _ := newProcStore()
+	defer s.Close()
+	for pid := int32(2); pid < maxProcs+200; pid++ {
+		_ = s.SessionForProcess(pchain(pid), "")
+	}
+	if n := len(s.procs); n > maxProcs {
+		t.Errorf("%d processes held, want at most %d", n, maxProcs)
+	}
+}
+
+func TestProcessHintsAndIsAgentProcess(t *testing.T) {
+	s, clk := newProcStore()
+	defer s.Close()
+	s.ClaimProcess("s1", "", pchain(500))
+	recordIn(s, clk, "s1")
+	_ = s.SessionForProcess(pchain(600, 500), "")
+	if !s.IsAgentProcess(pchain(500)[0]) || s.IsAgentProcess(pchain(600)[0]) {
+		t.Error("IsAgentProcess: want true for the process that named a session, false for its tool")
+	}
+	if got := s.ProcessHints(8); len(got) != 1 || got[0] != 500 {
+		t.Errorf("ProcessHints = %v, want [500]", got)
+	}
+}
+
+// Per-process pending buckets belong to one agent for SessionForClient's "two agents are
+// active" test, exactly like the agent-wide bucket.
+func TestSessionForClient_PerProcessPendingBucketsCountAsOneAgent(t *testing.T) {
+	s, clk := newProcStore()
+	defer s.Close()
+	recordIn(s, clk, PendingProcessID("claude-code", 1))
+	recordIn(s, clk, PendingProcessID("claude-code", 2))
+	if got := s.SessionForClient(""); got != "" {
+		t.Errorf("two pending buckets of one agent: %q, want \"\" (one agent)", got)
+	}
+	recordIn(s, clk, PendingSessionID("bob-shell"))
+	if got := s.SessionForClient(""); got != DefaultSessionID {
+		t.Errorf("with a second agent: %q, want default", got)
+	}
+}
+
+// The adoption records used to outlive both sessions they named, for the life of the
+// process.
+func TestEviction_ForgetsAdoptionRecords(t *testing.T) {
+	s := New(0, 0, 2)
+	defer s.Close()
+	s.Append(PendingSessionID("claude-code"), pipeline.SessionEvent{At: time.Now(), Direction: pipeline.Outbound, Phase: pipeline.SessionRequest})
+	s.Claim("s1", "claude-code") // adopts the pending bucket
+	for _, id := range []string{"s2", "s3"} {
+		s.Append(id, pipeline.SessionEvent{At: time.Now(), Direction: pipeline.Outbound, Phase: pipeline.SessionRequest})
+	}
+	if s.View("s1") != nil {
+		t.Fatal("s1 was not evicted; the test needs it gone")
+	}
+	if n := len(s.adopted); n != 0 {
+		t.Errorf("%d adoption record(s) left after their session was evicted", n)
+	}
+}

@@ -156,8 +156,8 @@ func (s *Store) SessionForClient(client string) string {
 		}
 		owner := s.owners[id]
 		if owner == "" {
-			owner = strings.TrimPrefix(id, PendingPrefix)
-			if owner == id {
+			var ok bool
+			if owner, ok = pendingOwner(id); !ok {
 				continue
 			}
 		}
