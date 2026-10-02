@@ -551,6 +551,14 @@ Per `(endpoint, model, tier)`, first hit wins:
 Within a level: specificity decides — endpoint axis before model axis, exact before glob,
 longer glob before shorter.
 
+Before any of that, the endpoint's [billing unit](#billing-units) is settled by the same order on
+the endpoint axis **alone**, and only rows in that unit are candidates above. So the most specific
+block covering a host decides its unit, and a block that omits `unit` decides USD: a
+`*.bob.ibm.com` block in credits beside an `api.us-east.bob.ibm.com` block with no `unit` makes
+that one host USD, and leaves the credits block's models unpriced there. Two patterns that rank
+equally on the endpoint axis, such as `*.bob.ibm.com` and `api.*.ibm.com`, are decided by the
+pattern that sorts first — never by a model name.
+
 ## Troubleshooting
 
 | Symptom | Cause | Fix |

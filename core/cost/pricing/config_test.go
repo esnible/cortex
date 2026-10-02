@@ -746,6 +746,81 @@ func TestTable_AGatewaysUnitCoversModelsItsBlockDoesNotName(t *testing.T) {
 	}
 }
 
+// No model name decides an endpoint's unit, even where two blocks in different units tie on host.
+//
+// *.bob.ibm.com and api.*.ibm.com are both globs of 13 bytes and both cover api.bob.ibm.com. The
+// unit lookup used to fall through specificity.beats to the MODEL fields there, so the USD block's
+// model name picked the unit: "gpt-4o" (shorter than "premium-ide") left the host in credits,
+// "gpt-4o-mini-2024-07-18" (longer) moved it to USD and unpriced premium-ide. The tie now breaks on
+// the host pattern alone, and "*" sorts first.
+func TestCurrencyFor_NoModelNameDecidesAnEndpointsUnit(t *testing.T) {
+	for _, usdModel := range []string{"gpt-4o", "gpt-4o-mini-2024-07-18"} {
+		t.Run(usdModel, func(t *testing.T) {
+			tbl, err := Build(&Config{Endpoints: []EndpointConfig{
+				{
+					Hosts: []string{"*.bob.ibm.com"}, Unit: "credits",
+					Models: map[string]ModelConfig{"premium-ide": {TierRates: TierRates{InputCostPerMillion: 2}}},
+				},
+				{
+					Hosts:  []string{"api.*.ibm.com"},
+					Models: map[string]ModelConfig{usdModel: {TierRates: TierRates{InputCostPerMillion: 1}}},
+				},
+			}})
+			if err != nil {
+				t.Fatalf("Build: %v", err)
+			}
+			if got := tbl.CurrencyFor("api.bob.ibm.com", ""); got != "credits" {
+				t.Errorf("CurrencyFor(api.bob.ibm.com) = %q, want credits", got)
+			}
+			if _, prov := tbl.Resolve("api.bob.ibm.com", "premium-ide", 0); prov != ProvConfigured {
+				t.Errorf("api.bob.ibm.com/premium-ide resolved %v, want %v", prov, ProvConfigured)
+			}
+			if _, prov := tbl.Resolve("api.bob.ibm.com", usdModel, 0); prov != ProvNone {
+				t.Errorf("api.bob.ibm.com/%s resolved %v, want %v: a dollar row priced a credits endpoint",
+					usdModel, prov, ProvNone)
+			}
+			// The dollar block still prices the hosts only it covers.
+			if got := tbl.CurrencyFor("api.us.ibm.com", ""); got != CurrencyUSD {
+				t.Errorf("CurrencyFor(api.us.ibm.com) = %q, want %s", got, CurrencyUSD)
+			}
+			if _, prov := tbl.Resolve("api.us.ibm.com", usdModel, 0); prov != ProvConfigured {
+				t.Errorf("api.us.ibm.com/%s resolved %v, want %v", usdModel, prov, ProvConfigured)
+			}
+		})
+	}
+}
+
+// The most specific block covering a host decides its unit, and a block with no unit decides USD.
+//
+// NOT A STARTUP ERROR, deliberately: the two blocks name different host patterns, so neither
+// claims the other's host, and pinning one gateway of a fleet at dollars is a thing an operator
+// may mean. What it costs is that the glob's models are unpriced on that one host, which
+// unpricedBy names.
+func TestCurrencyFor_TheMostSpecificBlockDecidesAHostsUnit(t *testing.T) {
+	tbl, err := Build(&Config{Endpoints: []EndpointConfig{
+		{
+			Hosts: []string{"*.bob.ibm.com"}, Unit: "credits",
+			Models: map[string]ModelConfig{"premium-ide": {TierRates: TierRates{InputCostPerMillion: 2}}},
+		},
+		{
+			Hosts:  []string{"api.us-east.bob.ibm.com"},
+			Models: map[string]ModelConfig{"gpt-4o": {TierRates: TierRates{InputCostPerMillion: 1}}},
+		},
+	}})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if got := tbl.CurrencyFor("api.us-east.bob.ibm.com", ""); got != CurrencyUSD {
+		t.Errorf("CurrencyFor(api.us-east.bob.ibm.com) = %q, want %s", got, CurrencyUSD)
+	}
+	if _, prov := tbl.Resolve("api.us-east.bob.ibm.com", "premium-ide", 0); prov != ProvNone {
+		t.Errorf("api.us-east.bob.ibm.com/premium-ide resolved %v, want %v", prov, ProvNone)
+	}
+	if got := tbl.CurrencyFor("api.eu.bob.ibm.com", ""); got != "credits" {
+		t.Errorf("CurrencyFor(api.eu.bob.ibm.com) = %q, want credits", got)
+	}
+}
+
 // A unit on a block with only a multiplier is refused: the block creates no rates to carry it.
 func TestConfig_AUnitOnAMultiplierOnlyBlockIsRefused(t *testing.T) {
 	f := 0.76
