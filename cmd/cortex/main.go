@@ -40,6 +40,7 @@ import (
 	"github.com/rossoctl/cortex/core/cost/pricing"
 	"github.com/rossoctl/cortex/core/cost/usage"
 	"github.com/rossoctl/cortex/core/memstore"
+	"github.com/rossoctl/cortex/core/peerproc"
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/plugins"
 	"github.com/rossoctl/cortex/core/reloader"
@@ -895,7 +896,20 @@ func main() {
 		// session.id_headers: [] turns it off.
 		fpSrv.SessionIDHeaders = cfg.Session.SessionIDHeaders()
 		fpSrv.ClientAffinity = cfg.Session.ClientAffinityEnabled()
-		fpHTTP, herr := bootstrap.StartHTTPServer("forward-proxy", fpSrv.Handler(), cfg.Listener.ForwardProxyAddr)
+		// Process attribution: header-less requests filed by the process that sent them.
+		// On by default only for a loopback-bound install (session.process_attribution:
+		// auto), and only behind a lookup whose self-test passed — a failure costs one
+		// warning and leaves resolution as it was.
+		if sessions != nil && cfg.Session.ProcessAttributionEnabled(cfg.Listener.BindLoopbackOnly) {
+			if procs, perr := peerproc.New(); perr != nil {
+				slog.Warn("process attribution off: this host's process lookup failed its self-test", "error", perr)
+			} else {
+				fpSrv.Processes = procs
+				slog.Info("process attribution on: header-less requests are filed by the process that sent them")
+			}
+		}
+		fpHTTP, herr := bootstrap.StartHTTPServer("forward-proxy", fpSrv.Handler(), cfg.Listener.ForwardProxyAddr,
+			bootstrap.WithConnContext(fpSrv.ConnContext))
 		if herr != nil {
 			fatalf("forward-proxy listen: %v", herr)
 		}

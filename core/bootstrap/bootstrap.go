@@ -7,6 +7,7 @@
 package bootstrap
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"net"
@@ -138,16 +139,33 @@ func StartStatServer(cfg *config.Config, cfgProvider observe.ConfigProvider, sta
 	return srv, nil
 }
 
-// StartHTTPServer binds addr, serves handler in a goroutine, and returns the
-// server for graceful shutdown. It logs the concrete bound address (resolving
-// an ephemeral ":0" to the OS-assigned port). A bind failure is returned so the
-// caller can decide how to handle it; a serve-time failure after bind is logged.
-func StartHTTPServer(name string, handler http.Handler, addr string) (*http.Server, error) {
+// ServerOption adjusts the http.Server StartHTTPServer builds, before it serves.
+type ServerOption func(*http.Server)
+
+// WithConnContext sets the server's ConnContext, which gives each connection state its
+// handlers share — the forward proxy's slot for the client's process.
+func WithConnContext(fn func(context.Context, net.Conn) context.Context) ServerOption {
+	return func(s *http.Server) { s.ConnContext = fn }
+}
+
+func newHTTPServer(addr string, handler http.Handler, opts []ServerOption) *http.Server {
 	srv := &http.Server{
 		Addr:              addr,
 		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
 	}
+	for _, o := range opts {
+		o(srv)
+	}
+	return srv
+}
+
+// StartHTTPServer binds addr, serves handler in a goroutine, and returns the
+// server for graceful shutdown. It logs the concrete bound address (resolving
+// an ephemeral ":0" to the OS-assigned port). A bind failure is returned so the
+// caller can decide how to handle it; a serve-time failure after bind is logged.
+func StartHTTPServer(name string, handler http.Handler, addr string, opts ...ServerOption) (*http.Server, error) {
+	srv := newHTTPServer(addr, handler, opts)
 	listener, err := net.Listen("tcp", addr)
 	if err != nil {
 		return nil, err

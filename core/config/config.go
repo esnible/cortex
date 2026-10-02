@@ -465,6 +465,16 @@ type SessionConfig struct {
 	// A pointer, like Enabled above, so the default can flip without taking away the
 	// off switch.
 	ClientAffinity *bool `yaml:"client_affinity" json:"client_affinity"`
+
+	// ProcessAttribution files a request that carries no session header under the session
+	// of the process that sent it, or of its nearest ancestor that named one, looked up
+	// from the kernel by core/peerproc — so a tool an agent's shell runs, its gh and git
+	// tunnels and its WebFetch land in the agent's session, and a process of no agent in
+	// none. "auto", the default (and what an empty value means), turns it on exactly when
+	// listener.bind_loopback_only is set: only there is every client a process on this
+	// host. "on" and "off" force it. Needs id_headers non-empty, like client_affinity. Not
+	// hot-reloadable. See session.Store.SessionForProcess.
+	ProcessAttribution string `yaml:"process_attribution" json:"process_attribution"`
 }
 
 // ClientAffinityEnabled reports whether header-less requests are filed by coding agent.
@@ -474,6 +484,26 @@ func (s SessionConfig) ClientAffinityEnabled() bool {
 		return true
 	}
 	return *s.ClientAffinity
+}
+
+// The values of session.process_attribution.
+const (
+	ProcessAttributionAuto = "auto"
+	ProcessAttributionOn   = "on"
+	ProcessAttributionOff  = "off"
+)
+
+// ProcessAttributionEnabled reports whether header-less requests are filed by the process
+// that sent them, given whether every listener binds loopback only.
+func (s SessionConfig) ProcessAttributionEnabled(loopbackOnly bool) bool {
+	switch s.ProcessAttribution {
+	case ProcessAttributionOn:
+		return true
+	case ProcessAttributionOff:
+		return false
+	default:
+		return loopbackOnly
+	}
 }
 
 // SessionIDHeaders returns the headers to consult for a client-supplied session
