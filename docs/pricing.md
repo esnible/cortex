@@ -343,7 +343,10 @@ block in that unit names is left unpriced there rather than priced from the doll
 the gateway reports itself is labelled with the same unit.
 
 A `unit` needs a `models` block — a block with only a `multiplier` has no rates for it to apply to
-— and two blocks naming the same host must agree on it. Both **fail startup** otherwise.
+— and it needs `hosts`: a block with none, or with `"*"` among them, covers every endpoint, so it
+would put every endpoint no other block names in that unit and leave the dollar table pricing
+nothing there. Two blocks naming the same host must also agree on its unit. All three **fail
+startup** otherwise.
 
 **Figures in different units are never added**, on a window served from the ledger or from the
 in-memory ring. Where such a window holds more than one, `agentop cost` withholds the combined total, names the units it found, and

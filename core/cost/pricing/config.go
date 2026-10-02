@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"slices"
 	"sort"
 	"strings"
 	"unicode"
@@ -292,6 +293,13 @@ func (c *Config) entries() ([]Entry, error) {
 				continue
 			}
 			return nil, fmt.Errorf("%s: no models or multiplier configured; an endpoint block with neither prices nothing", where)
+		}
+		// A unit is host-wide — Table.unitFor gives an endpoint the unit of its best-ranked row — so
+		// a catch-all carrying one puts every endpoint no more specific block names in that unit.
+		// The bundled dollar table then prices nothing there, and every charge an endpoint reports
+		// itself is labelled in the unit. A unit is a gateway's, so its hosts can be named.
+		if !strings.EqualFold(unit, CurrencyUSD) && slices.ContainsFunc(hosts, anyHost) {
+			return nil, fmt.Errorf("%s: unit %q needs hosts naming the gateways that bill in it; a block for every endpoint would put all of them in that unit", where, ep.Unit)
 		}
 		for _, h := range hosts {
 			k := strings.ToLower(h)
