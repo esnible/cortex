@@ -49,6 +49,7 @@ type setupEnv struct {
 	// Set while applying.
 	restorePrior func() error // brings back the Cortex that served before, after a rollback
 	priorDesc    string
+	priorManual  string   // what to run if restorePrior fails; "" is agentop service restart
 	onSuccess    []func() // run once every step has applied
 
 	configPinsChanged bool // the config step added listener pins, so the service must restart
@@ -256,7 +257,11 @@ func rollback(env *setupEnv, ui *checklist.UI, undos []undo) {
 	}
 	if env.restorePrior != nil {
 		if err := env.restorePrior(); err != nil {
-			failed = append(failed, failure{"the previous Cortex", "agentop service restart", err})
+			manual := env.priorManual
+			if manual == "" {
+				manual = "agentop service restart"
+			}
+			failed = append(failed, failure{"the previous Cortex", manual, err})
 		} else {
 			ui.Note("reverted", env.priorDesc)
 		}

@@ -201,11 +201,24 @@ func (s serviceStep) apply(env *setupEnv, act *checklist.Running) (string, undo,
 	stopped := unitSnap.existed && !env.priorService && !serviceLoaded(env.goos)
 	u := undo{label: "the service", fn: func() error {
 		if !unitSnap.existed {
-			_ = unloadService(env.goos, sp) // best effort: a failed load may have left nothing
+			// A failed install may have loaded nothing, so a failed unload counts only
+			// while the job is still loaded. Either way the unit then stays, for the
+			// manual fix.
+			if err := unloadService(env.goos, sp); err != nil {
+				if serviceLoaded(env.goos) {
+					return err
+				}
+			} else if err := waitUnloaded(env.goos); err != nil {
+				return err
+			}
 		}
 		err := errors.Join(unitSnap.restore(), stampSnap.restore())
 		if stopped {
-			err = errors.Join(err, controlService(env.goos, "stop", sp, io.Discard))
+			if serr := controlService(env.goos, "stop", sp, io.Discard); serr != nil {
+				err = errors.Join(err, serr)
+			} else {
+				err = errors.Join(err, waitUnloaded(env.goos))
+			}
 		}
 		return err
 	}, manual: "agentop service uninstall"}
@@ -214,6 +227,8 @@ func (s serviceStep) apply(env *setupEnv, act *checklist.Running) (string, undo,
 		u.manual = "agentop service stop"
 	case unitSnap.existed:
 		u.manual = "agentop service install --restart"
+	default:
+		u.manual = unloadByHand(env, sp.unitFile)
 	}
 	if env.priorService {
 		env.priorDesc = "the previous Cortex is running again · healthy"
@@ -235,7 +250,32 @@ func (s serviceStep) apply(env *setupEnv, act *checklist.Running) (string, undo,
 	// nothing to do and would skip the restart that puts the new pins live.
 	restart := env.opts.restart || env.configPinsChanged
 	mark := markLog(sp.logFile)
-	res := runServiceInstall(sp, adoptablePID(sp), restart, false, &out, &errb)
+	adopt := adoptablePID(sp)
+	adoptExe := sp.binary // or what it ran, where that can be told: v0.7.0's authbridge-proxy, say
+	if adopt > 0 {
+		if exe := setupPIDExePath(adopt); filepath.IsAbs(exe) {
+			adoptExe = exe
+		}
+	}
+	res := runServiceInstall(sp, adopt, restart, false, &out, &errb)
+	// The background proxy runServiceInstall stopped to put the service in its place.
+	// With no supervised Cortex to reload instead, a rollback starts it again. Only
+	// once it is gone: a failure before the stop leaves it running, and a second copy
+	// would take proxy.pid from it.
+	if adopt > 0 && env.restorePrior == nil && !alive(adopt) {
+		env.priorDesc = "the previous background Cortex is running again"
+		env.priorManual = startByHand(env, adoptExe)
+		env.restorePrior = func() error {
+			// A new job the service undo could not remove (its unload refused, or its
+			// teardown not done in time) answers the health check a background copy
+			// would be judged by, and holds the ports that copy needs.
+			if serviceLoaded(env.goos) {
+				return errors.New("the new service is still loaded, so a background copy would only fight it for the ports")
+			}
+			_, _, err := startUnsupervised(adoptExe, env.cortexDir, resolveHealthURL(env.configPath()))
+			return err
+		}
+	}
 	if res.exit != 0 {
 		// Read now, before the rollback brings the previous Cortex back to write
 		// after them: these are the new version's lines.
@@ -268,13 +308,22 @@ func (serviceStep) applyUnsupervised(env *setupEnv) (string, undo, error) {
 	bin := filepath.Join(env.binDir, "cortex")
 	pidFile := filepath.Join(env.cortexDir, "proxy.pid")
 	health := resolveHealthURL(env.configPath())
-	if old, running := proxyRunning(pidFile); running {
+	// start_unsupervised's order: v0.7.0's authbridge-proxy first, then ours. Either
+	// is stopped, and a rollback starts the binary it ran again; for authbridge-proxy
+	// that is after the cleanup step's undo has put it back.
+	prior := filepath.Join(env.binDir, "authbridge-proxy")
+	old, running := preRenameProxyRunning(env.binDir, pidFile)
+	if !running {
+		prior = bin
+		old, running = proxyRunning(pidFile)
+	}
+	if running {
 		if err := stopPID(old); err != nil {
 			return "", undo{}, fmt.Errorf("could not stop the background proxy (pid %d): %w", old, err)
 		}
 		env.priorDesc = "the previous background Cortex is running again"
 		env.restorePrior = func() error {
-			_, _, err := startUnsupervised(bin, env.cortexDir, health)
+			_, _, err := startUnsupervised(prior, env.cortexDir, health)
 			return err
 		}
 	}
@@ -303,6 +352,41 @@ func (serviceStep) applyUnsupervised(env *setupEnv) (string, undo, error) {
 		return "in the background · healthy", u, nil
 	}
 	return "in the background · not answering yet; see " + env.tilde(filepath.Join(env.cortexDir, "proxy.log")), u, nil
+}
+
+// waitUnloaded waits for a job an unload succeeded on to leave launchd: bootout
+// returns while teardown is still going, and the job's supervisor allows the
+// proxy up to 20s to drain. It is an error if the job is still there after
+// serviceBootoutTimeout, so a service undo that returns nil means the job is gone.
+// systemd's disable --now returns once the unit has stopped.
+func waitUnloaded(goos string) error {
+	if goos != "darwin" {
+		return nil
+	}
+	if !waitBootedOut("gui/"+strconv.Itoa(os.Getuid())+"/"+launchdLabel, serviceBootoutTimeout) {
+		return fmt.Errorf("the %s is still shutting down after %s", supervisorName(goos), serviceBootoutTimeout)
+	}
+	return nil
+}
+
+// unloadByHand finishes removing a job setup loaded, from a shell: the
+// supervisor's own commands, as agentop itself may be gone by then (a fresh
+// install's rollback removes it). The unit goes after the unload, as systemd
+// unloads by it, and systemd then rereads its unit files.
+func unloadByHand(env *setupEnv, unit string) string {
+	if env.goos == "darwin" {
+		return "launchctl bootout gui/$(id -u)/" + launchdLabel + "; rm -f " + env.tilde(unit)
+	}
+	return "systemctl --user disable --now " + systemdUnit + "; rm -f " + env.tilde(unit) + "; systemctl --user daemon-reload"
+}
+
+// startByHand is the nearest a shell comes to startUnsupervised: bin in the
+// background, under nohup where startUnsupervised gives it a session of its own
+// (macOS has no setsid command), its output appended to proxy.log and its pid in
+// proxy.pid.
+func startByHand(env *setupEnv, bin string) string {
+	return "nohup " + env.tilde(bin) + " --local --supervise >> " + env.tilde(filepath.Join(env.cortexDir, "proxy.log")) +
+		" 2>&1 & echo $! > " + env.tilde(filepath.Join(env.cortexDir, "proxy.pid"))
 }
 
 // logTailLines caps the proxy.log rows under a failed start.

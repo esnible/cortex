@@ -208,6 +208,12 @@ func TestOurProxy(t *testing.T) {
 	if ourProxy(binDir, pidFile, 9, "/usr/bin/python3") {
 		t.Error("python read as ours")
 	}
+	if !ourProxy(binDir, pidFile, 9, filepath.Join(binDir, "authbridge-proxy")) {
+		t.Error("v0.7.0's authbridge-proxy read as foreign")
+	}
+	if ourProxy(binDir, pidFile, 9, filepath.Join(t.TempDir(), "authbridge-proxy")) {
+		t.Error("an authbridge-proxy from another directory read as ours")
+	}
 
 	// /proc names a running binary by its resolved path, so a bin dir reached
 	// through a link (a symlinked HOME, /var -> /private/var) differs as text.

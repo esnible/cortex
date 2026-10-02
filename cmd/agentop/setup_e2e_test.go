@@ -12,7 +12,9 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 type setupScene struct {
@@ -218,4 +220,92 @@ func TestSetupInstallerModeKeepsAFromDirOutsideTheTempRoots(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(sc.stage, "agentop")); err != nil {
 		t.Errorf("installer mode deleted a --from dir outside the temp roots: %v", err)
 	}
+}
+
+// fakeSignals makes setupSignals hand setup the returned channel, for the test to
+// send on, and reports whether setup has asked for it yet.
+func fakeSignals(t *testing.T) (chan<- os.Signal, *atomic.Bool) {
+	t.Helper()
+	c := make(chan os.Signal, 1)
+	var subscribed atomic.Bool
+	saved := setupSignals
+	setupSignals = func() (<-chan os.Signal, func()) {
+		subscribed.Store(true)
+		return c, func() {}
+	}
+	t.Cleanup(func() { setupSignals = saved })
+	return c, &subscribed
+}
+
+// planHook runs fn as the step it wraps plans.
+type planHook struct {
+	step
+	fn func()
+}
+
+func (h planHook) plan(env *setupEnv) (stepPlan, *problem) {
+	h.fn()
+	return h.step.plan(env)
+}
+
+// A Ctrl-C or SIGTERM before apply changes nothing: setup catches it from the
+// start rather than dying of it, so it deletes the installer's staging dir, which
+// exec put past the script's EXIT trap, and exits 3, as declining does.
+func TestSetupASignalBeforeApplyChangesNothing(t *testing.T) {
+	declined := func(t *testing.T, sc setupScene, before map[string]string, code int, out string) {
+		t.Helper()
+		if code != exitDeclined || !strings.Contains(out, "  Not changed.\n") || strings.Contains(out, "✓ installed") {
+			t.Errorf("exit %d, want %d with nothing applied:\n%s", code, exitDeclined, out)
+		}
+		if _, err := os.Stat(sc.stage); err == nil {
+			t.Error("the staging dir survived a signal before apply")
+		}
+		sameFiles(t, before, homeFiles(t, sc.home))
+	}
+	t.Run("while planning", func(t *testing.T) {
+		sc := newSetupScene(t, ok200)
+		sigs, subscribed := fakeSignals(t)
+		saved := setupStepsHook
+		setupStepsHook = func(s []step) []step {
+			out := append([]step(nil), s...)
+			out[0] = planHook{out[0], func() {
+				if !subscribed.Load() {
+					t.Error("setup plans before it catches signals: one now would kill it and leave the stage")
+				}
+				sigs <- os.Interrupt
+			}}
+			return out
+		}
+		t.Cleanup(func() { setupStepsHook = saved })
+		before := homeFiles(t, sc.home)
+		code, out := sc.run(t, "--from", sc.stage, "--yes", "--handoff-bytes=2048")
+		declined(t, sc, before, code, out)
+	})
+	t.Run("at the prompt", func(t *testing.T) {
+		sc := newSetupScene(t, ok200)
+		sigs, subscribed := fakeSignals(t)
+		release := make(chan struct{})
+		t.Cleanup(func() { close(release) })
+		saved := setupConfirm
+		setupConfirm = func(w io.Writer) bool {
+			fmt.Fprint(w, "  Continue? [Y/n] ")
+			if !subscribed.Load() {
+				t.Error("setup asks before it catches signals: a Ctrl-C now would kill it and leave the stage")
+			}
+			sigs <- os.Interrupt
+			// A yes after the Ctrl-C, too late: setup has stopped waiting by then.
+			select {
+			case <-release:
+			case <-time.After(2 * time.Second):
+			}
+			return true
+		}
+		t.Cleanup(func() { setupConfirm = saved })
+		before := homeFiles(t, sc.home)
+		code, out := sc.run(t, "--from", sc.stage, "--handoff-bytes=2048")
+		declined(t, sc, before, code, out)
+		if !strings.Contains(out, "  Continue? [Y/n] \n  Not changed.\n") {
+			t.Errorf("Not changed. is not on a line of its own after the prompt:\n%s", out)
+		}
+	})
 }

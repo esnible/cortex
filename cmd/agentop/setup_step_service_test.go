@@ -32,8 +32,13 @@ func TestServiceStepFreshInstallAndUndo(t *testing.T) {
 	if _, err := os.Stat(loaded); err != nil {
 		t.Fatal("the fake job is not loaded")
 	}
-	if u.manual != "agentop service uninstall" {
-		t.Errorf("fresh undo manual = %q", u.manual)
+	// The supervisor's own commands: a fresh install's rollback removes agentop.
+	want := "systemctl --user disable --now cortex.service; rm -f ~/.config/systemd/user/cortex.service; systemctl --user daemon-reload"
+	if env.goos == "darwin" {
+		want = "launchctl bootout gui/$(id -u)/io.rossoctl.cortex; rm -f ~/Library/LaunchAgents/io.rossoctl.cortex.plist"
+	}
+	if u.manual != want {
+		t.Errorf("fresh undo manual = %q, want %q", u.manual, want)
 	}
 	if err := u.fn(); err != nil {
 		t.Fatal(err)
@@ -417,6 +422,31 @@ exit 0
 		p, prob := serviceStep{}.plan(env)
 		if prob != nil || p.done || p.advice != nil {
 			t.Errorf("our own background proxy read as supervised: %+v advice=%+v %v", p, p.advice, prob)
+		}
+	})
+	// The same for v0.7.0's background proxy: its child runs authbridge-proxy.
+	t.Run("a pre-rename background proxy's child", func(t *testing.T) {
+		fakeNoSupervisor(t)
+		env := serviceEnv(t, ok200)
+		child := exec.Command("/bin/sleep", "30")
+		if err := child.Start(); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = child.Process.Kill(); _ = child.Wait() })
+		installStub(t, "lsof", `#!/bin/sh
+case "$1" in
+  -nP) case "$2" in -iTCP@127.0.0.1:47600) printf 'p`+strconv.Itoa(child.Process.Pid)+`\n' ;; esac ;;
+esac
+exit 0
+`)
+		fakeProc(t, child.Process.Pid, filepath.Join(env.binDir, "authbridge-proxy"))
+		if err := os.WriteFile(filepath.Join(env.cortexDir, "proxy.pid"), []byte(strconv.Itoa(os.Getpid())+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		env.binaryChanges = []string{"cortex"}
+		p, prob := serviceStep{}.plan(env)
+		if prob != nil || p.done || p.advice != nil {
+			t.Errorf("the pre-rename background proxy read as foreign or supervised: %+v advice=%+v %v", p, p.advice, prob)
 		}
 	})
 }

@@ -157,12 +157,16 @@ func readPIDFile(path string) int {
 
 // ourProxy is foreign_proxy_holder's rule, inverted: the holder is ours if the
 // pidfile names it, or its executable is the installed cortex, by path or after
-// resolving links (samePath).
+// resolving links (samePath). Or v0.7.0's authbridge-proxy, adoptablePID's rule:
+// it ran under the same label and pidfile, so an upgrade from it finds it on the
+// port. A --supervise child runs its parent's executable, so it matches too.
+// install.sh never needed this: it asks foreign_proxy_holder only after a failed
+// service install, and the install replaces that job.
 func ourProxy(binDir, pidFile string, pid int, exe string) bool {
 	if pf := readPIDFile(pidFile); pf > 0 && pf == pid {
 		return true
 	}
-	return samePath(exe, filepath.Join(binDir, "cortex"))
+	return samePath(exe, filepath.Join(binDir, "cortex")) || samePath(exe, filepath.Join(binDir, "authbridge-proxy"))
 }
 
 func alive(pid int) bool { return pid > 0 && syscall.Kill(pid, 0) == nil }
@@ -186,6 +190,21 @@ func proxyRunning(pidFile string) (int, bool) {
 		return pid, true
 	}
 	return 0, false
+}
+
+// preRenameProxyRunning is install.sh's pre_rename_proxy_running: the pidfile
+// names a live process whose executable is binDir's authbridge-proxy, v0.7.0's
+// background proxy. proxyRunning does not count it: ps does not call it cortex.
+func preRenameProxyRunning(binDir, pidFile string) (int, bool) {
+	pid := readPIDFile(pidFile)
+	if !alive(pid) {
+		return 0, false
+	}
+	exe := setupPIDExePath(pid)
+	if exe == "" || !samePath(exe, filepath.Join(binDir, "authbridge-proxy")) {
+		return 0, false
+	}
+	return pid, true
 }
 
 // pidfileProcessUnnamed is install.sh's pidfile_process_unnamed: a live pidfile

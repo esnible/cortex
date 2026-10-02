@@ -65,21 +65,22 @@ func TestSetupRollsBackAFailureAtEachStep(t *testing.T) {
 	}
 }
 
-// runningCortex makes the fake supervisor's job run the cortex that was on disk
-// when it was loaded, as a real job does: each load copies ~/.local/bin/cortex to
-// running and starts the copy once with --fake-start, its output appended to
-// ~/.cortex/proxy.log as the unit's is, and each unload removes the copy. A health
-// check that read ~/.local/bin/cortex itself could not tell the previous Cortex
-// reloaded from the broken one left loaded, since the binaries undo puts the old
-// bytes back on disk either way. It wraps only fakeSupervisor's stubs, which name
-// loaded: the real launchctl acts on the real io.rossoctl.cortex.
+// runningCortex makes the fake supervisor's job run the binary its unit named
+// when it was loaded, as a real job does: each load copies the ~/.local/bin file
+// the unit names (cortex, or v0.7.0's authbridge-proxy) to running and starts the
+// copy once with --fake-start, its output appended to ~/.cortex/proxy.log as the
+// unit's is, and each unload removes the copy. A health check that read
+// ~/.local/bin/cortex itself could not tell the previous Cortex reloaded from the
+// broken one left loaded, since the binaries undo puts the old bytes back on disk
+// either way. It wraps only fakeSupervisor's stubs, which name loaded: the real
+// launchctl acts on the real io.rossoctl.cortex.
 func runningCortex(t *testing.T, loaded, home, running string) {
 	t.Helper()
-	bin := filepath.Join(home, ".local", "bin", "cortex")
+	binDir := filepath.Join(home, ".local", "bin")
 	log := filepath.Join(home, ".cortex", "proxy.log")
-	for _, w := range []struct{ tool, load, unload string }{
-		{"launchctl", "bootstrap*", "bootout*"},
-		{"systemctl", "*restart*", "*disable*"},
+	for _, w := range []struct{ tool, load, unload, unit string }{
+		{"launchctl", "bootstrap*", "bootout*", filepath.Join(home, "Library", "LaunchAgents", launchdLabel+".plist")},
+		{"systemctl", "*restart*", "*disable*", filepath.Join(home, ".config", "systemd", "user", systemdUnit)},
 	} {
 		fake, err := exec.LookPath(w.tool)
 		if err != nil {
@@ -90,7 +91,8 @@ func runningCortex(t *testing.T, loaded, home, running string) {
 		}
 		installStub(t, w.tool, `#!/bin/sh
 case "$*" in
-  `+w.load+`) cp '`+bin+`' '`+running+`'; '`+running+`' --fake-start >> '`+log+`' 2>&1 ;;
+  `+w.load+`) bin=$(grep -o '`+binDir+`/[a-z-]*' '`+w.unit+`' | head -n 1)
+    cp "$bin" '`+running+`'; '`+running+`' --fake-start >> '`+log+`' 2>&1 ;;
   `+w.unload+`) rm -f '`+running+`' ;;
 esac
 exec '`+fake+`' "$@"
@@ -265,6 +267,18 @@ func TestSetupRemovesTheInstallersStagingDir(t *testing.T) {
 		}
 		if !strings.Contains(out, "  ✓ downloaded   2.0 kB · sha256 verified") {
 			t.Errorf("no downloaded line:\n%s", out)
+		}
+	})
+	// Unlike a usage error: those flags parsed, so the stage is known.
+	t.Run("when HOME cannot be resolved", func(t *testing.T) {
+		sc := newSetupScene(t, ok200)
+		t.Setenv("HOME", "")
+		code, out := sc.run(t, "--from", sc.stage, "--yes", "--handoff-bytes=2048")
+		if code != 1 || !strings.Contains(out, "cannot determine your home directory") {
+			t.Fatalf("exit %d:\n%s", code, out)
+		}
+		if _, err := os.Stat(sc.stage); err == nil {
+			t.Error("the staging dir survived a run that could not resolve HOME")
 		}
 	})
 }

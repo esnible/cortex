@@ -35,7 +35,7 @@ Ctrl-C undoes what it did. Without --from it repairs what is installed.
   --restart          restart the service even when nothing changed
 
 Exit status: 0 done or already current, 1 failed (and rolled back), 2 usage,
-3 declined or no terminal to ask on.
+3 declined, interrupted before any change, or no terminal to ask on.
 `
 
 // setupStepsHook lets tests inject a failure into the real step list.
@@ -61,6 +61,14 @@ var setupConfirm = func(w io.Writer) bool {
 	}
 	defer func() { _ = tty.Close() }()
 	return setupConfirmFrom(tty, w)
+}
+
+// setupSignals is the channel Ctrl-C and SIGTERM arrive on, and the func that
+// stops them arriving. A var so tests can send one without signalling themselves.
+var setupSignals = func() (<-chan os.Signal, func()) {
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+	return c, func() { signal.Stop(c) }
 }
 
 // setupConfirmFrom reads the answer. Enter means yes: the user typed the install
@@ -142,15 +150,21 @@ func runSetup(args []string, stdout, stderr io.Writer) int {
 	}
 	opts, err := parseSetupFlags(args, stderr)
 	if err != nil {
-		return 2
+		return 2 // flags that did not parse name no stage, so it stays
+	}
+	// Caught from here on, rather than killing setup: install.sh exec'd it, past its
+	// own EXIT trap, so the staging dir goes on every way out, a signal's included.
+	// Before apply nothing has changed, so a signal is a decline; during it, a
+	// rollback after the current step.
+	sigs, stopSignals := setupSignals()
+	defer stopSignals()
+	if stage := installerStage(opts); stage != "" {
+		defer func() { _ = os.RemoveAll(stage) }()
 	}
 	env, err := newSetupEnv(opts)
 	if err != nil {
 		fmt.Fprintf(stderr, "agentop: %v\n", err)
 		return 1
-	}
-	if opts.fromInstaller() && isStagingDir(env.fromDir, env.home) {
-		defer func() { _ = os.RemoveAll(env.fromDir) }()
 	}
 	ui := checklist.New(stdout, isTerminal(stdout))
 	defer ui.Close()
@@ -164,6 +178,12 @@ func runSetup(args []string, stdout, stderr io.Writer) int {
 	ui.Blank()
 
 	planned, problems := planSteps(env, setupStepsHook(buildSetupSteps(env)))
+	select {
+	case <-sigs:
+		ui.Plain("Not changed.")
+		return exitDeclined
+	default:
+	}
 	if len(problems) > 0 {
 		for _, p := range problems {
 			fix := make([]string, 0, len(p.fix))
@@ -195,16 +215,24 @@ func runSetup(args []string, stdout, stderr io.Writer) int {
 			ui.Plain("No terminal to ask on — re-run with --yes to apply.")
 			return exitDeclined
 		}
-		if !setupConfirm(stdout) {
+		// Read aside, so a Ctrl-C at the prompt declines rather than waiting on the
+		// terminal. The reader is left blocked: setup exits soon after.
+		answer := make(chan bool, 1)
+		go func() { answer <- setupConfirm(stdout) }()
+		select {
+		case yes := <-answer:
+			if !yes {
+				ui.Plain("Not changed.")
+				return exitDeclined
+			}
+		case <-sigs:
+			ui.Blank() // ends the prompt's line
 			ui.Plain("Not changed.")
 			return exitDeclined
 		}
 		ui.Blank()
 	}
 
-	sigs := make(chan os.Signal, 1)
-	signal.Notify(sigs, os.Interrupt, syscall.SIGTERM)
-	defer signal.Stop(sigs)
 	if !applySteps(env, ui, planned, sigs) {
 		return 1
 	}
@@ -296,6 +324,24 @@ func printSetupEnding(env *setupEnv, ui *checklist.UI, took time.Duration) {
 // systemTempRoots are the temp dirs, besides ~/.cortex/tmp, that the installer
 // stages into. A var because a test's HOME is itself under one of them.
 var systemTempRoots = func() []string { return []string{os.TempDir(), "/tmp"} }
+
+// installerStage is the dir setup deletes on its way out: --from, when the
+// installer invoked setup and staged into it. Worked out from the flags alone, so
+// a HOME that cannot be resolved still has the system temp roots to go by.
+func installerStage(opts setupOptions) string {
+	if !opts.fromInstaller() || opts.from == "" {
+		return ""
+	}
+	dir, err := filepath.Abs(opts.from)
+	if err != nil {
+		return ""
+	}
+	home, _ := os.UserHomeDir()
+	if !isStagingDir(dir, home) {
+		return ""
+	}
+	return dir
+}
 
 // isStagingDir reports whether dir is one the installer staged into — strictly
 // inside $TMPDIR, /tmp or ~/.cortex/tmp — and so one setup may delete. A source
