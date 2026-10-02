@@ -429,6 +429,8 @@ type SessionConfig struct {
 	// list of supported-agent headers (see SessionIDHeaders); an explicit list
 	// REPLACES that default rather than extending it, and an explicit empty list
 	// turns header bucketing off and puts every session back in one shared bucket.
+	// The unset default also reads X-Session-Id on a loopback-only install (see
+	// SessionIDHeadersFor).
 	// Like Enabled above, the nil-versus-empty distinction is load-bearing — do
 	// not collapse it by assigning a default at load time.
 	//
@@ -520,9 +522,23 @@ func (s SessionConfig) ProcessAttributionEnabled(loopbackOnly bool) bool {
 // buckets exactly as it did before this option existed.
 func (s SessionConfig) SessionIDHeaders() []string {
 	if s.IDHeaders == nil {
-		return []string{session.ClaudeCodeSessionHeader, session.BobSessionHeader, session.SessionIDHeader}
+		return []string{session.ClaudeCodeSessionHeader, session.BobSessionHeader}
 	}
 	return s.IDHeaders
+}
+
+// SessionIDHeadersFor is SessionIDHeaders for a deployment that knows whether every listener
+// binds loopback only. On a laptop install (loopbackOnly) the unset default also reads
+// session.SessionIDHeader — X-Session-Id, which OpenCode, Pi and similar frameworks send — the
+// list the laptop installer writes. Everywhere else the default is SessionIDHeaders' own:
+// X-Session-Id is a generic name, and an in-cluster agent that sends it for its own reasons
+// (the IBAC demo's does, with an id it minted) would otherwise have its calls filed away from
+// the session that holds its user's intent. An explicit list is used as it is, either way.
+func (s SessionConfig) SessionIDHeadersFor(loopbackOnly bool) []string {
+	if s.IDHeaders == nil && loopbackOnly {
+		return []string{session.ClaudeCodeSessionHeader, session.BobSessionHeader, session.SessionIDHeader}
+	}
+	return s.SessionIDHeaders()
 }
 
 // SessionEnabled returns true when session tracking should run. Defaults to true

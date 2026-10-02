@@ -657,10 +657,11 @@ func TestBuiltinConfig_ReadsOpenCodesSessionHeader(t *testing.T) {
 }
 
 // TestBuiltinConfig_IDHeadersEqualTheCoreDefault: the laptop template's id_headers is the same
-// list, in the same order, as the one core uses when id_headers is unset. The template writes
-// its list explicitly, which replaces the default, so a header added to one and not the other
-// groups an agent's sessions in one kind of deployment only. Lives here rather than in
-// core/config because core cannot import this main package.
+// list, in the same order, as the one core uses on a laptop install (loopback-only listeners)
+// when id_headers is unset. The template writes its list explicitly, which replaces the
+// default, so a header added to one and not the other groups an agent's sessions on some
+// laptops only. Lives here rather than in core/config because core cannot import this main
+// package.
 func TestBuiltinConfig_IDHeadersEqualTheCoreDefault(t *testing.T) {
 	cortexDir := t.TempDir()
 	p, err := writeBuiltinConfig(cortexDir, filepath.Join(cortexDir, "ca"))
@@ -674,8 +675,8 @@ func TestBuiltinConfig_IDHeadersEqualTheCoreDefault(t *testing.T) {
 	if cfg.Session.IDHeaders == nil {
 		t.Fatal("built-in config: id_headers is unset, want the template's explicit list")
 	}
-	if got, want := cfg.Session.IDHeaders, (config.SessionConfig{}).SessionIDHeaders(); !slices.Equal(got, want) {
-		t.Errorf("built-in config: id_headers = %v, want the core default %v", got, want)
+	if got, want := cfg.Session.IDHeaders, (config.SessionConfig{}).SessionIDHeadersFor(true); !slices.Equal(got, want) {
+		t.Errorf("built-in config: id_headers = %v, want the core laptop default %v", got, want)
 	}
 }
 

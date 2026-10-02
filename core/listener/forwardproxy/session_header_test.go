@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rossoctl/cortex/core/config"
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/session"
 )
@@ -327,5 +328,31 @@ func TestResolveOutboundSessionID_DisabledByEmptyHeaderList(t *testing.T) {
 	clientHeaders := http.Header{session.ClaudeCodeSessionHeader: []string{"some-session"}}
 	if got := s.resolveOutboundSessionID(clientHeaders, nil); got != session.DefaultSessionID {
 		t.Fatalf("resolveOutboundSessionID() = %q, want %q (header bucketing disabled)", got, session.DefaultSessionID)
+	}
+}
+
+// TestResolveOutboundSessionID_InClusterDefaultKeepsTheA2ATurn: with the default id_headers of
+// a deployment that is not loopback-only, a tool call carrying an X-Session-Id the agent minted
+// stays with the inbound A2A turn that caused it, which is where IBAC reads the user's intent.
+// Read by default, the header filed the IBAC demo agent's http_post into an empty session. On a
+// laptop install the same request is grouped by the header, as OpenCode's are.
+func TestResolveOutboundSessionID_InClusterDefaultKeepsTheA2ATurn(t *testing.T) {
+	store := session.New(5*time.Minute, 100, 0)
+	defer store.Close()
+	store.Append("conv-A", pipeline.SessionEvent{
+		At:        time.Now(),
+		Direction: pipeline.Inbound,
+		Phase:     pipeline.SessionRequest,
+		A2A:       &pipeline.A2AExtension{Method: "message/stream", SessionID: "conv-A"},
+	})
+	clientHeaders := http.Header{session.SessionIDHeader: []string{"minted-by-the-agent"}}
+
+	cluster := &Server{Sessions: store, SessionIDHeaders: config.SessionConfig{}.SessionIDHeadersFor(false)}
+	if got := cluster.resolveOutboundSessionID(clientHeaders, nil); got != "conv-A" {
+		t.Errorf("in-cluster default: resolveOutboundSessionID() = %q, want the A2A turn %q", got, "conv-A")
+	}
+	laptop := &Server{Sessions: store, SessionIDHeaders: config.SessionConfig{}.SessionIDHeadersFor(true)}
+	if got := laptop.resolveOutboundSessionID(clientHeaders, nil); got != "minted-by-the-agent" {
+		t.Errorf("laptop default: resolveOutboundSessionID() = %q, want the header's %q", got, "minted-by-the-agent")
 	}
 }

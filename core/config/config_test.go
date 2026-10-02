@@ -503,7 +503,7 @@ func TestSessionConfig_SessionIDHeaders(t *testing.T) {
 		cfg  SessionConfig
 		want []string
 	}{
-		{"unset defaults to the supported agent headers, Claude Code first", SessionConfig{}, []string{session.ClaudeCodeSessionHeader, session.BobSessionHeader, session.SessionIDHeader}},
+		{"unset defaults to the supported agent headers, Claude Code first", SessionConfig{}, []string{session.ClaudeCodeSessionHeader, session.BobSessionHeader}},
 		{"explicit empty list disables bucketing", SessionConfig{IDHeaders: []string{}}, nil},
 		{"explicit list is used verbatim", SessionConfig{IDHeaders: []string{"X-Other-Agent-Session"}}, []string{"X-Other-Agent-Session"}},
 	}
@@ -519,6 +519,56 @@ func TestSessionConfig_SessionIDHeaders(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestSessionConfig_SessionIDHeadersFor pins the deployment-aware default: a loopback-only
+// install also reads X-Session-Id, the laptop installer's list; any other deployment gets
+// SessionIDHeaders' own default; and an explicit list, empty included, is used as it is
+// either way.
+func TestSessionConfig_SessionIDHeadersFor(t *testing.T) {
+	laptop := []string{session.ClaudeCodeSessionHeader, session.BobSessionHeader, session.SessionIDHeader}
+	cluster := []string{session.ClaudeCodeSessionHeader, session.BobSessionHeader}
+	tests := []struct {
+		name         string
+		cfg          SessionConfig
+		loopbackOnly bool
+		want         []string
+	}{
+		{"unset, loopback only", SessionConfig{}, true, laptop},
+		{"unset, not loopback only", SessionConfig{}, false, cluster},
+		{"explicit list, loopback only", SessionConfig{IDHeaders: []string{"X-Other-Agent-Session"}}, true, []string{"X-Other-Agent-Session"}},
+		{"explicit list, not loopback only", SessionConfig{IDHeaders: []string{"X-Other-Agent-Session"}}, false, []string{"X-Other-Agent-Session"}},
+		{"explicit empty list, loopback only", SessionConfig{IDHeaders: []string{}}, true, []string{}},
+		{"explicit empty list, not loopback only", SessionConfig{IDHeaders: []string{}}, false, []string{}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.cfg.SessionIDHeadersFor(tt.loopbackOnly)
+			if len(got) != len(tt.want) {
+				t.Fatalf("got %v, want %v", got, tt.want)
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Fatalf("got %v, want %v", got, tt.want)
+				}
+			}
+		})
+	}
+}
+
+// TestSessionConfig_InClusterDefaultDoesNotReadXSessionID pins the in-cluster default to
+// what it was before OpenCode support. X-Session-Id is a generic name: the IBAC demo agent
+// (demos/ibac/agent) sends it on its tool calls with an id it minted. Read by default, that
+// filed its http_post into an empty session, where IBAC found no user intent and, under
+// no_intent_policy: allow, let the exfiltration through.
+func TestSessionConfig_InClusterDefaultDoesNotReadXSessionID(t *testing.T) {
+	for _, got := range [][]string{SessionConfig{}.SessionIDHeadersFor(false), SessionConfig{}.SessionIDHeaders()} {
+		for _, h := range got {
+			if h == session.SessionIDHeader {
+				t.Errorf("default id_headers = %v: an in-cluster deployment must not read %s", got, session.SessionIDHeader)
+			}
+		}
 	}
 }
 

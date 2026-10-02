@@ -892,9 +892,9 @@ func main() {
 		// Per-session bucketing. Without it every coding-agent session on the
 		// machine records into one shared bucket: two Claude Code windows
 		// interleave and per-session cost cannot be computed at all. Defaults to
-		// the supported agents' session headers (config.SessionIDHeaders);
-		// session.id_headers: [] turns it off.
-		fpSrv.SessionIDHeaders = cfg.Session.SessionIDHeaders()
+		// the supported agents' session headers, plus X-Session-Id on a loopback-only
+		// install (config.SessionIDHeadersFor); session.id_headers: [] turns it off.
+		fpSrv.SessionIDHeaders = cfg.Session.SessionIDHeadersFor(cfg.Listener.BindLoopbackOnly)
 		fpSrv.ClientAffinity = cfg.Session.ClientAffinityEnabled()
 		// Process attribution: header-less requests filed by the process that sent them.
 		// On by default only for a loopback-bound install (session.process_attribution:
