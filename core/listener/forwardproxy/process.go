@@ -132,6 +132,11 @@ func (s *Server) selfTraffic(r *http.Request, chain []session.Proc) bool {
 	if cp == nil {
 		return false
 	}
+	// Every listener the request could reach must qualify: "localhost" names both
+	// loopbacks, and which one the dial takes is not known yet.
+	var svc netip.AddrPort
+	var pid int32
+	found := false
 	for _, dest := range loopbackDests(r) {
 		l, ok := s.listenerBehind(cp, dest)
 		if !ok {
@@ -140,10 +145,12 @@ func (s *Server) selfTraffic(r *http.Request, chain []session.Proc) bool {
 		if l.Exe != chain[0].Exe || !s.Sessions.IsAgentProcess(session.Proc{PID: l.PID, Start: l.Start.UnixNano()}) {
 			return false
 		}
-		s.noteSelfTraffic(chain[0].Exe, dest, l.PID)
-		return true
+		svc, pid, found = dest, l.PID, true
 	}
-	return false
+	if found {
+		s.noteSelfTraffic(chain[0].Exe, svc, pid)
+	}
+	return found
 }
 
 // listenerBehind is which process listens at dest, asked of the kernel at most once per

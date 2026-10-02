@@ -959,11 +959,13 @@ func (s *Server) resolvePluginSessionID(clientHeaders http.Header, chain []sessi
 	procs := chain != nil && s.processesOn()
 	agent := affinityClient(clientHeaders)
 	if sid := session.IDFromHeaders(clientHeaders, s.SessionIDHeaders); sid != "" {
-		if affinity {
-			s.Sessions.Claim(sid, agent)
-		}
+		// The process's claim first: it adopts the process's own pending bucket, which is
+		// certainly its calls, before the agent-wide guess can take the session.
 		if procs {
 			s.Sessions.ClaimProcess(sid, agent, chain)
+		}
+		if affinity {
+			s.Sessions.Claim(sid, agent)
 		}
 		return sid
 	}

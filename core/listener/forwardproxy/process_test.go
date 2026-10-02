@@ -33,11 +33,12 @@ const procClaudeUA = "claude-cli/2.1.286 (external, cli)"
 // play several. A connection belongs to whichever pid the client that dialled it was made
 // for (clientFor, connectAs); a listener to whichever pid listens registers.
 type fakeProcs struct {
-	mu        sync.Mutex
-	procs     map[int32]peerproc.Proc
-	byPort    map[uint16]int32
-	listeners map[uint16]int32
-	lookups   int
+	mu          sync.Mutex
+	procs       map[int32]peerproc.Proc
+	byPort      map[uint16]int32
+	listeners   map[uint16]int32
+	listenersAt map[netip.AddrPort]int32
+	lookups     int
 }
 
 func fproc(pid, ppid int32, exe string) peerproc.Proc {
@@ -45,7 +46,7 @@ func fproc(pid, ppid int32, exe string) peerproc.Proc {
 }
 
 func newFakeProcs(procs ...peerproc.Proc) *fakeProcs {
-	f := &fakeProcs{procs: map[int32]peerproc.Proc{}, byPort: map[uint16]int32{}, listeners: map[uint16]int32{}}
+	f := &fakeProcs{procs: map[int32]peerproc.Proc{}, byPort: map[uint16]int32{}, listeners: map[uint16]int32{}, listenersAt: map[netip.AddrPort]int32{}}
 	for _, p := range procs {
 		f.procs[p.PID] = p
 	}
@@ -66,7 +67,10 @@ func (f *fakeProcs) ConnOwner(client, _ netip.AddrPort, _ ...int32) (peerproc.Pr
 func (f *fakeProcs) ListenerOwner(addr netip.AddrPort, _ ...int32) (peerproc.Proc, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	pid, ok := f.listeners[addr.Port()]
+	pid, ok := f.listenersAt[addr]
+	if !ok {
+		pid, ok = f.listeners[addr.Port()]
+	}
 	if !ok {
 		return peerproc.Proc{}, peerproc.ErrNotFound
 	}
@@ -108,6 +112,13 @@ func (f *fakeProcs) listens(t *testing.T, rawURL string, pid int32) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.listeners[uint16(portOf(u.Host))] = pid
+}
+
+// listensAt registers pid as the listener at exactly addr, ahead of any port-wide listener.
+func (f *fakeProcs) listensAt(addr netip.AddrPort, pid int32) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.listenersAt[addr] = pid
 }
 
 func (f *fakeProcs) lookupCount() int {
@@ -599,5 +610,84 @@ func TestSelfTraffic_AnEventStreamIsRelayedAsItArrives(t *testing.T) {
 	}
 	if n := countPath(store, "/api/event"); n != 0 {
 		t.Errorf("%d /api/event rows; an agent's own event stream must not be recorded", n)
+	}
+}
+
+// A process's own pending bucket is certainly its calls; the agent-wide one is a guess
+// about a process the lookup could not name. When a header claims a session and both
+// buckets exist, the process's own is the one adopted.
+func TestProcessAttribution_AProcessAdoptsItsOwnPendingBucketFirst(t *testing.T) {
+	procs := newFakeProcs(fproc(100, 50, "/bin/claude"))
+	store := session.New(0, 0, 0)
+	defer store.Close()
+	proxyURL, backendURL, _ := newProcessProxy(t, store, procs, nil)
+	unnamed := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(mustParseURL(proxyURL))}}
+	claude := procs.clientFor(proxyURL, 100)
+
+	sendAs(t, unnamed, backendURL+"/guess", procClaudeUA, "", "")
+	sendAs(t, claude, backendURL+"/own", procClaudeUA, "", "")
+	sendAs(t, claude, backendURL+"/v1/messages", procClaudeUA, session.ClaudeCodeSessionHeader, "s1")
+	if got := strings.Join(recordedPaths(store, "s1"), ","); got != "/own,/v1/messages" {
+		t.Errorf("s1 = %s, want the process's own pre-header call adopted", got)
+	}
+}
+
+// "localhost" names both loopbacks, and the proxy has not dialled yet, so every listener
+// the request could reach must qualify. An agent's service on 127.0.0.1 does not make a
+// request self-traffic while another program holds the same port on ::1.
+func TestSelfTraffic_LocalhostNeedsEveryLoopbackListenerToQualify(t *testing.T) {
+	procs := newFakeProcs(fproc(500, 1, opencodeExe), fproc(510, 60, opencodeExe), fproc(600, 1, "/usr/bin/node"))
+	store := session.New(0, 0, 0)
+	defer store.Close()
+	proxyURL, backendURL, _ := newProcessProxy(t, store, procs, func(s *Server) {
+		s.SessionIDHeaders = append(s.SessionIDHeaders, "X-Opencode-Session-Id")
+	})
+	u, err := url.Parse(backendURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := uint16(portOf(u.Host))
+	procs.listensAt(netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), port), 500)
+	procs.listensAt(netip.AddrPortFrom(netip.IPv6Loopback(), port), 600)
+	sendAs(t, procs.clientFor(proxyURL, 500), backendURL+"/zen/v1/chat/completions", "", "X-Opencode-Session-Id", "ses_1")
+
+	sendAs(t, procs.clientFor(proxyURL, 510), fmt.Sprintf("http://localhost:%d/api/info", port), "opencode/latest/2.0.21/cli", "", "")
+	if n := countPath(store, "/api/info"); n != 1 {
+		t.Errorf("%d /api/info rows, want 1: ::1 is another program's, which the request may reach", n)
+	}
+}
+
+// OpenCode's service names its sessions only inside bridged TLS, since its inference goes to
+// an HTTPS endpoint. That claim belongs to the CONNECT's client, so it is what makes the
+// service an agent's own process, and its TUI's polling self-traffic.
+func TestSelfTraffic_AServiceThatNamesItsSessionInsideATunnelIsAnAgents(t *testing.T) {
+	procs := newFakeProcs(fproc(500, 1, opencodeExe), fproc(510, 60, opencodeExe))
+	store := session.New(0, 0, 0)
+	defer store.Close()
+	origin := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("ok")) }))
+	t.Cleanup(origin.Close)
+	originCA := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: origin.Certificate().Raw})
+	u, err := url.Parse(origin.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	engine := bridgeEngine(t, portOf(u.Host), originCA)
+	proxyURL, backendURL, _ := newProcessProxy(t, store, procs, func(s *Server) {
+		s.TLSBridge = engine
+		s.SessionIDHeaders = append(s.SessionIDHeaders, "X-Opencode-Session-Id")
+	})
+	procs.listens(t, backendURL, 500) // the service's own API, where its TUI polls
+
+	raw, br, _ := connectAs(t, procs, proxyURL, u.Host, 500)
+	tc := bridgedTLS(t, raw, br, u.Host, engine.CAPEM)
+	req, _ := http.NewRequest(http.MethodPost, "https://"+hostOnly(u.Host)+"/zen/v1/chat/completions", nil)
+	req.Header.Set("X-Opencode-Session-Id", "ses_1")
+	bridgedRoundTrip(t, tc, req)
+	_ = tc.Close()
+	eventually(t, func() bool { return len(recordedPaths(store, "ses_1")) == 1 }, "the service's inference in ses_1")
+
+	sendAs(t, procs.clientFor(proxyURL, 510), backendURL+"/api/info", "opencode/latest/2.0.21/cli", "", "")
+	if n := countPath(store, "/api/info"); n != 0 {
+		t.Errorf("%d /api/info rows: a claim made inside a tunnel did not make the service an agent's", n)
 	}
 }
