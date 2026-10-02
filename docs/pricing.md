@@ -88,6 +88,18 @@ So there are **no bundled rates for OpenAI, Gemini, Bedrock or Vertex models.** 
 to them reports as *unpriced* until you add rates. This is by design: Cortex reports
 unpriced rather than under-priced.
 
+### Free models ship at zero
+
+One hand-kept addition sits beside the generated table: OpenCode Zen's free models, priced
+at zero on `opencode.ai` only. That covers every Zen model whose id ends in `-free`, and
+`big-pickle`, the one free model without the suffix. A call to one of them is a *priced
+zero*, so it counts toward coverage and does not ask you for a rate that does not exist.
+
+It ships because config cannot say zero: a rate of 0 there leaves its tier unset, so the
+call would stay unpriced. `bundled: false` drops these rows along with the rest of the
+shipped table. A `-free` model on any other endpoint stays unpriced, because the suffix is
+Zen's naming and nobody else's.
+
 ### The shipped gateway discount
 
 Bundled rates are vendor list, and most internal LiteLLM gateways bill below it. One

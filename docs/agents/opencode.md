@@ -216,33 +216,42 @@ A cluster deployment's default does not read it, because the name is generic: th
 demo agent sends it with an id it minted. If you set that list yourself, include
 `X-Session-Id`, because naming any header replaces the built-in list.
 
-**Typed inference.** These requests are parsed in the OpenAI dialect (model, messages,
-tools and the response):
+**Typed inference.** OpenCode Zen serves each model on the endpoint of the SDK it speaks,
+and Cortex parses two of them, under both the `/zen` prefix and the `/zen/go` prefix of
+OpenCode's Go plan:
 
-- requests to OpenCode Zen's `/zen/v1/chat/completions`;
-- requests to OpenAI-compatible providers on `/v1/chat/completions` or
-  `/chat/completions`, LiteLLM among them.
+- the OpenAI dialect (model, messages, tools and the response) on
+  `/zen/v1/chat/completions`, and on OpenAI-compatible providers' `/v1/chat/completions`
+  or `/chat/completions`, LiteLLM among them;
+- the Anthropic dialect on `/zen/v1/messages`, where Zen serves its Claude models and
+  most of its Qwen ones, and on Anthropic's own `/v1/messages`.
 
-A provider on Anthropic's `/v1/messages` is parsed in that dialect instead. The path has
-to match exactly. A provider mounted under a prefix of its own, or any other endpoint
-under `/zen`, is recorded with its method and path but not parsed.
+The path has to match exactly. Zen's `/zen/v1/responses` (its GPT and Grok models) and
+`/zen/v1/models/<id>` (its Gemini models), and a provider mounted under a prefix of its
+own, are recorded with their method and path but not parsed.
 
 **Tokens and cost.** Token counts come from the usage block in the response. A streamed
 OpenAI-dialect response includes one only when the request asked for it
 (`stream_options.include_usage`). Whether OpenCode asks every provider for it was not
 checked. Cost needs either a reported figure or a rate. A LiteLLM gateway's
 `X-Litellm-Response-Cost` header is used as the figure. Otherwise the tokens are priced
-at a rate, and Cortex bundles rates only for Anthropic's models. Any other model, Zen's
-included, is reported unpriced until you add a `pricing:` entry for it.
-[Finding traffic that is not priced](../pricing.md#finding-traffic-that-is-not-priced)
-shows how to find the endpoint and model to add.
+at a rate:
+
+- **Zen's free models** — those whose id ends in `-free`, and `big-pickle` — are priced
+  at zero, a rate Cortex ships for `opencode.ai` only.
+- **Claude models**, Zen's included, are priced at the bundled Anthropic list rates.
+  For the model checked, Claude Sonnet 4.6 at $3 in and $15 out per million tokens, that
+  is what Zen charges.
+- **Any other model** is reported unpriced until you add a `pricing:` entry for it.
+  [Finding traffic that is not priced](../pricing.md#finding-traffic-that-is-not-priced)
+  shows how to find the endpoint and model to add.
 
 **Tool pruning is unsupported.** The `tool-prune` plugin acts on any request whose path
-ends in `/v1/chat/completions`, Zen's included, and removes the tools named in its
-`remove` list. That list comes from `agentop tools scan`, which reads only Claude Code's
-transcripts and proposes only Claude Code's built-in tool names, so nothing builds a
-list for OpenCode. A list written by hand would be applied to OpenCode's requests; that
-was not tested.
+ends in `/v1/chat/completions` or `/v1/messages`, Zen's included, and removes the tools
+named in its `remove` list. That list comes from `agentop tools scan`, which reads only
+Claude Code's transcripts and proposes only Claude Code's built-in tool names, so nothing
+builds a list for OpenCode. A list written by hand would be applied to OpenCode's
+requests; that was not tested.
 
 **Header-less traffic.** On a laptop, `session.process_attribution` is on by default,
 and a request with no session header is filed by the process that sent it. The
