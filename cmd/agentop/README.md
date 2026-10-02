@@ -611,11 +611,17 @@ write nothing and exit **3**. `--yes` skips the question, `--config PATH` reads
 another Cortex config, and `--opencode BIN` names the CLI when it is neither on
 `PATH` nor in `~/.opencode/bin`.
 
-Neither verb restarts a running service, because that ends every OpenCode session
-using it. Both compare the proxy in the environment the service's process started
-with against the one just configured, and when the two disagree, say so and name
-`opencode service restart`. `status` judges the running service by the proxy a
-restart would give it, the one its service environment names, and prints one of:
+Changing the service's environment through OpenCode's CLI stops a running
+service, which ends every OpenCode session using it. So when `enable` or
+`disable` has something to change, it says first that the service is running,
+with its pid (or that it may be, when that cannot be told), and asks; `--yes`
+skips the question, not the warning. OpenCode starts the service again, with the
+new environment, the next time you run it, and both say so once the change has
+stopped it. A service still running after the change is judged by the proxy in
+the environment its process started with: when that disagrees with the one just
+configured, they say so and name `opencode service restart`. `status` changes
+nothing. It judges the running service by the proxy a restart would give it, the
+one its service environment names, and prints one of:
 that it is using Cortex; that it is not; that it is running with its old
 environment, with the restart command, when a restart would put it on Cortex; or
 that it is using Cortex although its service environment does not route it there,

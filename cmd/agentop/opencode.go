@@ -216,7 +216,7 @@ func parseProxyURL(s string) *url.URL {
 // just means no warning. A service that is not running needs none either, because the
 // child starts it with exec's environment, under whatever service.json's env sets.
 // `opencode service …` commands are skipped: the user is already managing the service,
-// and advice to restart it would be noise. Only a command whose own name is opencode is
+// and the warning would be noise. Only a command whose own name is opencode is
 // recognised, so one run through a wrapper such as `env opencode` or an alias gets no
 // check.
 func warnOpenCodeService(cmdArgs []string, inject map[string]string, stderr io.Writer) {
@@ -248,7 +248,6 @@ func warnOpenCodeService(cmdArgs []string, inject map[string]string, stderr io.W
 		fmt.Fprintf(stderr, "agentop: warning: OpenCode's background service (pid %d) is not using Cortex.\n"+
 			"  It sends all of OpenCode's traffic and keeps the environment it started with,\n"+
 			"  so this session bypasses Cortex. To route it through Cortex for good:\n"+
-			"    agentop configure opencode enable\n"+
-			"    opencode service restart   # ends every OpenCode session using the service\n", svc.PID)
+			"    agentop configure opencode enable   # stops the service, ending every OpenCode session using it\n", svc.PID)
 	}
 }

@@ -98,10 +98,13 @@ disable changes only Cortex's values: one set some other way, even after enable,
 is left alone and named. status shows the nine and the running service, and
 changes nothing.
 
-Neither enable nor disable restarts a running service, because that ends every
-OpenCode session using it. A running service keeps the environment it started
-with, so each says when the service is running with its old environment;
-"opencode service restart" applies the change.
+Changing the service environment through OpenCode's CLI stops a running service,
+which ends every OpenCode session using it. So when enable or disable has
+something to change and the service is running, or may be, it says so first and
+asks (--yes skips the question, not the warning). OpenCode starts the service
+again, with the new environment, the next time you run it. A service still
+running after the change keeps the environment it started with, and each says
+when that is its old one.
 
 Note: once its service has started with these, OpenCode needs Cortex running —
 its requests go to the proxy address. "agentop configure opencode disable" is the
@@ -329,7 +332,9 @@ func openCodeEnable(bin, cortexCfgPath, statePath string, yes bool, stdout, stde
 	for _, k := range pl.changes {
 		fmt.Fprintf(stdout, "  %s=%s\n", k, pl.want[k])
 	}
-	fmt.Fprint(stdout, "Nothing else changes; agentop configure opencode disable removes them again.\n\n")
+	fmt.Fprintln(stdout, "Nothing else changes; agentop configure opencode disable removes them again.")
+	wasRunning := noteOpenCodeServiceStops(bin, stdout)
+	fmt.Fprintln(stdout)
 	if !yes && !opencodeConfirm(stdout) {
 		fmt.Fprintln(stdout, "Not changed.")
 		return exitDeclined
@@ -339,7 +344,7 @@ func openCodeEnable(bin, cortexCfgPath, statePath string, yes bool, stdout, stde
 		return 1
 	}
 	fmt.Fprintln(stdout, "Enabled — OpenCode's service uses Cortex from its next start.")
-	reportOpenCodeService(bin, pl.want[envProxy], true, false, stdout)
+	reportOpenCodeServiceAfterChange(bin, pl.want[envProxy], true, wasRunning, stdout)
 	return 0
 }
 
@@ -452,6 +457,7 @@ func openCodeDisable(bin, cortexCfgPath, statePath string, yes bool, stdout, std
 	if len(pl.present) == 0 {
 		return 0
 	}
+	wasRunning := noteOpenCodeServiceStops(bin, stdout)
 	fmt.Fprintln(stdout)
 	if !yes && !opencodeConfirm(stdout) {
 		fmt.Fprintln(stdout, "Not changed.")
@@ -467,8 +473,8 @@ func openCodeDisable(bin, cortexCfgPath, statePath string, yes bool, stdout, std
 	}
 	fmt.Fprintln(stdout, "\nDisabled. OpenCode's service no longer routes through Cortex from its next start.")
 
-	// The running service is compared with Cortex's proxy. When the config cannot be
-	// read, the proxy disable just took out stands in for it: that is what a service
+	// A service still running is compared with Cortex's proxy. When the config cannot
+	// be read, the proxy disable just took out stands in for it: that is what a service
 	// still running with its old environment uses.
 	if cortexProxy == "" {
 		for _, k := range pl.present {
@@ -478,7 +484,7 @@ func openCodeDisable(bin, cortexCfgPath, statePath string, yes bool, stdout, std
 			}
 		}
 	}
-	reportOpenCodeService(bin, cortexProxy, false, false, stdout)
+	reportOpenCodeServiceAfterChange(bin, cortexProxy, false, wasRunning, stdout)
 	return 0
 }
 
@@ -531,16 +537,59 @@ func openCodeStatus(bin, cortexCfgPath string, stdout, stderr io.Writer) int {
 	return 0
 }
 
-// reportOpenCodeService says how the running service compares with its service
-// environment. It never restarts the service: that would end every OpenCode session
-// using it.
+// noteOpenCodeServiceStops probes the service before enable or disable changes its
+// environment, prints what the change does to it, and returns whether it was running.
+// OpenCode's CLI stops a running service whenever `service set env` or `service unset
+// env` changes its environment (seen on 2.0.21), which ends every OpenCode session
+// using it; OpenCode starts it again, with the new environment, the next time it runs.
+//
+// A running service is named by its pid. When the CLI cannot say whether it runs, or
+// no process could be found on its port, the line says what happens if it does. A
+// service that is not running gets no line.
+func noteOpenCodeServiceStops(bin string, stdout io.Writer) bool {
+	svc, err := probeOpenCodeService(bin)
+	switch {
+	case err == nil && svc.Running && svc.PID != 0:
+		fmt.Fprintf(stdout, "OpenCode's background service is running (pid %d). Changing its environment stops it,\n"+
+			"  which ends every OpenCode session using it; OpenCode starts it again, with the new\n"+
+			"  environment, the next time you run it.\n", svc.PID)
+	case err != nil || svc.Running:
+		fmt.Fprint(stdout, "If OpenCode's background service is running, changing its environment stops it, which\n"+
+			"  ends every OpenCode session using it.\n")
+	}
+	return err == nil && svc.Running
+}
+
+// reportOpenCodeServiceAfterChange is the service line once enable or disable has
+// changed the service environment. A service that was running before the change and is
+// not running now was stopped by it, and the line says it starts with the new
+// environment. A service that is still running is reported as reportOpenCodeService
+// reports it. A service that was not running before gets no line.
+func reportOpenCodeServiceAfterChange(bin, cortexProxy string, configured, wasRunning bool, stdout io.Writer) {
+	svc, err := probeOpenCodeService(bin)
+	if err == nil && !svc.Running {
+		if wasRunning {
+			fmt.Fprintln(stdout, "OpenCode's background service is stopped; it starts with the new environment the next time you run OpenCode.")
+		}
+		return
+	}
+	describeOpenCodeService(svc, err, cortexProxy, configured, false, stdout)
+}
+
+// reportOpenCodeService probes the running service and says how it compares with its
+// service environment. It runs only `opencode service status`, which changes nothing.
+func reportOpenCodeService(bin, cortexProxy string, configured, status bool, stdout io.Writer) {
+	svc, err := probeOpenCodeService(bin)
+	describeOpenCodeService(svc, err, cortexProxy, configured, status, stdout)
+}
+
+// describeOpenCodeService prints the line for a probe's result, svc and err.
 //
 // cortexProxy is Cortex's proxy URL, "" when it is not known. configured is whether the
 // service environment routes OpenCode through it: true after enable, false after
 // disable, and for status whatever the environment's proxy says. status asks for a line
 // in every case; enable and disable say only what needs doing or what was confirmed.
-func reportOpenCodeService(bin, cortexProxy string, configured, status bool, stdout io.Writer) {
-	svc, err := probeOpenCodeService(bin)
+func describeOpenCodeService(svc openCodeService, err error, cortexProxy string, configured, status bool, stdout io.Writer) {
 	if err == nil && svc.Running {
 		err = svc.EnvErr
 	}

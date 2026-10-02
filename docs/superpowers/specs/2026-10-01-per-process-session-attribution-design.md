@@ -225,8 +225,10 @@ approach used on session 13cdee89.
   spawned a service pointed at Cortex). Enable sets the proxy and CA variables `agentop
   exec` sets, through the `opencode` CLI, and records prior values in
   `~/.cortex/opencode-state.json` so disable can restore them; it refuses to overwrite a
-  value someone else set. It never restarts a running service — that would cut every
-  OpenCode session using it — and says when one is running without the change.
+  value someone else set. OpenCode's CLI stops a running service whenever its environment
+  changes (verified on 2.0.21; it stops only the service its own config started), which
+  ends every OpenCode session using it. So enable and disable say so before acting and
+  ask, and the service starts with the new environment the next time OpenCode runs.
 - **`agentop exec -- opencode` warns** when a service is already running without Cortex's
   proxy: it finds the service by its port (`opencode service status`), its PID with
   `peerproc.ListenerOwner`, and reads that process's environment with a new
@@ -250,6 +252,9 @@ approach used on session 13cdee89.
 - **A multi-session process answers with its newest session**; tool windows wait for
   evidence.
 - **A stale OpenCode service gets a warning, not a restart.**
+- **configure opencode warns, then lets OpenCode's CLI stop the service.** Rejected: editing
+  service.json directly to spare the running service, which bypasses the CLI's ownership
+  of that file.
 - **OpenCode is configured through its service's own environment**, not by `agentop exec`
   alone: the service outlives its clients and keeps the environment of whichever started
   it, so `agentop exec -- opencode` does nothing for a service already running.

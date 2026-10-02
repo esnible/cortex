@@ -367,8 +367,7 @@ func TestOpenCodeRun(t *testing.T) {
 const openCodeWarning = "agentop: warning: OpenCode's background service (pid 4242) is not using Cortex.\n" +
 	"  It sends all of OpenCode's traffic and keeps the environment it started with,\n" +
 	"  so this session bypasses Cortex. To route it through Cortex for good:\n" +
-	"    agentop configure opencode enable\n" +
-	"    opencode service restart   # ends every OpenCode session using the service\n"
+	"    agentop configure opencode enable   # stops the service, ending every OpenCode session using it\n"
 
 func TestWarnOpenCodeService(t *testing.T) {
 	inject := map[string]string{"HTTPS_PROXY": "http://127.0.0.1:47600"}
@@ -406,7 +405,7 @@ func TestWarnOpenCodeService(t *testing.T) {
 			want: openCodeWarning, wantProbe: true,
 		},
 		{
-			// The user is already managing the service; advice to restart it is noise.
+			// The user is already managing the service; the warning would be noise.
 			name: "a service command", argv: []string{"opencode", "service", "restart"},
 			fake: running([]string{"PATH=/usr/bin"}, nil),
 		},
