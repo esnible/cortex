@@ -392,3 +392,22 @@ func TestSessionForProcess_AWorkerJoinsItsLaunchersSession(t *testing.T) {
 		t.Errorf("task-1 = %+v, want the launcher's request and the worker's call", v)
 	}
 }
+
+// A tool keeps the session it was started under, also when a launcher's worker started it
+// rather than the claimer itself.
+func TestSessionForProcess_AToolUnderAWorkerIsBoundToTheLaunchersSession(t *testing.T) {
+	s, clk := newProcStore()
+	defer s.Close()
+	s.ClaimProcess("task-1", "bob-shell", pchain(800))
+	recordIn(s, clk, "task-1")
+	s.SessionForProcess(pchain(820, 800), "bob-shell") // the worker, seen first
+	tool := pchain(900, 820, 800)
+	if got := s.SessionForProcess(tool, ""); got != "task-1" {
+		t.Fatalf("a tool under the worker: %q, want task-1", got)
+	}
+	s.ClaimProcess("task-2", "bob-shell", pchain(800))
+	recordIn(s, clk, "task-2")
+	if got := s.SessionForProcess(tool, ""); got != "task-1" {
+		t.Errorf("after the launcher moved on: %q, want task-1, the session the tool started under", got)
+	}
+}

@@ -178,6 +178,9 @@ func (s *Store) SessionForProcess(chain []Proc, agent string) string {
 			if root != i {
 				if rs := s.procs[chain[root].key()]; rs != nil {
 					if sid := s.newestClaimLocked(rs, now); sid != "" {
+						if i > 0 && self.agent == "" && !self.claimed {
+							self.bound = sid
+						}
 						return sid
 					}
 				}
