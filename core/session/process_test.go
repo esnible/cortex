@@ -77,7 +77,7 @@ func TestSessionForProcess_ANestedAgentIsNotFiledUnderItsParent(t *testing.T) {
 		t.Fatalf("before it identifies: %q, want outer", got)
 	}
 	pending := s.SessionForProcess(nested, "claude-code")
-	if want := PendingProcessID("claude-code", 400); pending != want {
+	if want := PendingProcessID("claude-code", nested[0]); pending != want {
 		t.Fatalf("once it identifies: %q, want its own pending bucket %q", pending, want)
 	}
 	recordIn(s, clk, pending)
@@ -217,8 +217,8 @@ func TestProcessHintsAndIsAgentProcess(t *testing.T) {
 func TestSessionForClient_PerProcessPendingBucketsCountAsOneAgent(t *testing.T) {
 	s, clk := newProcStore()
 	defer s.Close()
-	recordIn(s, clk, PendingProcessID("claude-code", 1))
-	recordIn(s, clk, PendingProcessID("claude-code", 2))
+	recordIn(s, clk, PendingProcessID("claude-code", Proc{PID: 1, Start: 1}))
+	recordIn(s, clk, PendingProcessID("claude-code", Proc{PID: 2, Start: 2}))
 	if got := s.SessionForClient(""); got != "" {
 		t.Errorf("two pending buckets of one agent: %q, want \"\" (one agent)", got)
 	}
@@ -243,5 +243,71 @@ func TestEviction_ForgetsAdoptionRecords(t *testing.T) {
 	}
 	if n := len(s.adopted); n != 0 {
 		t.Errorf("%d adoption record(s) left after their session was evicted", n)
+	}
+}
+
+// A pid is reused, and an adopted pending bucket's id keeps redirecting into the session
+// that adopted it. A new process with the old pid must get a bucket of its own.
+func TestSessionForProcess_AReusedPIDDoesNotInheritAPendingBucket(t *testing.T) {
+	s, clk := newProcStore()
+	defer s.Close()
+	old := []Proc{{PID: 400, Start: 1}}
+	recordIn(s, clk, s.SessionForProcess(old, "claude-code"))
+	s.ClaimProcess("yesterday", "claude-code", old)
+
+	reborn := []Proc{{PID: 400, Start: 2}}
+	recordIn(s, clk, s.SessionForProcess(reborn, "claude-code"))
+	if v := s.View("yesterday"); v == nil || len(v.Events) != 1 {
+		t.Errorf("yesterday = %+v; a new process with the old pid wrote into the old process's session", v)
+	}
+	s.ClaimProcess("today", "claude-code", reborn)
+	if v := s.View("today"); v == nil || len(v.Events) != 1 {
+		t.Errorf("today = %+v, want its own adopted pre-header call", v)
+	}
+}
+
+// A process that names its own session — OpenCode's service, whose User-Agent is not yet
+// recognised — first seen under another session's tree is never filed under that session
+// once it has named its own, even while its own has recorded nothing yet.
+func TestSessionForProcess_AProcessThatNamesASessionIsNeverBoundToAnother(t *testing.T) {
+	s, clk := newProcStore()
+	defer s.Close()
+	s.ClaimProcess("outer", "claude-code", pchain(100))
+	recordIn(s, clk, "outer")
+	svc := pchain(500, 100)
+	if got := s.SessionForProcess(svc, ""); got != "outer" {
+		t.Fatalf("first seen as the outer agent's tool: %q, want outer", got)
+	}
+	s.ClaimProcess("own", "", svc)
+	if got := s.SessionForProcess(svc, ""); got == "outer" {
+		t.Errorf("a process that named its own session fell back to the one it was first bound to")
+	}
+	recordIn(s, clk, "own")
+	if got := s.SessionForProcess(svc, ""); got != "own" {
+		t.Errorf("once its session is recorded: %q, want own", got)
+	}
+}
+
+// A tool keeps its session for its life — unless the session is gone, and then it is
+// rebound to its agent's live one.
+func TestSessionForProcess_AToolWhoseSessionIsGoneIsRebound(t *testing.T) {
+	clk := &procTestClock{t: time.Unix(1_700_000_000, 0)}
+	s := New(0, 0, 2, WithClock(clk.now))
+	defer s.Close()
+	claude := pchain(100)
+	s.ClaimProcess("s1", "claude-code", claude)
+	recordIn(s, clk, "s1")
+	tool := pchain(300, 100)
+	if got := s.SessionForProcess(tool, ""); got != "s1" {
+		t.Fatalf("tool: %q, want s1", got)
+	}
+	s.ClaimProcess("s2", "claude-code", claude)
+	recordIn(s, clk, "s2")
+	recordIn(s, clk, "other") // a third session evicts the oldest, s1
+	if s.View("s1") != nil {
+		t.Fatal("s1 was not evicted; the test needs it gone")
+	}
+	if got := s.SessionForProcess(tool, ""); got != "s2" {
+		t.Errorf("a tool whose session is gone: %q, want its agent's live s2", got)
 	}
 }

@@ -23,7 +23,8 @@ import (
 //	   session yet: that agent's pending bucket, which the first session it names adopts.
 //	   Stopping here is what keeps a nested agent — a claude -p run from another session's
 //	   shell — out of its parent's session.
-//	3. Bound earlier: that session.
+//	3. Named sessions, none of them live now: "", so resolution falls back — it is no other session's.
+//	4. Bound earlier: that session.
 //
 // No agent anywhere in the chain is the default bucket while some process has named a
 // session within ambiguityWindow, and "" otherwise, so ActiveSession() answers as before.
@@ -56,9 +57,9 @@ type procState struct {
 	bound string
 	// agent is the coding agent this process's requests identify as by User-Agent.
 	agent string
-	// claimed is set the first time the process names a session and never cleared: it is
-	// what makes a process an agent's own (IsAgentProcess) even after the sessions it
-	// named have been evicted.
+	// claimed is set when the process — or a process of the same agent below it — names a
+	// session, and stays set for as long as the store keeps the process: it is what makes a
+	// process an agent's own (IsAgentProcess) even after the sessions it named have been evicted.
 	claimed bool
 	seen    time.Time
 }
@@ -77,10 +78,11 @@ const (
 const claimGrace = time.Minute
 
 // PendingProcessID is the pending bucket of an agent process that has named no session
-// yet: the agent's pending bucket, per process, so two windows of one agent starting at
-// once do not share one.
-func PendingProcessID(agent string, pid int32) string {
-	return PendingSessionID(agent) + "@" + strconv.Itoa(int(pid))
+// yet: the agent's pending bucket, per process — pid and start time, since pids are reused
+// and an adopted bucket's id keeps redirecting into its session — so two windows of one
+// agent starting at once do not share one.
+func PendingProcessID(agent string, p Proc) string {
+	return PendingSessionID(agent) + "@" + strconv.Itoa(int(p.PID)) + "." + strconv.FormatInt(p.Start, 10)
 }
 
 // pendingOwner is the agent a pending bucket belongs to — claude-code for both
@@ -98,7 +100,8 @@ func pendingOwner(id string) (string, bool) {
 // Claim does for an agent. The claim is also recorded on the chain's agent root, so an
 // agent that runs as a launcher and a worker answers with one session from both, and the
 // root's pending bucket — and chain[0]'s own, if different — is adopted into sessionID
-// when sessionID holds nothing yet.
+// when sessionID holds nothing yet. Adoption is attempted on a process's first claim of a
+// session only: a bucket that cannot be adopted then never will be.
 func (s *Store) ClaimProcess(sessionID, agent string, chain []Proc) {
 	if sessionID == "" || len(chain) == 0 || strings.HasPrefix(sessionID, PendingPrefix) {
 		return
@@ -111,9 +114,12 @@ func (s *Store) ClaimProcess(sessionID, agent string, chain []Proc) {
 	now := s.clock()
 	s.lastProcClaim = now
 	self := s.procLocked(chain[0], now)
+	// A process that names a session is never a tool bound to another's.
+	self.bound = ""
 	if agent != "" {
-		self.agent, self.bound = agent, ""
+		self.agent = agent
 	}
+	_, already := self.claims[sessionID]
 	root := s.agentRootIndexLocked(chain, self.agent)
 	for _, i := range []int{0, root} {
 		st := s.procLocked(chain[i], now)
@@ -123,10 +129,10 @@ func (s *Store) ClaimProcess(sessionID, agent string, chain []Proc) {
 		st.claims[sessionID] = now
 		st.claimed = true
 	}
-	if self.agent != "" {
-		s.adoptLocked(PendingProcessID(self.agent, chain[root].PID), sessionID)
+	if self.agent != "" && !already {
+		s.adoptLocked(PendingProcessID(self.agent, chain[root]), sessionID)
 		if root != 0 {
-			s.adoptLocked(PendingProcessID(self.agent, chain[0].PID), sessionID)
+			s.adoptLocked(PendingProcessID(self.agent, chain[0]), sessionID)
 		}
 	}
 }
@@ -157,18 +163,23 @@ func (s *Store) SessionForProcess(chain []Proc, agent string) string {
 			}
 		}
 		if sid := s.newestClaimLocked(st, now); sid != "" {
-			if i > 0 && self.agent == "" {
+			if i > 0 && self.agent == "" && !self.claimed {
 				self.bound = sid
 			}
 			return sid
 		}
 		if st.agent != "" {
 			root := i + s.agentRootIndexLocked(chain[i:], st.agent)
-			return PendingProcessID(st.agent, chain[root].PID)
+			return PendingProcessID(st.agent, chain[root])
+		}
+		if st.claimed {
+			// A process that names its own sessions is no other session's, so with none
+			// of them live the walk stops here and resolution falls back.
+			return ""
 		}
 		if st.bound != "" {
 			if s.liveLocked(st.bound, now) {
-				if i > 0 && self.agent == "" {
+				if i > 0 && self.agent == "" && !self.claimed {
 					self.bound = st.bound
 				}
 				return st.bound
@@ -208,7 +219,8 @@ func (s *Store) ProcessHints(limit int) []int32 {
 	return out
 }
 
-// IsAgentProcess reports whether p has ever named a session through its own header.
+// IsAgentProcess reports whether p — or a process of the same agent it runs (see
+// agentRootIndexLocked) — has named a session through its own header.
 func (s *Store) IsAgentProcess(p Proc) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -262,7 +274,9 @@ func (s *Store) pruneProcsLocked(now time.Time) {
 // agentRootIndexLocked is the index in chain of the topmost process of agent reached from
 // chain[0] through processes of that same agent only. An agent that runs as a launcher
 // and a worker (node bob above node bob) has one root; a claude -p started from a shell is
-// its own, because the shell between it and the outer claude is no agent's.
+// its own, because the shell between it and the outer claude is no agent's. A nested agent
+// its parent agent runs directly, with no shell between, cannot be told from a worker and
+// joins its parent's root; Claude Code runs its tools through a shell.
 func (s *Store) agentRootIndexLocked(chain []Proc, agent string) int {
 	if agent == "" {
 		return 0
