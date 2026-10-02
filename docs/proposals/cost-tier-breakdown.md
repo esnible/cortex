@@ -1,11 +1,13 @@
-# Per-Tier Cost Breakdown in abctl
+# Per-Tier Cost Breakdown in agentop
 
-Status: proposed · 2026-09-19 · targets `authbridge/authlib/{pricing,costing,costevent,usage}`
-and `authbridge/cmd/abctl`
+Status: implemented · proposed 2026-09-19 · shipped in
+`core/cost/{pricing,settle,event,usage}` and
+`cmd/agentop` (the `$` spend breakdown). Kept as the design record,
+not a live proposal.
 
 ## 1. Problem
 
-abctl can say what traffic cost in total, and it can say how many tokens of each
+agentop can say what traffic cost in total, and it can say how many tokens of each
 kind that traffic used. It cannot say what each **kind** cost.
 
 That is the question an operator actually has. A cache read bills at roughly 0.1x
@@ -28,12 +30,12 @@ Verified against `fe19c8c1`, not assumed:
 | Layer | Per-tier tokens | Per-tier cost |
 |---|---|---|
 | `pricing.CostWithReason` | yes, `Usage.tokens()` | **computed, then discarded** |
-| `costing.Settled` | — | prompt/output halves only |
-| `costevent.Event` | — | `PromptUSD`, `OutputUSD` |
+| `settle.Settled` | — | prompt/output halves only |
+| `event.Event` | — | `PromptUSD`, `OutputUSD` |
 | `usage.Counts` | yes, five fields | no — one `CostMicros` |
-| `costledger.Row` | via embed | via embed |
+| `ledger.Row` | via embed | via embed |
 | `/v1/usage` | yes | no |
-| `abctl cost` | yes, `tokenSplit` | no |
+| `agentop cost` | yes, `tokenSplit` | no |
 | spend drawer | no | no |
 
 Two facts shape the whole design:
@@ -43,7 +45,7 @@ the four tiers and accumulates `usd += float64(n) * eff.Base[i]`, then throws th
 per-tier values away. Capturing them is a change at the source, not a new
 calculation.
 
-**`costledger.Row` embeds `usage.Counts`.** Its own doc says this is deliberate,
+**`ledger.Row` embeds `usage.Counts`.** Its own doc says this is deliberate,
 "so the ledger, /v1/usage and any future collector share one vocabulary: a field
 added there appears here, and a divergence is a compile error instead of a review
 question." Four fields on `Counts` therefore reach the ring, the durable ledger,
@@ -99,11 +101,11 @@ is a guess rather than an approximation. That is true, but any particular floor 
 a number nobody can defend: 50% and 10% are equally arbitrary, and a constant whose
 value is unjustifiable is worse than the behaviour it guards. The mix is the only
 evidence available, `~` says it is inexact, and a reader who wants coverage has
-`abctl cost`, which reports priced-versus-priceable already.
+`agentop cost`, which reports priced-versus-priceable already.
 
 **3.5 `reasoning` is not a tier.** It is a subset of `output` — `tokenSplit`
 already labels it `reasoning (of output)` — so including it as a fifth bar would
-double-count. It stays in `abctl cost`'s token line and out of the bars.
+double-count. It stays in `agentop cost`'s token line and out of the bars.
 
 > **Superseded in part.** `reasoning` is now drawn in this panel, as an *indented
 > child of `output`* carrying its own bar and figure.
@@ -141,7 +143,7 @@ the same visual weight, and the spend figures interleave labels with values
 ### 4.1 Resting
 
 ```
- abctl · 127.0.0.1:47601                              Sessions · Pipeline
+ agentop · 127.0.0.1:47601                              Sessions · Pipeline
   TODAY       LAST 1H     SAVED       CACHE HIT   TOKENS
   $3.8402     $4.5462     ~$0.2091    93%         5.6M
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -159,7 +161,7 @@ the band is the table's own top border, not a spent row.
 ### 4.2 Expanded (`$`)
 
 ```
- abctl · 127.0.0.1:47601                              Sessions · Pipeline
+ agentop · 127.0.0.1:47601                              Sessions · Pipeline
   TODAY       LAST 1H     SAVED       CACHE HIT   TOKENS
   $3.8402     $4.5462     ~$0.2091    93%         5.6M
 
@@ -225,15 +227,15 @@ Independent of the tier work, and the reason the current screen reads as ugly:
 ## 5. Data flow
 
 ```
-pricing.CostWithReason ──[numTiers]float64──▶ costing.Settled ──▶ costevent.Event
+pricing.CostWithReason ──[numTiers]float64──▶ settle.Settled ──▶ event.Event
                                                                         │
                                                           usage.foldInto│
                                                                         ▼
-                                          usage.Counts (4 × int64) ──▶ costledger.Row (embed)
+                                          usage.Counts (4 × int64) ──▶ ledger.Row (embed)
                                                      │                        │
                                                      ├──▶ /v1/usage           └──▶ durable ledger
                                                      ▼
-                                    usage.ApportionTiers(Counts) ──▶ drawer · abctl cost · --json
+                                    usage.ApportionTiers(Counts) ──▶ drawer · agentop cost · --json
 ```
 
 The apportionment of 3.2 lives in **one** exported helper in `usage`, called by
@@ -300,7 +302,7 @@ Three, stacked on `main`, each independently reviewable and each shipping a
 verifiable increment:
 
 **PR 1 — capture.** `pricing` returns the per-tier array it already computes;
-`costing.Settled` and `costevent.Event` carry it. No surface change. Ships the
+`settle.Settled` and `event.Event` carry it. No surface change. Ships the
 per-event data and is testable purely as arithmetic.
 
 **PR 2 — aggregate.** Four fields on `usage.Counts`, wired through `Add` and

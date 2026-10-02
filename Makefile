@@ -1,7 +1,7 @@
 # Root Makefile for cortex monorepo
 # Orchestrates linting and formatting across all sub-projects
 
-.PHONY: lint fmt pre-commit build-proxy-init pricing-table abctl authbridge-proxy dev-install help
+.PHONY: lint fmt pre-commit build-proxy-init pricing-table agentop cortex dev-install help
 
 BIN_DIR := $(CURDIR)/bin
 
@@ -19,11 +19,19 @@ lint: ## Run all linters (pre-commit hooks)
 	pre-commit run --all-files
 
 fmt: ## Run formatters across all sub-projects
-	cd authbridge/authlib && go fmt ./...
-	cd authbridge/cmd/abctl && go fmt ./...
-	cd authbridge/cmd/authbridge-proxy && go fmt ./...
-	cd authbridge/cmd/authbridge-envoy && go fmt ./...
-	ruff format authbridge/
+	cd core && go fmt ./...
+	@# Its own module, so the `cd core` above does not reach it: Go excludes nested
+	@# modules from ./..., and moving it under core/ made it only look covered.
+	cd core/storage/redis && go fmt ./...
+	cd cmd/agentop && go fmt ./...
+	cd cmd/cortex && go fmt ./...
+	cd cmd/cortex-envoy && go fmt ./...
+	@# Scope matches the ruff hooks in .pre-commit-config.yaml. Both skip the root
+	@# tests/ tree, which `authbridge/` never covered and which does not format clean.
+	@# Must be `--exclude ./tests`, root-anchored like the hook's `^tests/`: plain
+	@# `--exclude tests` also drops deploy/sparc-service/tests, and `--exclude /tests`
+	@# stops excluding root tests/ entirely.
+	ruff format . --exclude ./tests
 
 pre-commit: ## Install pre-commit hooks (including commit-msg)
 	pre-commit install --hook-type pre-commit --hook-type commit-msg
@@ -31,7 +39,7 @@ pre-commit: ## Install pre-commit hooks (including commit-msg)
 ##@ Sub-project Targets
 
 build-proxy-init: ## Build the proxy-init iptables init container
-	cd authbridge/proxy-init && make docker-build-init
+	cd deploy/proxy-init && make docker-build-init
 
 pricing-table: ## Regenerate the bundled price table (COMMIT=<sha> [NO_PROXY_FOR_GEN=1])
 ifndef COMMIT
@@ -43,22 +51,22 @@ endif
 	@# "github.com is behind a TLS-intercepting proxy" was true on one developer's
 	@# machine, not a property of this repo, and hardcoding it broke the target for
 	@# anyone whose proxy is the only route out.
-	cd authbridge/authlib && $(if $(filter 1,$(NO_PROXY_FOR_GEN)),HTTPS_PROXY= HTTP_PROXY= ALL_PROXY=,) \
-		go run ./pricing/internal/gen -commit $(COMMIT) -dir ./pricing
-	cd authbridge/authlib && go test ./pricing/ -run TestBundled
+	cd core && $(if $(filter 1,$(NO_PROXY_FOR_GEN)),HTTPS_PROXY= HTTP_PROXY= ALL_PROXY=,) \
+		go run ./cost/pricing/internal/gen -commit $(COMMIT) -dir ./cost/pricing
+	cd core && go test ./cost/pricing/ -run TestBundled
 
 ##@ Binary Targets
 
-# authbridge-proxy's plugin set is resolved from a named profile via
-# authbridge/scripts/profile-tags — the same helper CI uses — so the tag
-# list stays in sync without hand-maintenance. abctl links no plugins.
+# cortex's plugin set is resolved from a named profile via
+# scripts/profile-tags — the same helper CI uses — so the tag
+# list stays in sync without hand-maintenance. agentop links no plugins.
 
-abctl: ## Build abctl to ./bin/abctl
+agentop: ## Build agentop to ./bin/agentop
 	@mkdir -p $(BIN_DIR)
-	@echo "→ building abctl"
-	@cd authbridge/cmd/abctl && GOWORK=off go build -o $(BIN_DIR)/abctl .
+	@echo "→ building agentop"
+	@cd cmd/agentop && GOWORK=off go build -o $(BIN_DIR)/agentop .
 
-authbridge-proxy: ## Build authbridge-proxy to ./bin/authbridge-proxy (PROFILE=full|lite|local, default full)
+cortex: ## Build cortex to ./bin/cortex (PROFILE=full|lite|local, default full)
 	@mkdir -p $(BIN_DIR)
 	@# Restrict PROFILE to the plugin sets this binary ships.
 	@if [ -n "$(PROFILE)" ] && [ -z "$(filter full lite local,$(PROFILE))" ]; then \
@@ -70,28 +78,28 @@ authbridge-proxy: ## Build authbridge-proxy to ./bin/authbridge-proxy (PROFILE=f
 	@# The resolved tags, not just the profile name: "why is plugin X missing from my
 	@# binary" is answered by the tag list, and quieting the command removed the only
 	@# place it appeared.
-	@TAGS=$$(go -C authbridge/scripts/profile-tags run . $(or $(PROFILE),full)) && \
-		echo "→ building authbridge-proxy (profile $(or $(PROFILE),full)): $$TAGS" && \
-		cd authbridge/cmd/authbridge-proxy && \
-		GOWORK=off go build -tags "$$TAGS" -o $(BIN_DIR)/authbridge-proxy .
+	@TAGS=$$(go -C scripts/profile-tags run . $(or $(PROFILE),full)) && \
+		echo "→ building cortex (profile $(or $(PROFILE),full)): $$TAGS" && \
+		cd cmd/cortex && \
+		GOWORK=off go build -tags "$$TAGS" -o $(BIN_DIR)/cortex .
 
 ##@ Local Dev
 
 # install.sh installs Cortex from a RELEASE: it downloads prebuilt binaries, verifies
 # their checksums, and starts the service. There was no equivalent for the tree you are
-# sitting in — `make authbridge-proxy` built to ./bin and stopped, leaving four manual
+# sitting in — `make cortex` built to ./bin and stopped, leaving four manual
 # steps between a build and a running proxy. This is that bridge, and nothing else here
 # is a substitute for it.
 
-dev-install: authbridge-proxy abctl ## Build from this tree, install to ~/.local/bin, restart the service (PROFILE=full|lite|local)
+dev-install: cortex agentop ## Build from this tree, install to ~/.local/bin, restart the service (PROFILE=full|lite|local)
 	@mkdir -p $(DEV_BIN_DIR)
 	@# Copy to a sibling name and rename, rather than writing over the target.
 	@# Replacing a RUNNING executable in place fails with ETXTBSY on macOS, and both
-	@# of these are usually running: the proxy under the supervisor, abctl in a TUI.
+	@# of these are usually running: the proxy under the supervisor, agentop in a TUI.
 	@# rename swaps the directory entry and leaves the live process on its own inode.
 	@# The .new file is removed on any failure: this directory is meant to be on PATH,
 	@# so a half-copied executable left behind is worse than the failure itself.
-	@for b in authbridge-proxy abctl; do \
+	@for b in cortex agentop; do \
 		cp $(BIN_DIR)/$$b $(DEV_BIN_DIR)/$$b.new && \
 		mv -f $(DEV_BIN_DIR)/$$b.new $(DEV_BIN_DIR)/$$b || \
 		{ rm -f $(DEV_BIN_DIR)/$$b.new; exit 1; }; \
@@ -103,17 +111,17 @@ dev-install: authbridge-proxy abctl ## Build from this tree, install to ~/.local
 	@# dotfiles, so it says so and stops there.
 	@case ":$$PATH:" in \
 		*":$(DEV_BIN_DIR):"*) ;; \
-		*) echo >&2; echo "!  $(DEV_BIN_DIR) is not on PATH — \`abctl\` will not resolve until you add it" >&2; echo >&2;; \
+		*) echo >&2; echo "!  $(DEV_BIN_DIR) is not on PATH — \`agentop\` will not resolve until you add it" >&2; echo >&2;; \
 	esac
 	@# A machine that has never run Cortex has no config, and `service install` refuses
 	@# without one. Minting it here is what makes this work on a clean checkout rather
 	@# than only as an upgrade.
 	@if [ ! -f "$(HOME)/.cortex/config.yaml" ]; then \
 		echo "→ no config at ~/.cortex/config.yaml; writing the built-in one"; \
-		$(DEV_BIN_DIR)/authbridge-proxy --local --write-config || exit 1; \
+		$(DEV_BIN_DIR)/cortex --local --write-config || exit 1; \
 	fi
-	@# Absolute path, not bare `abctl`: PATH may resolve to a different copy, and the
-	@# unit records which abctl wrote it. --yes because a build command that stops to
+	@# Absolute path, not bare `agentop`: PATH may resolve to a different copy, and the
+	@# unit records which agentop wrote it. --yes because a build command that stops to
 	@# ask is not a one-liner; --restart because install is otherwise free to re-run and
 	@# would skip the restart whenever the rebuild happened to be byte-identical.
 	@# Quiet: make would otherwise echo an absolute path and a flag list immediately
@@ -121,10 +129,18 @@ dev-install: authbridge-proxy abctl ## Build from this tree, install to ~/.local
 	@#
 	@# "installing and starting" rather than "restarting": serviceInstall is also the
 	@# first-install path, where there is nothing to restart and no captured history to
-	@# clear. Both consequences are abctl's to report — it can tell whether anything was
+	@# clear. Both consequences are agentop's to report — it can tell whether anything was
 	@# running, and a Makefile echo cannot — so the session-store line moved there and
 	@# this says only what is true on both paths.
 	@echo "→ installing and starting the service"
-	@$(DEV_BIN_DIR)/abctl service install --yes --restart
+	@$(DEV_BIN_DIR)/agentop service install --yes --restart
 	@echo
-	@$(DEV_BIN_DIR)/abctl service status
+	@$(DEV_BIN_DIR)/agentop service status
+	@# The binaries were abctl and authbridge-proxy before the renames, and there are no
+	@# aliases. install.sh's remove_stale decides what may go (ours, and no unit still
+	@# naming it); it is extracted from there rather than copied, so there is one copy
+	@# and install_test.sh is what tests it. After the install above, so the unit has
+	@# already moved to cortex.
+	@BIN_DIR='$(DEV_BIN_DIR)'; info() { echo "→ $$*"; }; \
+		eval "$$(sed -n '/^remove_stale()/,/^}/p' scripts/install.sh)"; \
+		remove_stale abctl agentop && remove_stale authbridge-proxy cortex

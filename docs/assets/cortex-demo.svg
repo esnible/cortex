@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1040 670" width="1040" height="670" font-size="14" role="img" aria-label="Cortex: install, point Claude Code at it, run several sessions, then read what they cost in abctl">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1040 670" width="1040" height="670" font-size="14" role="img" aria-label="Cortex: install, point Claude Code at it, run several sessions, then read what they cost in agentop">
 <style>
 text{font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"Liberation Mono",monospace;white-space:pre}
 g.st{opacity:0}
@@ -7,34 +7,34 @@ g.st{opacity:0}
 @keyframes blink{0%,49%{opacity:1}50%,100%{opacity:0.15}}
 @keyframes st0{0.0000%,27.9990%{opacity:1}28.0000%,100%{opacity:0}}
 g.st0{animation:st0 50s linear infinite}
-@keyframes tp0_0{0%,0.0000%{width:0}9.4080%,100%{width:957.6px}}
-#cl0_0 rect{animation:tp0_0 50s steps(114,end) infinite}
-@keyframes cx0_0{0%,0.0000%{x:16.0px}9.4080%,100%{x:973.6px}}
-@keyframes cv0_0{0%,0.0000%{visibility:hidden}0.0000%,9.4080%{visibility:visible}10.0080%,100%{visibility:hidden}}
-.cur0_0{animation:cx0_0 50s steps(114,end) infinite,cv0_0 50s linear infinite,blink 1s steps(1,end) infinite}
-@keyframes rv0_1{0%,10.3470%{visibility:hidden}10.3480%,100%{visibility:visible}}
+@keyframes tp0_0{0%,0.0000%{width:0}9.1560%,100%{width:932.4px}}
+#cl0_0 rect{animation:tp0_0 50s steps(111,end) infinite}
+@keyframes cx0_0{0%,0.0000%{x:16.0px}9.1560%,100%{x:948.4px}}
+@keyframes cv0_0{0%,0.0000%{visibility:hidden}0.0000%,9.1560%{visibility:visible}9.7560%,100%{visibility:hidden}}
+.cur0_0{animation:cx0_0 50s steps(111,end) infinite,cv0_0 50s linear infinite,blink 1s steps(1,end) infinite}
+@keyframes rv0_1{0%,10.0950%{visibility:hidden}10.0960%,100%{visibility:visible}}
 .rv0_1{animation:rv0_1 50s linear infinite}
-@keyframes rv0_2{0%,15.3470%{visibility:hidden}15.3480%,100%{visibility:visible}}
+@keyframes rv0_2{0%,15.0950%{visibility:hidden}15.0960%,100%{visibility:visible}}
 .rv0_2{animation:rv0_2 50s linear infinite}
-@keyframes rv0_3{0%,17.1470%{visibility:hidden}17.1480%,100%{visibility:visible}}
+@keyframes rv0_3{0%,16.8950%{visibility:hidden}16.8960%,100%{visibility:visible}}
 .rv0_3{animation:rv0_3 50s linear infinite}
-@keyframes rv0_4{0%,18.5470%{visibility:hidden}18.5480%,100%{visibility:visible}}
+@keyframes rv0_4{0%,18.2950%{visibility:hidden}18.2960%,100%{visibility:visible}}
 .rv0_4{animation:rv0_4 50s linear infinite}
-@keyframes rv0_5{0%,18.7870%{visibility:hidden}18.7880%,100%{visibility:visible}}
+@keyframes rv0_5{0%,18.5350%{visibility:hidden}18.5360%,100%{visibility:visible}}
 .rv0_5{animation:rv0_5 50s linear infinite}
-@keyframes rv0_6{0%,20.5870%{visibility:hidden}20.5880%,100%{visibility:visible}}
+@keyframes rv0_6{0%,20.3350%{visibility:hidden}20.3360%,100%{visibility:visible}}
 .rv0_6{animation:rv0_6 50s linear infinite}
-@keyframes rv0_7{0%,20.8870%{visibility:hidden}20.8880%,100%{visibility:visible}}
+@keyframes rv0_7{0%,20.6350%{visibility:hidden}20.6360%,100%{visibility:visible}}
 .rv0_7{animation:rv0_7 50s linear infinite}
-@keyframes rv0_8{0%,21.1870%{visibility:hidden}21.1880%,100%{visibility:visible}}
+@keyframes rv0_8{0%,20.9350%{visibility:hidden}20.9360%,100%{visibility:visible}}
 .rv0_8{animation:rv0_8 50s linear infinite}
-@keyframes rv0_9{0%,21.4870%{visibility:hidden}21.4880%,100%{visibility:visible}}
+@keyframes rv0_9{0%,21.2350%{visibility:hidden}21.2360%,100%{visibility:visible}}
 .rv0_9{animation:rv0_9 50s linear infinite}
-@keyframes rv0_10{0%,22.0870%{visibility:hidden}22.0880%,100%{visibility:visible}}
+@keyframes rv0_10{0%,21.8350%{visibility:hidden}21.8360%,100%{visibility:visible}}
 .rv0_10{animation:rv0_10 50s linear infinite}
-@keyframes rv0_11{0%,24.4870%{visibility:hidden}24.4880%,100%{visibility:visible}}
+@keyframes rv0_11{0%,24.2350%{visibility:hidden}24.2360%,100%{visibility:visible}}
 .rv0_11{animation:rv0_11 50s linear infinite}
-@keyframes rv0_12{0%,26.2870%{visibility:hidden}26.2880%,100%{visibility:visible}}
+@keyframes rv0_12{0%,26.0350%{visibility:hidden}26.0360%,100%{visibility:visible}}
 .rv0_12{animation:rv0_12 50s linear infinite}
 @keyframes st1{0%,27.9990%{opacity:0}28.0000%,39.9990%{opacity:1}40.0000%,100%{opacity:0}}
 g.st1{animation:st1 50s linear infinite}
@@ -167,11 +167,11 @@ clipPath rect{width:100000px}
 <text x="520" y="19.0" fill="#6e7681" font-size="12" text-anchor="middle">cortex</text>
 <g class="st st0 lbl-install">
 <clipPath id="cl0_0"><rect x="16.0" y="45.0" width="0" height="18.0"/></clipPath>
-<text clip-path="url(#cl0_0)" y="58.0"><tspan x="16.0" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#3fb950" font-weight="600">$ </tspan><tspan x="32.8" textLength="940.8" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">curl -fsSL https://raw.githubusercontent.com/rossoctl/cortex/main/authbridge/install.sh | sh -s -- --claude-code</tspan></text>
+<text clip-path="url(#cl0_0)" y="58.0"><tspan x="16.0" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#3fb950" font-weight="600">$ </tspan><tspan x="32.8" textLength="915.6" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">curl -fsSL https://raw.githubusercontent.com/rossoctl/cortex/main/scripts/install.sh | sh -s -- --claude-code</tspan></text>
 <rect class="cur cur0_0" x="16.0" y="46.0" width="8.4" height="14.0"/>
 <text class="rv rv0_1" y="76.0"><tspan x="16.0" textLength="226.8" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">Resolving newest release...</tspan></text>
 <text class="rv rv0_2" y="94.0"><tspan x="16.0" textLength="319.2" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">Downloading v0.9.3 for darwin/arm64...</tspan></text>
-<text class="rv rv0_3" y="112.0"><tspan x="16.0" textLength="445.2" lengthAdjust="spacingAndGlyphs" fill="#3fb950">Installed abctl and authbridge-proxy to ~/.cortex/bin</tspan></text>
+<text class="rv rv0_3" y="112.0"><tspan x="16.0" textLength="378.0" lengthAdjust="spacingAndGlyphs" fill="#3fb950">Installed agentop and cortex to ~/.cortex/bin</tspan></text>
 <text class="rv rv0_4" y="130.0"><tspan x="16.0" textLength="277.2" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">Setting up the launchd service...</tspan></text>
 <text class="rv rv0_5" y="148.0"></text>
 <text class="rv rv0_6" y="166.0"><tspan x="16.0" textLength="428.4" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">Adds to the &quot;env&quot; block of ~/.claude/settings.json:</tspan></text>
@@ -200,7 +200,7 @@ clipPath rect{width:100000px}
 <text class="rv rv1_16" y="346.0"><tspan x="16.0" textLength="1008.0" lengthAdjust="spacingAndGlyphs" fill="#6e7681">└──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘</tspan></text>
 </g>
 <g class="st st2 lbl-sessions">
-<text class="rv rv2_0" y="58.0"><tspan x="16.0" textLength="243.6" lengthAdjust="spacingAndGlyphs" fill="#a5b3fc" font-weight="600">abctl · http://127.0.0.1:9094</tspan></text>
+<text class="rv rv2_0" y="58.0"><tspan x="16.0" textLength="260.4" lengthAdjust="spacingAndGlyphs" fill="#a5b3fc" font-weight="600">agentop · http://127.0.0.1:9094</tspan></text>
 <text class="rv rv2_1" y="76.0"><tspan x="16.0" textLength="58.8" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">LAST 1H</tspan><tspan x="74.8" textLength="75.6" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9"> $0.65 · </tspan><tspan x="150.4" textLength="42.0" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">TODAY</tspan><tspan x="192.4" textLength="75.6" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9"> $0.65 · </tspan><tspan x="268.0" textLength="50.4" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">7 DAYS</tspan><tspan x="318.4" textLength="75.6" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9"> $0.79 · </tspan><tspan x="394.0" textLength="84.0" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">THIS MONTH</tspan><tspan x="478.0" textLength="546.0" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9"> $0.79                                                           </tspan></text>
 <text class="rv rv2_2" y="94.0"><tspan x="16.0" textLength="1008.0" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────</tspan></text>
 <text class="rv rv2_3" y="112.0"><tspan x="24.4" textLength="117.6" lengthAdjust="spacingAndGlyphs" fill="#a5b3fc" font-weight="600">SESSION       </tspan><tspan x="158.8" textLength="226.8" lengthAdjust="spacingAndGlyphs" fill="#a5b3fc" font-weight="600">TITLE                      </tspan><tspan x="402.4" textLength="117.6" lengthAdjust="spacingAndGlyphs" fill="#a5b3fc" font-weight="600">UPDATED       </tspan><tspan x="536.8" textLength="67.2" lengthAdjust="spacingAndGlyphs" fill="#a5b3fc" font-weight="600">  EVENTS</tspan><tspan x="620.8" textLength="84.0" lengthAdjust="spacingAndGlyphs" fill="#a5b3fc" font-weight="600">    TOKENS</tspan><tspan x="721.6" textLength="84.0" lengthAdjust="spacingAndGlyphs" fill="#a5b3fc" font-weight="600">      COST</tspan><tspan x="822.4" textLength="84.0" lengthAdjust="spacingAndGlyphs" fill="#a5b3fc" font-weight="600">    SAVED~</tspan><tspan x="923.2" textLength="92.4" lengthAdjust="spacingAndGlyphs" fill="#a5b3fc" font-weight="600">CONTEXT(1M)</tspan></text>
@@ -237,7 +237,7 @@ clipPath rect{width:100000px}
 <text class="rv rv2_33" y="652.0"><tspan x="16.0" textLength="823.2" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">[↑↓] nav  [↵] drill  [u] usage  [$] spend  [/] filter  [p] pause  [P] pipeline  [?] keys  [q] quit</tspan></text>
 </g>
 <g class="st st3 lbl-spend">
-<text y="58.0"><tspan x="16.0" textLength="243.6" lengthAdjust="spacingAndGlyphs" fill="#a5b3fc" font-weight="600">abctl · http://127.0.0.1:9094</tspan></text>
+<text y="58.0"><tspan x="16.0" textLength="260.4" lengthAdjust="spacingAndGlyphs" fill="#a5b3fc" font-weight="600">agentop · http://127.0.0.1:9094</tspan></text>
 <text y="76.0"><tspan x="16.0" textLength="58.8" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">LAST 1H</tspan><tspan x="74.8" textLength="75.6" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9"> $0.65 · </tspan><tspan x="150.4" textLength="42.0" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">TODAY</tspan><tspan x="192.4" textLength="75.6" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9"> $0.65 · </tspan><tspan x="268.0" textLength="50.4" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">7 DAYS</tspan><tspan x="318.4" textLength="75.6" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9"> $0.79 · </tspan><tspan x="394.0" textLength="84.0" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">THIS MONTH</tspan><tspan x="478.0" textLength="546.0" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9"> $0.79                                                           </tspan></text>
 <text y="94.0"><tspan x="16.0" textLength="453.6" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">  WHERE IT WENT                               BY MODEL</tspan></text>
 <text y="112.0"><tspan x="16.0" textLength="840.0" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">  cache-read    43% ████████████      $0.27   claude-opus-5          $0.63       4 req   319k tokens</tspan></text>
@@ -274,7 +274,7 @@ clipPath rect{width:100000px}
 <text y="652.0"><tspan x="16.0" textLength="823.2" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">[↑↓] nav  [↵] drill  [u] usage  [$] spend  [/] filter  [p] pause  [P] pipeline  [?] keys  [q] quit</tspan></text>
 </g>
 <g class="st st4 lbl-usage">
-<text y="58.0"><tspan x="16.0" textLength="361.2" lengthAdjust="spacingAndGlyphs" fill="#a5b3fc" font-weight="600">abctl · http://127.0.0.1:9094 · usage · all</tspan></text>
+<text y="58.0"><tspan x="16.0" textLength="378.0" lengthAdjust="spacingAndGlyphs" fill="#a5b3fc" font-weight="600">agentop · http://127.0.0.1:9094 · usage · all</tspan></text>
 <text y="76.0"><tspan x="16.0" textLength="58.8" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">LAST 1H</tspan><tspan x="74.8" textLength="75.6" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9"> $0.65 · </tspan><tspan x="150.4" textLength="42.0" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">TODAY</tspan><tspan x="192.4" textLength="75.6" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9"> $0.65 · </tspan><tspan x="268.0" textLength="50.4" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">7 DAYS</tspan><tspan x="318.4" textLength="75.6" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9"> $0.79 · </tspan><tspan x="394.0" textLength="84.0" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">THIS MONTH</tspan><tspan x="478.0" textLength="546.0" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9"> $0.79                                                           </tspan></text>
 <text y="94.0"><tspan x="16.0" textLength="1008.0" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────</tspan></text>
 <text y="112.0"><tspan x="16.0" textLength="1008.0" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">  USAGE — all sessions — 10m0s @ 1m0s — tokens — ungrouped                                                              </tspan></text>
@@ -302,19 +302,19 @@ clipPath rect{width:100000px}
 <text y="508.0"><tspan x="16.0" textLength="730.8" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">[m] metric  [w] window  [b] breakdown  [s] this session  [esc] back  [?] keys  [q] quit</tspan></text>
 </g>
 <g class="st st5 lbl-events">
-<text y="58.0"><tspan x="16.0" textLength="336.0" lengthAdjust="spacingAndGlyphs" fill="#a5b3fc" font-weight="600">abctl · fix the retry handler (api-7f3c)</tspan></text>
+<text y="58.0"><tspan x="16.0" textLength="352.8" lengthAdjust="spacingAndGlyphs" fill="#a5b3fc" font-weight="600">agentop · fix the retry handler (api-7f3c)</tspan></text>
 <text y="76.0"><tspan x="16.0" textLength="58.8" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">LAST 1H</tspan><tspan x="74.8" textLength="75.6" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9"> $0.65 · </tspan><tspan x="150.4" textLength="42.0" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">TODAY</tspan><tspan x="192.4" textLength="75.6" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9"> $0.65 · </tspan><tspan x="268.0" textLength="50.4" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">7 DAYS</tspan><tspan x="318.4" textLength="75.6" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9"> $0.79 · </tspan><tspan x="394.0" textLength="84.0" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">THIS MONTH</tspan><tspan x="478.0" textLength="546.0" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9"> $0.79                                                           </tspan></text>
 <text y="94.0"><tspan x="16.0" textLength="1008.0" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────</tspan></text>
-<text y="112.0"><tspan x="24.4" textLength="33.6" lengthAdjust="spacingAndGlyphs" fill="#a5b3fc" font-weight="600">#   </tspan><tspan x="74.8" textLength="100.8" lengthAdjust="spacingAndGlyphs" fill="#a5b3fc" font-weight="600">TIME        </tspan><tspan x="192.4" textLength="33.6" lengthAdjust="spacingAndGlyphs" fill="#a5b3fc" font-weight="600">DIR </tspan><tspan x="242.8" textLength="58.8" lengthAdjust="spacingAndGlyphs" fill="#a5b3fc" font-weight="600">PHASE  </tspan><tspan x="318.4" textLength="67.2" lengthAdjust="spacingAndGlyphs" fill="#a5b3fc" font-weight="600">ACTION  </tspan><tspan x="402.4" textLength="151.2" lengthAdjust="spacingAndGlyphs" fill="#a5b3fc" font-weight="600">PLUGIN            </tspan><tspan x="570.4" textLength="151.2" lengthAdjust="spacingAndGlyphs" fill="#a5b3fc" font-weight="600">METHOD            </tspan><tspan x="738.4" textLength="58.8" lengthAdjust="spacingAndGlyphs" fill="#a5b3fc" font-weight="600">STATUS </tspan><tspan x="814.0" textLength="168.0" lengthAdjust="spacingAndGlyphs" fill="#a5b3fc" font-weight="600">HOST                </tspan></text>
-<text y="130.0"><tspan x="16.0" textLength="1008.0" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9"> 1     42:24:24.24   out   req      observe   inference-parser    claude-opus-5                api.anthropic.com        </tspan></text>
-<text y="148.0"><tspan x="16.0" textLength="1008.0" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9"> 1     42:24:24.24   out   resp     observe   2 plugins           claude-opus-5       200      api.anthropic.com        </tspan></text>
-<text y="166.0"><tspan x="16.0" textLength="1008.0" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9"> 2     42:24:24.24   out   req      modify    token-exchange      tools/call                   github-tool-mcp          </tspan></text>
-<text y="184.0"><tspan x="16.0" textLength="1008.0" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9"> 2     42:24:24.24   out   resp     —         —                   tools/call          200      github-tool-mcp          </tspan></text>
-<text y="202.0"><tspan x="16.0" textLength="1008.0" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9"> 3     42:24:24.24   out   req      observe   inference-parser    claude-opus-5                api.anthropic.com        </tspan></text>
-<text y="220.0"><tspan x="16.0" textLength="1008.0" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9"> 3     42:24:24.24   out   resp     observe   2 plugins           claude-opus-5       200      api.anthropic.com        </tspan></text>
-<text y="238.0"><tspan x="16.0" textLength="1008.0" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9"> 4     42:24:24.24   out   req      observe   inference-parser    claude-opus-5                api.anthropic.com        </tspan></text>
-<rect x="16.0" y="243.0" width="974.4" height="18.0" fill="#303050"/>
-<text y="256.0"><tspan x="16.0" textLength="974.4" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9" font-weight="600"> 4     42:24:24.24   out   resp     observe   2 plugins           claude-opus-5       200      api.anthropic.com    </tspan></text>
+<text y="112.0"><tspan x="24.4" textLength="33.6" lengthAdjust="spacingAndGlyphs" fill="#a5b3fc" font-weight="600">#   </tspan><tspan x="74.8" textLength="92.4" lengthAdjust="spacingAndGlyphs" fill="#a5b3fc" font-weight="600">TIME       </tspan><tspan x="184.0" textLength="33.6" lengthAdjust="spacingAndGlyphs" fill="#a5b3fc" font-weight="600">DIR </tspan><tspan x="234.4" textLength="50.4" lengthAdjust="spacingAndGlyphs" fill="#a5b3fc" font-weight="600">PHASE </tspan><tspan x="301.6" textLength="67.2" lengthAdjust="spacingAndGlyphs" fill="#a5b3fc" font-weight="600">ACTION  </tspan><tspan x="385.6" textLength="151.2" lengthAdjust="spacingAndGlyphs" fill="#a5b3fc" font-weight="600">PLUGIN            </tspan><tspan x="553.6" textLength="151.2" lengthAdjust="spacingAndGlyphs" fill="#a5b3fc" font-weight="600">METHOD            </tspan><tspan x="721.6" textLength="58.8" lengthAdjust="spacingAndGlyphs" fill="#a5b3fc" font-weight="600"> STATUS</tspan><tspan x="797.2" textLength="168.0" lengthAdjust="spacingAndGlyphs" fill="#a5b3fc" font-weight="600">HOST                </tspan></text>
+<text y="130.0"><tspan x="16.0" textLength="1008.0" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9"> 1     42:24:24.24  out   req     observe   inference-parser    claude-opus-5                api.anthropic.com          </tspan></text>
+<text y="148.0"><tspan x="16.0" textLength="1008.0" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9"> 1     42:24:24.24  out   resp    observe   2 plugins           claude-opus-5           200  api.anthropic.com          </tspan></text>
+<text y="166.0"><tspan x="16.0" textLength="1008.0" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9"> 2     42:24:24.24  out   req     modify    token-exchange      tools/call                   github-tool-mcp            </tspan></text>
+<text y="184.0"><tspan x="16.0" textLength="1008.0" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9"> 2     42:24:24.24  out   resp    —         —                   tools/call              200  github-tool-mcp            </tspan></text>
+<text y="202.0"><tspan x="16.0" textLength="1008.0" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9"> 3     42:24:24.24  out   req     observe   inference-parser    claude-opus-5                api.anthropic.com          </tspan></text>
+<text y="220.0"><tspan x="16.0" textLength="1008.0" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9"> 3     42:24:24.24  out   resp    observe   2 plugins           claude-opus-5           200  api.anthropic.com          </tspan></text>
+<text y="238.0"><tspan x="16.0" textLength="1008.0" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9"> 4     42:24:24.24  out   req     observe   inference-parser    claude-opus-5                api.anthropic.com          </tspan></text>
+<rect x="16.0" y="243.0" width="957.6" height="18.0" fill="#303050"/>
+<text y="256.0"><tspan x="16.0" textLength="957.6" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9" font-weight="600"> 4     42:24:24.24  out   resp    observe   2 plugins           claude-opus-5           200  api.anthropic.com    </tspan></text>
 <text y="274.0"></text>
 <text y="292.0"></text>
 <text y="310.0"></text>
@@ -339,7 +339,7 @@ clipPath rect{width:100000px}
 <text y="652.0"><tspan x="16.0" textLength="974.4" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">… [s] hide passthru/skip  [p] pause  [/] filter  [esc] back  ·  → 3 more columns ([c] to choose)  [?] keys  [q] quit</tspan></text>
 </g>
 <g class="st st6 lbl-detail">
-<text y="58.0"><tspan x="16.0" textLength="403.2" lengthAdjust="spacingAndGlyphs" fill="#a5b3fc" font-weight="600">abctl · fix the retry handler (api-7f3c) · event</tspan></text>
+<text y="58.0"><tspan x="16.0" textLength="420.0" lengthAdjust="spacingAndGlyphs" fill="#a5b3fc" font-weight="600">agentop · fix the retry handler (api-7f3c) · event</tspan></text>
 <text y="76.0"><tspan x="16.0" textLength="58.8" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">LAST 1H</tspan><tspan x="74.8" textLength="75.6" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9"> $0.65 · </tspan><tspan x="150.4" textLength="42.0" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">TODAY</tspan><tspan x="192.4" textLength="75.6" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9"> $0.65 · </tspan><tspan x="268.0" textLength="50.4" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">7 DAYS</tspan><tspan x="318.4" textLength="75.6" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9"> $0.79 · </tspan><tspan x="394.0" textLength="84.0" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">THIS MONTH</tspan><tspan x="478.0" textLength="546.0" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9"> $0.79                                                           </tspan></text>
 <text y="94.0"><tspan x="16.0" textLength="1008.0" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────</tspan></text>
 <text y="112.0"><tspan x="16.0" textLength="8.4" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">{</tspan></text>
@@ -375,7 +375,7 @@ clipPath rect{width:100000px}
 <text y="652.0"><tspan x="16.0" textLength="537.6" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">[↑↓] scroll  [y] yank  [u] usage  [esc] back  [?] keys  [q] quit</tspan></text>
 </g>
 <g class="st st7 lbl-manifest">
-<text y="58.0"><tspan x="16.0" textLength="403.2" lengthAdjust="spacingAndGlyphs" fill="#a5b3fc" font-weight="600">abctl · fix the retry handler (api-7f3c) · event</tspan></text>
+<text y="58.0"><tspan x="16.0" textLength="420.0" lengthAdjust="spacingAndGlyphs" fill="#a5b3fc" font-weight="600">agentop · fix the retry handler (api-7f3c) · event</tspan></text>
 <text y="76.0"><tspan x="16.0" textLength="58.8" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">LAST 1H</tspan><tspan x="74.8" textLength="75.6" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9"> $0.65 · </tspan><tspan x="150.4" textLength="42.0" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">TODAY</tspan><tspan x="192.4" textLength="75.6" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9"> $0.65 · </tspan><tspan x="268.0" textLength="50.4" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">7 DAYS</tspan><tspan x="318.4" textLength="75.6" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9"> $0.79 · </tspan><tspan x="394.0" textLength="84.0" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">THIS MONTH</tspan><tspan x="478.0" textLength="546.0" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9"> $0.79                                                           </tspan></text>
 <text y="94.0"><tspan x="16.0" textLength="1008.0" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────</tspan></text>
 <text y="112.0"><tspan x="83.2" textLength="50.4" lengthAdjust="spacingAndGlyphs" fill="#a5b3fc">&quot;role&quot;</tspan><tspan x="133.6" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">: </tspan><tspan x="150.4" textLength="92.4" lengthAdjust="spacingAndGlyphs" fill="#6ee7b7">&quot;assistant&quot;</tspan></text>
@@ -411,7 +411,7 @@ clipPath rect{width:100000px}
 <text y="652.0"><tspan x="16.0" textLength="537.6" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">[↑↓] scroll  [y] yank  [u] usage  [esc] back  [?] keys  [q] quit</tspan></text>
 </g>
 <g class="st st8 final lbl-back">
-<text y="58.0"><tspan x="16.0" textLength="243.6" lengthAdjust="spacingAndGlyphs" fill="#a5b3fc" font-weight="600">abctl · http://127.0.0.1:9094</tspan></text>
+<text y="58.0"><tspan x="16.0" textLength="260.4" lengthAdjust="spacingAndGlyphs" fill="#a5b3fc" font-weight="600">agentop · http://127.0.0.1:9094</tspan></text>
 <text y="76.0"><tspan x="16.0" textLength="58.8" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">LAST 1H</tspan><tspan x="74.8" textLength="75.6" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9"> $0.65 · </tspan><tspan x="150.4" textLength="42.0" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">TODAY</tspan><tspan x="192.4" textLength="75.6" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9"> $0.65 · </tspan><tspan x="268.0" textLength="50.4" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">7 DAYS</tspan><tspan x="318.4" textLength="75.6" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9"> $0.79 · </tspan><tspan x="394.0" textLength="84.0" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">THIS MONTH</tspan><tspan x="478.0" textLength="546.0" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9"> $0.79                                                           </tspan></text>
 <text y="94.0"><tspan x="16.0" textLength="1008.0" lengthAdjust="spacingAndGlyphs" fill="#9ca3af">────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────</tspan></text>
 <text y="112.0"><tspan x="24.4" textLength="117.6" lengthAdjust="spacingAndGlyphs" fill="#a5b3fc" font-weight="600">SESSION       </tspan><tspan x="158.8" textLength="226.8" lengthAdjust="spacingAndGlyphs" fill="#a5b3fc" font-weight="600">TITLE                      </tspan><tspan x="402.4" textLength="117.6" lengthAdjust="spacingAndGlyphs" fill="#a5b3fc" font-weight="600">UPDATED       </tspan><tspan x="536.8" textLength="67.2" lengthAdjust="spacingAndGlyphs" fill="#a5b3fc" font-weight="600">  EVENTS</tspan><tspan x="620.8" textLength="84.0" lengthAdjust="spacingAndGlyphs" fill="#a5b3fc" font-weight="600">    TOKENS</tspan><tspan x="721.6" textLength="84.0" lengthAdjust="spacingAndGlyphs" fill="#a5b3fc" font-weight="600">      COST</tspan><tspan x="822.4" textLength="84.0" lengthAdjust="spacingAndGlyphs" fill="#a5b3fc" font-weight="600">    SAVED~</tspan><tspan x="923.2" textLength="92.4" lengthAdjust="spacingAndGlyphs" fill="#a5b3fc" font-weight="600">CONTEXT(1M)</tspan></text>

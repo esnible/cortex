@@ -27,7 +27,7 @@ jobs:
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
-          go-version-file: authbridge/authlib/go.mod
+          go-version-file: core/go.mod
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
         with:
@@ -40,20 +40,20 @@ jobs:
         env:
           SKIP: ai-assisted-by-trailer
 
-  go-ci-authlib:
-    name: Go CI (authlib)
+  go-ci-core:
+    name: Go CI (core)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     defaults:
       run:
-        working-directory: authbridge/authlib
+        working-directory: core
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
-          go-version-file: authbridge/authlib/go.mod
-          cache-dependency-path: authbridge/authlib/go.sum
+          go-version-file: core/go.mod
+          cache-dependency-path: core/go.sum
 
       - name: Lint
         run: |
@@ -66,6 +66,30 @@ jobs:
       - name: Test
         run: go test -v -race -cover ./...
 
+  # core/peerproc reads the macOS kernel's TCP table by byte offset and checks its record
+  # sizes against the layout it was written for, so only a macOS runner exercises that
+  # code. The Linux job above covers the /proc implementation.
+  go-ci-core-macos:
+    name: Go CI (core peerproc, macOS)
+    runs-on: macos-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: core
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+        with:
+          go-version-file: core/go.mod
+          cache-dependency-path: core/go.sum
+
+      - name: Vet
+        run: go vet ./peerproc/...
+
+      - name: Test
+        run: go test -v -race ./peerproc/...
+
   # The plugin-profile guards live in their own module, so no other job runs
   # them. They have to run on every PR: plugins are all opt-in, and a plugin
   # missing from every profile produces no build error — it just silently
@@ -77,7 +101,7 @@ jobs:
     timeout-minutes: 10
     defaults:
       run:
-        working-directory: authbridge/scripts/profile-tags
+        working-directory: scripts/profile-tags
     env:
       GOWORK: "off"
     steps:
@@ -85,7 +109,7 @@ jobs:
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
-          go-version-file: authbridge/scripts/profile-tags/go.mod
+          go-version-file: scripts/profile-tags/go.mod
 
       - name: Lint
         run: |
@@ -116,7 +140,7 @@ jobs:
     timeout-minutes: 15
     defaults:
       run:
-        working-directory: authbridge/scripts/readme-demo
+        working-directory: scripts/readme-demo
     env:
       GOWORK: "off"
     steps:
@@ -124,18 +148,18 @@ jobs:
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
-          go-version-file: authbridge/scripts/readme-demo/go.mod
+          go-version-file: scripts/readme-demo/go.mod
 
       - name: Lint
         run: |
           go fmt ./...
           go vet ./...
 
-      # The generator drives the real abctl TUI and compares its output against the
+      # The generator drives the real agentop TUI and compares its output against the
       # committed docs/assets/cortex-demo.svg, so it reads sibling trees through
       # relative paths and needs the full checkout. -count=1 is required, not
       # cosmetic: Go's test cache keys on this package's own inputs and knows
-      # nothing about abctl's sources or the committed asset, so a cached PASS can
+      # nothing about agentop's sources or the committed asset, so a cached PASS can
       # outlive exactly the UI change this job exists to catch.
       - name: Test (includes the asset staleness check)
         run: go test -count=1 -v ./...
@@ -148,26 +172,26 @@ jobs:
       fail-fast: false
       matrix:
         binary:
-          - authbridge-proxy
-          - authbridge-envoy
-          # abctl is published by release-binaries.yaml, so it has to build
+          - cortex
+          - cortex-envoy
+          # agentop is published by release-binaries.yaml, so it has to build
           # under GOWORK=off here too. Omitting it let a missing go.sum entry
-          # for an authlib transitive dep reach main: the workspace build used
+          # for a core transitive dep reach main: the workspace build used
           # everywhere else resolved it, and the per-module release build did
           # not — surfacing only when a tag was cut.
-          - abctl
-          # authbridge-praxis was in no workflow at all, which is how it ended
+          - agentop
+          # cortex-praxis was in no workflow at all, which is how it ended
           # up broken under GOWORK=off by the same missing go.sum entry. Any
           # cmd/* module absent from every workflow will drift this way — the
-          # workspace hides exactly this class of breakage. (authbridge-cpex is
+          # workspace hides exactly this class of breakage. (cortex-cpex is
           # deliberately not here: it needs CGO and libcpex_ffi.a from a pinned
           # release, so build.yaml covers it via its image build instead.)
-          - authbridge-praxis
+          - cortex-praxis
     defaults:
       run:
-        working-directory: authbridge/cmd/${{ matrix.binary }}
+        working-directory: cmd/${{ matrix.binary }}
     env:
-      # Disable go.work so each cmd/* module resolves authlib via its own
+      # Disable go.work so each cmd/* module resolves core via its own
       # `replace` directive in go.mod (the workspace would otherwise pull
       # all sibling modules in and slow down CI).
       GOWORK: "off"
@@ -176,8 +200,8 @@ jobs:
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
-          go-version-file: authbridge/cmd/${{ matrix.binary }}/go.mod
-          cache-dependency-path: authbridge/cmd/${{ matrix.binary }}/go.sum
+          go-version-file: cmd/${{ matrix.binary }}/go.mod
+          cache-dependency-path: cmd/${{ matrix.binary }}/go.sum
 
       - name: Lint
         run: |
@@ -193,11 +217,11 @@ jobs:
       # profiles, so build AND test each one here. build.yaml only exercises them
       # on tag/main pushes; this catches a profile-only regression on the PR.
       - name: Build + test each shipped profile
-        if: matrix.binary == 'authbridge-proxy' || matrix.binary == 'authbridge-envoy'
+        if: matrix.binary == 'cortex' || matrix.binary == 'cortex-envoy'
         run: |
           case "${{ matrix.binary }}" in
-            authbridge-proxy) profiles="local full lite" ;;
-            authbridge-envoy) profiles="envoy" ;;
+            cortex) profiles="local full lite" ;;
+            cortex-envoy) profiles="envoy" ;;
           esac
           for profile in ${profiles}; do
             echo "::group::profile ${profile}"
@@ -207,16 +231,16 @@ jobs:
             echo "::endgroup::"
           done
 
-      # Gives the abctl leg a real systemd --user session for
+      # Gives the agentop leg a real systemd --user session for
       # cmd_service_systemd_integration_test.go. The runner has no interactive login, so
       # nothing has started one yet; enable-linger asks logind to start and keep one
       # running. Either way a real problem here is loud, not silent: a hard failure (e.g.
       # enable-linger itself failing) fails this step outright under bash -e, so Test
       # never runs; a soft one (session unreachable after enable-linger) only warns here,
-      # and ABCTL_SYSTEMD_TESTS=required (below) is what turns THAT case into a failed
+      # and AGENTOP_SYSTEMD_TESTS=required (below) is what turns THAT case into a failed
       # test instead of a silent skip.
-      - name: Enable a systemd --user session (abctl leg only)
-        if: matrix.binary == 'abctl'
+      - name: Enable a systemd --user session (agentop leg only)
+        if: matrix.binary == 'agentop'
         run: |
           sudo loginctl enable-linger "$(whoami)"
           rt="/run/user/$(id -u)"
@@ -230,7 +254,7 @@ jobs:
 
       - name: Test
         env:
-          ABCTL_SYSTEMD_TESTS: ${{ matrix.binary == 'abctl' && 'required' || '' }}
+          AGENTOP_SYSTEMD_TESTS: ${{ matrix.binary == 'agentop' && 'required' || '' }}
         run: go test -v -race -cover ./...
 
   proxy-init-iptables:
@@ -260,7 +284,7 @@ jobs:
       # ztunnel-mark RETURN. That ordering decides whether mesh-delivered traffic
       # is validated or waved through, and nothing else in CI covers it.
       - name: Test enforce-redirect + transparent inbound rules
-        run: sudo -E authbridge/proxy-init/test-enforce-redirect.sh
+        run: sudo -E deploy/proxy-init/test-enforce-redirect.sh
 
   python-test:
     name: Python Tests
@@ -292,9 +316,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
       - name: Run install.sh tests
-        run: sh authbridge/install_test.sh
+        run: sh scripts/install_test.sh
 
-  # `go mod tidy -diff` on every authbridge module. GOWORK=off so
+  # `go mod tidy -diff` on every module in the repo. GOWORK=off so
   # replace directives resolve as they do in build.yaml and
   # release-binaries.yaml.
   go-tidy-check:
@@ -308,7 +332,7 @@ jobs:
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
-          go-version-file: authbridge/authlib/go.mod
+          go-version-file: core/go.mod
 
       - name: Run go mod tidy -diff in every module
         run: |
@@ -331,9 +355,9 @@ jobs:
               fail=1
             fi
             echo "::endgroup::"
-          done < <(find authbridge -name go.mod -print0 | sort -z)
+          done < <(find . -name go.mod -print0 | sort -z)
           if [ "$found" -eq 0 ]; then
-            echo "::error::no go.mod found under authbridge/"
+            echo "::error::no go.mod found in the repository"
             exit 1
           fi
           exit $fail

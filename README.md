@@ -3,14 +3,14 @@
 **See what your coding agent actually sends — and pay less for it.**
 
 <img src="./docs/assets/cortex-demo.svg" width="100%"
-     alt="A terminal installs Cortex with one command and points Claude Code at it. Three Claude Code sessions run in separate directories, and abctl then lists all three with their token counts, cost and remaining context. Pressing $ breaks the spend down by tier, where cache reads dominate. Drilling into the busiest session shows the whole conversation and the fifteen-tool manifest it re-sends on every turn.">
+     alt="A terminal installs Cortex with one command and points Claude Code at it. Three Claude Code sessions run in separate directories, and agentop then lists all three with their token counts, cost and remaining context. Pressing $ breaks the spend down by tier, where cache reads dominate. Drilling into the busiest session shows the whole conversation and the fifteen-tool manifest it re-sends on every turn.">
 
 Cortex sits in your agent's request path, decrypts its traffic, and shows you the model
 calls, tool calls and agent-to-agent messages as they happen. It can also strip the
 tool definitions your agent never calls, which is 4–20% of the prompt on every turn.
 
 **Think `top`, for your coding agent.** Where `top` shows which processes are eating
-your CPU, `abctl observe` shows which agent sessions are eating your tokens, your
+your CPU, `agentop observe` shows which agent sessions are eating your tokens, your
 context window and your money — live, as they run.
 
 One binary, no Kubernetes. macOS or Linux, amd64 or arm64.
@@ -22,7 +22,7 @@ One binary, no Kubernetes. macOS or Linux, amd64 or arm64.
      Change both, or they drift — the --ref wording already did once. -->
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/rossoctl/cortex/main/authbridge/install.sh \
+curl -fsSL https://raw.githubusercontent.com/rossoctl/cortex/main/scripts/install.sh \
   | sh -s -- --claude-code
 ```
 
@@ -32,15 +32,15 @@ service that survives crashes and logins.
 Then open two terminals:
 
 ```sh
-abctl observe   # the viewer
+agentop observe # the viewer
 claude          # as usual — no environment variables to set
 ```
 
-Your agent's calls stream into `abctl`. Cortex only reads them; nothing is rewritten.
+Your agent's calls stream into `agentop`. Cortex only reads them; nothing is rewritten.
 
-- **[Cut token cost](./authbridge/docs/laptop-token-savings.md)** — one more command
-- **[Start, stop, remove](./authbridge/docs/laptop-service.md)** — `abctl service status | start | stop`
-- **[Run it in Kubernetes](./authbridge/docs/kubernetes.md)** — sidecars, Keycloak, SPIFFE/SPIRE
+- **[Cut token cost](./docs/laptop-token-savings.md)** — one more command
+- **[Start, stop, remove](./docs/laptop-service.md)** — `agentop service status | start | stop`
+- **[Run it in Kubernetes](./docs/kubernetes.md)** — sidecars, Keycloak, SPIFFE/SPIRE
 
 **Any agent works**, not only Claude Code: point it at `localhost:47600` and trust
 `~/.cortex/ca/ca.crt`.
@@ -51,6 +51,22 @@ release. Pin or override with `--ref`
 
 **Full install guide:** [Cortex on your laptop](https://www.rossoctl.dev/docs/dev/get-started/laptop)
 — prerequisites, step-by-step walkthrough, service management and troubleshooting.
+
+## Uninstall
+
+```sh
+agentop configure claude-code disable --yes && agentop service uninstall --yes
+```
+
+Claude Code goes straight to the API again, and Cortex stops and no longer starts at
+login. Your config, CA and cost history stay in `~/.cortex`, so
+`agentop service install && agentop configure claude-code enable` brings it back as it was.
+
+Restart any `claude` that was already running: it still points at Cortex.
+`claude --resume` picks the conversation back up.
+
+To delete everything, see [Remove it](./docs/laptop-service.md#remove-it). If
+`agentop` itself is gone, [remove it by hand](./docs/laptop-service.md#if-agentop-is-already-gone).
 
 ## Feedback
 
@@ -78,9 +94,10 @@ platform services agentic workloads need in production, as a sidecar or standalo
 - **Egress control** — govern which external services a workload can reach.
 - **Cost controls** — trim the context a workload sends, and cap its spend.
 
-Everything is a plugin in one pipeline; the [plugin catalog](./authbridge/docs/plugin-catalog.md)
-lists what ships, and the [architecture reference](./authbridge/README.md) explains how
-a request flows through it. Code lives under [`authbridge/`](./authbridge/).
+Everything is a plugin in one pipeline; the [plugin catalog](./docs/plugin-catalog.md)
+lists what ships, and the [architecture reference](./docs/architecture.md) explains how
+a request flows through it. The shared library is [`core/`](./core/); the
+binaries live under [`cmd/`](./cmd/).
 
 ## License
 

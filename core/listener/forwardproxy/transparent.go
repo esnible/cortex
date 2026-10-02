@@ -1,0 +1,338 @@
+package forwardproxy
+
+import (
+	"context"
+	"io"
+	"log/slog"
+	"net"
+	"net/http"
+	"time"
+
+	"github.com/rossoctl/cortex/core/pipeline"
+	"github.com/rossoctl/cortex/core/session"
+	"github.com/rossoctl/cortex/core/tlsbridge"
+)
+
+// HandleTransparentConn processes one outbound connection captured by an
+// iptables REDIRECT (proxy-sidecar enforce-redirect mode). It is the
+// transparent-listener analogue of handleConnect, and shares its semantics:
+// the same outbound pipeline gates the connection on destination/identity, and
+// the bytes are then blind-tunnelled, preserving the agent's end-to-end TLS
+// (token-exchange and protocol parsers are no-ops on opaque TLS, exactly as on
+// the CONNECT path).
+//
+// The crucial difference from handleConnect: there is NO HTTP CONNECT request.
+// The agent believes it is talking directly to dst, so the proxy must emit no
+// protocol bytes back — no "200 Connection Established", no hijack. It simply
+// gates, dials dst, and copies bytes both ways. dst is "host:port" recovered
+// from SO_ORIGINAL_DST by the transparent listener.
+//
+// HOSTNAME RECOVERY: CONNECT carries a hostname in r.Host, but SO_ORIGINAL_DST
+// yields only an IP:port. To give host/domain egress policy parity with the
+// CONNECT path, we sniff the connection's first bytes for the destination name
+// — the TLS ClientHello SNI for HTTPS, or the HTTP Host header for plaintext
+// HTTP — and use it as pctx.Host. If neither can be recovered we fall back to
+// the IP. The dial target ALWAYS stays the SO_ORIGINAL_DST IP (dst); the name is
+// only the policy key.
+//
+// Trust caveat (relevant before enforce-redirect goes always-on): for captured
+// traffic the agent controls both the SNI/Host and, separately, the IP the
+// bytes actually go to, so a *malicious* agent could present an allowed name
+// while connecting to another IP. Name-based policy here is therefore reliable
+// against a cooperative/misconfigured agent (the motivating case) but is not a
+// hard control against a hostile one — only the IP is ground truth. Hard
+// enforcement would need IP-set allowlists or SNI/cert cross-checks.
+//
+// SkipHosts is intentionally NOT consulted here. listener.skip_hosts is an
+// ops convenience for the cooperative-egress paths (forward proxy + ext_proc),
+// where bypassing the pipeline on infrastructure traffic is fine because the
+// agent is trusted to honor HTTP_PROXY anyway. The transparent path exists
+// precisely as the hard egress guard against agents that route around the
+// cooperative paths, and pctx.Host here is recovered from agent-controlled
+// SNI/Host bytes on the wire — making it self-exemptable would defeat the
+// reason this listener exists. If you find yourself wanting to add a
+// SkipHosts check here to "match the other listeners," don't — that's the
+// failure mode this comment is explicitly trying to prevent.
+//
+// HandleTransparentConn owns clientConn's lifecycle and always closes it.
+func (s *Server) HandleTransparentConn(clientConn net.Conn, dst string) {
+	defer func() { _ = clientConn.Close() }()
+
+	// Keepalive on the raw client conn before sniffing wraps it (the wrapper is
+	// not a *net.TCPConn, so enableKeepalive would no-op on it).
+	enableKeepalive(clientConn)
+
+	// Recover the destination hostname for policy parity with CONNECT. Gated to
+	// HTTP/TLS ports so non-HTTP protocols are not delayed by the peek. The dial
+	// target stays dst (the IP); only pctx.Host gets the recovered name.
+	host := dst
+	// Sniff on the standard HTTP/TLS ports, OR on whatever ports the TLS bridge
+	// is configured to intercept — so a configured non-standard bridge port
+	// (e.g. 9443) still gets the peekable conn the bridge branch needs. The
+	// bridge's own port set is the single source of truth (no drift with
+	// shouldSniff's heuristic list).
+	if shouldSniff(dst) || (s.TLSBridge != nil && s.TLSBridge.Decision.HandlesPort(portOf(dst))) {
+		name, wrapped := sniffHost(clientConn)
+		clientConn = wrapped
+		if name != "" {
+			if _, port, err := net.SplitHostPort(dst); err == nil {
+				host = net.JoinHostPort(name, port)
+			}
+			slog.Debug("transparent-proxy: recovered destination host for policy",
+				"host", name, "dst", dst)
+		}
+	}
+
+	// Background context: there is no inbound *http.Request to tie cancellation
+	// to. Tunnel teardown (either side closing) is what ends the connection;
+	// the pipeline Run/Finish calls are short and don't need request scoping.
+	ctx := context.Background()
+
+	pctx := &pipeline.Context{
+		Direction: pipeline.Outbound,
+		Method:    http.MethodConnect, // synthetic: opaque tunnel, parity with handleConnect
+		Scheme:    "tcp",              // marker: bytes are opaque, not HTTP
+		Host:      host,
+		Path:      "", // no request line to read one from; explicit, as in handleConnect
+		Headers:   http.Header{},
+		Shared:    s.Shared,
+		StartedAt: time.Now(),
+	}
+	// Pins ABSENCE here, and that is the point. A transparently redirected connection has
+	// no HTTP request to read a header from, so the honest answer is "no client" — and
+	// without the pin a plugin that wrote a User-Agent into these empty headers would give
+	// the tunnel row an agent that never existed. An invented agent in a cost table reads
+	// as a real program that spent real money, which is the failure
+	// TestForwardProxy_NoUserAgentStaysAbsent exists for.
+	pctx.ResolveClient()
+	defer func() {
+		s.OutboundPipeline.RunFinish(ctx, pctx, pipeline.OutcomeFromContext(pctx))
+	}()
+
+	// One identity for this connection, resolved once, exactly as on the request
+	// and CONNECT paths. What an opaque redirected connection lacks is a
+	// CLIENT-ASSERTED id — not an identity: ActiveSession() at the moment the
+	// connection is gated is the answer, and resolving it again at recording time
+	// would reopen the same flip window the other paths were fixed for, reduced to
+	// ActiveSession@T0 versus ActiveSession@T1. resolvePluginSessionID with nil
+	// headers is that same resolver with nothing to read a header from.
+	var sessionID string
+	if sessionID = s.resolvePluginSessionID(nil, nil); sessionID != "" {
+		pctx.Session = s.sessionViewFor(sessionID)
+	}
+
+	// Gate on host/identity before opening the tunnel — identical to the
+	// CONNECT path. Parsers see no body and degrade gracefully.
+	action := s.OutboundPipeline.Run(ctx, pctx)
+	if action.Type == pipeline.Reject {
+		// Carry the identity this connection was gated under, so the denial lands
+		// in the session whose traffic it was.
+		s.recordOutboundReject(pctx, action, s.tunnelSessionID(sessionID, nil, nil))
+		slog.Warn("transparent-proxy: outbound rejected by policy", "host", host)
+		return
+	}
+
+	// See handleConnect's pin: same rule, with no headers to read.
+	if s.ClientAffinity && s.Sessions != nil && sessionID != "" {
+		pctx.OutboundSessionID = sessionID
+	}
+
+	// This connection's two timeline rows; see handleConnect's tl. Never skipped here:
+	// SkipHosts is matched on the CONNECT path only.
+	tl := s.newTunnelLog(pctx, false)
+
+	// Always dial the original IP (dst), never the sniffed name — the agent
+	// already chose the IP, and re-resolving the name could diverge from it.
+	upstream, err := net.DialTimeout("tcp", dst, connectDialTimeout)
+	if err != nil {
+		slog.Warn("transparent-proxy: upstream dial failed", "host", host, "dst", dst, "error", err)
+		// The 502 is synthetic — this path sends the client no status at all — but the
+		// failure is recorded as it is on CONNECT rather than leaving no trace.
+		tl.open(pipeline.TunnelDialFailed)
+		tl.close(http.StatusBadGateway, dialError(err), 0, 0)
+		return
+	}
+	defer func() { _ = upstream.Close() }()
+
+	enableKeepalive(upstream)
+
+	// The transparent path records before its own bridge decision for now, so it
+	// reports only that the tunnel opened. Threading the reason through here too
+	// means the same restructuring done for handleConnect; deliberately left for
+	// a follow-up rather than half-done, since this listener is off by default
+	// (--local skips it) and every reason it could report is already correct in
+	// the log.
+	tl.open("")
+
+	if s.TLSBridge != nil {
+		// host is the policy authority: "<sniffed-SNI>:port" when a name was
+		// recovered, else dst ("<dial-IP>:port"). key is the SNI name or dial IP.
+		key := hostOnly(host)
+		var first []byte
+		if pc, ok := clientConn.(*peekedConn); ok {
+			first, _ = pc.Peek(5)
+		}
+		if !s.TLSBridge.Skip.Contains(key) {
+			v, reason := s.TLSBridge.Decision.Classify(key, portOf(dst), first)
+			if v == tlsbridge.Terminate {
+				_ = upstream.Close() // bridgeServe dials its own verified upstream; drop the pre-dial
+				// The open is already recorded above, so bridgeServe's own open calls are
+				// no-ops here; what it still records through tl is the close.
+				if s.bridgeServe(clientConn, host, key, tl) {
+					return
+				}
+				// bridgeServe fell open (upstream-verify failed) → re-dial for the tunnel.
+				up2, derr := net.DialTimeout("tcp", dst, connectDialTimeout)
+				if derr != nil {
+					tl.close(http.StatusOK, dialError(derr), 0, 0)
+					return
+				}
+				sent, received := tunnel(clientConn, up2)
+				_ = up2.Close()
+				tl.close(http.StatusOK, nil, sent, received)
+				return
+			}
+			slog.Info("tls-bridge passthrough", "host", key, "reason", reason)
+		}
+	}
+	sent, received := tunnel(clientConn, upstream)
+	tl.close(http.StatusOK, nil, sent, received)
+}
+
+// recordTunnelOpened emits the SessionRequest event for an opened opaque
+// tunnel (CONNECT or transparent-redirect). Shared by handleConnect and
+// HandleTransparentConn. MCP/Inference snapshots are nil by definition (the
+// bytes are opaque); Invocations from gate plugins and plugin-public Plugins
+// entries are still meaningful.
+//
+// It returns the bucket the row went to, so the tunnel's close row can land beside it;
+// nil when session tracking is off.
+func (s *Server) recordTunnelOpened(pctx *pipeline.Context, reason pipeline.TunnelReason) *session.Bucket {
+	if s.Sessions == nil {
+		return nil
+	}
+	// Always record the tunnel-open so passthrough/non-bridged tunnels (no
+	// plugin activity) are still visible. For a TLS-bridged call agentop folds
+	// this CONNECT event into the decrypted inner-request row.
+	return s.appendTunnelOpen(pctx, s.tunnelOpenEvent(pctx, reason))
+}
+
+// appendTunnelOpen records an already-built open row ev under the session a tunnel's own
+// row goes to, and returns its bucket; nil when session tracking is off. It is
+// recordTunnelOpened's filing rule on its own, for a bridged tunnel that settles with no
+// request having taken its deferred open (tunnelLog.settleLocked). Of pctx it reads only
+// OutboundSessionID, which the listener pins before bridging and nothing writes after.
+func (s *Server) appendTunnelOpen(pctx *pipeline.Context, ev pipeline.SessionEvent) *session.Bucket {
+	if s.Sessions == nil {
+		return nil
+	}
+	// Without client affinity this reads ActiveSession() at recording time, as it always
+	// has, ignoring the identity the tunnel was gated under (#1187). With it, the pin set
+	// after gating wins; see handleConnect. Process attribution pins it too, with the
+	// client process's answer.
+	var sid string
+	if s.ClientAffinity || s.processesOn() {
+		sid = pctx.OutboundSessionID
+	}
+	if sid == "" {
+		sid = s.Sessions.ActiveSession()
+	}
+	if sid == "" {
+		sid = session.DefaultSessionID
+	}
+	return s.Sessions.AppendBucket(sid, ev)
+}
+
+// tunnelOpenEvent is a tunnel's open row, for recordTunnelOpened and for a bridged
+// tunnel's deferred open, which tunnelLog.deferOpen builds before any handler runs.
+func (s *Server) tunnelOpenEvent(pctx *pipeline.Context, reason pipeline.TunnelReason) pipeline.SessionEvent {
+	return pipeline.SessionEvent{
+		At:          time.Now(),
+		Direction:   pipeline.Outbound,
+		Phase:       pipeline.SessionRequest,
+		RequestID:   pctx.RequestID(),
+		Invocations: pipeline.SnapshotInvocations(pctx.Extensions.Invocations, pipeline.InvocationPhaseRequest),
+		Plugins:     pipeline.SnapshotPlugins(pctx.Extensions.Custom),
+		Identity:    pipeline.SnapshotIdentity(pctx),
+		Host:        pctx.Host,
+		// Method is CONNECT — real on a proxied CONNECT, synthetic on a
+		// transparently redirected connection — and Path is empty: the bytes
+		// are opaque, so there is no request line to read one from. A blank
+		// path on this row is the accurate answer, not a gap.
+		HTTPMethod: pctx.Method,
+		HTTPPath:   pctx.Path,
+		// Explicit opaque-tunnel marker so agentop can fold this CONNECT into
+		// the decrypted inner request without inferring "tunnel" from shape.
+		Tunnel: true,
+		// Why the bytes stayed opaque. The caller knows; this function does
+		// not, which is why it is a parameter rather than something derived
+		// here from host shape.
+		TunnelReason: reason,
+		Client:       pctx.ClientInfo(),
+	}
+}
+
+// recordTunnelClosed emits the SessionResponse row for a tunnel that ended, or that
+// never opened because the destination could not be dialed. It shares the open's
+// RequestID, which is how agentop pairs the two into one exchange with a STATUS and a
+// DURATION.
+//
+// b is the bucket the open was recorded under, reused rather than re-resolved: a long
+// tunnel closes minutes after it opened, when whichever session spoke last says nothing
+// about whose tunnel this was.
+//
+// statusCode is the status the proxy answered the CONNECT with — 200 once the tunnel was
+// established, however it later ended, and 502 when the destination could not be dialed
+// at all. The transparent listener sends no status of its own, so there it is synthetic,
+// as that path's CONNECT method already is. fail says why a tunnel failed; nil when it
+// simply ran until one side closed. up and down are the bytes it carried, zero where
+// nothing was counted — a bridged tunnel's bytes were TLS the bridge terminated.
+//
+// No Invocations and no Plugins: nothing runs on a tunnel's response, so there is
+// nothing to snapshot that the open row does not already carry.
+func (s *Server) recordTunnelClosed(pctx *pipeline.Context, b *session.Bucket, reason pipeline.TunnelReason, statusCode int, fail *pipeline.EventError, up, down int64) {
+	if s.Sessions == nil {
+		return
+	}
+	s.Sessions.AppendTrailing(b, pipeline.SessionEvent{
+		At:           time.Now(),
+		Direction:    pipeline.Outbound,
+		Phase:        pipeline.SessionResponse,
+		RequestID:    pctx.RequestID(),
+		Identity:     pipeline.SnapshotIdentity(pctx),
+		Host:         pctx.Host,
+		HTTPMethod:   pctx.Method,
+		HTTPPath:     pctx.Path,
+		StatusCode:   statusCode,
+		Error:        fail,
+		Duration:     pipeline.DurationSince(pctx.StartedAt),
+		Tunnel:       true,
+		TunnelReason: reason,
+		BytesUp:      up,
+		BytesDown:    down,
+		Client:       pctx.ClientInfo(),
+	})
+}
+
+// tunnel bidirectionally copies between two connections until either side
+// closes, then propagates the close to the other so both io.Copy goroutines
+// exit. Close-on-each-side is idempotent on net.Conn. Shared by handleConnect
+// and HandleTransparentConn.
+//
+// It returns how many bytes crossed each way — up is client to upstream, down is
+// upstream to client — for the tunnel's close row. It waits for the other copy to
+// finish before returning, which it did not need to while nothing read its count:
+// closing both ends first is what makes that wait short.
+func tunnel(client, upstream net.Conn) (up, down int64) {
+	upc := make(chan int64, 1)
+	go func() {
+		n, _ := io.Copy(upstream, client)
+		_ = upstream.Close()
+		_ = client.Close()
+		upc <- n
+	}()
+	down, _ = io.Copy(client, upstream)
+	_ = client.Close()
+	_ = upstream.Close()
+	return <-upc, down
+}

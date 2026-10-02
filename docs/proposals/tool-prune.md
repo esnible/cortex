@@ -1,6 +1,10 @@
 # Directional Body Capabilities and the `tool-prune` Plugin
 
-**Status**: Draft
+**Status**: Implemented — kept as the design record, not a live proposal.
+Shipped as the `tool-prune` plugin (`core/plugins/toolprune`) plus
+the directional body capabilities in `core/pipeline`. Read
+[`tool-prune-plugin.md`](../../docs/tool-prune-plugin.md) for current
+behaviour.
 **Date**: September 2026
 
 This document specifies three changes that together let AuthBridge cut an agent's
@@ -13,8 +17,8 @@ operator what that saved:
    rewrites requests no longer forfeits incremental server-sent events (SSE).
 2. **`tool-prune`**, an outbound plugin that deletes named entries from the `tools`
    array of an inference request. The list is static, produced at setup time by a
-   new `abctl tools scan` subcommand that analyses local Claude Code transcripts.
-3. **A plugin metrics channel**, surfaced in the existing `abctl` plugin detail
+   new `agentop tools scan` subcommand that analyses local Claude Code transcripts.
+3. **A plugin metrics channel**, surfaced in the existing `agentop` plugin detail
    pane. Claude Code's `/cost` reports a session total, which is too coarse to
    attribute a saving to the plugin, so the plugin reports its own counters.
 
@@ -51,7 +55,7 @@ it removes the need for any persistence layer inside the plugin.
 ### The defect
 
 `PluginCapabilities.WritesBody` is a single boolean covering both directions.
-`Pipeline.WritesBody()` (`authlib/pipeline/pipeline.go:383-390`) is a plain OR
+`Pipeline.WritesBody()` (`core/pipeline/pipeline.go:383-390`) is a plain OR
 across the chain, with no notion of direction:
 
 ```go
@@ -140,7 +144,7 @@ tagged wire types (`sessionapi.CatalogEntry` at `sessionapi/server.go:55-63`, an
 the pipeline view whose `readsBody` field is at `:167`) and neither exposes
 `writesBody`. So **no wire key
 and no configuration key changes.** Capabilities are not configurable, so
-`authlib/config` is untouched.
+`core/config` is untouched.
 
 ### Compatibility audit
 
@@ -231,7 +235,7 @@ On each outbound request:
 4. Call `pctx.SetBody` once with the result.
 
 Every byte outside the deleted array elements is unchanged. `gjson`/`sjson` are
-already in `authlib/go.mod` (currently indirect), so no new dependency.
+already in `core/go.mod` (currently indirect), so no new dependency.
 
 Any error or panic fails open: the original body is forwarded unmodified, so the
 plugin's own failure modes cannot break a request. That is a narrower promise
@@ -263,7 +267,7 @@ dependency.
 
 ### Measure-only mode comes from the framework
 
-`on_error` is a per-plugin policy already parsed by `authlib/config`
+`on_error` is a per-plugin policy already parsed by `core/config`
 (`config.go:257`, values `enforce | observe | off`). Under `observe`, `SetBody` is
 a no-op on bytes but still records a modify `Invocation` with `Shadow=true`
 (`context.go:397-421`), so "would have removed" is countable without changing a
@@ -279,7 +283,7 @@ is the single deliberate act that enables the plugin. `on_error: observe` remain
 available as a projection mode, but is not the shipped default — two guards where
 one suffices only added a step operators skipped.
 
-### Where the list comes from: `abctl tools scan`
+### Where the list comes from: `agentop tools scan`
 
 A new subcommand ports the discovery core of `claude-tool-audit.py` (about 40 of
 its 814 lines) into Go:
@@ -289,12 +293,12 @@ its 814 lines) into Go:
 - Deduplicate tool calls by the unique `tool_use` block id.
 - Window to the last `--days` (default 30).
 
-`abctl` currently has no subcommand dispatch — `main.go` parses two flags and
+`agentop` currently has no subcommand dispatch — `main.go` parses two flags and
 launches the terminal UI. The change checks for a non-flag first argument before
 `flag.Parse()` and dispatches, falling through to the UI otherwise.
 
 ```sh
-abctl tools scan [--days 30] [--keep Name,Name] [--write <config.yaml>]
+agentop tools scan [--days 30] [--keep Name,Name] [--write <config.yaml>]
 ```
 
 Without `--write` it prints the YAML block. With `--write` it patches the
@@ -327,13 +331,13 @@ called directly.
 ### Installation flow
 
 `install-demo.sh` already downloads both binaries with checksum verification and
-prints next steps. `authbridge-proxy` writes `cortex-ca/demo.yaml` on first run
-(`cmd/authbridge-proxy/demo.go`), and that file is hot-reloaded — its own header
+prints next steps. `cortex` writes `cortex-ca/demo.yaml` on first run
+(`cmd/cortex/demo.go`), and that file is hot-reloaded — its own header
 says so — so the list can be filled in without a restart.
 
 - `demoConfigYAML()` gains the `tool-prune` entry with `on_error: observe` and an
   empty `remove: []`.
-- `install-demo.sh` runs `abctl tools scan --write` when the config already
+- `install-demo.sh` runs `agentop tools scan --write` when the config already
   exists, and otherwise prints the block in its next-steps output alongside the
   existing "Watch traffic" hint.
 
@@ -361,7 +365,7 @@ configuration (`--allowedTools`, disabling unused MCP servers). AuthBridge's
 advantage is the complement — it applies to every agent behind it with no
 per-client change, and it measures.
 
-## Part 3: Plugin metrics in `abctl`
+## Part 3: Plugin metrics in `agentop`
 
 ### What the plugin counts
 
@@ -420,7 +424,7 @@ labelled an estimate rather than a measurement.
 
 ### A generic metrics interface
 
-Added to `authlib/pipeline/plugin.go` beside the existing optional interfaces:
+Added to `core/pipeline/plugin.go` beside the existing optional interfaces:
 
 ```go
 // Metric is one operator-facing counter reported by a plugin.
@@ -453,7 +457,7 @@ Both extension points already have the exact pattern needed.
   populate it in `describePipeline` with a three-line type assertion mirroring the
   `RawConfigProvider` case at `sessionapi/server.go:234`. Matching field on
   `apiclient.PipelinePlugin`.
-- `cmd/abctl/tui/plugin_detail_pane.go`: a `Metrics:` section after the dependency
+- `cmd/agentop/tui/plugin_detail_pane.go`: a `Metrics:` section after the dependency
   sections and before `Config:`, following the always-newline convention that the
   comment at `:67-70` records as deliberate — it exists to stop layout jitter when
   navigating between plugins that do and do not have the section. `Note` renders
@@ -484,7 +488,7 @@ Counters are per-process and in-memory: they reset when the proxy restarts and a
 not aggregated across a fleet. That is the right trade for the laptop scenario this
 targets, and it is what keeps the plugin free of a storage dependency. Fleet-wide
 aggregation belongs on the existing stats server
-(`runtimeutil.StartStatServer`, port 47602 in the demo config), which is a
+(`bootstrap.StartStatServer`, port 47602 in the demo config), which is a
 natural later addition and does not change the plugin.
 
 ## Delivery
@@ -498,11 +502,11 @@ Four commits, sequenced so the regression argument survives review.
 2. **The split.** Add `WritesResponseBody`; declare it on `sparc` and `cpex`;
    point both listener branches at `Pipeline.WritesResponseBody()`; convert
    `cloneCatalog` to a struct copy; correct the `SetBody` godoc; add tests.
-3. **The metrics channel.** `Metric` and `MetricsProvider` in `authlib/pipeline`;
-   the `describePipeline` type assertion and wire field; the `abctl` pane section.
+3. **The metrics channel.** `Metric` and `MetricsProvider` in `core/pipeline`;
+   the `describePipeline` type assertion and wire field; the `agentop` pane section.
    Lands before the plugin so the plugin arrives already visible, and so this
    generic addition is reviewed on its own merits rather than as plugin scaffolding.
-4. **`tool-prune`.** Plugin and its counters, `abctl tools scan`,
+4. **`tool-prune`.** Plugin and its counters, `agentop tools scan`,
    `demoConfigYAML()` entry, `install-demo.sh` wiring, and documentation.
 
 ### Testing

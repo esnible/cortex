@@ -24,9 +24,12 @@ repos:
   - repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.9.10
     hooks:
+      # `files: ^authbridge/` until that tree became the repo root. Inverted to an
+      # exclude rather than dropped: the root tests/ tree was never in scope and
+      # does not lint or format clean, so dropping the filter would fail the hook
+      # on pre-existing findings. Widening to cover tests/ is a separate change.
       - id: ruff
         args: ['--fix']
-        files: ^authbridge/
+        exclude: ^tests/
       - id: ruff-format
-        files: ^authbridge/
-
+        exclude: ^tests/
