@@ -2704,11 +2704,16 @@ func TestRunCost_ByCurrencyWithholdsACappedRowOnAMixedWindow(t *testing.T) {
 // exact comparison there would read a real, operator-configured unit as unrecognised and withhold a
 // figure it should label, which is the same over-refusal in miniature that this table exists to
 // avoid.
+//
+// THE FIXTURE IS MIXED BECAUSE WITHHOLDING NEEDS ONE. In a single-unit window an unrecognised label
+// falls back to the window's own unit and renders "0.08 Credits" — a spelling change, not a
+// withheld figure — so the mixedCostCell assertion below could not fire on any implementation.
 func TestRunCost_ByCurrencyMatchesAUnitSpelledADifferentWay(t *testing.T) {
 	srv := fakeUsageServer(t, `{"window":"today","group":"currency","priced":true,
-		"currencies":["Credits"],
-		"totals":{"requests":57,"costMicros":77400,"pricedRequests":57,"priceableRequests":57},
+		"currencies":["USD","Credits"],
+		"totals":{"requests":1057,"costMicros":146439000,"pricedRequests":1057,"priceableRequests":1057},
 		"buckets":[{"at":"2026-09-27T10:00:00Z","series":{
+		   "USD":{"requests":1000,"costMicros":146361600,"pricedRequests":1000,"priceableRequests":1000},
 		   "credits":{"requests":57,"costMicros":77400,"pricedRequests":57,"priceableRequests":57}}}]}`)
 	defer srv.Close()
 
