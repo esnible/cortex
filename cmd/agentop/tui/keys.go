@@ -964,7 +964,7 @@ func filterPlaceholder(p paneID) string {
 	case paneSessions:
 		return "filter on SESSION, TITLE, or AGENT…"
 	case paneEvents:
-		return "METHOD, METHOD, etc., filter…"
+		return "PLUGIN, METHOD, etc., filter…"
 	}
 	return "filter…"
 }
