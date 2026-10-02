@@ -321,9 +321,10 @@ Not tested live:
 - **Probes of local model servers that are not running.** The service probes local model
   servers on every cycle; on 2.0.21 these included `:1234` (LM Studio's port) and
   `:8000`. With nothing listening there, each probe is recorded in the service's session
-  as a request with no response. Once [#1223](https://github.com/rossoctl/cortex/pull/1223)
-  merges, each probe instead appears as a `502` response row with `upstream_refused`,
-  every cycle.
+  as a `502` response row with `error.kind: upstream_refused`, every cycle — the proxy
+  synthesizes that 502 when the call to the upstream fails
+  ([#1223](https://github.com/rossoctl/cortex/pull/1223)) — and these count in
+  `/v1/usage`'s errors.
 - **`X-Session-Id` is a generic name.** Where it is read, by default on a laptop install,
   traffic from any client that sends it is grouped under its value, Pi (Inflection AI)
   and similar frameworks among them.
