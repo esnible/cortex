@@ -266,6 +266,71 @@ func TestProcessAttribution_AToolJoinsItsAgentsSessionAndAStrangerDoesNot(t *tes
 	}
 }
 
+// After /clear, a tool still running in the old session keeps writing there. The agent's
+// own header-less calls, and a tool started after the move, go to the new session.
+func TestProcessAttribution_AToolInTheOldSessionDoesNotPullTheAgentBack(t *testing.T) {
+	procs := newFakeProcs(
+		fproc(100, 50, "/bin/claude"), fproc(200, 100, "/bin/bash"),
+		fproc(300, 200, "/usr/bin/gh"), fproc(301, 200, "/usr/bin/curl"),
+	)
+	store := session.New(0, 0, 0)
+	defer store.Close()
+	proxyURL, backendURL, _ := newProcessProxy(t, store, procs, nil)
+	claude, watcher := procs.clientFor(proxyURL, 100), procs.clientFor(proxyURL, 300)
+
+	sendAs(t, claude, backendURL+"/v1/messages", procClaudeUA, session.ClaudeCodeSessionHeader, "s1")
+	sendAs(t, watcher, backendURL+"/watch", "gh/2.80", "", "")
+	sendAs(t, claude, backendURL+"/v1/messages", procClaudeUA, session.ClaudeCodeSessionHeader, "s2")
+	sendAs(t, watcher, backendURL+"/watch", "gh/2.80", "", "")
+	sendAs(t, claude, backendURL+"/webfetch", procClaudeUA, "", "")
+	sendAs(t, procs.clientFor(proxyURL, 301), backendURL+"/tool", "curl/8.7.1", "", "")
+
+	if got := strings.Join(recordedPaths(store, "s1"), ","); got != "/v1/messages,/watch,/watch" {
+		t.Errorf("s1 = %s, want the first request and both of the watcher's", got)
+	}
+	if got := strings.Join(recordedPaths(store, "s2"), ","); got != "/v1/messages,/webfetch,/tool" {
+		t.Errorf("s2 = %s, want the agent's requests after /clear and the new tool's", got)
+	}
+}
+
+// A service serving two sessions: a's request, then b's, then a's response, whose tool
+// runs next. The tool joins a, the session that answered last.
+func TestProcessAttribution_AServicesToolJoinsTheSessionThatAnsweredLast(t *testing.T) {
+	procs := newFakeProcs(fproc(500, 1, opencodeExe), fproc(600, 500, "/usr/bin/curl"))
+	store := session.New(0, 0, 0)
+	defer store.Close()
+	release := make(chan struct{})
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/a" {
+			<-release
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(backend.Close)
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(unblock)
+	proxyURL, _, _ := newProcessProxy(t, store, procs, func(s *Server) {
+		s.SessionIDHeaders = append(s.SessionIDHeaders, "X-Opencode-Session-Id")
+	})
+	svc := procs.clientFor(proxyURL, 500)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		sendAs(t, svc, backend.URL+"/a", "opencode/latest/2.0.21/cli", "X-Opencode-Session-Id", "ses_a")
+	}()
+	eventually(t, func() bool { return len(recordedPaths(store, "ses_a")) == 1 }, "a's request")
+	sendAs(t, svc, backend.URL+"/b", "opencode/latest/2.0.21/cli", "X-Opencode-Session-Id", "ses_b")
+	unblock()
+	<-done
+	sendAs(t, procs.clientFor(proxyURL, 600), backend.URL+"/tool", "curl/8.7.1", "", "")
+
+	if got := strings.Join(recordedPaths(store, "ses_a"), ","); got != "/a,/tool" {
+		t.Errorf("ses_a = %s, want a's request and the tool's", got)
+	}
+}
+
 // A client the lookup cannot name falls back to client affinity, exactly as without it.
 func TestProcessAttribution_FallsBackWhenTheClientCannotBeLookedUp(t *testing.T) {
 	store := session.New(0, 0, 0)

@@ -411,6 +411,9 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 		// health probe under "default") can flip mid-stream — mis-filing a
 		// streaming inference response away from its request's session.
 		pctx.OutboundSessionID = sid
+		if chain != nil {
+			defer s.Sessions.TouchProcess(sid, chain)
+		}
 		// Snapshot-copy the protocol extension so the request event
 		// doesn't see response-phase mutations on the same MCP/Inference
 		// struct (e.g. token counts assigned in OnResponse).

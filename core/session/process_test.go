@@ -104,7 +104,8 @@ func TestSessionForProcess_ASharedServiceAnswersWithItsNewestSession(t *testing.
 	recordIn(s, clk, "a")
 	s.ClaimProcess("b", "", svc)
 	recordIn(s, clk, "b")
-	recordIn(s, clk, "a") // a spoke last
+	recordIn(s, clk, "a") // a's response came last
+	s.TouchProcess("a", svc)
 
 	if got := s.SessionForProcess(svc, ""); got != "a" {
 		t.Fatalf("service: %q, want a, its most recently active session", got)
@@ -409,5 +410,51 @@ func TestSessionForProcess_AToolUnderAWorkerIsBoundToTheLaunchersSession(t *test
 	recordIn(s, clk, "task-2")
 	if got := s.SessionForProcess(tool, ""); got != "task-1" {
 		t.Errorf("after the launcher moved on: %q, want task-1, the session the tool started under", got)
+	}
+}
+
+// A tool bound to an agent's old session keeps writing there after the agent names a new
+// one. Those writes are the tool's: they do not make the old session the agent's newest
+// again, for the agent's own header-less calls or for a tool started after the move.
+func TestSessionForProcess_AToolWritingToAnOldSessionDoesNotMakeItTheNewest(t *testing.T) {
+	s, clk := newProcStore()
+	defer s.Close()
+	claude := pchain(100, 50)
+	s.ClaimProcess("s1", "claude-code", claude)
+	recordIn(s, clk, "s1")
+	watcher := pchain(300, 200, 100, 50) // gh run watch ← bash ← claude
+	if got := s.SessionForProcess(watcher, ""); got != "s1" {
+		t.Fatalf("tool: %q, want s1", got)
+	}
+	recordIn(s, clk, "s1")
+	s.ClaimProcess("s2", "claude-code", claude) // /clear
+	recordIn(s, clk, "s2")
+	recordIn(s, clk, "s1") // the watcher, still in s1
+
+	if got := s.SessionForProcess(claude, "claude-code"); got != "s2" {
+		t.Errorf("the agent's own header-less call: %q, want s2", got)
+	}
+	if got := s.SessionForProcess(pchain(301, 200, 100, 50), ""); got != "s2" {
+		t.Errorf("a tool started after the move: %q, want s2", got)
+	}
+}
+
+// The same holds for the claims a worker answers with from its launcher.
+func TestSessionForProcess_AToolWritingToALaunchersOldSessionDoesNotMoveItsWorker(t *testing.T) {
+	s, clk := newProcStore()
+	defer s.Close()
+	launcher, worker := pchain(800), pchain(820, 800)
+	s.ClaimProcess("task-1", "bob-shell", launcher)
+	recordIn(s, clk, "task-1")
+	_ = s.SessionForProcess(worker, "bob-shell")
+	if got := s.SessionForProcess(pchain(900, 820, 800), ""); got != "task-1" {
+		t.Fatalf("tool: %q, want task-1", got)
+	}
+	s.ClaimProcess("task-2", "bob-shell", launcher)
+	recordIn(s, clk, "task-2")
+	recordIn(s, clk, "task-1") // the tool, still in task-1
+
+	if got := s.SessionForProcess(worker, "bob-shell"); got != "task-2" {
+		t.Errorf("the worker: %q, want task-2", got)
 	}
 }

@@ -16,8 +16,8 @@ import (
 //
 // SessionForProcess walks the chain from the client up and, at each process it knows:
 //
-//	1. Named a session through its own session header (ClaimProcess): its most recently
-//	   active live session. A process that never named one — a tool an agent's shell ran —
+//	1. Named a session through its own session header (ClaimProcess): its live session.
+//	   A process that never named one — a tool an agent's shell ran —
 //	   is bound to that answer the first time it is seen, and keeps it for its life.
 //	2. An agent's (its requests carry a known coding agent's User-Agent) that has named no
 //	   session yet: that agent's pending bucket, which the first session it names adopts.
@@ -49,8 +49,7 @@ func (p Proc) key() procKey { return procKey{pid: p.PID, start: p.Start} }
 // procState is what the store knows about one process.
 type procState struct {
 	// claims are the sessions this process named through its own session header — or a
-	// process of the same agent directly below it named (see agentRootIndexLocked) —
-	// each with when it was named.
+	// process of the same agent directly below it named (see agentRootIndexLocked).
 	claims map[string]time.Time
 	// bound is the session a process that never named one was filed under the first time
 	// it was seen; "" until then.
@@ -136,6 +135,33 @@ func (s *Store) ClaimProcess(sessionID, agent string, chain []Proc) {
 		s.adoptLocked(PendingProcessID(self.agent, chain[root]), sessionID)
 		if root != 0 {
 			s.adoptLocked(PendingProcessID(self.agent, chain[0]), sessionID)
+		}
+	}
+}
+
+// TouchProcess records that a request chain[0] sent under sessionID has finished. A claim
+// chain[0] or its agent root holds on sessionID counts as made now, so a process serving
+// several sessions answers with the one whose request finished last. A process that holds
+// no claim on sessionID, such as a tool bound to it, changes nothing.
+func (s *Store) TouchProcess(sessionID string, chain []Proc) {
+	if len(chain) == 0 {
+		return
+	}
+	if len(sessionID) > MaxSessionIDLen {
+		sessionID = sessionID[:MaxSessionIDLen]
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	self := s.procs[chain[0].key()]
+	if self == nil {
+		return
+	}
+	now := s.clock()
+	for _, i := range []int{0, s.agentRootIndexLocked(chain, self.agent)} {
+		if st := s.procs[chain[i].key()]; st != nil {
+			if _, ok := st.claims[sessionID]; ok {
+				st.claims[sessionID] = now
+			}
 		}
 	}
 }
@@ -317,8 +343,8 @@ func (s *Store) agentRootIndexLocked(chain []Proc, agent string) int {
 	return i
 }
 
-// newestClaimLocked is the most recently active live session st has named, "" when none
-// is. A claim on a session that is gone is forgotten once claimGrace has passed.
+// newestClaimLocked is the live session st has named, "" when none is. A claim on a session
+// that is gone is forgotten once claimGrace has passed.
 func (s *Store) newestClaimLocked(st *procState, now time.Time) string {
 	var best string
 	var at time.Time
@@ -330,8 +356,8 @@ func (s *Store) newestClaimLocked(st *procState, now time.Time) string {
 			}
 			continue
 		}
-		if best == "" || sess.UpdatedAt.After(at) {
-			best, at = id, sess.UpdatedAt
+		if best == "" || claimedAt.After(at) {
+			best, at = id, claimedAt
 		}
 	}
 	return best
