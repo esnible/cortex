@@ -288,41 +288,53 @@ func TestProcessAttribution_LooksEachConnectionUpOnce(t *testing.T) {
 // process lookup git's tunnel would land in task-1, and the stranger's would not land in
 // default.
 func TestProcessAttribution_AnOpaqueTunnelJoinsItsProcessSession(t *testing.T) {
-	procs := newFakeProcs(
-		fproc(100, 50, "/bin/claude"), fproc(200, 100, "/bin/bash"), fproc(310, 200, "/usr/bin/git"),
-		fproc(800, 60, "/usr/bin/node"), fproc(700, 60, "/usr/bin/python3"),
-	)
-	store := session.New(0, 0, 0)
-	defer store.Close()
-	proxyURL, backendURL, _ := newProcessProxy(t, store, procs, nil)
-	sendAs(t, procs.clientFor(proxyURL, 100), backendURL+"/v1/messages", procClaudeUA, session.ClaudeCodeSessionHeader, "s1")
-	sendAs(t, procs.clientFor(proxyURL, 800), backendURL+"/inference", "bob-shell/2.0.5", session.BobSessionHeader, "task-1")
+	// Off, the CONNECT pin is the process answer alone, and only appendTunnelOpen reading
+	// it under processesOn keeps git's tunnel out of ActiveSession()'s task-1.
+	for _, tc := range []struct {
+		name      string
+		configure func(*Server)
+	}{
+		{name: "client affinity on"},
+		{name: "client affinity off", configure: func(s *Server) { s.ClientAffinity = false }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			procs := newFakeProcs(
+				fproc(100, 50, "/bin/claude"), fproc(200, 100, "/bin/bash"), fproc(310, 200, "/usr/bin/git"),
+				fproc(800, 60, "/usr/bin/node"), fproc(700, 60, "/usr/bin/python3"),
+			)
+			store := session.New(0, 0, 0)
+			defer store.Close()
+			proxyURL, backendURL, _ := newProcessProxy(t, store, procs, tc.configure)
+			sendAs(t, procs.clientFor(proxyURL, 100), backendURL+"/v1/messages", procClaudeUA, session.ClaudeCodeSessionHeader, "s1")
+			sendAs(t, procs.clientFor(proxyURL, 800), backendURL+"/inference", "bob-shell/2.0.5", session.BobSessionHeader, "task-1")
 
-	raw, br, resp := connectAs(t, procs, proxyURL, pingPongOrigin(t), 310)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("CONNECT status %d", resp.StatusCode)
-	}
-	pingPong(t, raw, br)
-	eventually(t, func() bool { _, closes := tunnelRows(store, "s1"); return len(closes) == 1 }, "the git tunnel's close row in s1")
-	onePair(t, store, "s1")
+			raw, br, resp := connectAs(t, procs, proxyURL, pingPongOrigin(t), 310)
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("CONNECT status %d", resp.StatusCode)
+			}
+			pingPong(t, raw, br)
+			eventually(t, func() bool { _, closes := tunnelRows(store, "s1"); return len(closes) == 1 }, "the git tunnel's close row in s1")
+			onePair(t, store, "s1")
 
-	// A process of no agent while agents are active: its tunnel goes to default.
-	raw, br, resp = connectAs(t, procs, proxyURL, pingPongOrigin(t), 700)
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("CONNECT status %d", resp.StatusCode)
-	}
-	pingPong(t, raw, br)
-	eventually(t, func() bool {
-		_, closes := tunnelRows(store, session.DefaultSessionID)
-		return len(closes) == 1
-	}, "the stranger's tunnel close row in default")
-	onePair(t, store, session.DefaultSessionID)
-	if v := store.View(session.DefaultSessionID); len(v.Events) != 2 {
-		t.Errorf("default holds %d event(s), want only the stranger's tunnel pair", len(v.Events))
-	}
-	onePair(t, store, "s1")
-	if opens, closes := tunnelRows(store, "task-1"); len(opens)+len(closes) != 0 {
-		t.Errorf("task-1 holds %d tunnel row(s); neither tunnel is Bob's", len(opens)+len(closes))
+			// A process of no agent while agents are active: its tunnel goes to default.
+			raw, br, resp = connectAs(t, procs, proxyURL, pingPongOrigin(t), 700)
+			if resp.StatusCode != http.StatusOK {
+				t.Fatalf("CONNECT status %d", resp.StatusCode)
+			}
+			pingPong(t, raw, br)
+			eventually(t, func() bool {
+				_, closes := tunnelRows(store, session.DefaultSessionID)
+				return len(closes) == 1
+			}, "the stranger's tunnel close row in default")
+			onePair(t, store, session.DefaultSessionID)
+			if v := store.View(session.DefaultSessionID); len(v.Events) != 2 {
+				t.Errorf("default holds %d event(s), want only the stranger's tunnel pair", len(v.Events))
+			}
+			onePair(t, store, "s1")
+			if opens, closes := tunnelRows(store, "task-1"); len(opens)+len(closes) != 0 {
+				t.Errorf("task-1 holds %d tunnel row(s); neither tunnel is Bob's", len(opens)+len(closes))
+			}
+		})
 	}
 }
 
