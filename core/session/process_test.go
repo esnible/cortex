@@ -312,13 +312,13 @@ func TestSessionForProcess_AToolWhoseSessionIsGoneIsRebound(t *testing.T) {
 	}
 }
 
-// F4 test: unclaimed processes are evicted first, agents are kept.
+// Pruning evicts processes that never named a session before an agent's own.
 func TestPruneProcs_EvictsToolsBeforeAgents(t *testing.T) {
 	clk := &procTestClock{t: time.Unix(1_700_000_000, 0)}
 	s := New(0, 0, 0, WithClock(clk.now))
 	defer s.Close()
 
-	// Step 1: Fill the table to (maxProcs - 1) with unclaimed (tool) processes
+	// Fill the table to (maxProcs - 1) with unclaimed (tool) processes
 	// All tools have the same timestamp
 	toolTime := clk.t
 	toolsAdded := 0
@@ -331,7 +331,7 @@ func TestPruneProcs_EvictsToolsBeforeAgents(t *testing.T) {
 		t.Fatalf("after initial fill, expected %d procs, got %d", maxProcs-1, len(s.procs))
 	}
 
-	// Step 2: Add a claimed (agent) process at the OLDEST chronological time
+	// Add a claimed (agent) process at the OLDEST chronological time
 	// (before all the tools)
 	clk.t = toolTime.Add(-1 * time.Hour)
 	agent := []Proc{{PID: maxProcs, Start: int64(maxProcs) * 1000}}
@@ -344,7 +344,7 @@ func TestPruneProcs_EvictsToolsBeforeAgents(t *testing.T) {
 		t.Fatalf("after agent add, expected %d procs, got %d", maxProcs, len(s.procs))
 	}
 
-	// Step 3: Add one more unclaimed (tool) process to trigger prune
+	// Add one more unclaimed (tool) process to trigger prune
 	// This pushes us over maxProcs and forces prune to run
 	clk.t = toolTime.Add(1 * time.Second)
 	tool := []Proc{{PID: maxProcs + 1, Start: int64(maxProcs+1) * 1000}}
@@ -354,18 +354,41 @@ func TestPruneProcs_EvictsToolsBeforeAgents(t *testing.T) {
 		t.Fatalf("%d processes after the trigger insert, want %d: no prune ran", len(s.procs), want)
 	}
 
-	// Step 4: Verify the agent process (claimed, oldest) survived
+	// Verify the agent process (claimed, oldest) survived
 	// because unclaimed (tool) processes are evicted first
 	agentKey := agent[0].key()
 	if _, ok := s.procs[agentKey]; !ok {
-		t.Error("agent process was evicted; F4 sort should prioritize unclaimed processes")
+		t.Error("agent process was evicted; pruning must evict unclaimed processes first")
 	}
 
-	// Step 5: ProcessHints guard tests
+	// ProcessHints guard tests
 	if hints := s.ProcessHints(0); hints != nil {
 		t.Errorf("ProcessHints(0) should return nil, got %v", hints)
 	}
 	if hints := s.ProcessHints(-1); hints != nil {
 		t.Errorf("ProcessHints(-1) should return nil, got %v", hints)
+	}
+}
+
+// A launcher and its worker are one agent. When the launcher names the session, the
+// worker's header-less calls go there too, not to a pending bucket that the launcher's next
+// session would adopt, which would move them into a session they predate.
+func TestSessionForProcess_AWorkerJoinsItsLaunchersSession(t *testing.T) {
+	s, clk := newProcStore()
+	defer s.Close()
+	launcher, worker := pchain(800), pchain(820, 800)
+	s.ClaimProcess("task-1", "bob-shell", launcher)
+	recordIn(s, clk, "task-1")
+	if got := s.SessionForProcess(worker, "bob-shell"); got != "task-1" {
+		t.Fatalf("a worker under a launcher in task-1: %q, want task-1", got)
+	}
+	recordIn(s, clk, "task-1") // the worker's call
+	s.ClaimProcess("task-2", "bob-shell", launcher)
+	recordIn(s, clk, "task-2")
+	if got := s.SessionForProcess(worker, "bob-shell"); got != "task-2" {
+		t.Errorf("after the launcher moved on: %q, want task-2", got)
+	}
+	if v := s.View("task-1"); v == nil || len(v.Events) != 2 {
+		t.Errorf("task-1 = %+v, want the launcher's request and the worker's call", v)
 	}
 }

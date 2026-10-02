@@ -64,9 +64,10 @@ type procState struct {
 	seen    time.Time
 }
 
-// maxProcs caps the process table and procIdleTTL is how long a process the store has not
-// heard from is kept. A live agent re-names its session on every headered request, so only
-// a process that has gone quiet — almost always one that has exited — ages out.
+// maxProcs caps the process table. Once it is full, a process the store has not heard from
+// for procIdleTTL is dropped first (pruneProcsLocked). A live agent re-names its session on
+// every headered request, so only a process that has gone quiet, almost always one that
+// has exited, is that old.
 const (
 	maxProcs    = 4096
 	procIdleTTL = 24 * time.Hour
@@ -172,6 +173,15 @@ func (s *Store) SessionForProcess(chain []Proc, agent string) string {
 		}
 		if st.agent != "" {
 			root := i + s.agentRootIndexLocked(chain[i:], st.agent)
+			// A claim is recorded on the agent's root as well as on the claimer, so a worker
+			// whose launcher has named a session answers with it.
+			if root != i {
+				if rs := s.procs[chain[root].key()]; rs != nil {
+					if sid := s.newestClaimLocked(rs, now); sid != "" {
+						return sid
+					}
+				}
+			}
 			return PendingProcessID(st.agent, chain[root])
 		}
 		if st.claimed {
