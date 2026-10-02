@@ -66,28 +66,14 @@ func migrateConfig(path string, stdout io.Writer) (changed bool, err error) {
 	if err != nil {
 		return false, err
 	}
-	// Decide what is missing from the PARSED config, not from a text search: a key
-	// could appear in a comment, and a commented-out key is still absent.
 	// Parsed only to establish the config is valid before editing it; the keys
 	// themselves come from listenerKeys below.
 	if _, err := config.Load(path); err != nil {
 		return false, fmt.Errorf("%s does not parse (%w); not touching it", path, err)
 	}
-	// Presence is decided against the DOCUMENT, not the parsed value. An explicit
-	// `health_addr: ""` or `bind_loopback_only: false` is present but parses as the
-	// zero value, so a value-based check appended a second copy of the key — and
-	// config.Load then rejected the duplicate, failing the migration on a config that
-	// was perfectly valid. Reading the keys also removes the need for a per-pin
-	// predicate, so there is no second list to keep in sync.
-	present, perr := listenerKeys(raw)
-	if perr != nil {
-		return false, perr
-	}
-	missing := make([]pinnedListener, 0, len(listenerPins))
-	for _, pin := range listenerPins {
-		if _, ok := present[pin.key]; !ok {
-			missing = append(missing, pin)
-		}
+	missing, err := missingListenerPins(raw)
+	if err != nil {
+		return false, err
 	}
 	if len(missing) == 0 {
 		return false, nil
@@ -120,6 +106,117 @@ func migrateConfig(path string, stdout io.Writer) (changed bool, err error) {
 			pin.key, pin.value, pin.unpinnedDefault)
 	}
 	return true, nil
+}
+
+// missingListenerPins returns the pins raw's listener block lacks.
+func missingListenerPins(raw []byte) ([]pinnedListener, error) {
+	// Decide what is missing from the PARSED config, not from a text search: a key
+	// could appear in a comment, and a commented-out key is still absent.
+	//
+	// Presence is decided against the DOCUMENT, not the parsed value. An explicit
+	// `health_addr: ""` or `bind_loopback_only: false` is present but parses as the
+	// zero value, so a value-based check appended a second copy of the key — and
+	// config.Load then rejected the duplicate, failing the migration on a config that
+	// was perfectly valid. Reading the keys also removes the need for a per-pin
+	// predicate, so there is no second list to keep in sync.
+	present, err := listenerKeys(raw)
+	if err != nil {
+		return nil, err
+	}
+	missing := make([]pinnedListener, 0, len(listenerPins))
+	for _, pin := range listenerPins {
+		if _, ok := present[pin.key]; !ok {
+			missing = append(missing, pin)
+		}
+	}
+	return missing, nil
+}
+
+// configMigrationPending reports true exactly when migrateConfig or
+// migrateBobPricing would change the file at path. agentop setup asks it before
+// consent, so a re-run with an up-to-date config can report "nothing to do" while
+// one with an older config still gets its migration.
+//
+// Each migration is decided by the steps it takes before it writes, with the same
+// helpers: for the pins, missingListenerPins, insertListenerKeys and loading the
+// result; for Bob, bobPriced, insertBobEndpoint, loading the result and
+// bobPricedVerify of that. A config a migration would refuse is not pending from
+// it, and a refused pins migration falls through to Bob, which may still apply.
+// Pricing that will not build is one such refusal: it reads as not pending, not as
+// an error, so setup is not stopped by a step that would only have failed.
+//
+// It writes nothing beside the user's config. Each candidate is loaded from a temp
+// file in os.TempDir(), removed before it returns. It returns an error, not an
+// answer, for a config migrateConfig refuses before editing (one that does not
+// load, or whose listener: is not a mapping) and when the temp file fails.
+func configMigrationPending(path string) (bool, error) {
+	raw, err := os.ReadFile(path) //nolint:gosec // operator-supplied path
+	if err != nil {
+		return false, err
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		return false, fmt.Errorf("%s does not parse (%w)", path, err)
+	}
+	if pins, err := pinsMigrationPending(raw); err != nil || pins {
+		return pins, err
+	}
+	// migrateConfig would leave the file as it is, so migrateBobPricing reads raw.
+	if priced, perr := bobPriced(cfg); perr != nil || priced {
+		return false, nil
+	}
+	updated, ierr := insertBobEndpoint(string(raw))
+	if ierr != nil {
+		return false, nil
+	}
+	c, loaded, lerr := loadCandidate(updated)
+	if lerr != nil || !loaded {
+		return false, lerr
+	}
+	return bobPricedVerify(c) == nil, nil
+}
+
+// pinsMigrationPending is configMigrationPending's pins half: whether
+// migrateConfig would add listener pins to raw, decided by the steps it takes
+// before it writes. A result insertListenerKeys refuses, or one that will not load,
+// is not pending. The error is missingListenerPins's, or loadCandidate's own temp
+// file's; pending is false with it.
+func pinsMigrationPending(raw []byte) (bool, error) {
+	missing, err := missingListenerPins(raw)
+	if err != nil || len(missing) == 0 {
+		return false, err
+	}
+	updated, err := insertListenerKeys(string(raw), missing)
+	if err != nil {
+		return false, nil
+	}
+	_, loaded, err := loadCandidate(updated)
+	return err == nil && loaded, err
+}
+
+// loadCandidate loads updated the way replaceConfig loads a migration's result
+// before swapping it in, but from a temp file in os.TempDir() rather than beside
+// the config, removed before it returns. loaded is false when updated does not
+// load; err is the temp file's own.
+func loadCandidate(updated string) (cfg *config.Config, loaded bool, err error) {
+	f, err := os.CreateTemp("", "agentop-pending-*.yaml")
+	if err != nil {
+		return nil, false, err
+	}
+	name := f.Name()
+	defer func() { _ = os.Remove(name) }()
+	_, werr := f.WriteString(updated)
+	if cerr := f.Close(); werr == nil {
+		werr = cerr
+	}
+	if werr != nil {
+		return nil, false, werr
+	}
+	cfg, lerr := config.Load(name)
+	if lerr != nil {
+		return nil, false, nil
+	}
+	return cfg, true, nil
 }
 
 // replaceConfig swaps updated in for the file at path, through a temp file that

@@ -17,7 +17,7 @@ func TestRunServiceInstall_ReportsWhatHappened(t *testing.T) {
 	var out, errb bytes.Buffer
 
 	first := runServiceInstall(sc.p, 0, false, false, &out, &errb)
-	if first != (installResult{exit: 0, healthy: true}) {
+	if first != (installResult{exit: 0, healthy: true, replaced: true}) {
 		t.Errorf("fresh install = %+v, want started and healthy\n%s%s", first, out.String(), errb.String())
 	}
 	second := runServiceInstall(sc.p, 0, false, false, &out, &errb)
@@ -49,8 +49,8 @@ func TestRunServiceInstall_UnprobedInstallIsNotHealthy(t *testing.T) {
 	sc.p.healthURL = ""
 	var out, errb bytes.Buffer
 
-	if got := runServiceInstall(sc.p, 0, false, false, &out, &errb); got != (installResult{}) {
-		t.Errorf("install with no health URL = %+v, want installResult{} (exit 0, not healthy, not already current)\n%s%s",
+	if got := runServiceInstall(sc.p, 0, false, false, &out, &errb); got != (installResult{replaced: true}) {
+		t.Errorf("install with no health URL = %+v, want installResult{replaced: true} (exit 0, not healthy, not already current)\n%s%s",
 			got, out.String(), errb.String())
 	}
 	if _, err := os.Stat(sc.p.unitFile); err != nil {

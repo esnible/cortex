@@ -82,12 +82,7 @@ func migrateBobPricing(path string, stdout io.Writer) (changed bool, err error) 
 	// A config that loads but still leaves Bob unpriced means the entry landed
 	// somewhere other than pricing.endpoints. Refuse it rather than report a fix
 	// that did not happen.
-	if err := replaceConfig(path, updated, func(c *config.Config) error {
-		if ok, berr := bobPriced(c); berr != nil || !ok {
-			return fmt.Errorf("the added entry does not price %s", bobHost)
-		}
-		return nil
-	}); err != nil {
+	if err := replaceConfig(path, updated, bobPricedVerify); err != nil {
 		return false, err
 	}
 
@@ -95,6 +90,16 @@ func migrateBobPricing(path string, stdout io.Writer) (changed bool, err error) 
 	fmt.Fprintf(stdout, "  + pricing.endpoints: %s at 2 Bobcoins per million tokens   (was: unpriced)\n", bobHost)
 	fmt.Fprintf(stdout, "  A running proxy reloads pricing from the file; this needs no restart.\n")
 	return true, nil
+}
+
+// bobPricedVerify is the check migrateBobPricing makes of its own result before
+// swapping it in: the result must price Bob. configMigrationPending makes the same
+// check of the same candidate through this function, so the two cannot drift.
+func bobPricedVerify(c *config.Config) error {
+	if ok, err := bobPriced(c); err != nil || !ok {
+		return fmt.Errorf("the added entry does not price %s", bobHost)
+	}
+	return nil
 }
 
 // bobPriced reports whether cfg's pricing resolves a rate for Bob's traffic.

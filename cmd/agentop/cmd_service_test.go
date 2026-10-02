@@ -207,17 +207,26 @@ func TestRunningPID_OnlyClaimsOurOwnProcess(t *testing.T) {
 	}
 }
 
-const sleeperEnv = "AGENTOP_TEST_SLEEPER"
+const (
+	sleeperEnv      = "AGENTOP_TEST_SLEEPER"
+	sleeperReadyEnv = "AGENTOP_TEST_SLEEPER_READY"
+)
 
 func init() {
 	if os.Getenv(sleeperEnv) == "1" {
+		if ready := os.Getenv(sleeperReadyEnv); ready != "" {
+			_ = os.WriteFile(ready, nil, 0o600)
+		}
 		time.Sleep(time.Minute)
 		os.Exit(0)
 	}
 }
 
 // startSleeperAt runs a copy of this test binary from path, so the process's
-// executable is path itself — a shell script's would be its interpreter.
+// executable is path itself — a shell script's would be its interpreter. It
+// returns once the copy is running Go code: on macOS, deleting the binary any
+// sooner (while dyld still reads it) kills the process, and a test that deletes it
+// would then be asserting about a zombie.
 func startSleeperAt(t *testing.T, path string) int {
 	t.Helper()
 	self, err := os.Executable()
@@ -231,8 +240,9 @@ func startSleeperAt(t *testing.T, path string) int {
 	if err := os.WriteFile(path, b, 0o755); err != nil { //nolint:gosec // an executable fixture
 		t.Fatal(err)
 	}
+	ready := filepath.Join(t.TempDir(), "ready")
 	cmd := exec.Command(path)
-	cmd.Env = append(os.Environ(), sleeperEnv+"=1")
+	cmd.Env = append(os.Environ(), sleeperEnv+"=1", sleeperReadyEnv+"="+ready)
 	if err := cmd.Start(); err != nil {
 		t.Skipf("cannot start the fixture process: %v", err)
 	}
@@ -240,6 +250,14 @@ func startSleeperAt(t *testing.T, path string) int {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
 	})
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(10 * time.Millisecond) {
+		if _, err := os.Stat(ready); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the fixture process at %s never started", path)
+		}
+	}
 	return cmd.Process.Pid
 }
 
@@ -292,6 +310,89 @@ func TestAdoptablePID_PreRenameProxyOnlyBesideOurs(t *testing.T) {
 	write(999999)
 	if got := adoptablePID(p); got != 0 {
 		t.Errorf("dead pid -> %d, want 0", got)
+	}
+}
+
+// TestAdoptablePID_MissingBinariesFromAnotherDir covers samePath's fallback for a
+// missing file in the direction that matters most: adopting means stopping, so a
+// stranger must never read as ours just because both binaries are gone.
+func TestAdoptablePID_MissingBinariesFromAnotherDir(t *testing.T) {
+	// A stranger whose executable cannot be named is refused for that reason alone,
+	// which would pass these tests without reaching samePath at all.
+	named := func(t *testing.T, pid int) string {
+		t.Helper()
+		exe := pidExePath(pid)
+		if exe == "" {
+			t.Fatalf("fixture: pid %d's executable cannot be named after its binary was removed", pid)
+		}
+		return exe
+	}
+
+	t.Run("a stranger from another directory", func(t *testing.T) {
+		p := servicePathsFixture(t) // holds no authbridge-proxy: ours is missing too
+		other := t.TempDir()
+		stranger := startSleeperAt(t, filepath.Join(other, "authbridge-proxy"))
+		if err := os.Remove(filepath.Join(other, "authbridge-proxy")); err != nil {
+			t.Fatal(err)
+		}
+		_ = named(t, stranger)
+		if err := os.WriteFile(p.pidFile, []byte(strconv.Itoa(stranger)), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if got := adoptablePID(p); got != 0 {
+			t.Errorf("a stranger from %s, both binaries missing -> %d, want 0", other, got)
+		}
+	})
+
+	// macOS ps reports the exec path as typed. <ours>/link/../authbridge-proxy, with
+	// link -> other/sub, really runs other/authbridge-proxy: the link is followed
+	// before the "..", so cleaning the ".." away first would land in our directory.
+	t.Run("a stranger spelled through a link and ..", func(t *testing.T) {
+		p := servicePathsFixture(t)
+		ours := filepath.Dir(p.binary)
+		other := t.TempDir()
+		if err := os.Mkdir(filepath.Join(other, "sub"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(filepath.Join(other, "sub"), filepath.Join(ours, "link")); err != nil {
+			t.Fatal(err)
+		}
+		stranger := startSleeperAt(t, filepath.Join(ours, "link")+"/../authbridge-proxy")
+		if err := os.Remove(filepath.Join(other, "authbridge-proxy")); err != nil {
+			t.Fatalf("fixture: the binary is not at the link's parent: %v", err)
+		}
+		// On macOS the path must arrive as typed, or this case is not the one it
+		// claims. Linux's /proc reports it resolved; TestSamePathFollowsLinksBeforeDotDot
+		// covers the rule there.
+		if exe := named(t, stranger); runtime.GOOS == "darwin" && !strings.Contains(exe, "/../") {
+			t.Fatalf("fixture: ps reported %q, not the path as typed", exe)
+		}
+		if err := os.WriteFile(p.pidFile, []byte(strconv.Itoa(stranger)), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if got := adoptablePID(p); got != 0 {
+			t.Errorf("a stranger from %s, spelled through %s -> %d, want 0", other, ours, got)
+		}
+	})
+}
+
+// TestSamePathFollowsLinksBeforeDotDot pins the same rule without a process, so it
+// holds where /proc already reports a resolved path (Linux).
+func TestSamePathFollowsLinksBeforeDotDot(t *testing.T) {
+	ours := t.TempDir()
+	other := t.TempDir()
+	if err := os.Mkdir(filepath.Join(other, "sub"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(other, "sub"), filepath.Join(ours, "link")); err != nil {
+		t.Fatal(err)
+	}
+	spelled := filepath.Join(ours, "link") + "/../authbridge-proxy"
+	if samePath(spelled, filepath.Join(ours, "authbridge-proxy")) {
+		t.Errorf("%s matched our missing binary; it names %s", spelled, filepath.Join(other, "authbridge-proxy"))
+	}
+	if !samePath(spelled, filepath.Join(other, "authbridge-proxy")) {
+		t.Errorf("%s did not match %s, the file it names", spelled, filepath.Join(other, "authbridge-proxy"))
 	}
 }
 
