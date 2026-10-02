@@ -26,7 +26,7 @@ func (binariesStep) plan(env *setupEnv) (stepPlan, *problem) {
 	p := stepPlan{label: "installed"}
 	installed := filepath.Join(env.binDir, "agentop")
 	env.freshInstall = !isExecutable(installed)
-	env.installedVersion = installedVersion(installed)
+	env.readVersions()
 	pair := "agentop, cortex " + env.installedVersion + " · " + env.tilde(env.binDir)
 	if env.fromDir == "" {
 		for _, n := range []string{"agentop", "cortex"} {
@@ -43,16 +43,16 @@ func (binariesStep) plan(env *setupEnv) (stepPlan, *problem) {
 			return p, &problem{reason: n + " is missing from " + env.tilde(env.fromDir)}
 		}
 	}
+	// Only binDir is asked: a ~/.cortex/previous that cannot be written fails
+	// apply, which rolls back, so it fails safe.
 	if prob := checkWritable(env, env.binDir); prob != nil {
 		return p, prob
 	}
 	env.binaryChanges = nil
-	for _, n := range setupBinaryNames {
-		src := filepath.Join(env.fromDir, n)
-		if !fileExists(src) {
-			continue
-		}
-		if binarySHA256(src) != binarySHA256(filepath.Join(env.binDir, n)) {
+	for _, n := range stagedBinaries(env) {
+		// binarySHA256 is "" for a file it cannot read, so an unreadable staged
+		// binary over a missing installed one reads as unchanged, and plans done.
+		if binarySHA256(filepath.Join(env.fromDir, n)) != binarySHA256(filepath.Join(env.binDir, n)) {
 			env.binaryChanges = append(env.binaryChanges, n)
 		}
 	}
@@ -60,7 +60,7 @@ func (binariesStep) plan(env *setupEnv) (stepPlan, *problem) {
 		p.done, p.doneMsg = true, pair
 		return p, nil
 	}
-	p.verb, p.what, p.where = "install", "agentop, cortex", env.tilde(env.binDir)
+	p.verb, p.what, p.where = "install", strings.Join(stagedBinaries(env), ", "), env.tilde(env.binDir)
 	if !env.freshInstall {
 		p.verb = "replace"
 		p.where = env.tilde(env.binDir) + " (previous kept until healthy)"
@@ -69,14 +69,9 @@ func (binariesStep) plan(env *setupEnv) (stepPlan, *problem) {
 }
 
 func (binariesStep) apply(env *setupEnv, _ *checklist.Running) (string, undo, error) {
+	prevExisted := dirExists(env.previousDir())
 	var restores []func() error
-	u := undo{label: "binaries", fn: func() error {
-		var errs []error
-		for i := len(restores) - 1; i >= 0; i-- {
-			errs = append(errs, restores[i]())
-		}
-		return errors.Join(errs...)
-	}, manual: "copy the files in " + env.tilde(env.previousDir()) + "/ back into " + env.tilde(env.binDir) +
+	u := undo{label: "binaries", manual: "copy the files in " + env.tilde(env.previousDir()) + "/ back into " + env.tilde(env.binDir) +
 		" (or delete agentop and cortex there, on a fresh install)"}
 	for _, name := range env.binaryChanges {
 		r, err := installBinary(env, filepath.Join(env.fromDir, name), filepath.Join(env.binDir, name))
@@ -84,19 +79,60 @@ func (binariesStep) apply(env *setupEnv, _ *checklist.Running) (string, undo, er
 			restores = append(restores, r)
 		}
 		if err != nil {
+			u.fn = undoMoves(restores, env.previousDir(), prevExisted)
 			return "", u, err
 		}
 	}
+	u.fn = undoMoves(restores, env.previousDir(), prevExisted)
 	env.onSuccess = append(env.onSuccess, func() { _ = os.RemoveAll(env.previousDir()) })
+	names := strings.Join(stagedBinaries(env), ", ")
 	if env.freshInstall {
-		return "agentop, cortex → " + env.tilde(env.binDir), u, nil
+		return names + " → " + env.tilde(env.binDir), u, nil
 	}
-	return "agentop, cortex " + env.installedVersion + " → " + version, u, nil
+	return names + " " + env.installedVersion + " → " + env.newVersion(), u, nil
+}
+
+// stagedBinaries are the setupBinaryNames present in the staging dir.
+func stagedBinaries(env *setupEnv) []string {
+	var out []string
+	for _, n := range setupBinaryNames {
+		if fileExists(filepath.Join(env.fromDir, n)) {
+			out = append(out, n)
+		}
+	}
+	return out
+}
+
+// undoMoves is the undo of a step that moved binaries through previous/: it runs
+// restores newest first, then removes previous/ when this step made it. It is nil
+// when nothing was moved. A previous/ an earlier, interrupted run left behind is
+// kept: only a run that applies a change clears it, on success.
+func undoMoves(restores []func() error, prevDir string, prevExisted bool) func() error {
+	if len(restores) == 0 {
+		return nil
+	}
+	return func() error {
+		var errs []error
+		for i := len(restores) - 1; i >= 0; i-- {
+			errs = append(errs, restores[i]())
+		}
+		if !prevExisted {
+			_ = os.Remove(prevDir) // only succeeds when empty, which is the point
+		}
+		return errors.Join(errs...)
+	}
+}
+
+func dirExists(p string) bool {
+	fi, err := os.Stat(p)
+	return err == nil && fi.IsDir()
 }
 
 // installBinary writes src over dst. An existing dst is copied into previous/
 // first — copied, so dst stays runnable until the rename replaces it — and the
-// returned func puts it back and removes the copy.
+// returned func puts it back and removes the copy. What it puts back is the
+// content, as a 0755 file: a dst that was a symlink, or had another mode, is not
+// recreated as such.
 func installBinary(env *setupEnv, src, dst string) (func() error, error) {
 	prev := filepath.Join(env.previousDir(), filepath.Base(dst))
 	hadOld := fileExists(dst)

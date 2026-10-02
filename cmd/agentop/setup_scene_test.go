@@ -10,6 +10,13 @@ import (
 	"testing"
 )
 
+// plainOutput clears CLICOLOR_FORCE, which makes termenv colour a writer that is
+// not a terminal, for a test that asserts setup's plain lines.
+func plainOutput(t *testing.T) {
+	t.Helper()
+	t.Setenv("CLICOLOR_FORCE", "")
+}
+
 func writeExe(t *testing.T, path, body string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

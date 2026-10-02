@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"syscall"
 	"testing"
 	"time"
@@ -26,7 +28,7 @@ func TestServiceStepFreshInstallAndUndo(t *testing.T) {
 		t.Fatalf("plan = %+v %v prior=%v", p, prob, env.priorService)
 	}
 	detail, u, err := serviceStep{}.apply(env, nil)
-	if err != nil || !strings.HasSuffix(detail, "healthy on 127.0.0.1:47600") {
+	if first, _, _ := strings.Cut(detail, "\n"); err != nil || !strings.HasSuffix(first, "healthy on 127.0.0.1:47600") {
 		t.Fatalf("apply = %q %v", detail, err)
 	}
 	if _, err := os.Stat(loaded); err != nil {
@@ -35,7 +37,7 @@ func TestServiceStepFreshInstallAndUndo(t *testing.T) {
 	// The supervisor's own commands: a fresh install's rollback removes agentop.
 	want := "systemctl --user disable --now cortex.service; rm -f ~/.config/systemd/user/cortex.service; systemctl --user daemon-reload"
 	if env.goos == "darwin" {
-		want = "launchctl bootout gui/$(id -u)/io.rossoctl.cortex; rm -f ~/Library/LaunchAgents/io.rossoctl.cortex.plist"
+		want = "launchctl bootout gui/" + strconv.Itoa(os.Getuid()) + "/io.rossoctl.cortex; rm -f ~/Library/LaunchAgents/io.rossoctl.cortex.plist"
 	}
 	if u.manual != want {
 		t.Errorf("fresh undo manual = %q, want %q", u.manual, want)
@@ -127,6 +129,90 @@ func TestServiceStepUpgradeUndoRestoresTheUnitAndThePrior(t *testing.T) {
 	}
 }
 
+// A restore of the previous service that fails names the manual fix for what is
+// left: service restart while the unit is there, setup itself once the service
+// undo could not put it back.
+func TestServiceStepFailedRestoreNamesWhatIsLeft(t *testing.T) {
+	shortReadyTimeout(t)
+	for _, unitGone := range []bool{false, true} {
+		t.Run(fmt.Sprintf("unit gone %v", unitGone), func(t *testing.T) {
+			fakeSupervisor(t)
+			var serving atomic.Bool
+			serving.Store(true)
+			env := serviceEnv(t, func(w http.ResponseWriter, _ *http.Request) {
+				if !serving.Load() {
+					w.WriteHeader(http.StatusServiceUnavailable)
+				}
+			})
+			if _, prob := (serviceStep{}).plan(env); prob != nil {
+				t.Fatal(prob)
+			}
+			if _, _, err := (serviceStep{}).apply(env, nil); err != nil {
+				t.Fatal(err)
+			}
+			up := *env
+			up.configFresh, up.binaryChanges = false, []string{"cortex"}
+			// New bytes, so the install replaces the job rather than finding it current.
+			writeExe(t, filepath.Join(env.binDir, "cortex"), cortexStub("x")+"# v2\n")
+			if p, prob := (serviceStep{}).plan(&up); prob != nil || p.done || !up.priorService {
+				t.Fatalf("upgrade plan = %+v %v prior=%v", p, prob, up.priorService)
+			}
+			if _, _, err := (serviceStep{}).apply(&up, nil); err != nil || up.restorePrior == nil {
+				t.Fatalf("upgrade apply = %v, restorePrior set %v", err, up.restorePrior != nil)
+			}
+			sp, _ := resolveServicePaths(env.configPath(), "", filepath.Join(env.binDir, "cortex"))
+			if unitGone {
+				if err := os.Remove(sp.unitFile); err != nil {
+					t.Fatal(err)
+				}
+			}
+			serving.Store(false)
+			want := "" // rollback's default, agentop service restart
+			if unitGone {
+				want = "re-run agentop setup"
+			}
+			if err := up.restorePrior(); err == nil || up.priorManual != want {
+				t.Errorf("restore error %v, manual %q, want %q", err, up.priorManual, want)
+			}
+		})
+	}
+}
+
+// A background proxy the unsupervised start stops is started again by a
+// rollback. If that fails, the manual fix is the same start by hand: there is no
+// service to restart.
+func TestServiceStepUnsupervisedRestoreNamesItsStartByHand(t *testing.T) {
+	fakeNoSupervisor(t)
+	env := serviceEnv(t, ok200)
+	t.Setenv(sleeperEnv, "1") // the copy of the test binary the step starts sleeps too
+	pidFile := filepath.Join(env.cortexDir, "proxy.pid")
+	old := detachedSleeperAt(t, filepath.Join(env.binDir, "cortex"))
+	if err := os.WriteFile(pidFile, []byte(strconv.Itoa(old)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	env.binaryChanges = []string{"cortex"}
+	if p, prob := (serviceStep{}).plan(env); prob != nil || p.done {
+		t.Fatalf("plan = %+v %v", p, prob)
+	}
+	var pid int
+	stopProcessOnCleanup(t, &pid)
+	_, u, err := serviceStep{}.apply(env, nil)
+	pid = readPIDFile(pidFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if alive(old) {
+		t.Fatal("fixture: the step did not stop the background proxy")
+	}
+	want := "sh -c 'nohup ~/.local/bin/cortex --local --supervise >> ~/.cortex/proxy.log 2>&1 & echo $! > ~/.cortex/proxy.pid'"
+	if env.restorePrior == nil || env.priorManual != want {
+		t.Errorf("restorePrior set %v, manual %q, want %q", env.restorePrior != nil, env.priorManual, want)
+	}
+	if err := u.fn(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // stopProcessOnCleanup kills *pid, if it is still alive when the test ends:
 // startUnsupervised's own goroutine reaps it, so this waits for it to go.
 func stopProcessOnCleanup(t *testing.T, pid *int) {
@@ -148,6 +234,9 @@ func TestServiceStepRunsUnsupervisedInASandbox(t *testing.T) {
 	p, prob := serviceStep{}.plan(env)
 	if prob != nil || !env.unsupervised || !strings.HasPrefix(p.where, "unsupervised") {
 		t.Fatalf("plan = %+v %v", p, prob)
+	}
+	if strings.Contains(p.where, "crash") { // cortex --supervise restarts its proxy
+		t.Errorf("consent row %q says a crash is not recovered", p.where)
 	}
 	var pid int
 	stopProcessOnCleanup(t, &pid)
@@ -215,6 +304,54 @@ func TestServiceStepPreflight(t *testing.T) {
 			t.Errorf("moved-port problem = %+v", prob)
 		}
 	})
+	t.Run("a stranger run from under HOME", func(t *testing.T) {
+		fakeSupervisor(t)
+		env := serviceEnv(t, ok200)
+		installStub(t, "lsof", `#!/bin/sh
+case "$1" in
+  -nP) case "$2" in -iTCP@127.0.0.1:47600) printf 'p31337\n' ;; esac ;;
+  -p) printf 'p31337\nftxt\nn`+env.home+`/tools/squid\n' ;;
+esac
+exit 0
+`)
+		fakeProc(t, 31337, "")
+		_, prob := serviceStep{}.plan(env)
+		if prob == nil || prob.reason != "127.0.0.1:47600 is held by ~/tools/squid (pid 31337), not this Cortex" {
+			t.Errorf("problem = %+v", prob)
+		}
+	})
+	// A stranger its supervisor would start again after a kill: the fix stops the
+	// job instead. Each OS's lookup is stubbed, so both run anywhere.
+	for _, tc := range []struct {
+		goos, want string
+		job        func(t *testing.T)
+	}{
+		{"darwin", "stop the job that runs it: launchctl bootout gui/" + strconv.Itoa(os.Getuid()) + "/org.squid-cache.squid", func(t *testing.T) {
+			installStub(t, "launchctl", "#!/bin/sh\n[ \"$1\" = list ] && printf 'PID\\tStatus\\tLabel\\n-\\t0\\tcom.apple.x\\n31337\\t0\\torg.squid-cache.squid\\n'\nexit 0\n")
+		}},
+		{"linux", "stop the job that runs it: systemctl --user disable --now squid.service", func(t *testing.T) {
+			cg := "0::/user.slice/user-501.slice/user@501.service/app.slice/squid.service\n"
+			if err := os.WriteFile(filepath.Join(procRoot, "31337", "cgroup"), []byte(cg), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run("a stranger a "+tc.goos+" job runs", func(t *testing.T) {
+			fakeSupervisor(t)
+			env := serviceEnv(t, ok200)
+			env.goos = tc.goos
+			strangerOn(t, "47600")
+			_, prob := serviceStep{}.preflightPorts(env)
+			if prob == nil || len(prob.fix) != 2 || prob.fix[0] != "kill 31337" {
+				t.Fatalf("with no job found, the fix is not the kill: %+v", prob)
+			}
+			tc.job(t)
+			_, prob = serviceStep{}.preflightPorts(env)
+			if prob == nil || !slices.Equal(prob.fix, []string{tc.want}) {
+				t.Errorf("fix = %+v, want [%q]", prob, tc.want)
+			}
+		})
+	}
 	// The holder is ours when proxy.pid names it, or when it runs the installed
 	// cortex: each case pins one of the two paths the step hands ourProxy.
 	for _, tc := range []struct {
@@ -326,8 +463,8 @@ func TestServiceStepRestartsForNewPinsButNotForBobsRate(t *testing.T) {
 				}
 			}
 			next := *env
-			if _, prob := (configStep{}).plan(&next); prob != nil || !next.configWillChange || next.configPinsPending != tc.pins {
-				t.Fatalf("config plan: %v willChange=%v pinsPending=%v", prob, next.configWillChange, next.configPinsPending)
+			if cp, prob := (configStep{}).plan(&next); prob != nil || cp.verb != "update" || next.configPinsPending != tc.pins {
+				t.Fatalf("config plan: %+v %v pinsPending=%v", cp, prob, next.configPinsPending)
 			}
 			if _, _, err := (configStep{}).apply(&next, nil); err != nil || next.configPinsChanged != tc.pins {
 				t.Fatalf("config apply: %v pinsChanged=%v", err, next.configPinsChanged)
@@ -341,7 +478,7 @@ func TestServiceStepRestartsForNewPinsButNotForBobsRate(t *testing.T) {
 				return
 			}
 			detail, _, err := serviceStep{}.apply(&next, nil)
-			if err != nil || strings.HasSuffix(detail, "already running") {
+			if first, _, _ := strings.Cut(detail, "\n"); err != nil || strings.HasSuffix(first, "already running") {
 				t.Errorf("new pins did not restart the service: %q %v", detail, err)
 			}
 			log, _ := os.ReadFile(calls)
@@ -376,6 +513,9 @@ exit 0
 		if prob != nil || !p.done || p.advice == nil || p.advice.reason != want {
 			t.Errorf("plan = %+v advice=%+v %v", p, p.advice, prob)
 		}
+		if hint := undoHint(env); hint != "Undo any time: agentop service uninstall" {
+			t.Errorf("beside a supervised Cortex the undo hint is %q, not its uninstall", hint)
+		}
 	})
 	t.Run("an upgrade in a sandbox", func(t *testing.T) {
 		fakeNoSupervisor(t)
@@ -384,7 +524,9 @@ exit 0
 		env.binaryChanges = []string{"cortex"}
 		_, prob := serviceStep{}.plan(env)
 		want := "a supervised Cortex is running here, and this environment cannot manage " + sup(env)
-		if prob == nil || prob.reason != want || len(prob.fix) != 2 {
+		// service stop cannot reach the supervisor from here either.
+		fix := []string{"run agentop setup from a normal terminal", "or stop it first, from a normal terminal: agentop service stop"}
+		if prob == nil || prob.reason != want || !slices.Equal(prob.fix, fix) {
 			t.Errorf("sandbox problem = %+v", prob)
 		}
 	})
@@ -451,8 +593,39 @@ exit 0
 	})
 }
 
-// serviceLoaded asks the supervisor, not the unit file: the service step's undo
-// stops the job again only when it was not loaded before.
+// A sandbox's ps may not name the holder's parent. A background proxy alive in
+// proxy.pid is then taken to be that parent; with none alive, the holder runs
+// under a supervisor.
+func TestSupervisedHolderWhenPsCannotNameTheParent(t *testing.T) {
+	installStub(t, "ps", "#!/bin/sh\nexit 1\n")
+	pidFile := filepath.Join(t.TempDir(), "proxy.pid")
+	for _, tc := range []struct {
+		pf   int
+		want bool
+	}{{os.Getpid(), false}, {999999999, true}} {
+		if err := os.WriteFile(pidFile, []byte(strconv.Itoa(tc.pf)+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if got := supervisedHolder(pidFile, 31337); got != tc.want {
+			t.Errorf("proxy.pid %d alive=%v: supervisedHolder = %v, want %v", tc.pf, alive(tc.pf), got, tc.want)
+		}
+	}
+}
+
+// The consent row names the forward address the config gives, not the default.
+func TestServiceStepConsentRowNamesTheConfiguredAddress(t *testing.T) {
+	fakeSupervisor(t)
+	env := serviceEnv(t, ok200)
+	moveForwardPort(t, env, "127.0.0.1:47700")
+	p, prob := serviceStep{}.plan(env)
+	if want := supervisorName(env.goos) + " · 127.0.0.1:47700"; prob != nil || p.where != want {
+		t.Errorf("consent row = %q (%v), want %q", p.where, prob, want)
+	}
+}
+
+// serviceLoaded asks the supervisor, not the unit file. The fake's is-active and
+// is-enabled follow one file, so on linux this loop never reaches is-enabled
+// alone; the stubs after it do, for both platforms.
 func TestServiceLoadedFollowsTheSupervisor(t *testing.T) {
 	loaded := fakeSupervisor(t)
 	if serviceLoaded(runtimeGOOS()) {
@@ -464,22 +637,33 @@ func TestServiceLoadedFollowsTheSupervisor(t *testing.T) {
 	if !serviceLoaded(runtimeGOOS()) {
 		t.Error("a loaded job read as not loaded")
 	}
+	// Enabled but not active: a unit stopped by hand, or one between restarts.
+	installStub(t, "systemctl", "#!/bin/sh\ncase \"$*\" in *is-active*) exit 3 ;; *is-enabled*) exit 0 ;; esac\nexit 1\n")
+	if !serviceLoaded("linux") {
+		t.Error("an enabled systemd unit read as not loaded")
+	}
+	// A launchctl that cannot see the domain does not know, so the job may be there.
+	installStub(t, "launchctl", "#!/bin/sh\necho 'Domain does not support specified action' >&2\nexit 125\n")
+	if !serviceLoaded("darwin") {
+		t.Error("a launchctl that could not tell read as the job gone")
+	}
 }
 
-// A failed start shows what that start wrote to the log, not an older run's
-// lines: from where the log ended before it, the last logTailLines, the first
-// labelled proxy.log in the checklist's label column.
+// A failed start shows what the log gained during it, not an older run's lines:
+// from where the log ended before it, the last logTailLines, the first labelled
+// proxy.log in the checklist's label column. Nothing gained is a row saying so.
 func TestLogTailIsWhatTheStartWrote(t *testing.T) {
 	env := newTestSetupEnv(t)
 	log := filepath.Join(env.home, "proxy.log")
-	if got := logTail(env, log, markLog(log)); got != nil {
+	nothing := []string{"proxy.log    (it wrote nothing)"}
+	if got := logTail(env, log, markLog(log)); !slices.Equal(got, nothing) {
 		t.Errorf("no log: %q", got)
 	}
 	if err := os.WriteFile(log, []byte("old run\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	m := markLog(log)
-	if got := logTail(env, log, m); got != nil {
+	if got := logTail(env, log, m); !slices.Equal(got, nothing) {
 		t.Errorf("nothing written since the mark: %q", got)
 	}
 	f, err := os.OpenFile(log, os.O_APPEND|os.O_WRONLY, 0o600) //nolint:gosec
@@ -492,15 +676,33 @@ func TestLogTailIsWhatTheStartWrote(t *testing.T) {
 	if got := logTail(env, log, m); !slices.Equal(got, want) {
 		t.Errorf("tail = %q, want %q", got, want)
 	}
-	// Rotated: runServiceInstall renames a long log away, so the start writes a new one.
+	// Rotated: runServiceInstall renames a long log away, so the start writes a new
+	// one. Longer than the mark, so only the file's identity says to read it whole.
 	if err := os.Rename(log, log+".1"); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(log, []byte("fresh\n"), 0o600); err != nil {
+	if err := os.WriteFile(log, []byte("fresh after the rotation\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if got := logTail(env, log, m); !slices.Equal(got, []string{"proxy.log    fresh"}) {
+	if got := logTail(env, log, m); !slices.Equal(got, []string{"proxy.log    fresh after the rotation"}) {
 		t.Errorf("after a rotation, tail = %q", got)
+	}
+	// Truncated in place: the same file, so only its size says to read it whole.
+	m = markLog(log)
+	if err := os.WriteFile(log, []byte("short\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := logTail(env, log, m); !slices.Equal(got, []string{"proxy.log    short"}) {
+		t.Errorf("after a truncation, tail = %q", got)
+	}
+	// A line longer than the scanner's 1 MiB ends the read; the tail says so.
+	m = markLog(log)
+	if err := os.WriteFile(log, []byte("short\nbefore\n"+strings.Repeat("x", 1<<20+1)+"\nafter\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	want = []string{"proxy.log    before", "             (stopped reading: bufio.Scanner: token too long)"}
+	if got := logTail(env, log, m); !slices.Equal(got, want) {
+		t.Errorf("past a line over 1 MiB, tail = %.300q, want %q", got, want)
 	}
 }
 
@@ -524,5 +726,269 @@ func TestServiceStepUnsupervisedFailureShowsTheLog(t *testing.T) {
 	want := []string{"see ~/.cortex/proxy.log", "proxy.log    cortex: open ~/.cortex/ca/ca.pem: permission denied"}
 	if se.reason != "the proxy exited immediately" || !slices.Equal(se.detail, want) {
 		t.Errorf("failure = %q %q, want detail %q", se.reason, se.detail, want)
+	}
+}
+
+// What service install warns about on a start that works stays under the
+// started line: its $HOME warning on macOS, where a test's HOME is not the login
+// home, and on Linux its linger caveat.
+func TestServiceStepKeepsServiceInstallsWarnings(t *testing.T) {
+	fakeSupervisor(t)
+	want := "loaded, but `loginctl enable-linger` failed: the service will stop when you log out."
+	if runtimeGOOS() == "darwin" {
+		lh := loginHome()
+		if lh == "" {
+			t.Skip("no login home to tell from HOME")
+		}
+		want = "$HOME is ~ but your login home is " + lh + ".\nThe unit goes to $HOME/Library/LaunchAgents"
+	} else {
+		installStub(t, "loginctl", "#!/bin/sh\ncase \"$1\" in show-user) echo Linger=no ;; enable-linger) exit 1 ;; esac\nexit 0\n")
+	}
+	env := serviceEnv(t, ok200)
+	if _, prob := (serviceStep{}).plan(env); prob != nil {
+		t.Fatal(prob)
+	}
+	detail, _, err := serviceStep{}.apply(env, nil)
+	first, notes, _ := strings.Cut(detail, "\n")
+	if err != nil || !strings.HasSuffix(first, "healthy on 127.0.0.1:47600") || !strings.HasPrefix(notes, want) {
+		t.Errorf("apply = %q %v, want the warning %q under the first line", detail, err, want)
+	}
+}
+
+// notRunning makes fakeSupervisor's job, while loaded, read as not running to
+// supervisorRunning: launchctl print of it says "state = not running", and
+// systemctl is-active says failed. serviceLoaded's own asks still see it loaded.
+// It wraps only the fakes, which name loaded.
+func notRunning(t *testing.T, loaded string) {
+	t.Helper()
+	for _, w := range []struct{ tool, ask, answer string }{
+		{"launchctl", "print gui/*/*", "echo 'state = not running'; exit 0"},
+		{"systemctl", "--user is-active cortex.service", "echo failed; exit 3"},
+	} {
+		fake, err := exec.LookPath(w.tool)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if b, _ := os.ReadFile(fake); !strings.Contains(string(b), loaded) { //nolint:gosec
+			t.Fatalf("%s on PATH is not fakeSupervisor's", fake)
+		}
+		installStub(t, w.tool, "#!/bin/sh\ncase \"$*\" in\n  \""+strings.ReplaceAll(w.ask, "*", "\"*\"")+
+			"\") if [ -f '"+loaded+"' ]; then "+w.answer+"; fi ;;\nesac\nexec '"+fake+"' \"$@\"\n")
+	}
+}
+
+// A failed start's detail is service install's own words, less what the rollback
+// makes untrue, then the log since the start: not install's tail of the whole log.
+func TestServiceStepFailureDetailIsWhatThisStartLeft(t *testing.T) {
+	shortReadyTimeout(t)
+	t.Run("nothing answers", func(t *testing.T) {
+		fakeSupervisor(t)
+		env := serviceEnv(t, func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusServiceUnavailable) })
+		if _, prob := (serviceStep{}).plan(env); prob != nil {
+			t.Fatal(prob)
+		}
+		_, _, err := serviceStep{}.apply(env, nil)
+		var se stepError
+		if !errors.As(err, &se) || !strings.HasPrefix(se.reason, "installed, but nothing answered ") ||
+			len(se.detail) == 0 || !strings.HasPrefix(se.detail[0], "Check ~/.cortex/proxy.log — ") {
+			t.Fatalf("failure = %+v (%v)", se, err)
+		}
+		for _, d := range se.detail {
+			if strings.Contains(d, "agentop service status") {
+				t.Errorf("the detail points at service status, which shows the rolled-back state: %q", se.detail)
+			}
+		}
+	})
+	t.Run("the supervisor does not run the job", func(t *testing.T) {
+		loaded := fakeSupervisor(t)
+		env := serviceEnv(t, ok200)
+		if err := os.WriteFile(filepath.Join(env.cortexDir, "proxy.log"), []byte("an older run's line\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		notRunning(t, loaded)
+		if _, prob := (serviceStep{}).plan(env); prob != nil {
+			t.Fatal(prob)
+		}
+		_, _, err := serviceStep{}.apply(env, nil)
+		var se stepError
+		if !errors.As(err, &se) || !strings.HasPrefix(se.reason, "the unit loaded but the supervisor does not report it running") {
+			t.Fatalf("failure = %+v (%v)", se, err)
+		}
+		if got := strings.Join(se.detail, "\n"); strings.Contains(got, "Last log lines:") || strings.Contains(got, "an older run's line") {
+			t.Errorf("the detail carries service install's tail of the whole log: %q", se.detail)
+		}
+		// The fake job writes nothing, so the log rows say just that.
+		if n := len(se.detail); n == 0 || se.detail[n-1] != "proxy.log    (it wrote nothing)" {
+			t.Errorf("the detail does not end on this start's log rows: %q", se.detail)
+		}
+	})
+}
+
+// A failure before runServiceInstall replaced the job leaves the previous Cortex
+// serving, so the rollback has nothing to bring back: a reload would only bounce it.
+func TestServiceStepRestoresThePriorOnlyOnceTheJobWasReplaced(t *testing.T) {
+	fakeSupervisor(t)
+	env := serviceEnv(t, ok200)
+	if _, prob := (serviceStep{}).plan(env); prob != nil {
+		t.Fatal(prob)
+	}
+	if _, _, err := (serviceStep{}).apply(env, nil); err != nil {
+		t.Fatal(err)
+	}
+	up := *env
+	up.configFresh, up.binaryChanges = false, []string{"cortex"}
+	if p, prob := (serviceStep{}).plan(&up); prob != nil || p.done || !up.priorService {
+		t.Fatalf("upgrade plan = %+v %v prior=%v", p, prob, up.priorService)
+	}
+	if err := os.Remove(filepath.Join(env.binDir, "cortex")); err != nil { // install refuses before it touches the job
+		t.Fatal(err)
+	}
+	if _, _, err := (serviceStep{}).apply(&up, nil); err == nil || up.restorePrior != nil {
+		t.Errorf("apply = %v; restorePrior set %v, want none for a job never replaced", err, up.restorePrior != nil)
+	}
+}
+
+// The undo after a failed or rolled-back upgrade leaves the job as the upgrade
+// found it, and its manual says how: a stopped job is stopped again, a loaded one
+// that was not answering stays loaded, and one not loaded while something else
+// answered is the previous Cortex the rollback reloads.
+func TestServiceStepUndoLeavesTheJobAsItFoundIt(t *testing.T) {
+	shortReadyTimeout(t)
+	for _, tc := range []struct {
+		name                   string
+		loaded, serving, prior bool
+		manual                 string
+		loadedAfter            bool
+	}{
+		{"stopped", false, false, false, "agentop service stop", false},
+		{"loaded but not answering", true, false, false, "agentop service install --restart", true},
+		{"answering but not loaded", false, true, true, "agentop service install --restart", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			loaded := fakeSupervisor(t)
+			var serving atomic.Bool
+			serving.Store(true)
+			env := serviceEnv(t, func(w http.ResponseWriter, _ *http.Request) {
+				if !serving.Load() {
+					w.WriteHeader(http.StatusServiceUnavailable)
+				}
+			})
+			if _, prob := (serviceStep{}).plan(env); prob != nil {
+				t.Fatal(prob)
+			}
+			if _, _, err := (serviceStep{}).apply(env, nil); err != nil {
+				t.Fatal(err)
+			}
+			if !tc.loaded {
+				if err := os.Remove(loaded); err != nil {
+					t.Fatal(err)
+				}
+			}
+			serving.Store(tc.serving)
+			up := *env
+			up.configFresh, up.binaryChanges = false, []string{"cortex"}
+			if p, prob := (serviceStep{}).plan(&up); prob != nil || p.done || up.priorService != tc.prior {
+				t.Fatalf("upgrade plan = %+v %v prior=%v", p, prob, up.priorService)
+			}
+			_, u, _ := serviceStep{}.apply(&up, nil)
+			if u.manual != tc.manual {
+				t.Errorf("undo manual = %q, want %q", u.manual, tc.manual)
+			}
+			if err := u.fn(); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := os.Stat(loaded); (err == nil) != tc.loadedAfter {
+				t.Errorf("after the undo the job is loaded=%v, want %v", err == nil, tc.loadedAfter)
+			}
+		})
+	}
+}
+
+// The background restore refuses while the new job is loaded, whether or not it
+// answers: one crash-looping still fights a background copy for the ports.
+func TestServiceStepBackgroundRestoreRefusesBesideALoadedUnhealthyJob(t *testing.T) {
+	shortReadyTimeout(t)
+	loaded := fakeSupervisor(t)
+	env := serviceEnv(t, func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusServiceUnavailable) })
+	t.Setenv(sleeperEnv, "1") // a restarted copy of the test binary sleeps too
+	pidFile := filepath.Join(env.cortexDir, "proxy.pid")
+	old := detachedSleeperAt(t, filepath.Join(env.binDir, "cortex"))
+	if err := os.WriteFile(pidFile, []byte(strconv.Itoa(old)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	env.binaryChanges = []string{"cortex"}
+	if p, prob := (serviceStep{}).plan(env); prob != nil || p.done || env.unsupervised || env.priorService {
+		t.Fatalf("plan = %+v %v", p, prob)
+	}
+	_, u, err := serviceStep{}.apply(env, nil)
+	if err == nil || alive(old) || env.restorePrior == nil {
+		t.Fatalf("fixture: apply = %v, background proxy alive %v, restorePrior set %v", err, alive(old), env.restorePrior != nil)
+	}
+	failingUnload(t, loaded)
+	if err := u.fn(); err == nil {
+		t.Fatal("fixture: the service undo's unload did not fail")
+	}
+	var second int
+	stopProcessOnCleanup(t, &second)
+	err = env.restorePrior()
+	second = readPIDFile(pidFile)
+	if err == nil || !strings.HasPrefix(err.Error(), "the new service is still loaded") || second != 0 {
+		t.Errorf("restore = %v, background pid %d: want a refusal and no background copy", err, second)
+	}
+}
+
+// startByHand's line runs as written: from sh here, and from fish, which has no
+// $!, where installed. sh -c expands the ~ in each path, the redirections' too.
+func TestStartByHandRunsFromAShell(t *testing.T) {
+	env := newTestSetupEnv(t)
+	writeExe(t, filepath.Join(env.binDir, "cortex"), "#!/bin/sh\necho \"started $*\"\nexec sleep 30\n")
+	if err := os.MkdirAll(env.cortexDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	shells := []string{"/bin/sh"}
+	if fish, err := exec.LookPath("fish"); err == nil {
+		shells = append(shells, fish)
+	}
+	for _, sh := range shells {
+		pidFile := filepath.Join(env.cortexDir, "proxy.pid")
+		_ = os.Remove(pidFile)
+		cmd := exec.Command(sh, "-c", startByHand(env, filepath.Join(env.binDir, "cortex"))) //nolint:gosec // the line under test
+		cmd.Env = append(os.Environ(), "HOME="+env.home)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("%s: %v %s", sh, err, out)
+		}
+		var pid int
+		for deadline := time.Now().Add(5 * time.Second); pid == 0 && time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
+			pid = readPIDFile(pidFile)
+		}
+		stopProcessOnCleanup(t, &pid)
+		log, _ := os.ReadFile(filepath.Join(env.cortexDir, "proxy.log"))
+		for deadline := time.Now().Add(5 * time.Second); !strings.Contains(string(log), "started --local --supervise") && time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
+			log, _ = os.ReadFile(filepath.Join(env.cortexDir, "proxy.log"))
+		}
+		if !alive(pid) || !strings.Contains(string(log), "started --local --supervise") {
+			t.Errorf("%s: proxy.pid %d alive=%v, proxy.log %q", sh, pid, alive(pid), log)
+		}
+	}
+}
+
+// A job that never leaves launchd's domain is the service undo's error once
+// serviceBootoutTimeout runs out, naming that bound, so "undone" means gone.
+// systemd's disable --now has returned by then, so linux waits for nothing.
+func TestWaitUnloadedNamesItsTimeout(t *testing.T) {
+	saved := serviceBootoutTimeout
+	serviceBootoutTimeout = 500 * time.Millisecond
+	t.Cleanup(func() { serviceBootoutTimeout = saved })
+	installStub(t, "launchctl", "#!/bin/sh\necho 'state = running'\n") // the job is still there
+	began := time.Now()
+	err := waitUnloaded("darwin")
+	if want := "the launchd user agent is still shutting down after 500ms"; err == nil || err.Error() != want {
+		t.Errorf("waitUnloaded = %v, want %q", err, want)
+	}
+	if took := time.Since(began); took > 5*time.Second {
+		t.Errorf("waited %s, not serviceBootoutTimeout", took)
+	}
+	if err := waitUnloaded("linux"); err != nil {
+		t.Errorf("linux waited: %v", err)
 	}
 }

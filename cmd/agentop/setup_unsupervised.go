@@ -14,7 +14,8 @@ import (
 // one-second health checks. It runs in its own session, so a Ctrl-C at setup's
 // terminal cannot reach a proxy meant to outlive setup; rollback stops it on
 // purpose instead. healthy is false when the proxy is alive but has not answered
-// yet, which install.sh also treats as started.
+// yet, which install.sh also treats as started. A proxy that exits is a stepError
+// with no detail: the caller adds the log lines this start wrote.
 func startUnsupervised(bin, cortexDir, healthURL string) (pid int, healthy bool, err error) {
 	if err := os.MkdirAll(cortexDir, 0o700); err != nil {
 		return 0, false, err
@@ -45,10 +46,7 @@ func startUnsupervised(bin, cortexDir, healthURL string) (pid int, healthy bool,
 		select {
 		case <-exited:
 			_ = os.Remove(pidFile)
-			return 0, false, stepError{
-				reason: "the proxy exited immediately",
-				detail: append([]string{"see " + logPath}, lastLines(logPath, 5)...),
-			}
+			return 0, false, stepError{reason: "the proxy exited immediately"}
 		default:
 		}
 		if healthURL != "" && waitHealthy(healthURL, time.Second) {

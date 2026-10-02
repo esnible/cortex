@@ -51,6 +51,9 @@ func TestPathProfileFollowsInstallSh(t *testing.T) {
 }
 
 func TestOnPath(t *testing.T) {
+	if !onPath("/h/.local/bin:/usr/bin", "/h/.local/bin") {
+		t.Error("first entry not found")
+	}
 	if !onPath("/usr/bin:/h/.local/bin:/bin", "/h/.local/bin") {
 		t.Error("middle entry not found")
 	}
@@ -161,6 +164,32 @@ func TestSnapshotRestoresASymlinkUnderAMissingParent(t *testing.T) {
 	}
 	if entries, _ := os.ReadDir(sub); len(entries) != 1 {
 		t.Errorf("the link's directory holds %d entries, want only the link", len(entries))
+	}
+}
+
+// A rename that fails leaves no temp link behind: a directory now where the link
+// was makes the restore fail, and the parent holds only that directory.
+func TestSymlinkRestoreRemovesItsTempLinkWhenTheRenameFails(t *testing.T) {
+	dir := t.TempDir()
+	link := filepath.Join(dir, "settings.json")
+	if err := os.Symlink("real", link); err != nil {
+		t.Fatal(err)
+	}
+	s, err := snapshotFile(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(link, "child"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.restore(); err == nil {
+		t.Fatal("restoring a link over a directory succeeded")
+	}
+	if entries, _ := os.ReadDir(dir); len(entries) != 1 {
+		t.Errorf("a failed link restore left %d entries, want only the directory", len(entries))
 	}
 }
 

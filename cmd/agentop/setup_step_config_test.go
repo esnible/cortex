@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -75,7 +76,7 @@ func TestConfigStepMigratesAnOldConfigAndUndoesByteForByte(t *testing.T) {
 		t.Fatal(err)
 	}
 	p, prob := configStep{}.plan(env)
-	if prob != nil || p.verb != "update" || !env.configWillChange {
+	if prob != nil || p.verb != "update" {
 		t.Fatalf("plan = %+v %v", p, prob)
 	}
 	_, u, err := configStep{}.apply(env, nil)
@@ -198,6 +199,45 @@ func TestConfigStepRefusesAFailedPinMigrationThatLeavesListenersExposed(t *testi
 	}
 }
 
+// The same configs are refused in plan, so the run stops before any step changes
+// anything: whether the Bob migration is pending, which makes the plan an update,
+// or Bob is priced already, which would make it done.
+func TestConfigStepPlanRefusesExposedListenersThePinsCannotBind(t *testing.T) {
+	for _, tc := range []struct{ name, body string }{
+		{"no listener block", "mode: proxy-sidecar\n"},
+		{"flow-style listener", "mode: proxy-sidecar\nlistener: {roles: [forward]}\n"},
+	} {
+		for _, priced := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s, Bob priced %v", tc.name, priced), func(t *testing.T) {
+				env := configEnv(t)
+				writeExe(t, env.configPath(), tc.body)
+				if err := os.Chmod(env.configPath(), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if priced {
+					if _, err := migrateBobPricing(env.configPath(), io.Discard); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if pending, err := configMigrationPending(env.configPath()); err != nil || pending == priced {
+					t.Fatalf("fixture: pending=%v err=%v, want pending=%v", pending, err, !priced)
+				}
+				before, _ := os.ReadFile(env.configPath())
+				_, prob := configStep{}.plan(env)
+				if prob == nil || !strings.Contains(prob.reason, "health_addr") || !strings.Contains(prob.reason, "on every interface") {
+					t.Fatalf("plan problem = %+v, want a refusal naming the exposed health_addr", prob)
+				}
+				if len(prob.fix) != 1 || !strings.Contains(prob.fix[0], "bind_loopback_only: true") {
+					t.Errorf("fix = %q, want service install's remedy", prob.fix)
+				}
+				if after, _ := os.ReadFile(env.configPath()); !bytes.Equal(after, before) {
+					t.Error("plan changed the config")
+				}
+			})
+		}
+	}
+}
+
 // A failed pin migration on a config already bound to loopback only warns, as in
 // service install, and the Bob migration still runs. The pins cannot go in: one
 // listener block is flow style, and the other's indented comment makes the pinned
@@ -222,6 +262,9 @@ func TestConfigStepWarnsOnAFailedPinMigrationWhenNothingIsExposed(t *testing.T) 
 			}
 			if _, err := migrateConfig(probe, io.Discard); err == nil {
 				t.Fatal("migrateConfig accepts the fixture, so it tests nothing")
+			}
+			if _, prob := (configStep{}).plan(env); prob != nil {
+				t.Fatalf("plan refused pins it cannot add, with nothing exposed: %v", prob.reason)
 			}
 			detail, u, err := configStep{}.apply(env, nil)
 			if err != nil {
@@ -293,6 +336,46 @@ func TestConfigStepDoneWhenCurrentAndRefusesABrokenOne(t *testing.T) {
 	}
 }
 
+// A --write-config that fails part way is undone like any other write: the file
+// it left, and the ~/.cortex it made, go.
+func TestConfigStepUndoesAFailedWriteConfig(t *testing.T) {
+	env := newTestSetupEnv(t)
+	writeExe(t, filepath.Join(env.binDir, "cortex"), "#!/bin/sh\nmkdir -p \"$HOME/.cortex\"\n"+
+		"echo 'mode: proxy' > \"$HOME/.cortex/config.yaml\"\necho 'disk full' >&2\nexit 1\n")
+	if _, prob := (configStep{}).plan(env); prob != nil {
+		t.Fatal(prob)
+	}
+	_, u, err := configStep{}.apply(env, nil)
+	var se stepError
+	if !asStepError(err, &se) || se.reason != "cortex --local --write-config failed" {
+		t.Fatalf("err = %#v, want the write-config failure", err)
+	}
+	if u.fn == nil {
+		t.Fatal("a failed --write-config returned no undo")
+	}
+	if err := u.fn(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(env.cortexDir); err == nil {
+		t.Error("undo after a failed --write-config left ~/.cortex")
+	}
+}
+
+// A --write-config that exits 0 having written nothing is named as such, rather
+// than as a config that will not load.
+func TestConfigStepReportsAWriteConfigThatWroteNothing(t *testing.T) {
+	env := newTestSetupEnv(t)
+	writeExe(t, filepath.Join(env.binDir, "cortex"), "#!/bin/sh\nexit 0\n")
+	if _, prob := (configStep{}).plan(env); prob != nil {
+		t.Fatal(prob)
+	}
+	_, _, err := configStep{}.apply(env, nil)
+	var se stepError
+	if !asStepError(err, &se) || se.reason != "cortex --local --write-config wrote no ~/.cortex/config.yaml" {
+		t.Errorf("err = %#v, want the wrote-no-config step error", err)
+	}
+}
+
 func TestConfigStepReportsAWriteConfigFailure(t *testing.T) {
 	env := newTestSetupEnv(t)
 	writeExe(t, filepath.Join(env.binDir, "cortex"), "#!/bin/sh\necho 'no home' >&2\nexit 1\n")
@@ -315,9 +398,10 @@ func TestConfigStepFlagsNewPinsButNotBobsRate(t *testing.T) {
 	for _, tc := range []struct {
 		name, body string
 		pins       bool
+		backup     string // the one that holds the file from before the run
 	}{
-		{"pins missing", "mode: proxy-sidecar\nlistener:\n  roles: [forward]\n  forward_proxy_addr: 127.0.0.1:47600\n", true},
-		{"only Bob's rate missing", "mode: proxy-sidecar\n" + pins, false},
+		{"pins missing", "mode: proxy-sidecar\nlistener:\n  roles: [forward]\n  forward_proxy_addr: 127.0.0.1:47600\n", true, ".before-agentop-migrate"},
+		{"only Bob's rate missing", "mode: proxy-sidecar\n" + pins, false, ".before-agentop-pricing"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			env := configEnv(t)
@@ -325,12 +409,16 @@ func TestConfigStepFlagsNewPinsButNotBobsRate(t *testing.T) {
 			if err := os.Chmod(env.configPath(), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			if _, prob := (configStep{}).plan(env); prob != nil || !env.configWillChange || env.configPinsPending != tc.pins {
-				t.Fatalf("plan: %v willChange=%v pinsPending=%v, want pinsPending=%v",
-					prob, env.configWillChange, env.configPinsPending, tc.pins)
+			if p, prob := (configStep{}).plan(env); prob != nil || p.verb != "update" || env.configPinsPending != tc.pins {
+				t.Fatalf("plan: %+v %v pinsPending=%v, want an update with pinsPending=%v",
+					p, prob, env.configPinsPending, tc.pins)
 			}
-			if _, _, err := (configStep{}).apply(env, nil); err != nil || env.configPinsChanged != tc.pins {
+			_, u, err := configStep{}.apply(env, nil)
+			if err != nil || env.configPinsChanged != tc.pins {
 				t.Errorf("apply: %v pinsChanged=%v, want %v", err, env.configPinsChanged, tc.pins)
+			}
+			if want := "from ~/.cortex/config.yaml" + tc.backup + ","; !strings.Contains(u.manual, want) {
+				t.Errorf("undo manual = %q, want it to name %s", u.manual, tc.backup)
 			}
 		})
 	}

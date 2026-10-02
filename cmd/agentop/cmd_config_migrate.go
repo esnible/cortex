@@ -158,20 +158,8 @@ func configMigrationPending(path string) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("%s does not parse (%w)", path, err)
 	}
-	missing, err := missingListenerPins(raw)
-	if err != nil {
-		return false, err
-	}
-	if len(missing) > 0 {
-		if updated, ierr := insertListenerKeys(string(raw), missing); ierr == nil {
-			_, loaded, lerr := loadCandidate(updated)
-			if lerr != nil {
-				return false, lerr
-			}
-			if loaded {
-				return true, nil
-			}
-		}
+	if pins, err := pinsMigrationPending(raw); err != nil || pins {
+		return pins, err
 	}
 	// migrateConfig would leave the file as it is, so migrateBobPricing reads raw.
 	if priced, perr := bobPriced(cfg); perr != nil || priced {
@@ -186,6 +174,24 @@ func configMigrationPending(path string) (bool, error) {
 		return false, lerr
 	}
 	return bobPricedVerify(c) == nil, nil
+}
+
+// pinsMigrationPending is configMigrationPending's pins half: whether
+// migrateConfig would add listener pins to raw, decided by the steps it takes
+// before it writes. A result insertListenerKeys refuses, or one that will not load,
+// is not pending. The error is missingListenerPins's, or loadCandidate's own temp
+// file's; pending is false with it.
+func pinsMigrationPending(raw []byte) (bool, error) {
+	missing, err := missingListenerPins(raw)
+	if err != nil || len(missing) == 0 {
+		return false, err
+	}
+	updated, err := insertListenerKeys(string(raw), missing)
+	if err != nil {
+		return false, nil
+	}
+	_, loaded, err := loadCandidate(updated)
+	return err == nil && loaded, err
 }
 
 // loadCandidate loads updated the way replaceConfig loads a migration's result

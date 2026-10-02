@@ -336,7 +336,9 @@ func TestAdoptablePID_MissingBinariesFromAnotherDir(t *testing.T) {
 			t.Fatal(err)
 		}
 		_ = named(t, stranger)
-		_ = os.WriteFile(p.pidFile, []byte(strconv.Itoa(stranger)), 0o600)
+		if err := os.WriteFile(p.pidFile, []byte(strconv.Itoa(stranger)), 0o600); err != nil {
+			t.Fatal(err)
+		}
 		if got := adoptablePID(p); got != 0 {
 			t.Errorf("a stranger from %s, both binaries missing -> %d, want 0", other, got)
 		}
@@ -365,7 +367,9 @@ func TestAdoptablePID_MissingBinariesFromAnotherDir(t *testing.T) {
 		if exe := named(t, stranger); runtime.GOOS == "darwin" && !strings.Contains(exe, "/../") {
 			t.Fatalf("fixture: ps reported %q, not the path as typed", exe)
 		}
-		_ = os.WriteFile(p.pidFile, []byte(strconv.Itoa(stranger)), 0o600)
+		if err := os.WriteFile(p.pidFile, []byte(strconv.Itoa(stranger)), 0o600); err != nil {
+			t.Fatal(err)
+		}
 		if got := adoptablePID(p); got != 0 {
 			t.Errorf("a stranger from %s, spelled through %s -> %d, want 0", other, ours, got)
 		}

@@ -36,11 +36,7 @@ const (
 	// restricted sandbox, or a shell without a usable launchd session. Distinct from a
 	// failure, so install.sh can offer the unsupervised path instead of a dead end.
 	exitNoSupervisor = 4
-	// serviceBootoutTimeout bounds the wait for a previous job to leave the domain.
-	// Longer than the supervisor's own teardown: it SIGTERMs the proxy, allows its 15s
-	// graceful shutdown, then insists at 20s.
-	serviceBootoutTimeout = 30 * time.Second
-	serviceUsage          = `agentop service — keep Cortex running across crashes and logins
+	serviceUsage     = `agentop service — keep Cortex running across crashes and logins
 
 Usage:
   agentop service install   [--yes] [--restart] [--config PATH]
@@ -71,11 +67,18 @@ only shows up at your next reboot.
 Never installed as root. The proxy holds a CA private key; this stays a user
 service.
 `
-	// serviceReadyTimeout bounds the post-start health probe. The supervisor
-	// reports "loaded", not "serving", and the difference is where a bad config
-	// hides.
-	serviceReadyTimeout = 15 * time.Second
 )
+
+// serviceReadyTimeout bounds the post-start health probe. The supervisor reports
+// "loaded", not "serving", and the difference is where a bad config hides. A var
+// so a test of a start that never answers need not wait it out.
+var serviceReadyTimeout = 15 * time.Second
+
+// serviceBootoutTimeout bounds the wait for a previous job to leave the domain.
+// Longer than the supervisor's own teardown: it SIGTERMs the proxy, allows its 15s
+// graceful shutdown, then insists at 20s. A var so a test of a teardown that never
+// ends need not wait it out.
+var serviceBootoutTimeout = 30 * time.Second
 
 // servicePaths is everything the platform-specific bits need, gathered so tests
 // can point all of it at a temp dir instead of the real ~/Library/LaunchAgents.
@@ -314,6 +317,9 @@ type installResult struct {
 	exit           int  // what `agentop service install` returns
 	alreadyCurrent bool // nothing needed changing, so nothing was touched
 	healthy        bool // the health endpoint answered after the start
+	// replaced: it went on to load the new job, which first unloads or restarts a
+	// loaded one, so a previous Cortex under the supervisor may be down.
+	replaced bool
 }
 
 // runServiceInstall is serviceInstall from the moment the user has agreed: every check
@@ -486,7 +492,7 @@ func runServiceInstall(p servicePaths, adopt int, forceRestart, announceUnit boo
 			fmt.Fprintf(stderr, "agentop: also could not remove %s: %v\n", p.unitFile, rmErr)
 		}
 		fmt.Fprintf(stderr, "agentop: %v\n", err)
-		return installResult{exit: 1}
+		return installResult{exit: 1, replaced: true}
 	}
 
 	// "Loaded" is not "serving". A bad config is fatal at startup and a supervisor
@@ -504,23 +510,23 @@ func runServiceInstall(p servicePaths, adopt int, forceRestart, announceUnit boo
 		for _, line := range lastLines(p.logFile, 5) {
 			fmt.Fprintf(stderr, "    %s\n", line)
 		}
-		return installResult{exit: 1}
+		return installResult{exit: 1, replaced: true}
 	}
 
 	if p.healthURL != "" {
 		if waitHealthy(p.healthURL, serviceReadyTimeout) {
 			reportInstallSuccess(true, stdout)
 			reportHistoryCleared(wasServing, stdout)
-			return installResult{healthy: true}
+			return installResult{healthy: true, replaced: true}
 		}
 		fmt.Fprintf(stderr, "\nagentop: installed, but nothing answered %s within %s.\n"+
 			"  Check %s — a config error is fatal at startup and the supervisor will keep retrying.\n"+
 			"  agentop service status shows the current state.\n", p.healthURL, serviceReadyTimeout, p.logFile)
-		return installResult{exit: 1}
+		return installResult{exit: 1, replaced: true}
 	}
 	reportInstallSuccess(false, stdout)
 	reportHistoryCleared(wasServing, stdout)
-	return installResult{}
+	return installResult{replaced: true}
 }
 
 // crashRecoveryNote explains why there are two cortex processes on macOS.

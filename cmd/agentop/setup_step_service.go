@@ -47,25 +47,30 @@ func (s serviceStep) plan(env *setupEnv) (stepPlan, *problem) {
 			if !changing {
 				p.done = true
 				p.advice = &problem{reason: "Cortex is already running under " + sup + "; not starting a second copy"}
+				env.unsupervised = false // the Cortex that serves is supervised, so the undo hint names its uninstall
 				return p, nil
 			}
 			if env.opts.noService {
 				return p, &problem{reason: "a supervised Cortex is running here, and --no-service would start a second copy",
 					fix: []string{"remove it first: agentop service uninstall", "or run agentop setup without --no-service"}}
 			}
+			// service stop asks the supervisor too, so it is run from there as well.
 			return p, &problem{reason: "a supervised Cortex is running here, and this environment cannot manage " + sup,
-				fix: []string{"run agentop setup from a normal terminal", "or stop it first: agentop service stop"}}
+				fix: []string{"run agentop setup from a normal terminal", "or stop it first, from a normal terminal: agentop service stop"}}
 		}
 		if _, running := proxyRunning(pidFile); running && !changing {
 			p.done, p.doneMsg = true, "in the background (no supervisor)"
 			return p, nil
 		}
 		p.verb, p.what = "run", "the cortex proxy"
-		p.where = "unsupervised · won't restart after a reboot or a crash" + note
+		// cortex --supervise restarts its proxy after a crash; nothing starts it at login.
+		p.where = "unsupervised · won't restart after a reboot" + note
 		return p, nil
 	}
 	if !env.configFresh {
 		if sp, err := resolveServicePaths(env.configPath(), "", filepath.Join(env.binDir, "cortex")); err == nil {
+			// Accepted: an endpoint that hangs costs ~2.5s here (waitHealthy's 2s client
+			// timeout, then its pause), and one slower than 2s reads as not serving.
 			env.priorService = serviceInstalled(sp) && sp.healthURL != "" && waitHealthy(sp.healthURL, time.Second)
 			// serviceIsCurrent only behind priorService: on a job that is not running it
 			// polls the supervisor for its full readiness timeout.
@@ -75,7 +80,8 @@ func (s serviceStep) plan(env *setupEnv) (stepPlan, *problem) {
 			}
 		}
 	}
-	p.verb, p.what, p.where = "run", "the cortex proxy", supervisorName(env.goos)+" · 127.0.0.1:47600"
+	addr, _ := forwardListener(env) // a fresh install's built-in config gives the default
+	p.verb, p.what, p.where = "run", "the cortex proxy", supervisorName(env.goos)+" · "+addr
 	return p, nil
 }
 
@@ -117,12 +123,15 @@ func (serviceStep) preflightPorts(env *setupEnv) (forwardHold, *problem) {
 		return forwardHold{pid: pid, known: true}, nil
 	}
 	fix := []string{fmt.Sprintf("kill %d", pid)}
-	if env.goos == "darwin" {
-		fix = append(fix, "or, if it is an older Cortex service: launchctl bootout gui/$(id -u)/"+launchdLabel)
-	} else {
+	switch job := holderJob(env.goos, pid); {
+	case job != "": // a kill would only have its supervisor start it again
+		fix = []string{"stop the job that runs it: " + job}
+	case env.goos == "darwin":
+		fix = append(fix, "or, if it is an older Cortex service: "+launchdBootout(launchdLabel))
+	default:
 		fix = append(fix, "or, if it is an older Cortex service: systemctl --user disable --now "+systemdUnit)
 	}
-	return forwardHold{}, &problem{reason: fmt.Sprintf("%s is held by %s (pid %d), not this Cortex", addr, exe, pid), fix: fix}
+	return forwardHold{}, &problem{reason: fmt.Sprintf("%s is held by %s (pid %d), not this Cortex", addr, env.tilde(exe), pid), fix: fix}
 }
 
 // forwardListener is the existing config's forward proxy address and its port,
@@ -142,6 +151,11 @@ func forwardListener(env *setupEnv) (addr, port string) {
 // is cortex --supervise, whose child holds the port, so the pidfile names the
 // holder or its parent. When ps cannot name the parent, a live pidfile proxy is
 // taken to be it.
+//
+// Accepted: anything of ours that proxy.pid does not name reads as supervised —
+// a cortex run by hand, or a --supervise child its parent left behind — so its
+// advice names the supervisor; and a stale proxy.pid whose number now names the
+// holder's parent reads as the background proxy.
 func supervisedHolder(pidFile string, pid int) bool {
 	pf := readPIDFile(pidFile)
 	if pf == pid {
@@ -157,11 +171,19 @@ func supervisedHolder(pidFile string, pid int) bool {
 // serviceLoaded reports whether the supervisor has our job: in launchd's domain,
 // running or not, or active or enabled under systemd. `agentop service stop`
 // leaves neither; a crash-looping job is either. Unlike supervisorRunning it asks
-// once, rather than waiting for the job to come up.
+// once, rather than waiting for the job to come up. A launchctl that cannot tell
+// (labelGone's not known) counts as loaded: each caller then claims less — no
+// stop to undo, an unload failure reported, no background copy beside it.
+//
+// Accepted: on Linux a unit stopped by hand with systemctl --user stop is still
+// enabled, so it reads as loaded and a failed upgrade's undo leaves the job it
+// started running; on macOS a unit on disk never bootstrapped reads as stopped,
+// so the undo's stop also disables it. The fake launchd does not model refusing a
+// disabled label.
 func serviceLoaded(goos string) bool {
 	if goos == "darwin" {
-		target := "gui/" + strconv.Itoa(os.Getuid()) + "/" + launchdLabel
-		return exec.Command("launchctl", "print", target).Run() == nil
+		gone, _ := labelGone("gui/" + strconv.Itoa(os.Getuid()) + "/" + launchdLabel) // not known: not gone
+		return !gone
 	}
 	if exec.Command("systemctl", "--user", "is-active", "--quiet", systemdUnit).Run() == nil {
 		return true
@@ -197,7 +219,9 @@ func (s serviceStep) apply(env *setupEnv, act *checklist.Running) (string, undo,
 	}
 	// A unit on disk whose job the supervisor does not have is what `agentop service
 	// stop` leaves. The install below loads the job, so the undo stops it again; the
-	// stop needs no binary, as the binaries undo runs after this one.
+	// stop needs no binary, as the binaries undo runs after this one. Accepted: a job
+	// loaded but not serving stays loaded as the install reloaded it; the undo puts
+	// back the unit file, not the definition the supervisor read from the new one.
 	stopped := unitSnap.existed && !env.priorService && !serviceLoaded(env.goos)
 	u := undo{label: "the service", fn: func() error {
 		if !unitSnap.existed {
@@ -230,17 +254,22 @@ func (s serviceStep) apply(env *setupEnv, act *checklist.Running) (string, undo,
 	default:
 		u.manual = unloadByHand(env, sp.unitFile)
 	}
-	if env.priorService {
-		env.priorDesc = "the previous Cortex is running again · healthy"
-		env.restorePrior = func() error {
-			if err := loadService(env.goos, sp, io.Discard); err != nil && !errors.Is(err, errLingerUnavailable) {
-				return err
-			}
-			if !waitHealthy(sp.healthURL, serviceReadyTimeout) {
-				return fmt.Errorf("it did not answer %s", sp.healthURL)
-			}
-			return nil
+	// Set below, once runServiceInstall has replaced the job: a failure before
+	// that leaves the previous Cortex serving, and a reload would only bounce it.
+	reloadPrior := func() error {
+		err := loadService(env.goos, sp, io.Discard)
+		if errors.Is(err, errLingerUnavailable) {
+			err = nil
 		}
+		if err == nil && !waitHealthy(sp.healthURL, serviceReadyTimeout) {
+			err = fmt.Errorf("it did not answer %s", sp.healthURL)
+		}
+		if err != nil && !fileExists(sp.unitFile) {
+			// The service undo could not put the unit back, so service restart has
+			// nothing to start; setup writes it again.
+			env.priorManual = "re-run agentop setup"
+		}
+		return err
 	}
 	if act != nil {
 		act.Wait("the proxy to answer /healthz", serviceReadyTimeout)
@@ -251,24 +280,31 @@ func (s serviceStep) apply(env *setupEnv, act *checklist.Running) (string, undo,
 	restart := env.opts.restart || env.configPinsChanged
 	mark := markLog(sp.logFile)
 	adopt := adoptablePID(sp)
-	adoptExe := sp.binary // or what it ran, where that can be told: v0.7.0's authbridge-proxy, say
+	adoptExe, adoptSeen := sp.binary, "" // or what it ran, where that can be told: v0.7.0's authbridge-proxy, say
 	if adopt > 0 {
-		if exe := setupPIDExePath(adopt); filepath.IsAbs(exe) {
-			adoptExe = exe
+		if adoptSeen = setupPIDExePath(adopt); filepath.IsAbs(adoptSeen) {
+			adoptExe = adoptSeen
 		}
 	}
 	res := runServiceInstall(sp, adopt, restart, false, &out, &errb)
+	switch {
+	case env.priorService:
+		if res.replaced {
+			env.priorDesc, env.restorePrior = "the previous Cortex is running again · healthy", reloadPrior
+		}
 	// The background proxy runServiceInstall stopped to put the service in its place.
 	// With no supervised Cortex to reload instead, a rollback starts it again. Only
 	// once it is gone: a failure before the stop leaves it running, and a second copy
-	// would take proxy.pid from it.
-	if adopt > 0 && env.restorePrior == nil && !alive(adopt) {
+	// would take proxy.pid from it. Asked up to a minute after the stop, so a live pid
+	// that now runs something else is gone too.
+	case adopt > 0 && (!alive(adopt) || setupPIDExePath(adopt) != adoptSeen):
 		env.priorDesc = "the previous background Cortex is running again"
 		env.priorManual = startByHand(env, adoptExe)
 		env.restorePrior = func() error {
 			// A new job the service undo could not remove (its unload refused, or its
-			// teardown not done in time) answers the health check a background copy
-			// would be judged by, and holds the ports that copy needs.
+			// teardown not done in time) holds the ports a background copy needs, or
+			// keeps retrying for them; healthy, it also answers the check that copy
+			// would be judged by.
 			if serviceLoaded(env.goos) {
 				return errors.New("the new service is still loaded, so a background copy would only fight it for the ports")
 			}
@@ -277,19 +313,26 @@ func (s serviceStep) apply(env *setupEnv, act *checklist.Running) (string, undo,
 		}
 	}
 	if res.exit != 0 {
+		// Accepted: a supervisor that refuses here (exitNoSupervisor, a bootstrap
+		// EIO) fails the step rather than falling back to a background proxy, and
+		// runServiceInstall's "start it yourself" stands above the rollback.
+		//
 		// Read now, before the rollback brings the previous Cortex back to write
-		// after them: these are the new version's lines.
+		// after them. They are what the log gained during the install: the new
+		// version's lines, after, on an upgrade over a serving Cortex, the old one's
+		// shutdown lines (accepted: they are not trimmed off).
 		reason, detail := lastAgentopError(errb.String())
-		for i, d := range detail {
+		kept := detail[:0]
+		for _, d := range detail {
 			if d == "Last log lines:" { // runServiceInstall's own tail, of the whole log
-				detail = detail[:i]
 				break
 			}
+			// The state it would show is the one the rollback leaves, not this failure.
+			if d != "agentop service status shows the current state." {
+				kept = append(kept, env.tildeText(d))
+			}
 		}
-		for i := range detail {
-			detail[i] = env.tildeText(detail[i])
-		}
-		detail = append(detail, logTail(env, sp.logFile, mark)...)
+		detail = append(kept, logTail(env, sp.logFile, mark)...)
 		return "", u, stepError{reason: env.tildeText(reason), detail: detail}
 	}
 	detail := supervisorName(env.goos)
@@ -301,7 +344,18 @@ func (s serviceStep) apply(env *setupEnv, act *checklist.Running) (string, undo,
 	default:
 		detail += " · started"
 	}
-	return detail, u, nil
+	return detail + stderrNotes(env, errb.String()), u, nil
+}
+
+// stderrNotes is what a step that applied wrote to stderr, such as service
+// install's linger caveat or its $HOME warning, as detail rows: each non-blank
+// line after a newline, without the "agentop: " prefix and with HOME as ~.
+func stderrNotes(env *setupEnv, stderr string) string {
+	var b strings.Builder
+	for _, l := range trimAll(strings.Split(stderr, "\n")) {
+		b.WriteString("\n" + env.tildeText(strings.TrimPrefix(l, "agentop: ")))
+	}
+	return b.String()
 }
 
 func (serviceStep) applyUnsupervised(env *setupEnv) (string, undo, error) {
@@ -322,6 +376,7 @@ func (serviceStep) applyUnsupervised(env *setupEnv) (string, undo, error) {
 			return "", undo{}, fmt.Errorf("could not stop the background proxy (pid %d): %w", old, err)
 		}
 		env.priorDesc = "the previous background Cortex is running again"
+		env.priorManual = startByHand(env, prior)
 		env.restorePrior = func() error {
 			_, _, err := startUnsupervised(prior, env.cortexDir, health)
 			return err
@@ -359,6 +414,10 @@ func (serviceStep) applyUnsupervised(env *setupEnv) (string, undo, error) {
 // proxy up to 20s to drain. It is an error if the job is still there after
 // serviceBootoutTimeout, so a service undo that returns nil means the job is gone.
 // systemd's disable --now returns once the unit has stopped.
+//
+// Accepted: the rollback shows no progress line while this waits, as an undo has
+// no line of its own to write one on; and a launchctl that cannot tell whether
+// the job is there (labelGone's not known) is waited out in full, then reported.
 func waitUnloaded(goos string) error {
 	if goos != "darwin" {
 		return nil
@@ -375,25 +434,37 @@ func waitUnloaded(goos string) error {
 // unloads by it, and systemd then rereads its unit files.
 func unloadByHand(env *setupEnv, unit string) string {
 	if env.goos == "darwin" {
-		return "launchctl bootout gui/$(id -u)/" + launchdLabel + "; rm -f " + env.tilde(unit)
+		return launchdBootout(launchdLabel) + "; rm -f " + env.tilde(unit)
 	}
 	return "systemctl --user disable --now " + systemdUnit + "; rm -f " + env.tilde(unit) + "; systemctl --user daemon-reload"
+}
+
+// launchdBootout is the command that boots label out of this user's launchd
+// domain. The uid is spelled out: fish before 3.4 cannot read $(id -u).
+func launchdBootout(label string) string {
+	return "launchctl bootout gui/" + strconv.Itoa(os.Getuid()) + "/" + label
 }
 
 // startByHand is the nearest a shell comes to startUnsupervised: bin in the
 // background, under nohup where startUnsupervised gives it a session of its own
 // (macOS has no setsid command), its output appended to proxy.log and its pid in
-// proxy.pid.
+// proxy.pid. It goes through sh -c, so it reads the same from any shell: fish has
+// no $!, and sh still expands the ~ in each path.
+//
+// The binary that ran, rather than `agentop setup --no-service`: the rollback has
+// just put back what was there, which for v0.7.0 is authbridge-proxy and no
+// agentop at all; and setup runs every step again, then starts ~/.local/bin/cortex
+// rather than the binary that ran.
 func startByHand(env *setupEnv, bin string) string {
-	return "nohup " + env.tilde(bin) + " --local --supervise >> " + env.tilde(filepath.Join(env.cortexDir, "proxy.log")) +
-		" 2>&1 & echo $! > " + env.tilde(filepath.Join(env.cortexDir, "proxy.pid"))
+	return "sh -c 'nohup " + env.tilde(bin) + " --local --supervise >> " + env.tilde(filepath.Join(env.cortexDir, "proxy.log")) +
+		" 2>&1 & echo $! > " + env.tilde(filepath.Join(env.cortexDir, "proxy.pid")) + "'"
 }
 
 // logTailLines caps the proxy.log rows under a failed start.
 const logTailLines = 5
 
 // logMark is where the proxy log ended before a start, so that a failure shows
-// what the start wrote rather than an older run's lines.
+// what the log gained since rather than an older run's lines.
 type logMark struct {
 	fi   os.FileInfo // nil when there was no log
 	size int64
@@ -409,30 +480,41 @@ func markLog(path string) logMark {
 
 // logTail is the last logTailLines non-blank lines the log at path gained since
 // m, as checklist detail rows: the first labelled proxy.log in the label column,
-// HOME shown as ~. A log rotated or truncated since m is read whole. It is nil
-// when the start wrote nothing or there is no log.
+// HOME shown as ~. A log rotated or truncated since m is read whole. A log that
+// gained nothing, or is not there, is one row saying so; one it could not read to
+// the end ends on a row saying why.
 func logTail(env *setupEnv, path string, m logMark) []string {
-	f, err := os.Open(path) //nolint:gosec // the service's own log
-	if err != nil {
-		return nil
-	}
-	defer func() { _ = f.Close() }()
-	if fi, err := f.Stat(); err == nil && m.fi != nil && os.SameFile(fi, m.fi) && fi.Size() >= m.size {
-		if _, err := f.Seek(m.size, io.SeekStart); err != nil {
-			return nil
-		}
-	}
 	var ring []string
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	for sc.Scan() {
-		if l := strings.TrimRight(sc.Text(), " \t\r"); strings.TrimSpace(l) != "" {
-			ring = append(ring, l)
-			if len(ring) > logTailLines {
-				ring = ring[1:]
+	f, err := os.Open(path) //nolint:gosec // the service's own log
+	switch {
+	case os.IsNotExist(err):
+	case err != nil:
+		ring = append(ring, "("+err.Error()+")")
+	default:
+		defer func() { _ = f.Close() }()
+		if fi, err := f.Stat(); err == nil && m.fi != nil && os.SameFile(fi, m.fi) && fi.Size() >= m.size {
+			if _, err := f.Seek(m.size, io.SeekStart); err != nil {
+				return nil
 			}
 		}
+		sc := bufio.NewScanner(f)
+		sc.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+		for sc.Scan() {
+			if l := strings.TrimRight(sc.Text(), " \t\r"); strings.TrimSpace(l) != "" {
+				ring = append(ring, l)
+				if len(ring) > logTailLines {
+					ring = ring[1:]
+				}
+			}
+		}
+		if err := sc.Err(); err != nil { // a line over 1 MiB, say: the rest goes unread
+			ring = append(ring, "(stopped reading: "+err.Error()+")")
+		}
 	}
+	if len(ring) == 0 {
+		ring = []string{"(it wrote nothing)"}
+	}
+	ring = ring[max(0, len(ring)-logTailLines):]
 	var rows []string
 	for i, l := range ring {
 		label := "" // the checklist's label column is 12 wide
@@ -446,6 +528,8 @@ func logTail(env *setupEnv, path string, m logMark) []string {
 
 // lastAgentopError picks runServiceInstall's failure out of what it wrote to
 // stderr: the last "agentop: " line is the reason, the lines after it the detail.
+// Accepted: the detail is capped at six lines; the log rows under it are
+// logTail's, so the cap cuts only runServiceInstall's own words.
 func lastAgentopError(s string) (string, []string) {
 	lines := tailLines(s, 1<<10)
 	for i := len(lines) - 1; i >= 0; i-- {

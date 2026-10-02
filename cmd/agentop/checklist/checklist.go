@@ -73,8 +73,12 @@ func (u *UI) Animated() bool { return u.animate }
 func (u *UI) println(s string) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
-	fmt.Fprintln(u.w, s)
+	u.write(s + "\n")
 }
+
+// write is every write to the screen; the caller holds u.mu. A write that fails
+// has nowhere better to be reported than the screen it failed on, so it is dropped.
+func (u *UI) write(s string) { _, _ = io.WriteString(u.w, s) }
 
 func pad(s string, n int) string {
 	if w := lipgloss.Width(s); w < n {
@@ -128,9 +132,13 @@ func (u *UI) Already(label, detail string) {
 func (u *UI) Advise(label, reason string, fix ...string) {
 	u.println(u.mark(u.warn, "!", label, reason))
 	for _, f := range fix {
-		u.println("      " + u.faint.Render("fix: ") + f)
+		u.Remedy("fix: ", f)
 	}
 }
+
+// Remedy is a command for the user to run, at a mark's detail indent: lead, such
+// as "fix: ", is faint and the command keeps its normal weight, to be read and typed.
+func (u *UI) Remedy(lead, cmd string) { u.println("      " + u.faint.Render(lead) + cmd) }
 
 // Fail marks a step that failed. Each detail is one line, printed under the mark:
 // lipgloss pads a multi-line string to its widest line, and only the first line
@@ -184,7 +192,7 @@ func (u *UI) Start(label string) *Running {
 	r.stop, r.stopped = make(chan struct{}), make(chan struct{})
 	u.mu.Lock()
 	if !u.cursorHidden {
-		fmt.Fprint(u.w, "\x1b[?25l")
+		u.write("\x1b[?25l")
 		u.cursorHidden = true
 	}
 	u.running = r
@@ -226,11 +234,11 @@ func (r *Running) draw(frame string) {
 	}
 	r.u.mu.Lock()
 	defer r.u.mu.Unlock()
-	fmt.Fprint(r.u.w, "\r\x1b[K  "+r.u.accent.Render(frame)+" "+pad(r.label, labelWidth)+" "+detail)
+	r.u.write("\r\x1b[K  " + r.u.accent.Render(frame) + " " + pad(r.label, labelWidth) + " " + detail)
 }
 
 // end stops the spinner and clears its line. It runs its body once, so a second
-// end (Close after Done, say) can neither close the channel twice nor clear twice.
+// end (Done after Close, say) can neither close the channel twice nor clear twice.
 func (r *Running) end() time.Duration {
 	r.ended.Do(func() {
 		if r.stop == nil {
@@ -239,7 +247,7 @@ func (r *Running) end() time.Duration {
 		close(r.stop)
 		<-r.stopped
 		r.u.mu.Lock()
-		fmt.Fprint(r.u.w, "\r\x1b[K")
+		r.u.write("\r\x1b[K")
 		r.u.running = nil
 		r.u.mu.Unlock()
 	})
@@ -265,7 +273,7 @@ func (u *UI) Close() {
 	u.mu.Lock()
 	defer u.mu.Unlock()
 	if u.cursorHidden {
-		fmt.Fprint(u.w, "\x1b[?25h")
+		u.write("\x1b[?25h")
 		u.cursorHidden = false
 	}
 }

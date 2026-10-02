@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"crypto/sha256"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -15,6 +16,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/rossoctl/cortex/cmd/agentop/checklist"
 )
 
 type setupScene struct {
@@ -26,6 +29,7 @@ type setupScene struct {
 // serves, and a terminal that answers yes.
 func newSetupScene(t *testing.T, healthz http.HandlerFunc) setupScene {
 	t.Helper()
+	plainOutput(t)
 	loaded := fakeSupervisor(t)
 	freePorts(t)
 	srv := httptest.NewServer(healthz)
@@ -113,7 +117,7 @@ func TestSetupFreshInstallEndToEnd(t *testing.T) {
 		"  ✓ config       ~/.cortex/config.yaml\n",
 		"  ✓ started      " + supervisorName(runtimeGOOS()) + " · healthy on 127.0.0.1:47600\n",
 		"  ✓ routed       Claude Code → Cortex\n",
-		"  cortex " + version + " ready.\n",
+		"  cortex v9.9.9 ready.\n", // the staged agentop's version
 		"    agentop        # watch your agent traffic live\n",
 		"  Undo any time: agentop service uninstall · agentop configure claude-code disable\n",
 	} {
@@ -132,7 +136,7 @@ func TestSetupReRunIsOneLine(t *testing.T) {
 		t.Fatalf("first run: %d\n%s", code, out)
 	}
 	code, out := sc.run(t, "--from", sc.stage, "--yes", "--claude-code")
-	if code != 0 || !strings.Contains(out, "  cortex "+version+" is installed and healthy.\n") || strings.Contains(out, "✓") {
+	if code != 0 || !strings.Contains(out, "  cortex v9.9.9 is installed and healthy.\n") || strings.Contains(out, "✓") {
 		t.Errorf("re-run exit %d:\n%s", code, out)
 	}
 }
@@ -188,10 +192,97 @@ func TestSetupUnsupervisedNamesTheStopCommand(t *testing.T) {
 			t.Errorf("output lacks %q:\n%s", want, out)
 		}
 	}
+	if strings.Contains(out, "agentop service uninstall") {
+		t.Errorf("the undo names service uninstall, which leaves a background proxy running:\n%s", out)
+	}
+}
+
+// donePlan is a step with nothing to do; prior says the service plan's health
+// check answered.
+type donePlan struct {
+	label  string
+	advice *problem
+	prior  bool
+}
+
+func (d donePlan) name() string { return d.label }
+
+func (d donePlan) plan(env *setupEnv) (stepPlan, *problem) {
+	env.priorService = env.priorService || d.prior
+	return stepPlan{label: d.label, done: true, doneMsg: "current", advice: d.advice}, nil
+}
+
+func (d donePlan) apply(*setupEnv, *checklist.Running) (string, undo, error) {
+	return "", undo{}, errors.New("a done step was applied")
+}
+
+// With nothing to change, setup says healthy only when a health check answered,
+// and still shows a step's advice.
+func TestSetupWithNothingToChangeSaysOnlyWhatItChecked(t *testing.T) {
+	path := &problem{reason: "~/.local/bin is not on PATH", fix: []string{"exec zsh"}}
+	for _, c := range []struct {
+		name  string
+		steps []step
+		want  string
+	}{
+		{"health answered", []step{donePlan{label: "started", prior: true}}, "  cortex " + version + " is installed and healthy.\n"},
+		{"found running, not asked", []step{donePlan{label: "started"}}, "  cortex " + version + " is installed and running.\n"},
+		{"advice", []step{donePlan{label: "PATH", advice: path}, donePlan{label: "started", prior: true}},
+			"  ! PATH         ~/.local/bin is not on PATH\n      fix: exec zsh\n\n  cortex " + version + " is installed and healthy.\n"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			sc := newSetupScene(t, ok200)
+			saved := setupStepsHook
+			setupStepsHook = func([]step) []step { return c.steps }
+			t.Cleanup(func() { setupStepsHook = saved })
+			if code, out := sc.run(t, "--yes"); code != 0 || !strings.HasSuffix(out, c.want) {
+				t.Errorf("exit %d, want the ending %q:\n%s", code, c.want, out)
+			}
+		})
+	}
+}
+
+// Without a PATH edit the commands are spelled out from ~, and a re-run keeps the
+// PATH advice rather than hiding it behind its one line.
+func TestSetupWithoutAPathEditSpellsOutTheCommand(t *testing.T) {
+	sc := newSetupScene(t, ok200)
+	code, out := sc.run(t, "--from", sc.stage, "--yes", "--no-modify-path")
+	if code != 0 || !strings.Contains(out, "\n    ~/.local/bin/agentop exec -- <cmd>        # send an agent through Cortex\n") {
+		t.Errorf("fresh install exit %d, want the command from ~:\n%s", code, out)
+	}
+	code, out = sc.run(t, "--from", sc.stage, "--yes", "--no-modify-path")
+	for _, want := range []string{"  ! PATH         ~/.local/bin is not on PATH — not editing dotfiles\n",
+		"      fix: export PATH=", "  cortex v9.9.9 is installed and healthy.\n"} {
+		if code != 0 || !strings.Contains(out, want) {
+			t.Errorf("re-run exit %d, output lacks %q:\n%s", code, want, out)
+		}
+	}
+}
+
+// An install-only run ends on the command left to run, setup, and on where it
+// can be run from.
+func TestSetupInstallOnlyEndsOnSetup(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"PATH added for new terminals", nil, "  Installed. Open a new terminal, then start Cortex with:  agentop setup\n"},
+		{"--no-modify-path", []string{"--no-modify-path"}, "  Installed. Start Cortex with:  ~/.local/bin/agentop setup\n"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			sc := newSetupScene(t, ok200)
+			code, out := sc.run(t, append([]string{"--from", sc.stage, "--yes", "--install-only"}, c.args...)...)
+			if code != 0 || !strings.HasSuffix(out, c.want) {
+				t.Errorf("exit %d, want the ending %q:\n%s", code, c.want, out)
+			}
+		})
+	}
 }
 
 // An upgrade keeps the old binaries in previous/ until every step has applied;
-// the success hooks then remove it.
+// the success hooks then remove it. Its lines name the staged version, not the
+// version of the agentop running setup.
 func TestSetupUpgradeRemovesPrevious(t *testing.T) {
 	sc := newSetupScene(t, ok200)
 	if code, out := sc.run(t, "--from", sc.stage, "--yes"); code != 0 {
@@ -199,11 +290,35 @@ func TestSetupUpgradeRemovesPrevious(t *testing.T) {
 	}
 	writeExe(t, filepath.Join(sc.stage, "agentop"), "#!/bin/sh\necho agentop v9.9.10\n")
 	code, out := sc.run(t, "--from", sc.stage, "--yes")
-	if code != 0 || !strings.Contains(out, "  ✓ installed    agentop, cortex v9.9.9 → "+version+"\n") {
+	if code != 0 {
 		t.Fatalf("upgrade exit %d:\n%s", code, out)
+	}
+	for _, want := range []string{"   v9.9.9 → v9.9.10 · ", "  ✓ installed    agentop, cortex v9.9.9 → v9.9.10\n", "  cortex v9.9.10 ready.\n"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the upgrade's output lacks %q:\n%s", want, out)
+		}
 	}
 	if _, err := os.Stat(filepath.Join(sc.home, ".cortex", "previous")); err == nil {
 		t.Error("a successful upgrade left previous/ behind")
+	}
+}
+
+// The header and the binaries plan both want the installed agentop's version, and
+// the header the staged one's: each binary runs once.
+func TestSetupAsksEachAgentopItsVersionOnce(t *testing.T) {
+	sc := newSetupScene(t, ok200)
+	if code, out := sc.run(t, "--from", sc.stage, "--yes"); code != 0 {
+		t.Fatalf("first run: %d\n%s", code, out)
+	}
+	calls := filepath.Join(t.TempDir(), "calls")
+	counting := func(name, v string) string {
+		return "#!/bin/sh\necho " + name + " >> '" + calls + "'\necho agentop " + v + "\n"
+	}
+	writeExe(t, filepath.Join(sc.home, ".local", "bin", "agentop"), counting("installed", "v9.9.9"))
+	writeExe(t, filepath.Join(sc.stage, "agentop"), counting("staged", "v9.9.10"))
+	code, out := sc.run(t, "--from", sc.stage, "--yes")
+	if b, _ := os.ReadFile(calls); code != 0 || string(b) != "installed\nstaged\n" {
+		t.Errorf("exit %d; the agentops ran %q, want each once:\n%s", code, b, out)
 	}
 }
 
@@ -288,7 +403,7 @@ func TestSetupASignalBeforeApplyChangesNothing(t *testing.T) {
 		t.Cleanup(func() { close(release) })
 		saved := setupConfirm
 		setupConfirm = func(w io.Writer) bool {
-			fmt.Fprint(w, "  Continue? [Y/n] ")
+			_, _ = fmt.Fprint(w, "  Continue? [Y/n] ")
 			if !subscribed.Load() {
 				t.Error("setup asks before it catches signals: a Ctrl-C now would kill it and leave the stage")
 			}

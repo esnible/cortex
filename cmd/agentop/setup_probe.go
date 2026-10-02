@@ -62,7 +62,9 @@ var procRoot = "/proc"
 // portHolder is install.sh's port_holder: the pid and executable listening on port.
 // It asks lsof for each bind address install.sh asks about, then ss when lsof is
 // absent or names no pid, as install.sh does: a sandbox can blind lsof. ok is
-// false unless both halves are known — never a placeholder.
+// false unless both halves are known — never a placeholder. Accepted: loopback
+// and wildcard binds only, as install.sh asks, so a forward port bound to a LAN
+// address is never found here.
 func portHolder(port string) (pid int, exe string, ok bool) {
 	if _, err := exec.LookPath("lsof"); err == nil {
 		for _, addr := range []string{"127.0.0.1", "[::1]", "0.0.0.0", "[::]"} {
@@ -123,6 +125,45 @@ func setupPIDExePath(pid int) string {
 		if f := strings.Fields(strings.SplitN(string(out), "\n", 2)[0]); len(f) > 0 {
 			return f[0]
 		}
+	}
+	return ""
+}
+
+// holderJob is the command that stops the supervisor job pid runs under, or ""
+// when it runs under none that can be found: on macOS a job `launchctl list`
+// gives pid for, on Linux the systemd service /proc's cgroup puts it in. Such a
+// job, KeepAlive or Restart=, may start again what a kill stops.
+func holderJob(goos string, pid int) string {
+	if goos == "darwin" {
+		out, err := exec.Command("launchctl", "list").Output()
+		if err != nil {
+			return ""
+		}
+		for _, line := range strings.Split(string(out), "\n") {
+			if f := strings.Fields(line); len(f) == 3 && f[0] == strconv.Itoa(pid) {
+				return launchdBootout(f[2])
+			}
+		}
+		return ""
+	}
+	b, err := os.ReadFile(filepath.Join(procRoot, strconv.Itoa(pid), "cgroup")) //nolint:gosec // /proc
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(b), "\n") {
+		// cgroup v2's "0::<path>", or v1's systemd hierarchy, "<n>:name=systemd:<path>".
+		f := strings.SplitN(line, ":", 3)
+		if len(f) != 3 || f[1] != "" && f[1] != "name=systemd" {
+			continue
+		}
+		unit := filepath.Base(f[2])
+		if !strings.HasSuffix(unit, ".service") || strings.HasPrefix(unit, "user@") {
+			continue
+		}
+		if strings.Contains(f[2], "/user@") {
+			return "systemctl --user disable --now " + unit
+		}
+		return "sudo systemctl disable --now " + unit
 	}
 	return ""
 }

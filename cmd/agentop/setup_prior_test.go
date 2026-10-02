@@ -424,13 +424,13 @@ func TestSetupRollbackReportsAServiceItCouldNotUnload(t *testing.T) {
 	}
 	unload := "systemctl --user disable --now cortex.service; rm -f ~/.config/systemd/user/cortex.service; systemctl --user daemon-reload"
 	if runtimeGOOS() == "darwin" {
-		unload = "launchctl bootout gui/$(id -u)/io.rossoctl.cortex; rm -f ~/Library/LaunchAgents/io.rossoctl.cortex.plist"
+		unload = "launchctl bootout gui/" + strconv.Itoa(os.Getuid()) + "/io.rossoctl.cortex; rm -f ~/Library/LaunchAgents/io.rossoctl.cortex.plist"
 	}
 	for _, want := range []string{
 		"    could not roll back the service: ",
 		"unload refused\n      do it yourself: " + unload + "\n",
 		"    could not roll back the previous Cortex: the new service is still loaded, so a background copy would only fight it for the ports\n" +
-			"      do it yourself: nohup ~/.local/bin/cortex --local --supervise >> ~/.cortex/proxy.log 2>&1 & echo $! > ~/.cortex/proxy.pid\n",
+			"      do it yourself: sh -c 'nohup ~/.local/bin/cortex --local --supervise >> ~/.cortex/proxy.log 2>&1 & echo $! > ~/.cortex/proxy.pid'\n",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("the rollback does not report %q:\n%s", want, out)

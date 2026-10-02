@@ -64,7 +64,7 @@ func TestPathStepPlans(t *testing.T) {
 		if !p.done || p.advice == nil {
 			t.Fatalf("plan = %+v, want done with advice", p)
 		}
-		if want := "~/.zshrc is not writable; add ~/.local/bin to PATH yourself"; p.advice.reason != want {
+		if want := "~/.zshrc is not writable (permission denied); add ~/.local/bin to PATH yourself"; p.advice.reason != want {
 			t.Errorf("advice = %q, want %q", p.advice.reason, want)
 		}
 		if len(p.advice.fix) != 1 || p.advice.fix[0] != exportLine(env.binDir) {
@@ -74,6 +74,37 @@ func TestPathStepPlans(t *testing.T) {
 			t.Errorf("a read-only profile set binOnPathNewTerms=%v pathProfile=%q", env.binOnPathNewTerms, env.pathProfile)
 		}
 	})
+	// apply renames a temp file into the target's directory, and writes the .bak
+	// beside the profile, so a writable file in a read-only directory is advice too.
+	for _, tc := range []struct{ name, readOnly string }{
+		{"a writable link target in a read-only directory advises", "dotfiles"},
+		{"a link from a read-only home advises", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if os.Geteuid() == 0 {
+				t.Skip("root can write a read-only directory")
+			}
+			env := newTestSetupEnv(t)
+			real := filepath.Join(env.home, "dotfiles", "zshrc")
+			if tc.readOnly == "" {
+				real = filepath.Join(t.TempDir(), "dotfiles", "zshrc")
+			}
+			writeExe(t, real, "x\n")
+			mustSymlink(t, real, filepath.Join(env.home, ".zshrc"))
+			dir := filepath.Join(env.home, tc.readOnly)
+			if err := os.Chmod(dir, 0o555); err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+			p, prob := pathStep{}.plan(env)
+			if prob != nil || !p.done || p.advice == nil {
+				t.Fatalf("plan = %+v %v, want done with advice", p, prob)
+			}
+			if !strings.Contains(p.advice.reason, " is not writable (permission denied); add ~/.local/bin to PATH yourself") {
+				t.Errorf("advice = %q, want checkWritable's reason", p.advice.reason)
+			}
+		})
+	}
 }
 
 func TestPathStepAppendsTheBlockAndUndoes(t *testing.T) {
@@ -110,6 +141,40 @@ func TestPathStepAppendsTheBlockAndUndoes(t *testing.T) {
 	}
 	if _, err := os.Stat(rc + ".bak"); err == nil {
 		t.Error("undo left the .bak it created")
+	}
+}
+
+// A write the directory refused changed nothing, so the undo puts back only the
+// .bak it wrote: rewriting the unchanged profile there would fail as well.
+func TestPathStepUndoAfterARefusedWriteRestoresOnlyWhatItWrote(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root can write a read-only directory")
+	}
+	env := newTestSetupEnv(t)
+	dots := filepath.Join(env.home, "dotfiles")
+	writeExe(t, filepath.Join(dots, "zshrc"), "x\n")
+	rc := filepath.Join(env.home, ".zshrc")
+	mustSymlink(t, filepath.Join(dots, "zshrc"), rc)
+	if err := os.Chmod(dots, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dots, 0o755) })
+	env.pathProfile = rc // past plan, which advises on the read-only directory
+	_, u, err := pathStep{}.apply(env, nil)
+	if err == nil {
+		t.Fatal("writing into a read-only directory succeeded")
+	}
+	if _, err := os.Lstat(rc + ".bak"); err != nil {
+		t.Fatalf("fixture: the .bak was not written before the refused write: %v", err)
+	}
+	if err := u.fn(); err != nil {
+		t.Errorf("undo after a refused write reported %v, though nothing it wrote is left", err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(dots, "zshrc")); string(b) != "x\n" {
+		t.Errorf("profile = %q", b)
+	}
+	if _, err := os.Lstat(rc + ".bak"); err == nil {
+		t.Error("undo left the .bak it wrote")
 	}
 }
 
@@ -183,6 +248,16 @@ func TestPathStepAppendsThroughADanglingProfileLink(t *testing.T) {
 		checkAppendsThroughLinks(t, env, filepath.Join(env.home, "dotfiles", "zshrc.real"),
 			map[string]string{rc: "dotfiles/zshrc", mid: "zshrc.real"})
 	})
+	t.Run("a link into a missing directory", func(t *testing.T) {
+		env := newTestSetupEnv(t)
+		rc := filepath.Join(env.home, ".zshrc")
+		mustSymlink(t, "dotfiles/sub/zshrc", rc)
+		checkAppendsThroughLinks(t, env, filepath.Join(env.home, "dotfiles", "sub", "zshrc"),
+			map[string]string{rc: "dotfiles/sub/zshrc"})
+		if _, err := os.Lstat(filepath.Join(env.home, "dotfiles")); err == nil {
+			t.Error("undo left the directories made for the target")
+		}
+	})
 }
 
 func checkAppendsThroughLinks(t *testing.T, env *setupEnv, target string, links map[string]string) {
@@ -225,14 +300,35 @@ func checkAppendsThroughLinks(t *testing.T, env *setupEnv, target string, links 
 }
 
 // A link loop leads to no file, so there is nothing to append to: install.sh's
-// >> fails, and setup refuses rather than replace the link.
+// >> fails. setup refuses it in plan, so the run stops before any step changes
+// anything, and in readable words when the loop is in a directory link.
 func TestPathStepRefusesAProfileLinkLoop(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		links [][2]string // link (under home) and its target text
+	}{
+		{"the profile links to itself", [][2]string{{".zshrc", ".zshrc"}}},
+		{"through a directory that links to itself", [][2]string{{"loop", "loop"}, {".zshrc", "loop/zshrc"}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env := newTestSetupEnv(t)
+			for _, l := range tc.links {
+				mustSymlink(t, l[1], filepath.Join(env.home, l[0]))
+			}
+			_, prob := pathStep{}.plan(env)
+			if prob == nil || prob.reason != "~/.zshrc is a symlink loop; not editing it" {
+				t.Fatalf("plan problem = %+v, want a symlink-loop refusal", prob)
+			}
+			if len(prob.fix) != 1 || prob.fix[0] != exportLine(env.binDir) {
+				t.Errorf("fix = %q, want the export line", prob.fix)
+			}
+		})
+	}
+	// apply still refuses a loop that plan did not see.
 	env := newTestSetupEnv(t)
 	rc := filepath.Join(env.home, ".zshrc")
 	mustSymlink(t, ".zshrc", rc)
-	if _, prob := (pathStep{}).plan(env); prob != nil {
-		t.Fatal(prob)
-	}
+	env.pathProfile = rc
 	if _, _, err := (pathStep{}).apply(env, nil); err == nil {
 		t.Error("apply wrote through a symlink loop")
 	}
@@ -281,6 +377,9 @@ func TestPathStepFollowsTheKernelThroughLinkedDirectories(t *testing.T) {
 		{"a link whose own text climbs out of a linked directory",
 			[][2]string{{"alias", "real/dots"}, {".zshrc", "alias/../zshrc"}},
 			true, "real/zshrc", "zshrc"},
+		{"the same link to a missing file",
+			[][2]string{{"alias", "real/dots"}, {".zshrc", "alias/../zshrc"}},
+			false, "real/zshrc", "zshrc"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			env := newTestSetupEnv(t)

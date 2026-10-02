@@ -14,7 +14,12 @@ import (
 	"github.com/muesli/termenv"
 )
 
+// noForcedColour clears CLICOLOR_FORCE, which makes termenv colour a writer that
+// is not a terminal, for a test that asserts what such a writer gets.
+func noForcedColour(t *testing.T) { t.Setenv("CLICOLOR_FORCE", "") }
+
 func TestPlainLines(t *testing.T) {
+	noForcedColour(t)
 	var b bytes.Buffer
 	u := New(&b, false)
 	u.Header("rosso cortex · setup", "dev · darwin/arm64")
@@ -54,6 +59,7 @@ func TestPlainLines(t *testing.T) {
 }
 
 func TestPlainModeHasNoControlBytes(t *testing.T) {
+	noForcedColour(t)
 	var b bytes.Buffer
 	u := New(&b, false)
 	r := u.Start("started")
@@ -82,7 +88,32 @@ func TestColourWhenTheProfileAllowsIt(t *testing.T) {
 	}
 }
 
+// A remedy's command keeps its normal weight, as Advise's fix does: only the lead
+// is faint.
+func TestARemedyLeavesItsCommandUnstyled(t *testing.T) {
+	var b bytes.Buffer
+	r := lipgloss.NewRenderer(&b)
+	r.SetColorProfile(termenv.ANSI256)
+	u := newUI(&b, false, r)
+	u.Remedy("do it yourself: ", "agentop service restart")
+	u.Advise("PATH", "not on PATH", "exec zsh")
+	lines := strings.Split(b.String(), "\n")
+	if len(lines) != 4 || !strings.Contains(lines[0], "\x1b[") {
+		t.Fatalf("want 3 lines, the lead coloured under ANSI256: %q", b.String())
+	}
+	// The faint lead's reset sequence ends in m; a styled command would end in one too.
+	for _, c := range []struct{ line, cmd string }{{lines[0], "agentop service restart"}, {lines[2], "exec zsh"}} {
+		if !strings.HasSuffix(c.line, "m"+c.cmd) {
+			t.Errorf("the command is styled, not left at normal weight after the faint lead: %q", c.line)
+		}
+	}
+	if got := ansi.Strip(lines[0]); got != "      do it yourself: agentop service restart" {
+		t.Errorf("remedy text = %q", got)
+	}
+}
+
 func TestAnimatedRunningLineResolvesAndRestoresTheCursor(t *testing.T) {
+	noForcedColour(t)
 	var b bytes.Buffer
 	u := New(&b, true)
 	r := u.Start("started")
@@ -137,6 +168,7 @@ func TestCloseStopsARunningSpinnerAndClearsItsLine(t *testing.T) {
 }
 
 func TestColourFollowsTheWriterNotTheDefaultRenderer(t *testing.T) {
+	noForcedColour(t)
 	prev := lipgloss.DefaultRenderer()
 	t.Cleanup(func() { lipgloss.SetDefaultRenderer(prev) })
 	d := lipgloss.NewRenderer(io.Discard)

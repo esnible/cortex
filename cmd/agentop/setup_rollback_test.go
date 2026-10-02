@@ -46,13 +46,18 @@ func TestSetupRollsBackAFailureAtEachStep(t *testing.T) {
 		{"config", "rolled back  the changes above are undone"},
 		{"started", "rolled back  the changes above are undone"},
 		{"routed", "rolled back  the changes above are undone"},
+		{"late step", "rolled back  the changes above are undone"}, // after routed: its undo runs too
 	} {
 		t.Run(tc.label, func(t *testing.T) {
 			sc := newSetupScene(t, ok200)
 			writeExe(t, filepath.Join(sc.home, ".zshrc"), "alias ll='ls -l'\n")
 			writeExe(t, filepath.Join(sc.home, settingsRel), `{"model":"opus"}`)
 			before := homeFiles(t, sc.home)
-			failAt(t, tc.label)
+			if tc.label == "late step" {
+				failLast(t)
+			} else {
+				failAt(t, tc.label)
+			}
 			code, out := sc.run(t, "--from", sc.stage, "--yes", "--claude-code")
 			if code != 1 || !strings.Contains(out, "  ✗ "+tc.label) || !strings.Contains(out, tc.rolledBack) {
 				t.Fatalf("exit %d:\n%s", code, out)
@@ -140,8 +145,18 @@ func brokenRelease(t *testing.T, sc setupScene) (string, []byte) {
 	return next, old
 }
 
+// shortReadyTimeout cuts serviceReadyTimeout for a test whose start never
+// answers, which would otherwise wait the full 15s.
+func shortReadyTimeout(t *testing.T) {
+	t.Helper()
+	saved := serviceReadyTimeout
+	serviceReadyTimeout = 2 * time.Second
+	t.Cleanup(func() { serviceReadyTimeout = saved })
+}
+
 // An upgrade whose new cortex never answers puts the old one back, serving.
 func TestSetupFailedUpgradeRevertsToThePreviousVersion(t *testing.T) {
+	shortReadyTimeout(t)
 	sc, running := newUpgradeScene(t)
 	before := homeFiles(t, sc.home)
 	next, old := brokenRelease(t, sc)
@@ -183,6 +198,7 @@ func TestSetupFailedUpgradeRevertsToThePreviousVersion(t *testing.T) {
 // stopped. The failed install loaded the new job; left loaded, it would undo the
 // user's stop and run again at the next login.
 func TestSetupFailedUpgradeLeavesAStoppedServiceStopped(t *testing.T) {
+	shortReadyTimeout(t)
 	sc, _ := newUpgradeScene(t)
 	sp, err := resolveServicePaths(filepath.Join(sc.home, ".cortex", "config.yaml"), "",
 		filepath.Join(sc.home, ".local", "bin", "cortex"))

@@ -2,6 +2,8 @@ package main
 
 import (
 	"bufio"
+	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -34,9 +36,13 @@ Ctrl-C undoes what it did. Without --from it repairs what is installed.
   --no-modify-path   never edit a shell profile
   --restart          restart the service even when nothing changed
 
-Exit status: 0 done or already current, 1 failed (and rolled back), 2 usage,
-3 declined, interrupted before any change, or no terminal to ask on.
+Exit status: 0 done or already current, 1 failed (and rolled back) or refused
+before any change, 2 usage, 3 declined, interrupted before any change, or no
+terminal to ask on.
 `
+
+// A Go panic exits 2 too, the runtime's own code, so it reads as a usage error.
+// Accepted: setup recovers nothing, and either way the run did not apply.
 
 // setupStepsHook lets tests inject a failure into the real step list.
 var setupStepsHook = func(s []step) []step { return s }
@@ -65,6 +71,7 @@ var setupConfirm = func(w io.Writer) bool {
 
 // setupSignals is the channel Ctrl-C and SIGTERM arrive on, and the func that
 // stops them arriving. A var so tests can send one without signalling themselves.
+// Only those two: a SIGHUP, from a terminal closed mid-run, still kills setup.
 var setupSignals = func() (<-chan os.Signal, func()) {
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
@@ -74,7 +81,7 @@ var setupSignals = func() (<-chan os.Signal, func()) {
 // setupConfirmFrom reads the answer. Enter means yes: the user typed the install
 // command and the list of changes is right above the prompt. EOF is not consent.
 func setupConfirmFrom(r io.Reader, w io.Writer) bool {
-	fmt.Fprint(w, "  Continue? [Y/n] ")
+	_, _ = fmt.Fprint(w, "  Continue? [Y/n] ")
 	line, err := bufio.NewReader(r).ReadString('\n')
 	if err != nil && line == "" {
 		return false
@@ -86,10 +93,15 @@ func setupConfirmFrom(r io.Reader, w io.Writer) bool {
 	return false
 }
 
+// parseSetupFlags parses setup's flags. A request for help, -h or --help as a
+// flag or help as an argument, is flag.ErrHelp; any other error has been written
+// to stderr with the usage.
 func parseSetupFlags(args []string, stderr io.Writer) (setupOptions, error) {
 	var o setupOptions
 	fs := newFlagSet("setup", stderr)
-	fs.Usage = func() { fmt.Fprint(stderr, setupUsage) }
+	// Printed from Parse's result, as cmd_pipeline's is: Usage fires for -h and for
+	// a bad flag alike, and help belongs on stdout.
+	fs.Usage = func() {}
 	fs.StringVar(&o.from, "from", "", "")
 	fs.BoolVar(&o.claudeCode, "claude-code", false, "")
 	fs.BoolVar(&o.yes, "yes", false, "")
@@ -102,10 +114,18 @@ func parseSetupFlags(args []string, stderr io.Writer) (setupOptions, error) {
 	fs.IntVar(&o.handoffSeconds, "handoff-seconds", 0, "")
 	_ = fs.Bool("local", false, "") // install.sh passes it; local is the only mode
 	if err := fs.Parse(args); err != nil {
+		if !errors.Is(err, flag.ErrHelp) {
+			_, _ = fmt.Fprint(stderr, setupUsage) // under Parse's own line
+		}
 		return o, err
 	}
+	if fs.Arg(0) == "help" {
+		return o, flag.ErrHelp
+	}
 	if fs.NArg() > 0 {
-		return o, fmt.Errorf("unexpected argument %q", fs.Arg(0))
+		err := fmt.Errorf("unexpected argument %q", fs.Arg(0))
+		_, _ = fmt.Fprintf(stderr, "agentop: %v\n%s", err, setupUsage)
+		return o, err
 	}
 	return o, nil
 }
@@ -142,13 +162,12 @@ func buildSetupSteps(env *setupEnv) []step {
 }
 
 func runSetup(args []string, stdout, stderr io.Writer) int {
-	for _, a := range args {
-		if a == "-h" || a == "--help" || a == "help" {
-			fmt.Fprint(stdout, setupUsage)
-			return 0
-		}
-	}
+	// Help returns before the staging dir's defer: install.sh probes with --help.
 	opts, err := parseSetupFlags(args, stderr)
+	if errors.Is(err, flag.ErrHelp) {
+		_, _ = fmt.Fprint(stdout, setupUsage)
+		return 0
+	}
 	if err != nil {
 		return 2 // flags that did not parse name no stage, so it stays
 	}
@@ -163,7 +182,7 @@ func runSetup(args []string, stdout, stderr io.Writer) int {
 	}
 	env, err := newSetupEnv(opts)
 	if err != nil {
-		fmt.Fprintf(stderr, "agentop: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "agentop: %v\n", err)
 		return 1
 	}
 	ui := checklist.New(stdout, isTerminal(stdout))
@@ -186,22 +205,35 @@ func runSetup(args []string, stdout, stderr io.Writer) int {
 	}
 	if len(problems) > 0 {
 		for _, p := range problems {
-			fix := make([]string, 0, len(p.fix))
+			ui.Fail(p.label, p.reason)
 			for _, f := range p.fix {
-				fix = append(fix, "fix: "+f)
+				ui.Remedy("fix: ", f)
 			}
-			ui.Fail(p.label, p.reason, fix...)
 		}
 		ui.Blank()
 		ui.Plain("Nothing was changed.")
 		return 1
 	}
 	if allDone(planned) {
-		if opts.installOnly {
-			ui.Plain(fmt.Sprintf("cortex %s is installed.", version))
-		} else {
-			ui.Plain(fmt.Sprintf("cortex %s is installed and healthy.", version))
+		// Nothing to change, but advice still stands: a PATH this shell lacks, say.
+		advised := false
+		for _, p := range planned {
+			if a := p.p.advice; a != nil && !p.p.hidden {
+				ui.Advise(p.p.label, a.reason, a.fix...)
+				advised = true
+			}
 		}
+		if advised {
+			ui.Blank()
+		}
+		state := "installed and running" // a background or supervised proxy alive, not asked
+		switch {
+		case opts.installOnly:
+			state = "installed"
+		case env.priorService: // the service plan's health check answered
+			state = "installed and healthy"
+		}
+		ui.Plain(fmt.Sprintf("cortex %s is %s.", env.newVersion(), state))
 		return 0
 	}
 	if !opts.yes {
@@ -245,7 +277,8 @@ func runSetup(args []string, stdout, stderr io.Writer) int {
 
 // downloadSize is the installer's byte count in decimal units, as the TUI's
 // formatBytes shows one: a download under a megabyte in kB, so it never reads as
-// "0.0 MB", and the tier promoted where the rounding carries, so none prints 1000.0.
+// "0.0 MB", and kB promoted to MB where the rounding carries, so it never reads as
+// "1000.0 kB". MB is the last tier: a gigabyte prints as 1000.0 MB.
 func downloadSize(n int64) string {
 	switch {
 	case n < 1000:
@@ -261,8 +294,10 @@ func printSetupHeader(env *setupEnv, ui *checklist.UI) {
 	if env.opts.fromInstaller() {
 		title = "rosso cortex · installer"
 	}
-	right := version + " · " + env.goos + "/" + runtime.GOARCH
-	if prev := installedVersion(filepath.Join(env.binDir, "agentop")); env.fromDir != "" && prev != "" && prev != version {
+	env.readVersions()
+	next := env.newVersion()
+	right := next + " · " + env.goos + "/" + runtime.GOARCH
+	if prev := env.installedVersion; env.fromDir != "" && prev != "" && prev != next {
 		right = prev + " → " + right
 	}
 	if env.fromDir != "" && !env.opts.fromInstaller() {
@@ -271,13 +306,22 @@ func printSetupHeader(env *setupEnv, ui *checklist.UI) {
 	ui.Header(title, right)
 }
 
+// stopBackgroundByHand stops the background proxy proxy.pid records.
+func stopBackgroundByHand(env *setupEnv) string {
+	return "kill $(cat " + env.tilde(filepath.Join(env.cortexDir, "proxy.pid")) + ")"
+}
+
 // undoHint names the commands that undo this run, as of PR 2; PR 3's
-// `agentop uninstall` replaces it.
+// `agentop uninstall` replaces it. A proxy run without a supervisor is stopped
+// by its pidfile: service uninstall would leave it running.
 func undoHint(env *setupEnv) string {
 	if env.opts.installOnly {
 		return ""
 	}
 	hint := "Undo any time: agentop service uninstall"
+	if env.unsupervised {
+		hint = "Undo any time: " + stopBackgroundByHand(env)
+	}
 	if env.opts.claudeCode {
 		hint += " · agentop configure claude-code disable"
 	}
@@ -287,16 +331,20 @@ func undoHint(env *setupEnv) string {
 func printSetupEnding(env *setupEnv, ui *checklist.UI, took time.Duration) {
 	agentop := "agentop"
 	if !env.binOnPath && !env.binOnPathNewTerms {
-		agentop = filepath.Join(env.binDir, "agentop")
+		agentop = env.tilde(filepath.Join(env.binDir, "agentop"))
 	}
 	if env.opts.installOnly {
 		ui.Blank()
+		if !env.binOnPath && env.binOnPathNewTerms { // the PATH edit reaches new terminals only
+			ui.Plain("Installed. Open a new terminal, then start Cortex with:  " + agentop + " setup")
+			return
+		}
 		ui.Plain("Installed. Start Cortex with:  " + agentop + " setup")
 		return
 	}
-	ready := "cortex " + version + " ready."
+	ready := "cortex " + env.newVersion() + " ready."
 	if ui.Animated() {
-		ready = "cortex " + version + " ready in " + checklist.FormatDuration(took)
+		ready = "cortex " + env.newVersion() + " ready in " + checklist.FormatDuration(took)
 	}
 	if !env.freshInstall {
 		ui.Blank()
@@ -316,7 +364,10 @@ func printSetupEnding(env *setupEnv, ui *checklist.UI, took time.Duration) {
 	ui.Next("Open a new terminal, then:", cmd, comment)
 	ui.Blank()
 	if env.startedBackground {
-		ui.Faint("Cortex runs without a supervisor here; stop it with: kill $(cat ~/.cortex/proxy.pid)")
+		ui.Faint("Cortex runs without a supervisor here; stop it with: " + stopBackgroundByHand(env))
+		if !env.opts.claudeCode {
+			return // the undo hint would name the same stop, and nothing else
+		}
 	}
 	ui.Faint(undoHint(env))
 }
@@ -345,7 +396,9 @@ func installerStage(opts setupOptions) string {
 
 // isStagingDir reports whether dir is one the installer staged into — strictly
 // inside $TMPDIR, /tmp or ~/.cortex/tmp — and so one setup may delete. A source
-// tree's ./bin never is.
+// tree's ./bin never is, nor is anything under a TMPDIR of / or $HOME, which
+// would hold every such tree. Without an absolute HOME there is no ~/.cortex/tmp:
+// joined to "", it would be a .cortex/tmp under the working directory.
 func isStagingDir(dir, home string) bool {
 	if dir == "" {
 		return false
@@ -354,9 +407,14 @@ func isStagingDir(dir, home string) bool {
 	if err != nil {
 		return false
 	}
-	for _, root := range append(systemTempRoots(), filepath.Join(home, ".cortex", "tmp")) {
+	roots := systemTempRoots()
+	if filepath.IsAbs(home) {
+		roots = append(roots, filepath.Join(home, ".cortex", "tmp"))
+	}
+	realHome, _ := filepath.EvalSymlinks(home)
+	for _, root := range roots {
 		r, err := filepath.EvalSymlinks(root)
-		if err != nil {
+		if err != nil || r == "/" || r == realHome {
 			continue
 		}
 		rel, err := filepath.Rel(r, real)

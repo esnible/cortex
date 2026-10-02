@@ -36,6 +36,7 @@ type fakeStep struct {
 	noUndo   bool   // apply changed nothing, so it returns an empty undo
 	manual   string // the undo's do-it-yourself line
 	priorErr error  // what restorePrior returns
+	bareUndo bool   // the undo carries no label of its own
 }
 
 func (f fakeStep) name() string { return f.label }
@@ -58,7 +59,11 @@ func (f fakeStep) apply(env *setupEnv, _ *checklist.Running) (string, undo, erro
 	if f.noUndo {
 		return "did " + f.label, undo{label: f.label}, f.applyErr
 	}
-	return "did " + f.label, undo{label: f.label, fn: func() error {
+	label := f.label
+	if f.bareUndo {
+		label = ""
+	}
+	return "did " + f.label, undo{label: label, fn: func() error {
 		*f.log = append(*f.log, "undo "+f.label)
 		return f.undoErr
 	}, manual: f.manual}, f.applyErr
@@ -66,6 +71,7 @@ func (f fakeStep) apply(env *setupEnv, _ *checklist.Running) (string, undo, erro
 
 func run(t *testing.T, env *setupEnv, steps []step, sig <-chan os.Signal) (bool, string) {
 	t.Helper()
+	plainOutput(t)
 	ps, probs := planSteps(env, steps)
 	if len(probs) > 0 {
 		t.Fatalf("unexpected problems: %v", probs)
@@ -358,6 +364,80 @@ func TestTildeTextShortensOnlyWholeHomePaths(t *testing.T) {
 	} {
 		if got := env.tildeText(in); got != want {
 			t.Errorf("tildeText(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// An undo with no label of its own is named after its step, in the rollback's
+// lines as on the checklist.
+func TestAnUnlabelledUndoTakesItsStepsLabel(t *testing.T) {
+	var log []string
+	env := newTestSetupEnv(t)
+	_, out := run(t, env, []step{
+		fakeStep{label: "a", log: &log, bareUndo: true},
+		fakeStep{label: "b", log: &log, bareUndo: true, undoErr: errors.New("busy")},
+		fakeStep{label: "z", log: &log, applyErr: errors.New("boom")},
+	}, nil)
+	for _, want := range []string{"    could not roll back b: busy\n", "    undone       a\n"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("an unlabelled undo is not named after its step, %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestErrorLinesSkipsEmptyLines(t *testing.T) {
+	for _, c := range []struct {
+		in, reason string
+		rest       []string
+	}{
+		{"boom", "boom", nil},
+		{"write failed\nrename failed\n", "write failed", []string{"rename failed"}},
+		{"write failed\n\nrename failed", "write failed", []string{"rename failed"}},
+		{"\nwrite failed\nrename failed", "write failed", []string{"rename failed"}},
+		{"", "", nil},
+	} {
+		reason, rest := errorLines(errors.New(c.in))
+		if reason != c.reason || !slices.Equal(rest, c.rest) {
+			t.Errorf("errorLines(%q) = %q %q, want %q %q", c.in, reason, rest, c.reason, c.rest)
+		}
+	}
+}
+
+// notedStep applies with a detail of more than one line, as a step that passes
+// on a warning does.
+type notedStep struct{ detail string }
+
+func (notedStep) name() string { return "noted" }
+
+func (notedStep) plan(*setupEnv) (stepPlan, *problem) {
+	return stepPlan{verb: "do", what: "noted", where: "here"}, nil
+}
+
+func (n notedStep) apply(*setupEnv, *checklist.Running) (string, undo, error) {
+	return n.detail, undo{}, nil
+}
+
+// A detail's lines after its first are rows of their own under the ✓ line, at
+// Fail's detail indent: one marked line, not a line break inside it.
+func TestADetailsLaterLinesAreRowsUnderIt(t *testing.T) {
+	ok, out := run(t, newTestSetupEnv(t), []step{notedStep{"done\nwatch out\n\nreally"}}, nil)
+	want := "  ✓ noted        done\n      watch out\n      really\n"
+	if !ok || out != want {
+		t.Errorf("ok=%v, output %q, want %q", ok, out, want)
+	}
+}
+
+// Whole-path means whole in s itself: HOME straight after a shortened HOME is
+// inside that path, not a second one. A byte of 0x80 or more is part of a name,
+// and a HOME with a trailing slash still shortens.
+func TestTildeTextReadsBytesAsTheyStandInTheLine(t *testing.T) {
+	for _, tc := range []struct{ home, in, want string }{
+		{"/Users/al", "/Users/al/Users/al/x", "~/Users/al/x"},
+		{"/Users/al", "/Users/alé/x and /Users/al/y", "/Users/alé/x and ~/y"},
+		{"/Users/al/", "open /Users/al/x", "open ~/x"},
+	} {
+		if got := (&setupEnv{home: tc.home}).tildeText(tc.in); got != tc.want {
+			t.Errorf("HOME %s: tildeText(%q) = %q, want %q", tc.home, tc.in, got, tc.want)
 		}
 	}
 }

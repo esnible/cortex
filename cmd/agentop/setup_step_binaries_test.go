@@ -65,6 +65,9 @@ func TestBinariesUpgradeKeepsThePreviousUntilUndoneOrDone(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(env.previousDir(), "cortex")); err == nil {
 		t.Error("undo left its copy in previous/")
 	}
+	if _, err := os.Stat(env.previousDir()); err == nil {
+		t.Error("undo left the previous/ it made")
+	}
 
 	// Done: once every step has applied, onSuccess drops previous/.
 	env.onSuccess = nil
@@ -76,6 +79,82 @@ func TestBinariesUpgradeKeepsThePreviousUntilUndoneOrDone(t *testing.T) {
 	}
 	if _, err := os.Stat(env.previousDir()); err == nil {
 		t.Error("onSuccess left previous/")
+	}
+}
+
+// A failure part way through puts back each binary the step had replaced, the one
+// it failed on included, and leaves no previous/ behind.
+func TestBinariesUndoAfterAPartialFailureRestoresEach(t *testing.T) {
+	env := newTestSetupEnv(t)
+	writeExe(t, filepath.Join(env.binDir, "agentop"), "#!/bin/sh\necho agentop v1.0.0\n")
+	writeExe(t, filepath.Join(env.binDir, "cortex"), "#!/bin/sh\necho cortex v1.0.0\n")
+	env.fromDir = stageDir(t, "#!/bin/sh\necho cortex v9.9.9\n")
+	if _, prob := (binariesStep{}).plan(env); prob != nil {
+		t.Fatal(prob)
+	}
+	// agentop goes in; cortex, gone from the stage since the plan, fails.
+	if err := os.Remove(filepath.Join(env.fromDir, "cortex")); err != nil {
+		t.Fatal(err)
+	}
+	_, u, err := binariesStep{}.apply(env, nil)
+	if err == nil {
+		t.Fatal("apply with a staged binary gone succeeded")
+	}
+	if b, _ := os.ReadFile(filepath.Join(env.binDir, "agentop")); !bytes.Contains(b, []byte("v9.9.9")) {
+		t.Fatal("fixture: the step failed before agentop went in")
+	}
+	if u.fn == nil {
+		t.Fatal("a partly applied step returned no undo")
+	}
+	if err := u.fn(); err != nil {
+		t.Fatal(err)
+	}
+	for _, n := range []string{"agentop", "cortex"} {
+		if b, _ := os.ReadFile(filepath.Join(env.binDir, n)); !bytes.Contains(b, []byte(n+" v1.0.0")) {
+			t.Errorf("after a partial failure, undo left %s = %q, want the previous one", n, b)
+		}
+	}
+	if entries, err := os.ReadDir(env.previousDir()); err == nil {
+		t.Errorf("after a partial failure, undo left previous/ holding %d entries", len(entries))
+	}
+}
+
+// previous/ that was there before the run is not the undo's to remove, even
+// when it is empty again afterwards.
+func TestBinariesUndoKeepsAPreviousDirThatExisted(t *testing.T) {
+	env := newTestSetupEnv(t)
+	writeExe(t, filepath.Join(env.binDir, "agentop"), "#!/bin/sh\necho agentop v1.0.0\n")
+	writeExe(t, filepath.Join(env.binDir, "cortex"), "#!/bin/sh\necho cortex v1.0.0\n")
+	mustMkdir(t, env.previousDir())
+	env.fromDir = stageDir(t, "#!/bin/sh\necho cortex v9.9.9\n")
+	if _, prob := (binariesStep{}).plan(env); prob != nil {
+		t.Fatal(prob)
+	}
+	_, u, err := binariesStep{}.apply(env, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := u.fn(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(env.previousDir()); err != nil {
+		t.Error("undo removed a previous/ that existed before the step")
+	}
+}
+
+// The consent row and the done line name what the stage holds, so a staged
+// cortex-session-dump is named too.
+func TestBinariesNameWhatIsStaged(t *testing.T) {
+	env := newTestSetupEnv(t)
+	env.fromDir = stageDir(t, "#!/bin/sh\necho cortex v9.9.9\n")
+	writeExe(t, filepath.Join(env.fromDir, "cortex-session-dump"), "#!/bin/sh\n")
+	p, prob := binariesStep{}.plan(env)
+	if want := "agentop, cortex, cortex-session-dump"; prob != nil || p.what != want {
+		t.Fatalf("plan = %+v %v, want what = %q", p, prob, want)
+	}
+	detail, _, err := binariesStep{}.apply(env, nil)
+	if want := "agentop, cortex, cortex-session-dump → ~/.local/bin"; err != nil || detail != want {
+		t.Errorf("apply = %q %v, want %q", detail, err, want)
 	}
 }
 
@@ -137,6 +216,39 @@ func TestCleanupRemovesOnlyOurStaleBinariesAndCanUndo(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(env.previousDir(), "abctl")); err == nil {
 		t.Error("undo left its copy of abctl in previous/")
 	}
+	if _, err := os.Stat(env.previousDir()); err == nil {
+		t.Error("undo left the previous/ it made")
+	}
+}
+
+// A failure part way through puts back what the step had already moved.
+func TestCleanupUndoAfterAPartialFailureRestoresWhatItMoved(t *testing.T) {
+	env := newTestSetupEnv(t)
+	abctl := "#!/bin/sh\n# github.com/rossoctl/cortex/cmd/abctl\n"
+	writeExe(t, filepath.Join(env.binDir, "abctl"), abctl)
+	writeExe(t, filepath.Join(env.binDir, "authbridge-proxy"), "#!/bin/sh\n# github.com/rossoctl/cortex/cmd/authbridge-proxy\n")
+	// A directory where authbridge-proxy's copy would go fails its move, after
+	// abctl's.
+	mustMkdir(t, filepath.Join(env.previousDir(), "authbridge-proxy", "x"))
+	_, u, err := cleanupStep{afterService: true}.apply(env, nil)
+	if err == nil {
+		t.Fatal("moving authbridge-proxy onto a directory succeeded")
+	}
+	if _, err := os.Stat(filepath.Join(env.binDir, "abctl")); err == nil {
+		t.Fatal("fixture: the step failed before abctl was moved")
+	}
+	if u.fn == nil {
+		t.Fatal("a partly applied step returned no undo")
+	}
+	if err := u.fn(); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(env.binDir, "abctl")); string(b) != abctl {
+		t.Errorf("after a partial failure, undo left abctl = %q", b)
+	}
+	if _, err := os.Stat(filepath.Join(env.previousDir(), "abctl")); err == nil {
+		t.Error("after a partial failure, undo left its copy of abctl in previous/")
+	}
 }
 
 func TestCleanupKeepsABinaryAUnitStillRuns(t *testing.T) {
@@ -147,15 +259,20 @@ func TestCleanupKeepsABinaryAUnitStillRuns(t *testing.T) {
 		env := newTestSetupEnv(t)
 		writeExe(t, filepath.Join(env.binDir, "authbridge-proxy"), "#!/bin/sh\n# github.com/rossoctl/cortex/cmd/authbridge-proxy\n")
 		writeExe(t, filepath.Join(env.home, unit), "<string>"+filepath.Join(env.binDir, "authbridge-proxy")+"</string>")
-		detail, _, err := cleanupStep{afterService: true}.apply(env, nil)
+		detail, u, err := cleanupStep{afterService: true}.apply(env, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if _, err := os.Stat(filepath.Join(env.binDir, "authbridge-proxy")); err != nil {
 			t.Errorf("%s: a binary the unit still runs was removed", unit)
 		}
-		if detail != "kept authbridge-proxy: the service still runs it" {
-			t.Errorf("%s: detail = %q", unit, detail)
+		if want := "kept authbridge-proxy: the service still runs it;" +
+			" `agentop service install` moves the service over, then delete the old file"; detail != want {
+			t.Errorf("%s: detail = %q, want %q", unit, detail, want)
+		}
+		// Keeping everything changed nothing: no "undone" line, no success hook.
+		if u.fn != nil || len(env.onSuccess) != 0 {
+			t.Errorf("%s: a run that kept everything returned undo=%v, %d success hooks", unit, u.fn != nil, len(env.onSuccess))
 		}
 	}
 }
@@ -181,8 +298,8 @@ func TestCleanupKeepsAuthbridgeProxyWhileAnUnnamedProcessHoldsThePidfile(t *test
 	if _, err := os.Stat(filepath.Join(env.binDir, "authbridge-proxy")); err != nil {
 		t.Error("authbridge-proxy was removed while an unnamed process held the pidfile")
 	}
-	if detail != "removed abctl; kept authbridge-proxy: the service still runs it" {
-		t.Errorf("detail = %q", detail)
+	if want := "removed abctl; kept authbridge-proxy: the process in ~/.cortex/proxy.pid may still run it (ps cannot name it)"; detail != want {
+		t.Errorf("detail = %q, want %q", detail, want)
 	}
 }
 

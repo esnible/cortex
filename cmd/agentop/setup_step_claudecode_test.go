@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -120,12 +121,15 @@ func TestClaudeCodeStepApplyLeavesAnAlreadyRoutedFileAlone(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeExe(t, path, string(b))
-	detail, _, err := claudeCodeStep{}.apply(env, nil)
+	detail, u, err := claudeCodeStep{}.apply(env, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got, _ := os.ReadFile(path); string(got) != string(b) || detail != "Claude Code already routed" {
 		t.Errorf("apply with nothing to change rewrote the file: %q (detail %q)", got, detail)
+	}
+	if u.fn != nil { // a rollback would rewrite the file, over any edit made since
+		t.Error("apply with nothing to change returned an undo")
 	}
 	if _, err := os.Stat(path + ".bak"); err == nil {
 		t.Error("apply with nothing to change wrote a .bak")
@@ -153,5 +157,108 @@ func TestClaudeCodeStepApplyKeepsAnEditMadeAfterThePlan(t *testing.T) {
 	var doc map[string]any
 	if err := json.Unmarshal(b, &doc); err != nil || doc["theme"] != "dark" {
 		t.Errorf("apply lost the edit made after the plan: %s", b)
+	}
+}
+
+// onDiskConfig writes the built-in config, as the config step does, and makes env
+// a later run's: one with a config to plan against.
+func onDiskConfig(t *testing.T, env *setupEnv) {
+	t.Helper()
+	env.configFresh = true
+	if _, _, err := (configStep{}).apply(env, nil); err != nil {
+		t.Fatal(err)
+	}
+	env.configFresh = false
+}
+
+// The undo takes away a ~/.claude the write made, if nothing else has used it.
+func TestClaudeCodeStepUndoRemovesTheClaudeDirItMade(t *testing.T) {
+	env, path := claudeEnv(t, "")
+	onDiskConfig(t, env)
+	_, u, err := claudeCodeStep{}.apply(env, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := u.fn(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Dir(path)); err == nil {
+		t.Error("the undo left the ~/.claude the step made")
+	}
+}
+
+// The consent row promises a .bak only when writeSettings will write one: there is
+// a file to copy, and no .bak from before, which it never overwrites.
+func TestClaudeCodeStepPromisesABakOnlyWhenOneIsWritten(t *testing.T) {
+	for _, tc := range []struct {
+		name, settings string
+		bak, want      bool
+	}{{"no settings.json", "", false, false}, {"settings.json", `{}`, false, true}, {"and a .bak", `{}`, true, false}} {
+		t.Run(tc.name, func(t *testing.T) {
+			env, path := claudeEnv(t, tc.settings)
+			if tc.bak {
+				writeExe(t, path+".bak", `{}`)
+			}
+			env.configFresh = true
+			p, prob := claudeCodeStep{}.plan(env)
+			if prob != nil || strings.HasSuffix(p.where, " (.bak kept)") != tc.want {
+				t.Errorf("consent row %q (%v), want a .bak named %v", p.where, prob, tc.want)
+			}
+		})
+	}
+}
+
+// A value set between the plan and the apply is refused when the step applies,
+// HOME as ~, with nothing changed and so nothing to undo.
+func TestClaudeCodeStepApplyRefusesAValueSetSinceThePlan(t *testing.T) {
+	env, path := claudeEnv(t, `{}`)
+	onDiskConfig(t, env)
+	if p, prob := (claudeCodeStep{}).plan(env); prob != nil || p.verb != "route" {
+		t.Fatalf("plan = %+v %v", p, prob)
+	}
+	writeExe(t, path, `{"env":{"HTTPS_PROXY":"http://corp:3128"}}`)
+	_, u, err := claudeCodeStep{}.apply(env, nil)
+	var se stepError
+	if !errors.As(err, &se) || se.reason != `HTTPS_PROXY is already set to "http://corp:3128" in ~/.claude/settings.json.` || u.fn != nil {
+		t.Errorf("apply = %v (undo %v), want the refusal and no undo", err, u.fn != nil)
+	}
+}
+
+// Refusals show HOME as ~, on a fresh install's plan and on one against a config.
+func TestClaudeCodeStepRefusalsShowHomeAsTilde(t *testing.T) {
+	env, _ := claudeEnv(t, `{not json`)
+	env.configFresh = true
+	if _, prob := (claudeCodeStep{}).plan(env); prob == nil || !strings.HasPrefix(prob.reason, "~/.claude/settings.json is not valid JSON") {
+		t.Errorf("fresh problem = %+v", prob)
+	}
+	env2, _ := claudeEnv(t, `{"env":{"HTTPS_PROXY":"http://corp:3128"}}`)
+	onDiskConfig(t, env2)
+	if _, prob := (claudeCodeStep{}).plan(env2); prob == nil || !strings.HasSuffix(prob.reason, " in ~/.claude/settings.json.") {
+		t.Errorf("problem = %+v", prob)
+	}
+}
+
+// A config that will not load is reported once, by the config step.
+func TestClaudeCodeStepLeavesAConfigThatWillNotLoadToTheConfigStep(t *testing.T) {
+	env, _ := claudeEnv(t, `{}`)
+	writeExe(t, env.configPath(), "listener: [\n")
+	_, probs := planSteps(env, []step{configStep{}, claudeCodeStep{}})
+	if len(probs) != 1 || probs[0].label != "config" {
+		t.Errorf("problems = %+v, want the config step's alone", probs)
+	}
+}
+
+// A prior-settings record enable could not write is its warning, passed on as a
+// row under the routed line: disable will then delete the keys, not restore them.
+func TestClaudeCodeStepPassesOnTheStateRecordWarning(t *testing.T) {
+	env, _ := claudeEnv(t, `{}`)
+	onDiskConfig(t, env)
+	_, state := claudeCodeStep{}.paths(env)
+	writeExe(t, state, "{not json")
+	detail, _, err := claudeCodeStep{}.apply(env, nil)
+	first, notes, _ := strings.Cut(detail, "\n")
+	if err != nil || first != "Claude Code → Cortex" || !strings.HasPrefix(notes, "could not record prior settings (") ||
+		strings.Contains(notes, env.home) {
+		t.Errorf("apply = %q %v, want the warning, HOME as ~, under the first line", detail, err)
 	}
 }

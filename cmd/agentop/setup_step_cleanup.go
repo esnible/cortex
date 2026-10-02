@@ -2,7 +2,6 @@ package main
 
 import (
 	"bytes"
-	"errors"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -11,8 +10,9 @@ import (
 	"github.com/rossoctl/cortex/cmd/agentop/checklist"
 )
 
-// staleBinaries are the pre-rename names, newest name beside each.
-var staleBinaries = []struct{ old, now string }{{"abctl", "agentop"}, {"authbridge-proxy", "cortex"}}
+// staleBinaries are the pre-rename names: abctl is agentop now, and
+// authbridge-proxy is cortex.
+var staleBinaries = []string{"abctl", "authbridge-proxy"}
 
 // cleanupStep is install.sh's remove_stale. afterService admits authbridge-proxy,
 // which install.sh removes only once the service has moved to cortex.
@@ -22,12 +22,12 @@ func (cleanupStep) name() string { return "cleaned up" }
 
 func (c cleanupStep) candidates(env *setupEnv) []string {
 	var out []string
-	for _, sb := range staleBinaries {
-		if sb.old == "authbridge-proxy" && !c.afterService {
+	for _, old := range staleBinaries {
+		if old == "authbridge-proxy" && !c.afterService {
 			continue
 		}
-		if isOurStaleBinary(filepath.Join(env.binDir, sb.old), sb.old) {
-			out = append(out, sb.old)
+		if isOurStaleBinary(filepath.Join(env.binDir, old), old) {
+			out = append(out, old)
 		}
 	}
 	return out
@@ -44,46 +44,55 @@ func (c cleanupStep) plan(env *setupEnv) (stepPlan, *problem) {
 	return p, nil
 }
 
+// apply returns an undo, and leaves previous/ to be cleared on success, only when
+// it moved something: a run that kept every binary changed nothing.
 func (c cleanupStep) apply(env *setupEnv, _ *checklist.Running) (string, undo, error) {
+	prevExisted := dirExists(env.previousDir())
+	pidFile := filepath.Join(env.cortexDir, "proxy.pid")
 	var restores []func() error
-	u := undo{label: "pre-rename binaries", fn: func() error {
-		var errs []error
-		for i := len(restores) - 1; i >= 0; i-- {
-			errs = append(errs, restores[i]())
-		}
-		return errors.Join(errs...)
-	}, manual: "copy the files in " + env.tilde(env.previousDir()) + "/ back into " + env.tilde(env.binDir)}
-	var removed, kept []string
+	u := undo{label: "pre-rename binaries", manual: "copy the files in " + env.tilde(env.previousDir()) + "/ back into " + env.tilde(env.binDir)}
+	var removed, keptForUnit, keptForPID []string
 	for _, old := range c.candidates(env) {
-		path := filepath.Join(env.binDir, old)
-		if unitStillNames(env, old) ||
-			(old == "authbridge-proxy" && pidfileProcessUnnamed(filepath.Join(env.cortexDir, "proxy.pid"))) {
-			kept = append(kept, old)
+		if unitStillNames(env, old) {
+			keptForUnit = append(keptForUnit, old)
 			continue
 		}
-		r, err := moveToPrevious(env, path)
+		if old == "authbridge-proxy" && pidfileProcessUnnamed(pidFile) {
+			keptForPID = append(keptForPID, old)
+			continue
+		}
+		r, err := moveToPrevious(env, filepath.Join(env.binDir, old))
 		if r != nil {
 			restores = append(restores, r)
 		}
 		if err != nil {
+			u.fn = undoMoves(restores, env.previousDir(), prevExisted)
 			return "", u, err
 		}
 		removed = append(removed, old)
 	}
-	env.onSuccess = append(env.onSuccess, func() { _ = os.RemoveAll(env.previousDir()) })
+	u.fn = undoMoves(restores, env.previousDir(), prevExisted)
 	var parts []string
 	if len(removed) > 0 {
+		env.onSuccess = append(env.onSuccess, func() { _ = os.RemoveAll(env.previousDir()) })
 		parts = append(parts, "removed "+strings.Join(removed, ", "))
 	}
-	if len(kept) > 0 {
-		parts = append(parts, "kept "+strings.Join(kept, ", ")+": the service still runs it")
+	if len(keptForUnit) > 0 {
+		// install.sh's remove_stale, both lines of it.
+		parts = append(parts, "kept "+strings.Join(keptForUnit, ", ")+": the service still runs it;"+
+			" `agentop service install` moves the service over, then delete the old file")
+	}
+	if len(keptForPID) > 0 {
+		parts = append(parts, "kept "+strings.Join(keptForPID, ", ")+": the process in "+env.tilde(pidFile)+
+			" may still run it (ps cannot name it)")
 	}
 	return strings.Join(parts, "; "), u, nil
 }
 
 // moveToPrevious moves path into previous/ — a copy, then a remove, so it works
 // when the two are on different filesystems — and returns the func that copies it
-// back and removes the copy. The func is nil when nothing was moved.
+// back and removes the copy. The func is nil when nothing was moved. It copies back
+// the content, as a 0755 file: a symlink or another mode is not recreated.
 func moveToPrevious(env *setupEnv, path string) (func() error, error) {
 	prev := filepath.Join(env.previousDir(), filepath.Base(path))
 	if err := os.MkdirAll(env.previousDir(), 0o700); err != nil {
