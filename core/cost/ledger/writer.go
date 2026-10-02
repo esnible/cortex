@@ -1068,40 +1068,52 @@ func (w *Writer) settleClosedMinute() {
 // land, so "Flush returned" means "every row recorded before this call is on disk".
 // Tests depend on that ordering, and so does the shutdown sequence in main.
 //
-// Returns the store's error so a shutdown path can log it, unlike Record, which has a
-// request to serve and must not.
+// Returns the store's error for the rows it held, so a shutdown path can log it, unlike
+// Record, which has a request to serve and must not. A late row that was already queued
+// reports a failed write through the log and Dropped() instead.
 func (w *Writer) Flush() error {
-	w.mu.Lock()
-	b := w.takeLocked()
-	w.mu.Unlock()
+	b := w.take()
+	if len(b.rows) == 0 && b.pruneAt.IsZero() {
+		// Nothing held, but a late row may still be queued: wait for it.
+		return w.sync()
+	}
 	return w.submit(b)
+}
+
+// take is takeLocked under mu.
+func (w *Writer) take() batch {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.takeLocked()
 }
 
 // sync blocks until every batch enqueued before this call has been written.
 //
-// A test barrier, and only that. It exists because Record returns before its IO has
-// happened, so a test that records and then reads the day files would be asserting against
-// a race rather than against behaviour. Production readers need no barrier: Window reads
-// the in-memory half directly, and Flush already waits for its own batch.
+// A barrier for tests, and for Flush when it has no batch of its own. It exists because
+// Record returns before its IO has happened, so a test that records and then reads the day
+// files would be asserting against a race rather than against behaviour. Production readers
+// need no barrier: Window reads the in-memory half directly.
 //
 // Deliberately NOT called from Window. A reader that waited for the writer's queue to drain
 // would put a hung filesystem in front of /v1/usage, and all it buys is closing a
 // microsecond-wide gap that self-heals on the next read. See the type doc.
 func (w *Writer) sync() error {
 	if w.closed.Load() {
+		// Close writes or counts in Dropped() whatever is still queued.
 		return nil
 	}
 	done := make(chan error, 1)
 	select {
 	case w.ops <- batch{done: done}:
 	case <-w.quit:
-		return nil
+		return errClosedWhileFlushing
 	}
 	select {
 	case err := <-done:
 		return err
 	case <-w.quit:
-		return nil
+		// Unconfirmed, as in submit.
+		return errClosedWhileFlushing
 	}
 }
 
@@ -1161,8 +1173,9 @@ var errClosedWhileFlushing = errors.New("costledger: closed while flushing; the 
 func (w *Writer) Close() error {
 	w.closeOnce.Do(func() {
 		// Before the goroutine stops, so this batch is ordered behind everything already
-		// queued rather than racing the drain.
-		w.closeErr = w.Flush()
+		// queued rather than racing the drain. Not Flush: the drain below covers queued
+		// rows, so there is no need to wait on the goroutine for them.
+		w.closeErr = w.submit(w.take())
 		close(w.quit)
 		w.wg.Wait()
 
