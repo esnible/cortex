@@ -765,8 +765,59 @@ func TestConfig_AUnitOnAMultiplierOnlyBlockIsRefused(t *testing.T) {
 	}
 }
 
+// A unit on a block that covers every endpoint is refused: it would put every endpoint no more
+// specific block names in that unit.
+//
+// WHY IT IS AN ERROR AND NOT A FOOTGUN. Only rows in an endpoint's unit may price its traffic, so
+// a catch-all credits block leaves the bundled dollar table pricing nothing — loud, since every
+// pair lands in unpricedBy — and labels every charge an endpoint reports itself as credits, which
+// nothing reports. A unit is a gateway's, so its hosts can be named.
+//
+// A CATCH-ALL ANYWHERE IN THE LIST COUNTS: naming one gateway beside "*" still covers the rest.
+func TestConfig_AUnitOnACatchAllBlockIsRefused(t *testing.T) {
+	block := func(hosts []string, unit string) EndpointConfig {
+		return EndpointConfig{Hosts: hosts, Unit: unit,
+			Models: map[string]ModelConfig{"premium-ide": {TierRates: TierRates{InputCostPerMillion: 2}}}}
+	}
+	for _, tc := range []struct {
+		name  string
+		hosts []string
+	}{
+		{"no hosts", nil},
+		{"star", []string{"*"}},
+		{"star beside a named gateway", []string{"gw.bob", "*"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Build(&Config{Endpoints: []EndpointConfig{block(tc.hosts, "credits")}})
+			if err == nil || !strings.Contains(err.Error(), "needs hosts") {
+				t.Fatalf("Build = %v, want a refusal asking for hosts", err)
+			}
+			if !strings.Contains(err.Error(), "pricing.endpoints[0]") {
+				t.Errorf("the refusal does not name the block: %v", err)
+			}
+		})
+	}
+	// Any spelling of the default is not a unit claim, and a named gateway is what a unit is for.
+	for _, tc := range []struct {
+		hosts []string
+		unit  string
+	}{
+		{nil, ""},
+		{nil, "usd"},
+		{[]string{"*"}, "USD"},
+		{[]string{"gw.bob"}, "credits"},
+	} {
+		if _, err := Build(&Config{Endpoints: []EndpointConfig{block(tc.hosts, tc.unit)}}); err != nil {
+			t.Errorf("hosts %v unit %q: %v, want accepted", tc.hosts, tc.unit, err)
+		}
+	}
+}
+
 // Two blocks naming one host must agree on its unit, or its unit depends on which of their rows
 // happens to rank first.
+//
+// NO CATCH-ALL CASE: a block for every endpoint may not carry a unit at all, so two spellings of
+// it always agree. See TestConfig_AUnitOnACatchAllBlockIsRefused.
 func TestConfig_BlocksForOneHostMustAgreeOnTheUnit(t *testing.T) {
 	block := func(hosts []string, unit, model string) EndpointConfig {
 		return EndpointConfig{Hosts: hosts, Unit: unit,
@@ -779,8 +830,6 @@ func TestConfig_BlocksForOneHostMustAgreeOnTheUnit(t *testing.T) {
 	}{
 		{"one host, two units", []EndpointConfig{
 			block([]string{"gw.bob"}, "credits", "a"), block([]string{"GW.bob"}, "", "b")}, false},
-		{"any-endpoint spelled two ways", []EndpointConfig{
-			block(nil, "credits", "a"), block([]string{"*"}, "", "b")}, false},
 		{"one unit spelled two ways", []EndpointConfig{
 			block([]string{"gw.bob"}, "credits", "a"), block([]string{"gw.bob"}, "Credits", "b")}, true},
 		{"different hosts, different units", []EndpointConfig{
