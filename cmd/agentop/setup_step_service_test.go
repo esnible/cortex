@@ -849,9 +849,8 @@ func TestServiceStepRestoresThePriorOnlyOnceTheJobWasReplaced(t *testing.T) {
 }
 
 // The undo after a failed or rolled-back upgrade leaves the job as the upgrade
-// found it, and its manual says how: a stopped job is stopped again, a loaded one
-// that was not answering stays loaded, and one not loaded while something else
-// answered is the previous Cortex the rollback reloads.
+// found it, and its manual says how: a stopped job is stopped again, and a loaded
+// one that was not answering stays loaded.
 func TestServiceStepUndoLeavesTheJobAsItFoundIt(t *testing.T) {
 	shortReadyTimeout(t)
 	for _, tc := range []struct {
@@ -862,7 +861,7 @@ func TestServiceStepUndoLeavesTheJobAsItFoundIt(t *testing.T) {
 	}{
 		{"stopped", false, false, false, "agentop service stop", false},
 		{"loaded but not answering", true, false, false, "agentop service install --restart", true},
-		{"answering but not loaded", false, true, true, "agentop service install --restart", true},
+		{"answering but not loaded", false, true, false, "agentop service stop", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			loaded := fakeSupervisor(t)

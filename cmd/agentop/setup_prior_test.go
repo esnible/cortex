@@ -493,6 +493,73 @@ func TestSetupRollbackReloadsTheSupervisedCortexOverABackgroundOne(t *testing.T)
 	sameFiles(t, before, after)
 }
 
+// Beside a service stopped with agentop service stop, a pidfile proxy answers the
+// health check. That is the background Cortex, which runServiceInstall adopts and
+// stops, so the rollback starts it again and leaves the job stopped.
+func TestSetupRollbackRestartsTheBackgroundCortexBesideAStoppedService(t *testing.T) {
+	running := filepath.Join(t.TempDir(), "running")
+	sc := newSetupScene(t, func(w http.ResponseWriter, _ *http.Request) {
+		_, err := os.Stat(running)
+		if err != nil && !alive(readPIDFile(filepath.Join(os.Getenv("HOME"), ".cortex", "proxy.pid"))) {
+			w.WriteHeader(http.StatusServiceUnavailable)
+		}
+	})
+	t.Setenv(sleeperEnv, "1") // the restarted copy of the test binary sleeps too
+	runningCortex(t, sc.loaded, sc.home, running)
+	if code, out := sc.run(t, "--from", sc.stage, "--yes"); code != 0 {
+		t.Fatalf("first install: %d\n%s", code, out)
+	}
+	bin := filepath.Join(sc.home, ".local", "bin", "cortex")
+	pidFile := filepath.Join(sc.home, ".cortex", "proxy.pid")
+	sp, err := resolveServicePaths(filepath.Join(sc.home, ".cortex", "config.yaml"), "", bin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := controlService(runtimeGOOS(), "stop", sp, io.Discard); err != nil {
+		t.Fatal(err)
+	}
+	beside := filepath.Join(t.TempDir(), "cortex")
+	old := detachedSleeperAt(t, beside)
+	if err := os.WriteFile(pidFile, []byte(strconv.Itoa(old)+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(sc.loaded); err == nil || adoptablePID(sp) != old {
+		t.Fatalf("fixture: job loaded %v, adoptablePID = %d, want the pidfile proxy %d", err == nil, adoptablePID(sp), old)
+	}
+	prev, err := os.ReadFile(bin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	next := t.TempDir()
+	writeExe(t, filepath.Join(next, "agentop"), "#!/bin/sh\necho agentop v10.0.0\n")
+	writeExe(t, filepath.Join(next, "cortex"), string(prev)+"# v10.0.0\n")
+	before := homeFiles(t, sc.home)
+	failLast(t)
+	var restarted int
+	stopProcessOnCleanup(t, &restarted)
+
+	code, out := sc.run(t, "--from", next, "--yes")
+	restarted = readPIDFile(pidFile)
+	if ranFrom(old, beside) {
+		t.Fatal("fixture: runServiceInstall did not stop the pidfile proxy")
+	}
+	if _, err := os.Stat(sc.loaded); err == nil {
+		t.Error("the rollback loaded the job agentop service stop had stopped")
+	}
+	if restarted == old || !ranFrom(restarted, beside) {
+		t.Errorf("proxy.pid names %d after the rollback, not a restarted %s", restarted, beside)
+	}
+	if code != 1 || !strings.Contains(out, "reverted     the previous background Cortex is running again\n") ||
+		strings.Contains(out, "the previous Cortex is running again") {
+		t.Errorf("exit %d, and the rollback did not restart the background Cortex alone:\n%s", code, out)
+	}
+	// proxy.pid names the restarted proxy now, so it is compared by that, above.
+	after := homeFiles(t, sc.home)
+	delete(before, filepath.Join(".cortex", "proxy.pid"))
+	delete(after, filepath.Join(".cortex", "proxy.pid"))
+	sameFiles(t, before, after)
+}
+
 // asyncTeardown makes fakeSupervisor's bootout of a loaded job return at once and
 // the job leave the domain a second later, as launchd's does while the job's
 // supervisor drains the proxy. Everything else goes to the fake, which it alone
