@@ -1,0 +1,205 @@
+package checklist
+
+import (
+	"bytes"
+	"io"
+	"regexp"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
+	"github.com/muesli/termenv"
+)
+
+func TestPlainLines(t *testing.T) {
+	var b bytes.Buffer
+	u := New(&b, false)
+	u.Header("rosso cortex · setup", "dev · darwin/arm64")
+	u.Consent([]Item{{"install", "agentop, cortex", "~/.local/bin"}, {"add", "~/.local/bin to PATH", "~/.zshrc"}})
+	u.Done("installed", "agentop, cortex → ~/.local/bin", 3*time.Second)
+	u.Already("config", "~/.cortex/config.yaml (kept)")
+	u.Advise("PATH", "not on PATH", `export PATH="/h/.local/bin:$PATH"`)
+	u.Fail("started", "never answered", "see ~/.cortex/proxy.log")
+	u.Note("rolled back", "the changes above are undone")
+	u.Wordmark("ready in 4.6s")
+	u.Next("Open a new terminal, then:", "agentop", "watch your agent traffic live")
+	u.Close()
+	want := strings.Join([]string{
+		"  rosso cortex · setup   dev · darwin/arm64",
+		"  This will:",
+		"    install  agentop, cortex       ~/.local/bin",
+		"    add      ~/.local/bin to PATH  ~/.zshrc",
+		"  ✓ installed    agentop, cortex → ~/.local/bin",
+		"  · config       ~/.cortex/config.yaml (kept)",
+		"  ! PATH         not on PATH",
+		`      fix: export PATH="/h/.local/bin:$PATH"`,
+		"  ✗ started      never answered",
+		"      see ~/.cortex/proxy.log",
+		"    rolled back  the changes above are undone",
+		"",
+		"    ▄▀▀ ▄▀▄ █▀▄ ▀█▀ █▀▀ ▀▄▀",
+		"    ▀▄▄ ▀▄▀ █▀▄  █  ██▄ ▄▀▄   ready in 4.6s",
+		"",
+		"  Open a new terminal, then:",
+		"",
+		"    agentop        # watch your agent traffic live",
+		"",
+	}, "\n")
+	if b.String() != want {
+		t.Errorf("plain output differs\n got: %q\nwant: %q", b.String(), want)
+	}
+}
+
+func TestPlainModeHasNoControlBytes(t *testing.T) {
+	var b bytes.Buffer
+	u := New(&b, false)
+	r := u.Start("started")
+	r.Wait("the proxy", 15*time.Second)
+	r.Done("healthy")
+	u.Close()
+	if strings.ContainsAny(b.String(), "\r\x1b") {
+		t.Errorf("plain output carries control bytes: %q", b.String())
+	}
+	if b.String() != "  ✓ started      healthy\n" {
+		t.Errorf("got %q", b.String())
+	}
+}
+
+func TestColourWhenTheProfileAllowsIt(t *testing.T) {
+	var b bytes.Buffer
+	r := lipgloss.NewRenderer(&b)
+	r.SetColorProfile(termenv.ANSI256)
+	u := newUI(&b, false, r)
+	u.Done("installed", "x", 0)
+	if !strings.Contains(b.String(), "\x1b[") {
+		t.Fatalf("no colour under ANSI256: %q", b.String())
+	}
+	if got := ansi.Strip(b.String()); got != "  ✓ installed    x\n" {
+		t.Errorf("text under the colour differs: %q", got)
+	}
+}
+
+func TestAnimatedRunningLineResolvesAndRestoresTheCursor(t *testing.T) {
+	var b bytes.Buffer
+	u := New(&b, true)
+	r := u.Start("started")
+	time.Sleep(250 * time.Millisecond)
+	r.Done("healthy")
+	u.Close()
+	out := b.String()
+	// Every spinner frame starts with a clear too, so only a clear directly before
+	// the resolved line proves end() cleared the last frame.
+	for _, want := range []string{"\x1b[?25l", "\r\x1b[K  ✓ started      healthy", "\x1b[?25h"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("animated output lacks %q: %q", want, out)
+		}
+	}
+	if !regexp.MustCompile(`healthy  \d+\.\ds\n`).MatchString(ansi.Strip(out)) {
+		t.Errorf("animated Done carries no timing: %q", out)
+	}
+}
+
+// lockedBuffer lets a test read output a spinner goroutine may still be writing.
+type lockedBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (l *lockedBuffer) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *lockedBuffer) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
+}
+
+func TestCloseStopsARunningSpinnerAndClearsItsLine(t *testing.T) {
+	var b lockedBuffer
+	u := New(&b, true)
+	u.Start("started")
+	time.Sleep(150 * time.Millisecond)
+	u.Close()
+	out := b.String()
+	if !strings.HasSuffix(out, "\r\x1b[K\x1b[?25h") {
+		t.Errorf("Close did not clear the running line before showing the cursor: %q", out)
+	}
+	time.Sleep(250 * time.Millisecond)
+	if after := b.String(); after != out {
+		t.Errorf("the spinner kept drawing after Close: %q", strings.TrimPrefix(after, out))
+	}
+}
+
+func TestColourFollowsTheWriterNotTheDefaultRenderer(t *testing.T) {
+	prev := lipgloss.DefaultRenderer()
+	t.Cleanup(func() { lipgloss.SetDefaultRenderer(prev) })
+	d := lipgloss.NewRenderer(io.Discard)
+	d.SetColorProfile(termenv.ANSI256)
+	d.SetHasDarkBackground(true)
+	lipgloss.SetDefaultRenderer(d)
+
+	var b bytes.Buffer
+	u := New(&b, false)
+	u.Done("installed", "x", 0)
+	u.Wordmark("ready")
+	if strings.Contains(b.String(), "\x1b") {
+		t.Errorf("colour came from the default renderer, not from w: %q", b.String())
+	}
+}
+
+func TestEndingASecondTimeIsSafe(t *testing.T) {
+	cases := []struct {
+		name   string
+		finish func(*UI, *Running)
+	}{
+		{"done then close", func(u *UI, r *Running) { r.Done("healthy"); u.Close() }},
+		{"close twice", func(u *UI, r *Running) { u.Close(); u.Close() }},
+		{"close then done", func(u *UI, r *Running) { u.Close(); r.Done("healthy") }},
+		// Outside Close's contract, but a second end must still not double-close.
+		{"close and done at once", func(u *UI, r *Running) {
+			var wg sync.WaitGroup
+			wg.Add(2)
+			go func() { defer wg.Done(); u.Close() }()
+			go func() { defer wg.Done(); r.Done("healthy") }()
+			wg.Wait()
+		}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			var b lockedBuffer
+			u := New(&b, true)
+			r := u.Start("started")
+			time.Sleep(20 * time.Millisecond)
+			c.finish(u, r)
+			out := b.String()
+			if n := strings.Count(out, "\x1b[?25h"); n != 1 {
+				t.Errorf("cursor shown %d times, want 1: %q", n, out)
+			}
+		})
+	}
+}
+
+func TestWaitingShowsAfterThreeSeconds(t *testing.T) {
+	var b bytes.Buffer
+	u := New(&b, true)
+	start := time.Unix(1000, 0)
+	u.now = func() time.Time { return start }
+	r := &Running{u: u, label: "started", start: start}
+	r.Wait("the proxy to answer /healthz", 15*time.Second)
+	u.now = func() time.Time { return start.Add(2 * time.Second) }
+	r.draw("⠋")
+	if strings.Contains(b.String(), "waiting") {
+		t.Errorf("waiting text before 3s: %q", b.String())
+	}
+	u.now = func() time.Time { return start.Add(4 * time.Second) }
+	r.draw("⠙")
+	if !strings.Contains(ansi.Strip(b.String()), "waiting for the proxy to answer /healthz · 4s / 15s") {
+		t.Errorf("waiting text missing at 4s: %q", b.String())
+	}
+}
