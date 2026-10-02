@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -58,6 +59,25 @@ func (e *responseRejectedError) Error() string {
 	}
 	return "response rejected"
 }
+
+// responseBufferError marks a failure to buffer a response the backend DID
+// send — a body read that errored, or one over maxBodySize. Both reach
+// errorHandler, which otherwise cannot tell them from a backend that was never
+// reached: it sees only an error value, and the client gets the same 502 either
+// way.
+//
+// Worth a type because the event needs both halves. status is the backend's real
+// status, which the row keeps as error.code beside the 502 the client got.
+// overLimit separates the one failure that is ours — the buffer ceiling — from a
+// read error, which usually means the backend broke off mid-body.
+type responseBufferError struct {
+	status    int
+	overLimit bool
+	err       error
+}
+
+func (e *responseBufferError) Error() string { return e.err.Error() }
+func (e *responseBufferError) Unwrap() error { return e.err }
 
 // Server is an HTTP reverse proxy with inbound JWT validation.
 //
@@ -492,11 +512,16 @@ func (s *Server) modifyResponse(resp *http.Response) error {
 	if s.InboundPipeline.NeedsBody() && resp.Body != nil {
 		body, err := io.ReadAll(io.LimitReader(resp.Body, maxBodySize+1))
 		if err != nil {
-			return err
+			// Wrapped so errorHandler keeps the backend's own status.
+			return &responseBufferError{status: resp.StatusCode, err: err}
 		}
 		resp.Body.Close()
 		if len(body) > maxBodySize {
-			return fmt.Errorf("response body too large (%d bytes)", len(body))
+			return &responseBufferError{
+				status:    resp.StatusCode,
+				overLimit: true,
+				err:       fmt.Errorf("response body over the %d-byte buffer limit", maxBodySize),
+			}
 		}
 		pctx.ResponseBody = body
 		resp.Body = io.NopCloser(bytes.NewReader(body))
@@ -608,12 +633,68 @@ func (s *Server) modifyResponse(resp *http.Response) error {
 	return nil
 }
 
-func (s *Server) errorHandler(w http.ResponseWriter, _ *http.Request, err error) {
+// errorHandler answers what ReverseProxy could not complete: a plugin that
+// rejected the response, a backend call that failed at the transport level, a
+// response that could not be buffered, or a 101 upgrade that failed after its
+// response was recorded.
+//
+// r is read for its context, which carries the pctx handleRequest parked under
+// pctxKey{}. It survives even though the stdlib passes its own outreq here,
+// that being req.Clone(ctx). Every ErrorHandler call is inside s.proxy.ServeHTTP,
+// which only handleRequest calls, after parking it — so the nil check is
+// defence, not a path that occurs.
+func (s *Server) errorHandler(w http.ResponseWriter, r *http.Request, err error) {
 	if rErr, ok := err.(*responseRejectedError); ok {
+		// A plugin's verdict, not a transport failure: it has an Action to
+		// account for and belongs in a denial row. Left unrecorded, as it is
+		// today — a sibling of #1045 with a different answer.
 		httpx.WriteRejection(w, rErr.action)
 		return
 	}
 	http.Error(w, `{"error":"bad gateway"}`, http.StatusBadGateway)
+
+	pctx, _ := r.Context().Value(pctxKey{}).(*pipeline.Context)
+	bErr, buffering := err.(*responseBufferError)
+	if pctx != nil && !buffering && pctx.StatusCode != 0 {
+		// The response row already exists. modifyResponse sets pctx.StatusCode
+		// before anything else, and every way it fails is typed and handled
+		// here, so it returned nil — having recorded the row. What arrives after
+		// that is handleUpgradeResponse failing a 101 (a protocol mismatch, a
+		// failed hijack), and a second row would break the one-response-per-
+		// request pairing /v1/usage counts on.
+		slog.Warn("reverse-proxy: backend upgrade failed", "host", r.Host, "status", pctx.StatusCode, "error", err)
+		return
+	}
+
+	// A 502 with the cause, or a 499 when the client hung up first — which is
+	// the common end of a slow synchronous call. See pipeline.ExchangeFailure.
+	var status int
+	var fail *pipeline.EventError
+	switch {
+	case buffering && bErr.overLimit:
+		// The one failure here that is ours rather than the backend's.
+		status, fail = http.StatusBadGateway, &pipeline.EventError{Kind: "proxy_error", Message: bErr.Error()}
+	case buffering:
+		status, fail = pipeline.ExchangeFailure(r.Context(), bErr.err)
+	default:
+		status, fail = pipeline.ExchangeFailure(r.Context(), err)
+	}
+	if r.Context().Err() == nil {
+		slog.Warn("reverse-proxy: backend request failed", "host", r.Host, "method", r.Method, "kind", fail.Kind, "error", fail.Message)
+	}
+	if pctx == nil {
+		return
+	}
+	if buffering {
+		// The backend's own status, beside the one the client got. See
+		// forwardproxy's bufferResponseBody, which records the same way.
+		fail.Code = strconv.Itoa(bErr.status)
+	}
+	// Record it, so the failure is not visible only on the wire (#1045). The
+	// status goes on the event only; pctx.StatusCode is zero, so the Outcome is
+	// OutcomeError — see the twin comment in forwardproxy.
+	pctx.StatusCode = 0
+	s.recordInboundResponseEvent(pctx, status, fail)
 }
 
 // recordInboundReject emits a SessionDenied event for inbound requests
@@ -715,7 +796,7 @@ func (s *Server) installStreamingResponseBody(resp *http.Response, pctx *pipelin
 		pipeline: s.InboundPipeline,
 		pctx:     pctx,
 		onClose: func(statusCode int) {
-			s.recordInboundResponseEvent(pctx, statusCode)
+			s.recordInboundResponseEvent(pctx, statusCode, nil)
 		},
 		statusCode: resp.StatusCode,
 	}
@@ -726,7 +807,11 @@ func (s *Server) installStreamingResponseBody(resp *http.Response, pctx *pipelin
 // bottom of modifyResponse; lives here so the streaming body's
 // onClose callback can record without holding a reference to the
 // status code that close arrived with.
-func (s *Server) recordInboundResponseEvent(pctx *pipeline.Context, statusCode int) {
+//
+// fail is set only by errorHandler, where the exchange failed, and statusCode is
+// then what the client got. Nil when the response was delivered, leaving the
+// error to DeriveError.
+func (s *Server) recordInboundResponseEvent(pctx *pipeline.Context, statusCode int, fail *pipeline.EventError) {
 	if s.Sessions == nil {
 		return
 	}
@@ -758,7 +843,7 @@ func (s *Server) recordInboundResponseEvent(pctx *pipeline.Context, statusCode i
 		HTTPMethod:  pctx.Method,
 		HTTPPath:    pctx.Path,
 		StatusCode:  statusCode,
-		Error:       pipeline.DeriveError(pctx),
+		Error:       pipeline.EventErrorOr(pctx, fail),
 		Duration:    pipeline.DurationSince(pctx.StartedAt),
 		TLS:         eventTLS(pctx),
 	})
