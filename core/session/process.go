@@ -101,7 +101,8 @@ func pendingOwner(id string) (string, bool) {
 // agent that runs as a launcher and a worker answers with one session from both, and the
 // root's pending bucket — and chain[0]'s own, if different — is adopted into sessionID
 // when sessionID holds nothing yet. Adoption is attempted on a process's first claim of a
-// session only: a bucket that cannot be adopted then never will be.
+// session only: a bucket that cannot be adopted then never will be. If the process already
+// claimed the session, adoption is skipped (already claimed on a prior request).
 func (s *Store) ClaimProcess(sessionID, agent string, chain []Proc) {
 	if sessionID == "" || len(chain) == 0 || strings.HasPrefix(sessionID, PendingPrefix) {
 		return
