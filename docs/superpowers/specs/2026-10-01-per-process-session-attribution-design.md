@@ -39,7 +39,7 @@ OpenCode isolated through its own `XDG_*` directories.
 |---|---|
 | OpenCode's process model | A background service, `opencode serve --service`, on a **fixed port (49374)** — one per user. The first client spawns it; when that client exits it is reparented to PID 1, and every later client reuses it. |
 | Who sends OpenCode's traffic | **The service, for every session**: inference, `webfetch`, the model catalog, and local-model probes every 30 s. `bash`-tool commands are its direct children. Clients only call the service's `/api/*` over loopback, through the proxy, because `agentop exec` sets no `NO_PROXY`. |
-| OpenCode's session id | On inference: `x-opencode-session-id`, plus `X-Session-Id`, `x-session-affinity`, `x-opencode-session`, all carrying the same `ses_…` value. Nothing on any CONNECT, not even a User-Agent. `traceparent` is per-process — identical across sessions — so it cannot tell sessions apart. |
+| OpenCode's session id | On inference: `x-opencode-session-id`, plus `X-Session-Id`, `x-session-affinity`, `x-opencode-session`, all carrying the same `ses_…` value (measured on sessions with no parent or fork). Nothing on any CONNECT, not even a User-Agent. `traceparent` is per-process — identical across sessions — so it cannot tell sessions apart. |
 | Two concurrent OpenCode sessions | One service PID served both. Each tool's traffic fell between its own session's `finish_reason: tool_calls` response and that session's next request, so at each tool call the owning session was the process's most recently active one. |
 | OpenCode's environment | The service keeps **its first client's environment**. Started without the proxy, it bypassed Cortex entirely, even for a later `agentop exec -- opencode`. |
 | Claude Code | One process, one session at a time. `Bash` children (`curl` → `bash` → `claude`) descend from it; `WebFetch` and MCP run in-process, header-less. A nested `claude -p` sends header-less MCP calls before its own first header. |
@@ -214,10 +214,13 @@ approach used on session 13cdee89.
 - `ParseUserAgent` learns `opencode/<channel>/<version>/<client>`, where the version is
   the third segment, and `knownClients` gains `opencode`. Today the User-Agent parses to
   no name at all, so OpenCode is "Other agent".
-- `X-Session-Id` joins the default `id_headers`, so the default matches the list the
-  laptop installer writes and OpenCode's inference rows land in OpenCode's sessions, which
-  its service claims. OpenCode sends its session's affinity id there (the parent's for a
-  subagent, the source's for a fork), so a subagent joins its parent's session.
+- `X-Session-Id` joins the default `id_headers` on laptop installs (`bind_loopback_only`),
+  as `process_attribution: auto` is; the in-cluster default is unchanged, because
+  X-Session-Id is generic (the IBAC demo agent sends it with an id it minted). On a laptop
+  the default then matches the list the laptop installer writes, and OpenCode's inference
+  rows land in OpenCode's sessions, which its service claims. OpenCode sends its session's
+  affinity id there (the parent's for a subagent, the source's for a fork), so a subagent
+  joins its parent's session.
 - `docs/agents/opencode.md`, linked from the README, as every supported agent has.
 - **`agentop configure opencode enable | disable | status`** routes OpenCode through Cortex
   persistently. OpenCode's background service, not the process you run, sends all of
@@ -261,8 +264,11 @@ approach used on session 13cdee89.
   first.** Rejected: editing service.json directly to spare the running service, which
   bypasses the CLI's ownership of that file.
 - **OpenCode is grouped by X-Session-Id**, its affinity id, so a subagent or fork joins its
-  parent's session as Claude Code's do. Rejected: X-Opencode-Session-Id, a row per
-  subagent, which the laptop installer's list did not read.
+  parent's session as Claude Code's do, on laptop installs (`bind_loopback_only`), as
+  `process_attribution: auto` is; the in-cluster default is unchanged, because
+  X-Session-Id is generic (the IBAC demo agent sends it with an id it minted). Rejected:
+  X-Opencode-Session-Id, a row per subagent, which the laptop installer's list did not
+  read.
 - **configure opencode restarts a running service once, after its writes**: an open
   OpenCode window restarts the service the moment the CLI stops it, before the change
   lands. Rejected: only advising a restart.

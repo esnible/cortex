@@ -53,7 +53,8 @@ type openCodeCLI struct {
 	restartKeepsEnv bool    // `service restart` leaves procEnv as it was
 	answer          bool    // what opencodeConfirm answers
 
-	calls    []string // every command, its arguments space-joined
+	calls    []string          // every command, its arguments space-joined
+	cliWant  map[string]string // openCodeCLIWant as it stood at the last command
 	prompts  int
 	atPrompt string // stdout as it stood when opencodeConfirm was last asked
 }
@@ -108,6 +109,7 @@ func stubOpenCodeCLI(t *testing.T, f *openCodeCLI) string {
 			t.Errorf("ran %s, want the --opencode binary %s", bin, fakeOpenCodePath)
 		}
 		f.calls = append(f.calls, strings.Join(args, " "))
+		f.cliWant = maps.Clone(openCodeCLIWant)
 		switch {
 		case slices.Equal(args, []string{"service", "status"}):
 			if f.statusErr != nil {
@@ -238,7 +240,8 @@ const (
 		"  which interrupts every OpenCode session using it; an open OpenCode reconnects to it.\n"
 	openCodeRestartNoPIDNote = "OpenCode's background service is running. Changing its environment restarts it, which\n" +
 		"  interrupts every OpenCode session using it; an open OpenCode reconnects to it.\n"
-	openCodeMaybeRestartNote = "If OpenCode's background service is running, changing its environment restarts it, which\n" +
+	// When `service status` fails nothing is restarted, so this one says only what the CLI does.
+	openCodeMaybeStopNote = "If OpenCode's background service is running, changing its environment stops it, which\n" +
 		"  interrupts every OpenCode session using it.\n"
 
 	openCodeRestartedOnCortex  = "OpenCode's background service was restarted (pid 4243) and is using Cortex.\n"
@@ -960,8 +963,9 @@ func TestConfigureOpenCode_ChangingTheEnvironmentRestartsTheService(t *testing.T
 	statusErr := errors.New("opencode service status: exit status 1")
 	const couldNotCheck = "Could not check OpenCode's running service (opencode service status: exit status 1); " +
 		"restart it to be sure: opencode service restart\n"
+	// Nothing was probed after the failed restart, so the line says what it may be and how to find out.
 	const restartFailed = "agentop: could not restart OpenCode's background service (opencode service restart: exit status 1).\n" +
-		"  It is stopped; it starts with the new environment the next time you run OpenCode, or now: opencode service start\n"
+		"  It may be stopped, or running with its old environment; agentop configure opencode status says which.\n"
 	for _, action := range []string{"enable", "disable"} {
 		// The environment the service started with is the one the change replaces.
 		procEnv := []string{"PATH=/usr/bin"}
@@ -987,8 +991,8 @@ func TestConfigureOpenCode_ChangingTheEnvironmentRestartsTheService(t *testing.T
 			{name: "running, --yes", running: true, yes: true, before: openCodeRestartNote, after: restartedLine},
 			{name: "not running"},
 			{name: "not running, --yes", yes: true},
-			{name: "service status fails", statusErr: statusErr, before: openCodeMaybeRestartNote, after: couldNotCheck},
-			{name: "service status fails, --yes", statusErr: statusErr, yes: true, before: openCodeMaybeRestartNote, after: couldNotCheck},
+			{name: "service status fails", statusErr: statusErr, before: openCodeMaybeStopNote, after: couldNotCheck},
+			{name: "service status fails, --yes", statusErr: statusErr, yes: true, before: openCodeMaybeStopNote, after: couldNotCheck},
 			// Running, but no process is found on its port, so there is no pid to name,
 			// before the restart or after it.
 			{name: "running, no pid", running: true, listenErr: peerproc.ErrNotFound, yes: true,
@@ -1087,7 +1091,7 @@ func TestConfigureOpenCode_ChangingTheEnvironmentRestartsTheService(t *testing.T
 // nor asks, nor restarts it: enable a second time, and disable with only a value Cortex
 // did not set.
 func TestConfigureOpenCode_NothingToChangeLeavesARunningServiceAlone(t *testing.T) {
-	notes := []string{openCodeRestartNote, openCodeRestartNoPIDNote, openCodeMaybeRestartNote}
+	notes := []string{openCodeRestartNote, openCodeRestartNoPIDNote, openCodeMaybeStopNote}
 	t.Run("enable, already enabled", func(t *testing.T) {
 		f := &openCodeCLI{}
 		home := stubOpenCodeCLI(t, f)
@@ -1347,7 +1351,7 @@ func TestConfigureOpenCode_EnableFailingPartWay(t *testing.T) {
 		want := "agentop: opencode service set env HTTPS_PROXY: exit status 1\n" +
 			"  Already set: NODE_EXTRA_CA_CERTS, SSL_CERT_FILE, GIT_SSL_CAINFO, REQUESTS_CA_BUNDLE, CURL_CA_BUNDLE. " +
 			"agentop configure opencode disable undoes them\n" +
-			"  OpenCode's background service is stopped; re-run this command to finish.\n"
+			"  OpenCode's background service may be stopped; re-run this command to finish.\n"
 		if errOut != want {
 			t.Errorf("stderr =\n%s\nwant\n%s", errOut, want)
 		}
@@ -1360,7 +1364,7 @@ func TestConfigureOpenCode_EnableFailingPartWay(t *testing.T) {
 		f := &openCodeCLI{failSet: "HTTPS_PROXY"}
 		stubOpenCodeCLI(t, f)
 		_, _, errOut := runOC("enable", "--yes")
-		if !strings.Contains(errOut, "Already set: ") || strings.Contains(errOut, "is stopped") {
+		if !strings.Contains(errOut, "Already set: ") || strings.Contains(errOut, "stopped") {
 			t.Errorf("stderr = %q, want the keys already set and nothing about a stopped service", errOut)
 		}
 	})
@@ -1381,7 +1385,7 @@ func TestConfigureOpenCode_DisableFailingPartWay(t *testing.T) {
 	}
 	want := "agentop: opencode service unset env HTTP_PROXY: exit status 1\n" +
 		"  Run agentop configure opencode disable again to finish\n" +
-		"  OpenCode's background service is stopped; re-run this command to finish.\n"
+		"  OpenCode's background service may be stopped; re-run this command to finish.\n"
 	if errOut != want {
 		t.Errorf("stderr =\n%s\nwant\n%s", errOut, want)
 	}
@@ -1417,6 +1421,46 @@ func TestConfigureOpenCode_Usage(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Every opencode CLI call configure makes judges agentop's own variables against Cortex's
+// values from the config it was given, so a Cortex on a port no shape check knows is still
+// recognised and kept from the CLI. The values are cleared once the command is done.
+func TestConfigureOpenCode_TheCLIIsJudgedByTheCortexConfig(t *testing.T) {
+	for _, action := range []string{"enable", "disable", "status"} {
+		t.Run(action, func(t *testing.T) {
+			f := &openCodeCLI{}
+			home := stubOpenCodeCLI(t, f)
+			writeOpenCodeCortexCfg(t, home, strings.Replace(cortexCfg, `"127.0.0.1:47600"`, `"127.0.0.1:8081"`, 1))
+			args := []string{action}
+			if action != "status" {
+				args = append(args, "--yes")
+			}
+			if code, _, errOut := runOC(args...); code != 0 {
+				t.Fatalf("exit %d: %s", code, errOut)
+			}
+			if got := f.cliWant["HTTPS_PROXY"]; got != "http://127.0.0.1:8081" {
+				t.Errorf("the CLI was judged against HTTPS_PROXY %q, want the config's http://127.0.0.1:8081", got)
+			}
+			if openCodeCLIWant != nil {
+				t.Errorf("openCodeCLIWant = %v after the command, want nil", openCodeCLIWant)
+			}
+		})
+	}
+	// Without a readable config there is nothing to judge by but the values' shape.
+	t.Run("disable, no config", func(t *testing.T) {
+		f := &openCodeCLI{}
+		home := stubOpenCodeCLI(t, f)
+		if err := os.Remove(filepath.Join(home, ".cortex", "config.yaml")); err != nil {
+			t.Fatal(err)
+		}
+		if code, _, errOut := runOC("disable", "--yes"); code != 0 {
+			t.Fatalf("exit %d: %s", code, errOut)
+		}
+		if f.cliWant != nil {
+			t.Errorf("the CLI was judged against %v, want nothing", f.cliWant)
+		}
+	})
 }
 
 // The usage gives each action the flags it takes, so status shows no --yes, and says

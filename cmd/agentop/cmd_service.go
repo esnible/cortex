@@ -50,9 +50,9 @@ Usage:
 
 install hands the proxy to the OS supervisor — a launchd user agent on macOS, a
 systemd user unit on Linux — so it restarts on failure and comes back at login.
-Claude Code depends on the proxy being up once "agentop configure claude-code enable"
-has run,
-and nothing else keeps it up.
+Claude Code and OpenCode depend on the proxy being up once "agentop configure
+claude-code enable" or "agentop configure opencode enable" has run, and nothing
+else keeps it up.
 
 stop/start/restart exist so there is never a reason to reach for launchctl,
 systemctl, kill or pkill: under a supervisor a plain kill is undone within seconds,

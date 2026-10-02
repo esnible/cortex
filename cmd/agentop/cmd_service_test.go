@@ -339,6 +339,17 @@ func TestServiceStatus_NamesTheUnsupervisedCase(t *testing.T) {
 	}
 }
 
+// TestServiceUsage_NamesTheAgentsThatDependOnTheProxy: once configured, OpenCode depends on
+// the proxy being up as Claude Code does, and the usage says so beside it.
+func TestServiceUsage_NamesTheAgentsThatDependOnTheProxy(t *testing.T) {
+	prose := strings.Join(strings.Fields(serviceUsage), " ")
+	want := `Claude Code and OpenCode depend on the proxy being up once "agentop configure claude-code enable" ` +
+		`or "agentop configure opencode enable" has run, and nothing else keeps it up.`
+	if !strings.Contains(prose, want) {
+		t.Errorf("serviceUsage lacks %q", want)
+	}
+}
+
 // TestServiceStatus_NotAnsweringNamesTheAgentsThatFail: an installed proxy that does not
 // answer its health check fails every agent configured to use it, OpenCode as well as
 // Claude Code.

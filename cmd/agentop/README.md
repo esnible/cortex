@@ -622,15 +622,17 @@ lands, with the environment it had. So when the service was running, `enable` an
 `disable` restart it once, after their last change, with `opencode service
 restart`, which starts it with its service environment. That interrupts every
 OpenCode session using it, and an open OpenCode reconnects to it. When there is
-something to change they say first that the service is running, with its pid (or
-that it may be, when that cannot be told), and ask; `--yes` skips the question,
-not the warning. After the restart they say whether the service's proxy matches
-the change, judged by the environment its new process started with; when it does
-not, they name `opencode service restart`. A restart that fails is reported with
-`opencode service start` to run, and the command still exits 0, because the change
-itself succeeded. A change that fails part way is not followed by a restart, and
-they say the service is stopped. A service that was not running starts with the
-new environment the next time you run OpenCode.
+something to change they say first that the service is running and that the
+change restarts it, with its pid, and ask; when whether it runs cannot be told,
+they say only that the change stops it if it is. `--yes` skips the question, not
+the warning. After the restart they say whether the service's proxy matches the
+change, judged by the environment its new process started with; when it does
+not, they name `opencode service restart`. A restart that fails is reported, with
+`agentop configure opencode status` to tell whether the service is stopped or
+running with its old environment, and the command still exits 0, because the
+change itself succeeded. A change that fails part way is not followed by a
+restart, and they say the service may be stopped. A service that was not running
+starts with the new environment the next time you run OpenCode.
 
 `status` changes nothing. It judges the running service by the proxy a restart
 would give it, the one its service environment names, and prints one of: that it

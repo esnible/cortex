@@ -32,9 +32,10 @@ const (
 	opencodeStateSettings = "opencode service env"
 )
 
-// openCodeKeys are the variables enable sets, in the order it sets them: the nine
-// `agentop exec` gives a child, for the reasons execProxyVars and bundleKeys give.
-// Not CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC, which only Claude Code reads.
+// openCodeKeys are the variables enable sets: the nine `agentop exec` gives a child, for
+// the reasons execProxyVars and bundleKeys give. Not CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC,
+// which only Claude Code reads. The order is the one enable lists them in and disable
+// changes them in, the proxy first; enable sets them CA first (openCodeApplyOrder).
 var openCodeKeys = append([]string{envProxy, "HTTP_PROXY", "https_proxy", "http_proxy", envCACerts}, bundleKeys...)
 
 // openCodeCanonicalKey is the name wantedFromConfig and isCortexValue know k by. Both
@@ -178,6 +179,14 @@ func runOpenCode(args []string, stdout, stderr io.Writer) int {
 		*bin = found
 	}
 	statePath := filepath.Join(home, opencodeStateRel)
+
+	// What every opencode CLI call is judged against (openCodeCLIWant): Cortex's values from
+	// this config, or nothing when it cannot be read, so only their shape decides.
+	openCodeCLIWant = nil
+	if w, _, werr := wantedFromConfig(*cortexCfgPath); werr == nil {
+		openCodeCLIWant = openCodeValues(w)
+	}
+	defer func() { openCodeCLIWant = nil }()
 
 	switch action {
 	case "enable":
@@ -332,9 +341,9 @@ func openCodeApplyOrder(keys []string) []string {
 }
 
 // openCodeStoppedMidway is said after a change that failed part way, when the service was
-// running before it: the writes that succeeded stopped it, and it is not restarted with
-// its environment half changed.
-const openCodeStoppedMidway = "  OpenCode's background service is stopped; re-run this command to finish.\n"
+// running before it: the writes that succeeded stop it, an open OpenCode may have started
+// it again, and agentop does not restart it with its environment half changed or probe it.
+const openCodeStoppedMidway = "  OpenCode's background service may be stopped; re-run this command to finish.\n"
 
 func openCodeEnable(bin, cortexCfgPath, statePath string, yes bool, stdout, stderr io.Writer) int {
 	pl, err := planOpenCodeEnable(bin, cortexCfgPath)
@@ -578,7 +587,8 @@ func noteOpenCodeServiceRestarts(bin string, stdout io.Writer) bool {
 	svc, err := probeOpenCodeService(bin)
 	switch {
 	case err != nil:
-		fmt.Fprint(stdout, "If OpenCode's background service is running, changing its environment restarts it, which\n"+
+		// Not restarted afterwards, since nothing says it was running: only the CLI's stop.
+		fmt.Fprint(stdout, "If OpenCode's background service is running, changing its environment stops it, which\n"+
 			"  interrupts every OpenCode session using it.\n")
 	case svc.Running && svc.PID != 0:
 		fmt.Fprintf(stdout, "OpenCode's background service is running (pid %d). Changing its environment restarts it,\n"+
@@ -615,7 +625,7 @@ func finishOpenCodeChange(bin, cortexProxy string, configured, wasRunning bool, 
 	fmt.Fprintln(stdout, done)
 	if _, err := openCodeRun(bin, "service", "restart"); err != nil {
 		fmt.Fprintf(stderr, "agentop: could not restart OpenCode's background service (%v).\n"+
-			"  It is stopped; it starts with the new environment the next time you run OpenCode, or now: opencode service start\n", err)
+			"  It may be stopped, or running with its old environment; agentop configure opencode status says which.\n", err)
 		return
 	}
 	svc, err := probeOpenCodeService(bin)

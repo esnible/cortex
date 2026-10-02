@@ -31,17 +31,24 @@ import (
 // so a CLI that hangs must not hang agentop with it.
 const openCodeTimeout = 10 * time.Second
 
+// openCodeCLIWant is the nine variables' values for the Cortex the command at hand works
+// with, nil when they are not known. runOpenCode sets it from the Cortex config and
+// warnOpenCodeService from what exec injects, each for as long as it runs; openCodeRun
+// judges agentop's own variables against it (openCodeCLIEnv).
+var openCodeCLIWant map[string]string
+
 // openCodeRun runs the opencode CLI and returns its stdout with surrounding whitespace
 // trimmed. A package variable so tests replace it; nothing in a test may run the real binary.
 var openCodeRun = func(bin string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), openCodeTimeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, bin, args...) //nolint:gosec // bin is the opencode CLI, found or named by the caller
-	// agentop's own proxy and CA variables do not reach OpenCode's CLI. The CLI talks to its
-	// service over loopback through any proxy it inherits, and a service it starts or restarts
-	// inherits them as well, so after disable a restart from a shell with HTTPS_PROXY set would
-	// leave the service on Cortex.
-	cmd.Env = openCodeCLIEnv(os.Environ())
+	// agentop's own proxy and CA variables reach OpenCode's CLI only when they are not
+	// Cortex's. The CLI talks to its service over loopback through any proxy it inherits, and
+	// a service it starts or restarts inherits them as well, so after disable a restart from a
+	// shell with Cortex's HTTPS_PROXY set would leave the service on Cortex. A proxy or CA of
+	// the user's own is passed on, so a restarted service keeps it.
+	cmd.Env = openCodeCLIEnv(os.Environ(), openCodeCLIWant)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	// Bounds how long Wait waits for the output pipes once the CLI has exited or been
@@ -62,12 +69,14 @@ var openCodeRun = func(bin string, args ...string) (string, error) {
 	return strings.TrimSpace(string(out)), nil
 }
 
-// openCodeCLIEnv is env, a list of "NAME=value" strings, without the nine variables
-// enable manages (openCodeKeys).
-func openCodeCLIEnv(env []string) []string {
+// openCodeCLIEnv is env, a list of "NAME=value" strings, without those of the nine
+// variables enable manages (openCodeKeys) whose value is Cortex's, judged as disable judges
+// them (openCodeIsOurs): against want, Cortex's values when they are known, or else by
+// their shape. Every other entry is kept.
+func openCodeCLIEnv(env []string, want map[string]string) []string {
 	out := make([]string, 0, len(env))
 	for _, kv := range env {
-		if k, _, _ := strings.Cut(kv, "="); slices.Contains(openCodeKeys, k) {
+		if k, v, _ := strings.Cut(kv, "="); slices.Contains(openCodeKeys, k) && openCodeIsOurs(k, v, want) {
 			continue
 		}
 		out = append(out, kv)
@@ -251,6 +260,9 @@ func warnOpenCodeService(cmdArgs []string, inject map[string]string, stderr io.W
 	if len(cmdArgs) > 1 && (cmdArgs[1] == "service" || cmdArgs[1] == "serve") {
 		return
 	}
+	// The CLI calls below keep only Cortex's values, as exec gives them, from the CLI.
+	openCodeCLIWant = inject
+	defer func() { openCodeCLIWant = nil }()
 	// The binary the child will run, found as runChild finds it: a path is used as
 	// given, a bare name is searched for on PATH. When that fails, findOpenCode tries
 	// PATH and then the installer's directory.

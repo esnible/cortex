@@ -71,12 +71,15 @@ under its value too. [OpenCode](agents/opencode.md) is grouped by the `X-Session
 background service sets, and its buckets are named with OpenCode's `ses_…` session ids.
 OpenCode puts its session's affinity id there: the parent session's id for a subagent
 and the source session's for a fork, so a subagent or fork is filed under the session it
-belongs to, as Claude Code's subagents are. `X-Session-Id` is a generic name as well,
-which Pi (Inflection AI) and similar frameworks send too. OpenCode also sends
-`X-Opencode-Session-Id`, the session's own id, which is not read. Traffic that carries
-no such header is filed by the process that sent it (see below), and where that has no
-answer falls back to the previous behavior — the most recently active session, or the
-`default` bucket. In practice `default` collects Claude Code's own connectivity probe (`HEAD /api/hello`) and anything
+belongs to, as Claude Code's subagents are. Cortex reads `X-Session-Id` on a laptop
+install: it is in the list the installer writes, and in the built-in default wherever
+every listener binds loopback (`listener.bind_loopback_only`). A cluster deployment's
+default does not read it, because it is a generic name as well, which Pi (Inflection AI)
+and similar frameworks send too. OpenCode also sends `X-Opencode-Session-Id`, the
+session's own id, which is not read. Traffic that carries no such header is filed by the
+process that sent it (see below), and where that has no answer falls back to the previous
+behavior — the most recently active session, or the `default` bucket. In practice
+`default` collects Claude Code's own connectivity probe (`HEAD /api/hello`) and anything
 else that egresses through the proxy without announcing a session.
 
 Some limitations worth knowing:
@@ -547,7 +550,7 @@ chained to the others with `&&`.
 
 ```sh
 agentop configure claude-code status # should say "not enabled"
-agentop configure opencode status    # if you use OpenCode: every variable should say (unset)
+agentop configure opencode status    # if you use OpenCode: every variable Cortex set should say (unset)
 pgrep -lx cortex                     # should print nothing
 ls ~/.cortex 2>/dev/null             # should print nothing
 ```

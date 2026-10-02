@@ -87,18 +87,20 @@ is yours. An open OpenCode window can start the service again within a second, b
 the change lands, and then it comes back with the environment it had. That is why
 `enable` and `disable` restart it themselves:
 
-- When there is something to change, they say first that the service is running, with
-  its pid when it can be found, or that it may be when `opencode service status` fails,
-  and then ask.
+- When there is something to change, they say first that the service is running and
+  that the change restarts it, with its pid when it can be found, and then ask. When
+  `opencode service status` fails, they say only that the change stops the service if it
+  is running.
 - If the service was running, they restart it once, after the last change, with
   `opencode service restart`, which starts it with its service environment. The restart
   interrupts every OpenCode session using the service, and an open OpenCode reconnects
   to it. Then they say whether the restarted service is using Cortex (after `enable`) or
   no longer uses it (after `disable`).
-- If the restart fails, they say so and name `opencode service start`. The change
-  stands, and they exit 0.
-- If a change fails part way, they do not restart the service. They say it is stopped,
-  and running the command again finishes the change.
+- If the restart fails, they say so: the service may be stopped, or running with its old
+  environment, and `agentop configure opencode status` says which. The change stands,
+  and they exit 0.
+- If a change fails part way, they do not restart the service. They say it may be
+  stopped, and running the command again finishes the change.
 - A service that was not running is left alone, and it starts with the new environment
   the next time you run OpenCode. When `opencode service status` fails, they cannot tell
   whether it was running, so they do not restart it; if it still cannot be checked
@@ -201,15 +203,17 @@ from the field after the channel. OpenCode therefore gets its own row in agentop
 agents pane instead of sharing `Other`.
 
 **Its own sessions.** On its inference requests the service sends a session id
-(`ses_…`, the form that appears in the TUI's URLs) in `X-Session-Id`, and Cortex groups
-by it. OpenCode sends its session's affinity id there: the parent session's id for a
+(`ses_…`, the form that appears in the TUI's URLs) in `X-Session-Id`, and on a laptop
+install Cortex groups by it. OpenCode sends its session's affinity id there: the parent session's id for a
 subagent, the source session's for a fork, and otherwise the session's own. So a
 subagent or a fork is filed under the session it belongs to, with one row and one cost,
 as Claude Code's subagents are. OpenCode also sends `X-Opencode-Session-Id`, the
-session's own id, and Cortex does not read it. `X-Session-Id` is in the default
-`session.id_headers`, and the laptop installer's config lists it too. If you set that
-list yourself, include `X-Session-Id`, because naming any header replaces the built-in
-list.
+session's own id, and Cortex does not read it. On a laptop install `X-Session-Id` is
+read by default: it is in the list the laptop installer writes, and in the built-in
+`session.id_headers` wherever every listener binds loopback (`listener.bind_loopback_only`).
+A cluster deployment's default does not read it, because the name is generic: the IBAC
+demo agent sends it with an id it minted. If you set that list yourself, include
+`X-Session-Id`, because naming any header replaces the built-in list.
 
 **Typed inference.** These requests are parsed in the OpenAI dialect (model, messages,
 tools and the response):
@@ -319,7 +323,8 @@ Not tested live:
   as a request with no response. Once [#1223](https://github.com/rossoctl/cortex/pull/1223)
   merges, each probe instead appears as a `502` response row with `upstream_refused`,
   every cycle.
-- **`X-Session-Id` is a generic name.** Pi (Inflection AI) and similar frameworks send
-  it too, and traffic from any client that sends it is grouped under its value.
+- **`X-Session-Id` is a generic name.** Where it is read, by default on a laptop install,
+  traffic from any client that sends it is grouped under its value, Pi (Inflection AI)
+  and similar frameworks among them.
 - **Rows recorded before this release** keep the raw label `opencode/latest/2.0.21/cli`
   and show under `Other` until they age out.

@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"io"
+	"maps"
 	"net/netip"
 	"os"
 	"path/filepath"
@@ -370,29 +372,77 @@ func TestOpenCodeRun(t *testing.T) {
 	}
 }
 
-// agentop's own proxy and CA variables do not reach the CLI, so a service the CLI starts
-// or restarts does not inherit them either. /bin/sh -c env stands in for opencode and
-// prints the environment it was given; everything else in agentop's reaches it.
-func TestOpenCodeRun_LeavesOutAgentopsProxyAndCAVariables(t *testing.T) {
+// Only Cortex's values are kept from the CLI: a proxy or CA variable of agentop's own goes
+// when it is Cortex's, by the wanted values when they are known (another spelling of the
+// proxy's listener included) or by its shape, and reaches the CLI otherwise, so a user's own
+// corporate proxy or CA reaches a service the CLI restarts. /bin/sh -c env stands in for
+// opencode and prints the environment it was given.
+func TestOpenCodeRun_LeavesOutOnlyCortexsValues(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("uses /bin/sh")
 	}
 	t.Setenv("HOME", t.TempDir())
-	for _, k := range openCodeKeys {
-		t.Setenv(k, "/from/agentop")
+	t.Cleanup(func() { openCodeCLIWant = nil })
+	openCodeCLIWant = map[string]string{"HTTPS_PROXY": "http://127.0.0.1:8081", "SSL_CERT_FILE": "/srv/ca/bundle.crt"}
+	env := map[string]string{
+		"HTTPS_PROXY":         "http://localhost:8081",         // Cortex's listener, spelled another way
+		"https_proxy":         "http://127.0.0.1:47600",        // Cortex's shape
+		"SSL_CERT_FILE":       "/srv/ca/bundle.crt",            // Cortex's, from the config
+		"NODE_EXTRA_CA_CERTS": "/home/u/.cortex/ca/ca.crt",     // Cortex's shape
+		"CURL_CA_BUNDLE":      "/home/u/.cortex/ca/bundle.crt", // Cortex's shape
+		"HTTP_PROXY":          "http://corp:3128",              // the user's own
+		"http_proxy":          "http://corp:3128",
+		"GIT_SSL_CAINFO":      "/etc/corp/ca.pem",
+		"REQUESTS_CA_BUNDLE":  "/etc/corp/ca.pem",
+	}
+	for k, v := range env {
+		t.Setenv(k, v)
 	}
 	t.Setenv("OPENCODE_UNRELATED", "kept")
 	out, err := openCodeRun("/bin/sh", "-c", "env")
 	if err != nil {
 		t.Fatal(err)
 	}
+	got := map[string]string{}
 	for _, kv := range strings.Split(out, "\n") {
-		if k, _, _ := strings.Cut(kv, "="); slices.Contains(openCodeKeys, k) {
-			t.Errorf("the CLI was given %s", kv)
+		if k, v, ok := strings.Cut(kv, "="); ok {
+			got[k] = v
 		}
 	}
-	if !slices.Contains(strings.Split(out, "\n"), "OPENCODE_UNRELATED=kept") {
+	for _, k := range []string{"HTTPS_PROXY", "https_proxy", "SSL_CERT_FILE", "NODE_EXTRA_CA_CERTS", "CURL_CA_BUNDLE"} {
+		if v, ok := got[k]; ok {
+			t.Errorf("the CLI was given Cortex's %s=%s", k, v)
+		}
+	}
+	for _, k := range []string{"HTTP_PROXY", "http_proxy", "GIT_SSL_CAINFO", "REQUESTS_CA_BUNDLE"} {
+		if got[k] != env[k] {
+			t.Errorf("the CLI was given %s=%q, want the user's own %q", k, got[k], env[k])
+		}
+	}
+	if got["OPENCODE_UNRELATED"] != "kept" {
 		t.Errorf("the CLI lost the rest of the environment:\n%s", out)
+	}
+}
+
+// warnOpenCodeService's CLI calls are judged against what exec injects, and only while it
+// runs.
+func TestWarnOpenCodeService_JudgesTheCLIByWhatExecInjects(t *testing.T) {
+	f := &fakeOpenCode{status: "http://127.0.0.1:49374", pid: 4242, env: []string{"PATH=/usr/bin"}}
+	stubOpenCode(t, f)
+	fakeOpenCodeBin(t)
+	var seen map[string]string
+	run := openCodeRun
+	openCodeRun = func(bin string, args ...string) (string, error) {
+		seen = maps.Clone(openCodeCLIWant)
+		return run(bin, args...)
+	}
+	inject := map[string]string{"HTTPS_PROXY": "http://127.0.0.1:8081"}
+	warnOpenCodeService([]string{"opencode"}, inject, io.Discard)
+	if !maps.Equal(seen, inject) {
+		t.Errorf("the CLI was judged against %v, want what exec injects, %v", seen, inject)
+	}
+	if openCodeCLIWant != nil {
+		t.Errorf("openCodeCLIWant = %v after the warning, want nil", openCodeCLIWant)
 	}
 }
 
