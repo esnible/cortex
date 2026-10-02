@@ -42,6 +42,7 @@ type setupEnv struct {
 	pathProfile       string   // the profile the PATH step edits
 	configFresh       bool     // no config.yaml before this run
 	configWillChange  bool     // the config step migrates an existing config
+	configPinsPending bool     // the migration adds listener pins, which a running proxy takes only on a restart
 	unsupervised      bool     // the proxy runs without launchd/systemd
 	priorService      bool     // a supervised Cortex was serving before this run
 
@@ -49,6 +50,8 @@ type setupEnv struct {
 	restorePrior func() error // brings back the Cortex that served before, after a rollback
 	priorDesc    string
 	onSuccess    []func() // run once every step has applied
+
+	configPinsChanged bool // the config step added listener pins, so the service must restart
 }
 
 func (e *setupEnv) configPath() string  { return filepath.Join(e.cortexDir, "config.yaml") }
