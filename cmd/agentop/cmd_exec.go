@@ -199,6 +199,10 @@ func runExec(args []string, stdout, stderr io.Writer) int {
 		return 0
 	}
 
+	// OpenCode's traffic leaves from its background service, not from this child, and
+	// a service already running keeps its own environment. Only a message: the child
+	// runs either way.
+	warnOpenCodeService(cmdArgs, inject, stderr)
 	return runChild(cmdArgs, inject, stdout, stderr)
 }
 
