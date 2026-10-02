@@ -297,12 +297,12 @@ var knownClients = map[string]string{
 	// client alike: "opencode/<channel>/<version>/<client>", e.g. "opencode/latest/2.0.21/cli"
 	// (captured from 2.0.21). The version is the field after the channel, not the first one —
 	// see productVersion. It arrives with its own detection work: its session header is
-	// session.OpenCodeSessionHeader, and `agentop configure opencode` sets it up.
+	// session.SessionIDHeader, and `agentop configure opencode` sets it up.
 	"opencode": "opencode",
 }
 
 // IsKnownAgent reports whether name is the canonical name of a coding agent ParseUserAgent
-// recognises — "claude-code", "bob-shell", "ibm-bob" — as AgentName folds a Label to it.
+// recognises — every canonical name in knownClients — as AgentName folds a Label to it.
 //
 // FOR A CONSUMER THAT HAS TO TELL AN AGENT FROM A RAW User-Agent, which a label alone cannot
 // say: "curl" is what AgentName answers for curl/8.4.0, and nothing in that string marks it

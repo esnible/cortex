@@ -503,7 +503,7 @@ func TestSessionConfig_SessionIDHeaders(t *testing.T) {
 		cfg  SessionConfig
 		want []string
 	}{
-		{"unset defaults to the supported agent headers, Claude Code first", SessionConfig{}, []string{session.ClaudeCodeSessionHeader, session.BobSessionHeader, session.OpenCodeSessionHeader}},
+		{"unset defaults to the supported agent headers, Claude Code first", SessionConfig{}, []string{session.ClaudeCodeSessionHeader, session.BobSessionHeader, session.SessionIDHeader}},
 		{"explicit empty list disables bucketing", SessionConfig{IDHeaders: []string{}}, nil},
 		{"explicit list is used verbatim", SessionConfig{IDHeaders: []string{"X-Other-Agent-Session"}}, []string{"X-Other-Agent-Session"}},
 	}

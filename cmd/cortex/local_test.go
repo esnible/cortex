@@ -638,6 +638,47 @@ func TestBuiltinConfig_SeparatesCodingAgentSessions(t *testing.T) {
 	}
 }
 
+// TestBuiltinConfig_ReadsOpenCodesSessionHeader: OpenCode's X-Session-Id must be listed, for
+// the same reason as Bob's — an explicit id_headers replaces the built-in default, so leaving
+// it out would pool OpenCode's sessions under --local.
+func TestBuiltinConfig_ReadsOpenCodesSessionHeader(t *testing.T) {
+	cortexDir := t.TempDir()
+	p, err := writeBuiltinConfig(cortexDir, filepath.Join(cortexDir, "ca"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(cfg.Session.SessionIDHeaders(), session.SessionIDHeader) {
+		t.Errorf("built-in config: id_headers = %v, want it to include %s", cfg.Session.SessionIDHeaders(), session.SessionIDHeader)
+	}
+}
+
+// TestBuiltinConfig_IDHeadersEqualTheCoreDefault: the laptop template's id_headers is the same
+// list, in the same order, as the one core uses when id_headers is unset. The template writes
+// its list explicitly, which replaces the default, so a header added to one and not the other
+// groups an agent's sessions in one kind of deployment only. Lives here rather than in
+// core/config because core cannot import this main package.
+func TestBuiltinConfig_IDHeadersEqualTheCoreDefault(t *testing.T) {
+	cortexDir := t.TempDir()
+	p, err := writeBuiltinConfig(cortexDir, filepath.Join(cortexDir, "ca"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Session.IDHeaders == nil {
+		t.Fatal("built-in config: id_headers is unset, want the template's explicit list")
+	}
+	if got, want := cfg.Session.IDHeaders, (config.SessionConfig{}).SessionIDHeaders(); !slices.Equal(got, want) {
+		t.Errorf("built-in config: id_headers = %v, want the core default %v", got, want)
+	}
+}
+
 // TestBuiltinConfig_PricesBobInBobcoins: the built-in config prices IBM Bob's gateway at its
 // flat 2 Bobcoins per million tokens on every tier. Without the entry, every Bob request is
 // unpriced (its models — premium-ide, router, openai/gpt-oss-20b — are in no bundled table), and

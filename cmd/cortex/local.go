@@ -300,7 +300,7 @@ cost_ledger:
 #
 # X-Claude-Code-Session-Id is set by Claude Code on every inference request.
 # X-Task-Id is set by IBM Bob Shell.
-# X-Session-Id is set by OpenCode, Pi (Inflection AI), and similar frameworks.
+# X-Session-Id is set by OpenCode (its affinity id, so a subagent joins its parent's session), Pi (Inflection AI), and similar frameworks.
 #
 # An explicit empty list (id_headers: []) disables header-based bucketing.
 #
