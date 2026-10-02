@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"unsafe"
@@ -368,5 +369,39 @@ func TestParseProcArgs2(t *testing.T) {
 		if _, err := parseProcArgs2(bad); err == nil {
 			t.Errorf("parseProcArgs2(%v) accepted a truncated buffer", bad)
 		}
+	}
+}
+
+func TestParseProcArgs2_EndsAndErrors(t *testing.T) {
+	head := func(argc uint32, s string) []byte {
+		return append(binary.LittleEndian.AppendUint32(nil, argc), s...)
+	}
+	if env, err := parseProcArgs2(head(1, "/bin/x\x00\x00\x00x\x00\x00ptr_munge=\x00")); err != nil || len(env) != 0 {
+		t.Errorf("no environment, Apple's strings after: %q, %v; want none and no error", env, err)
+	}
+	if _, err := parseProcArgs2(head(1, "/bin/cat\x00\x00\x00\x00\x00\x00\x00\x00cat\x00")); !errors.Is(err, errWithheld) {
+		t.Errorf("buffer ending right after the arguments: %v, want errWithheld", err)
+	}
+	if _, err := parseProcArgs2(head(2, "/bin/x\x00\x00x\x00")); err == nil || errors.Is(err, errWithheld) {
+		t.Errorf("buffer ending inside the arguments: %v, want a truncation error", err)
+	}
+}
+
+// macOS withholds an Apple system binary's environment while still showing its arguments.
+// Environ must say so, never answer an empty environment.
+func TestEnviron_AWithheldEnvironmentIsNotFound(t *testing.T) {
+	cmd := exec.Command("/bin/sleep", "30")
+	cmd.Env = []string{"PEERPROC_MARKER=1"}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = cmd.Process.Kill(); _ = cmd.Wait() }()
+	env, err := Environ(int32(cmd.Process.Pid))
+	switch {
+	case errors.Is(err, ErrNotFound):
+	case err == nil && slices.Contains(env, "PEERPROC_MARKER=1"):
+		t.Skip("this macOS shows /bin/sleep's environment")
+	default:
+		t.Errorf("Environ(/bin/sleep) = %q, %v; a withheld environment must be ErrNotFound, not empty", env, err)
 	}
 }

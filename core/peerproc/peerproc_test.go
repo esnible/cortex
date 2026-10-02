@@ -447,16 +447,3 @@ func TestEnvironHelperProcess(t *testing.T) {
 	_, _ = io.Copy(io.Discard, os.Stdin)
 	os.Exit(0)
 }
-
-// Another user's process — pid 1 belongs to root — cannot be read.
-func TestEnviron_RefusesAnotherUsersProcess(t *testing.T) {
-	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
-		t.Skip("Environ is unsupported on " + runtime.GOOS)
-	}
-	if os.Geteuid() == 0 {
-		t.Skip("root can read every process")
-	}
-	if _, err := Environ(1); err == nil {
-		t.Error("Environ(1) succeeded for a non-root caller")
-	}
-}

@@ -330,7 +330,8 @@ func readBootTime(path string) (time.Time, error) {
 func environ(pid int32) ([]string, error) {
 	b, err := os.ReadFile("/proc/" + strconv.Itoa(int(pid)) + "/environ")
 	if err != nil {
-		return nil, fmt.Errorf("peerproc: %w", err)
+		// Another user's process, one that is not dumpable, or one that has exited.
+		return nil, fmt.Errorf("%w: %v", ErrNotFound, err)
 	}
 	return splitNUL(b), nil
 }

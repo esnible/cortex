@@ -276,15 +276,30 @@ func exePath(pid int32) string {
 func environ(pid int32) ([]string, error) {
 	buf, err := unix.SysctlRaw("kern.procargs2", int(pid))
 	if err != nil {
-		return nil, fmt.Errorf("peerproc: kern.procargs2 for pid %d: %w", pid, err)
+		// EINVAL, for another user's process and for a pid that does not exist alike.
+		return nil, fmt.Errorf("%w: kern.procargs2 for pid %d: %v", ErrNotFound, pid, err)
 	}
-	return parseProcArgs2(buf)
+	env, err := parseProcArgs2(buf)
+	if errors.Is(err, errWithheld) {
+		return nil, fmt.Errorf("%w: pid %d's environment is withheld", ErrNotFound, pid)
+	}
+	return env, err
 }
 
-// parseProcArgs2 reads the environment out of a kern.procargs2 buffer. The layout is argc
-// as a 32-bit integer, the executable path, NUL padding, argc NUL-terminated arguments,
-// then the NUL-terminated environment, which ends at an empty string. Apple's own strings
-// follow that empty one and are not the environment.
+// errWithheld is parseProcArgs2's answer for a buffer that ends right after the arguments.
+// macOS withholds some processes' environments, including every Apple system process and
+// some third-party ones (Chrome, iTerm's server), while still showing their arguments. A
+// process that really has no environment still has Apple's strings after its arguments, so
+// the two cannot be confused.
+var errWithheld = errors.New("environment withheld")
+
+// parseProcArgs2 reads the environment out of a kern.procargs2 buffer. The layout is argc as
+// a 32-bit integer, the executable path, NUL padding, then argc NUL-terminated arguments.
+// The NUL-terminated environment follows, and in a running process it ends at an empty
+// string, with Apple's own strings after it. A process stopped at exec, before dyld runs,
+// can lack that empty string, and its Apple strings then read as environment. An empty
+// argv[0] reads as part of the padding, so the first environment string is lost, as it is
+// to psutil and ps.
 func parseProcArgs2(buf []byte) ([]string, error) {
 	if len(buf) < 4 {
 		return nil, fmt.Errorf("peerproc: kern.procargs2 is %d bytes", len(buf))
@@ -305,6 +320,9 @@ func parseProcArgs2(buf []byte) ([]string, error) {
 			return nil, errors.New("peerproc: kern.procargs2 ends inside its arguments")
 		}
 		rest = rest[i+1:]
+	}
+	if len(rest) == 0 {
+		return nil, errWithheld
 	}
 	var env []string
 	for {
