@@ -126,9 +126,34 @@ func (m *model) rebuildEventsTable() {
 	// exchange is read off the timeline.
 	ids, partner := computeEventPairs(eventRows)
 
-	// One selection per rebuild, fitted to the terminal. Both the header and every
-	// row cell come from `cols`, so they cannot disagree.
-	cols, dropped := fitColumns(selectedColumns(m.eventColumns), m.width)
+	// One cellContext per row of the SESSION, before any filter. The fitsContent
+	// columns are measured over all of them (see measureColumns), and the row loop
+	// below shows the cells measured there, so a column cannot be sized from one
+	// reading of a row and filled from another.
+	//
+	// That computes invocations, rowAction and the measured cells for rows a filter
+	// then hides, which the loop used to skip. Each is evaluated once per row, which is
+	// what the unfiltered view pays on every rebuild anyway, so filtering never makes a
+	// rebuild dearer than not filtering.
+	ctxs := make([]cellContext, len(eventRows))
+	for i, er := range eventRows {
+		// One invocations and one rowAction per row: hideInactive below reads invs,
+		// and the ACTION and PLUGIN cells read this one rowAction result rather than
+		// each recomputing the pair and discarding half of it. Both consider the
+		// folded tunnel's invocations too.
+		invs := er.invocations()
+		action, plugin := rowAction(er, invs)
+		ctxs[i] = cellContext{
+			m: m, rows: eventRows, partner: partner, i: i, row: er, ids: ids,
+			invs: invs, action: action, plugin: plugin,
+		}
+	}
+
+	// One selection per rebuild, sized to the session and fitted to the terminal.
+	// Both the header and every row cell come from `cols`, so they cannot disagree.
+	var measured map[eventColumnID][]string
+	m.eventColWidths, measured = measureColumns(selectedColumns(m.eventColumns), ctxs)
+	cols, dropped := layoutColumns(m.eventColumns, m.eventColWidths, m.width)
 	m.eventColsDropped = dropped
 
 	// Rows are built first and handed to the table together with their columns at
@@ -153,17 +178,15 @@ func (m *model) rebuildEventsTable() {
 			}
 		}
 	}
-	for i, er := range eventRows {
-		if m.filter != "" && !matchEventRow(er, m.filter) {
+	for j, cc := range ctxs {
+		if m.filter != "" && !matchEventRow(cc.row, m.filter) {
 			continue
 		}
 		// hideInactive (the `s` toggle) is off by default — every message is
 		// shown, including passthrough/skip-only ones, per "I should see all
 		// network messages". Turning it on focuses the timeline on plugin
-		// activity (deny/modify/observe/allow). Both the filter and the
-		// headline consider the folded tunnel's invocations too.
-		invs := er.invocations()
-		if m.hideInactive && eventInactive(invs) {
+		// activity (deny/modify/observe/allow).
+		if m.hideInactive && eventInactive(cc.invs) {
 			m.hiddenInactive++
 			continue
 		}
@@ -181,16 +204,14 @@ func (m *model) rebuildEventsTable() {
 		// notation, so both rows claimed to contain each other and the output was
 		// actively misleading. The # column pairs exchanges exactly (by the
 		// proxy-stamped RequestID), which is what the glyphs approximated.
-		// One rowAction per row, reusing the invs computed for hideInactive above:
-		// the ACTION and PLUGIN cells read this result rather than each recomputing
-		// the pair and discarding half of it.
-		action, plugin := rowAction(er, invs)
-		cc := cellContext{
-			m: m, rows: eventRows, partner: partner, i: i, row: er, ids: ids,
-			invs: invs, action: action, plugin: plugin,
-		}
 		row := make(table.Row, 0, len(cols))
 		for _, c := range cols {
+			// A measured column's cell was evaluated for this row by measureColumns,
+			// so it is aligned and shown rather than evaluated a second time.
+			if vs, ok := measured[c.id]; ok {
+				row = append(row, c.align(vs[j]))
+				continue
+			}
 			// render, not cell: it sets cc.width from the column AND applies the
 			// column's declared alignment, which is the same field tableColumns pads
 			// the heading with. A cell that aligned itself could not tell the header,
@@ -198,7 +219,7 @@ func (m *model) rebuildEventsTable() {
 			row = append(row, c.render(cc))
 		}
 		rows = append(rows, row)
-		m.visibleRows = append(m.visibleRows, er)
+		m.visibleRows = append(m.visibleRows, cc.row)
 		// Keyed from the SAME cellContext that just rendered the row, so the value
 		// sorted on and the value displayed cannot come apart. cc.width stays zero
 		// here — render takes its own copy — and no sortKey reads it.
@@ -214,27 +235,36 @@ func (m *model) rebuildEventsTable() {
 	if sortCol != nil {
 		sortEventRows(rows, m.visibleRows, keys, m.sortDesc)
 	}
-	// Columns are re-set only when they actually differ, and the clear that has to
-	// precede that is paid only then too.
+	// Columns are re-set only when they actually differ, and in an order that keeps
+	// every intermediate state renderable.
 	//
-	// SetColumns calls UpdateViewport, which re-renders whatever rows are loaded,
-	// and bubbles' renderRow walks the ROW's cells while indexing m.cols[i] — so a
-	// row with more cells than there are columns reads past the end and panics
-	// ("index out of range [10] with length 10"). Toggling a column off is exactly
-	// that. Clearing first leaves SetColumns nothing to mis-render.
+	// SetColumns and SetRows each call UpdateViewport, which re-renders whatever rows
+	// are loaded against whatever columns are set, and bubbles' renderRow walks the
+	// ROW's cells while indexing m.cols[i] — so a row with more cells than there are
+	// columns reads past the end and panics ("index out of range [10] with length
+	// 10"). Fewer cells than columns is harmless. So when the new set has fewer
+	// columns the new rows go in first, and otherwise the new columns do: at no step
+	// is a loaded row longer than the columns it is rendered against.
 	//
-	// But SetRows(nil) also empties the viewport's content, which resets its offset
-	// to 0 and parks the cursor at −1: the scroll position is GONE before the
-	// restore below can preserve it. Doing it on every rebuild meant the two-second
-	// sessions poll re-anchored the pane under an operator who was reading it.
-	// The equality check is what makes the poll a no-op — the columns only change
-	// when someone toggles one or the terminal is resized past a fit boundary, and
-	// re-anchoring then is fine.
-	if newCols := tableColumns(cols, m.sortCol, m.sortDesc); !slices.Equal(m.eventsTbl.Columns(), newCols) {
-		m.eventsTbl.SetRows(nil)
+	// The order replaced a SetRows(nil) before SetColumns, which avoided the panic
+	// but also emptied the viewport's content, resetting its offset to 0 and parking
+	// the cursor at −1: the scroll position was GONE before the restore below could
+	// preserve it. Columns change on three triggers — a column toggled, the terminal
+	// resized past a fit boundary, and a fitsContent column (TOKENS, COST) widening
+	// or narrowing as figures arrive, which can push a column off the terminal or
+	// let one back on. The third happens mid-stream with no keystroke behind it, so
+	// none of them may re-anchor the pane under an operator who is reading it.
+	newCols := tableColumns(cols, m.sortCol, m.sortDesc)
+	switch oldCols := m.eventsTbl.Columns(); {
+	case slices.Equal(oldCols, newCols):
+		m.eventsTbl.SetRows(rows)
+	case len(newCols) < len(oldCols):
+		m.eventsTbl.SetRows(rows)
 		m.eventsTbl.SetColumns(newCols)
+	default:
+		m.eventsTbl.SetColumns(newCols)
+		m.eventsTbl.SetRows(rows)
 	}
-	m.eventsTbl.SetRows(rows)
 
 	// Auto-follow: if user was at the bottom, stay at the bottom. Otherwise
 	// preserve position so reading isn't disturbed by new events.
