@@ -902,7 +902,13 @@ func main() {
 		// named — and only behind a lookup whose self-test passed: a failure costs one
 		// warning and leaves resolution as it was.
 		if sessions != nil && len(fpSrv.SessionIDHeaders) > 0 && cfg.Session.ProcessAttributionEnabled(cfg.Listener.BindLoopbackOnly) {
-			if procs, perr := peerproc.New(); perr != nil {
+			procs, perr := peerproc.New()
+			if perr != nil {
+				// Once more: the self-test checks this process's parent, which a supervisor
+				// can change under it at startup.
+				procs, perr = peerproc.New()
+			}
+			if perr != nil {
 				slog.Warn("process attribution off: this host's process lookup is unavailable", "error", perr)
 			} else {
 				fpSrv.Processes = procs
