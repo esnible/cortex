@@ -16,6 +16,26 @@ import (
 // recognize both dialects.
 const anthropicMessagesPath = "/v1/messages"
 
+// zenMessagesPath and zenGoMessagesPath are OpenCode Zen's Anthropic-dialect endpoints:
+// Zen (opencode.ai/zen) serves its Claude models, and most of its Qwen ones, on an
+// Anthropic Messages endpoint under its /zen prefix, and OpenCode's Go plan mounts the
+// same under /zen/go.
+const (
+	zenMessagesPath   = "/zen/v1/messages"
+	zenGoMessagesPath = "/zen/go/v1/messages"
+)
+
+// isAnthropicMessagesPath reports whether path speaks the Anthropic Messages dialect. One
+// predicate for the request and every response-side call site, so no path can be read as
+// Anthropic on the way out and as OpenAI on the way back.
+func isAnthropicMessagesPath(path string) bool {
+	switch path {
+	case anthropicMessagesPath, zenMessagesPath, zenGoMessagesPath:
+		return true
+	}
+	return false
+}
+
 // --- request ---
 
 // anthropicRequest is the subset of the Anthropic Messages request we surface.
