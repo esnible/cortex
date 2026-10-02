@@ -69,7 +69,7 @@ func endpointPath(pctx *pipeline.Context) string {
 // mistake even when it is not.
 const bobPath = "/inference/v1/chat/completions"
 
-// zenPath is OpenCode Zen's inference endpoint (opencode.ai/zen). It speaks the
+// zenPath is OpenCode Zen's (opencode.ai/zen) OpenAI-dialect endpoint. It speaks the
 // OPENAI dialect — the body is {model, messages, ...} — despite living under a
 // /zen prefix, so it needs the same explicit routing bobPath does.
 const zenPath = "/zen/v1/chat/completions"

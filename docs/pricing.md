@@ -95,10 +95,20 @@ at zero on `opencode.ai` only. That covers every Zen model whose id ends in `-fr
 `big-pickle`, the one free model without the suffix. A call to one of them is a *priced
 zero*, so it counts toward coverage and does not ask you for a rate that does not exist.
 
-It ships because config cannot say zero: a rate of 0 there leaves its tier unset, so the
-call would stay unpriced. `bundled: false` drops these rows along with the rest of the
-shipped table. A `-free` model on any other endpoint stays unpriced, because the suffix is
-Zen's naming and nobody else's.
+It ships because config cannot say zero: a tier given a rate of 0 is left unset, and an
+entry whose every rate is 0 is a startup error. `bundled: false` drops these rows along
+with the rest of the shipped table. A `-free` model on any other endpoint stays unpriced,
+because the suffix is Zen's naming and nobody else's.
+
+A configured entry outranks a shipped one whatever its pattern, so a `"*"` entry for
+`opencode.ai`, or one under `hosts: ["*"]`, replaces these zeros with its own rate. To
+price Zen's paid models, name them.
+
+A zero still needs token counts to apply to. A response that reports none, such as an
+OpenAI-dialect stream sent without `stream_options.include_usage`, is reported unpriced
+and named in `unpricedBy`, as for any model. No rate fixes that, since there is nothing to
+apply it to. A free call that is priced counts toward coverage, but its cost cells in
+the events and sessions panes are blank, since there is no amount to show.
 
 ### The shipped gateway discount
 
@@ -157,7 +167,7 @@ where the factor came from.
 |---|---|
 | `configured` | From your `pricing:` section. Outranks everything below. |
 | `discovered` | Reserved; no producer today (see [Refreshing](#refreshing-the-bundled-table)). |
-| `bundled` | Compiled in — vendor list, possibly scaled by a shipped discount. **Expect it to be wrong for a gateway you have not pinned.** |
+| `bundled` | Compiled in — vendor list, possibly scaled by a shipped discount, or the zero [shipped for Zen's free models](#free-models-ship-at-zero). **Expect it to be wrong for a gateway you have not pinned.** |
 | `authoritative` | A settled per-request cost from the gateway's `X-Litellm-Response-Cost` header. Not a rate. |
 
 ### Finding traffic that is not priced

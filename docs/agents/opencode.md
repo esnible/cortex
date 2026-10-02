@@ -238,13 +238,17 @@ checked. Cost needs either a reported figure or a rate. A LiteLLM gateway's
 at a rate:
 
 - **Zen's free models** — those whose id ends in `-free`, and `big-pickle` — are priced
-  at zero, a rate Cortex ships for `opencode.ai` only.
+  at zero, a rate Cortex ships for `opencode.ai` only. A call to one counts as priced,
+  but its cost cells in the events and sessions panes are blank: there is no amount to
+  show.
 - **Claude models**, Zen's included, are priced at the bundled Anthropic list rates.
   For the model checked, Claude Sonnet 4.6 at $3 in and $15 out per million tokens, that
   is what Zen charges.
 - **Any other model** is reported unpriced until you add a `pricing:` entry for it.
   [Finding traffic that is not priced](../pricing.md#finding-traffic-that-is-not-priced)
-  shows how to find the endpoint and model to add.
+  shows how to find the endpoint and model to add. Name the model rather than writing
+  `"*"` for `opencode.ai`: a configured entry outranks a shipped one, so a catch-all would
+  also replace the free models' zero.
 
 **Tool pruning is unsupported.** The `tool-prune` plugin acts on any request whose path
 ends in `/v1/chat/completions` or `/v1/messages`, Zen's included, and removes the tools

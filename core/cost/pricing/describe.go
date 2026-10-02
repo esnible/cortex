@@ -19,13 +19,17 @@ import (
 
 // RowView is one rate-table row, in the unit providers publish.
 //
-// A zero rate means UNSET, not free: config rejects a zero and the generator drops it,
-// so nothing legitimate produces one. Rendered with omitempty so an absent tier reads
-// as absent rather than as a price of nothing.
+// A zero rate field means UNSET, not free: config leaves a zero tier unset (and rejects
+// an entry whose every rate is zero), and the generator drops it. Rendered with omitempty so an absent tier reads as absent rather than as a price of
+// nothing. The one row whose rates really are zero, a free model shipped at zero (see
+// bundledFreeRates), says so in Free instead.
 type RowView struct {
 	Host       string `json:"host,omitempty"`
 	Model      string `json:"model"`
 	Provenance string `json:"provenance"`
+	// Free marks a row that prices every tier it sets at zero. Its rate fields are omitted
+	// like an unset tier's, so this is what tells the two apart.
+	Free bool `json:"free,omitempty"`
 	// Unit is the currency these rates are denominated in. OMITTED WHEN USD, so a
 	// single-currency deployment's document is unchanged and a reader who has never configured a
 	// unit is not shown a column of "USD".
@@ -74,6 +78,8 @@ type EffectiveRates struct {
 	Model      string `json:"model"`
 	Provenance string `json:"provenance"`
 	Unpriced   bool   `json:"unpriced,omitempty"`
+	// Free marks a model priced at zero; see RowView.Free.
+	Free bool `json:"free,omitempty"`
 	// Unit is the currency these rates are denominated in; omitted when USD. See RowView.Unit.
 	Unit string `json:"unit,omitempty"`
 
@@ -136,6 +142,7 @@ func (t *Table) Describe() Description {
 			Host:       r.host,
 			Model:      r.model.pattern,
 			Provenance: r.prov.String(),
+			Free:       r.rates.free(),
 			// Omitted for the default so the common document is byte-identical to before.
 			Unit:                 nonDefaultCurrency(r.currency),
 			InputPerMillion:      perM(r.rates, TierInput),
@@ -168,7 +175,8 @@ func (t *Table) Describe() Description {
 	return out
 }
 
-// EffectiveFor resolves every model the table names, for one endpoint.
+// EffectiveFor resolves every model the table names, for one endpoint — except shipped
+// rows scoped to a different endpoint, which have nothing to say about this one.
 //
 // This is the question worth answering: not "what rows exist" but "what will this
 // gateway charge me". Resolution applies host scoping, specificity, provenance
@@ -191,7 +199,16 @@ func (t *Table) EffectiveFor(host string) Effective {
 	seen := map[string]struct{}{}
 	var models []string
 	for i := range t.rows {
-		m := t.rows[i].model.pattern
+		r := &t.rows[i]
+		// A SHIPPED row scoped to another endpoint is that endpoint's business: OpenCode
+		// Zen's free models have nothing to say about api.anthropic.com, and listing them
+		// there as UNPRICED reads as a gap in that endpoint's rates. A configured row for
+		// another host is still listed, so an operator can see what one gateway has that
+		// this one lacks.
+		if r.prov == ProvBundled && !matchHost(r.host, host) {
+			continue
+		}
+		m := r.model.pattern
 		if _, dup := seen[m]; dup {
 			continue
 		}
@@ -221,6 +238,7 @@ func (t *Table) EffectiveFor(host string) Effective {
 			}
 		}
 		if prov != ProvNone {
+			e.Free = rates.free()
 			e.InputPerMillion = perM(rates, TierInput)
 			e.CacheWritePerMillion = perM(rates, TierCacheWrite)
 			e.CacheReadPerMillion = perM(rates, TierCacheRead)

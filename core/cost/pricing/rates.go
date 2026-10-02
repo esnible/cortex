@@ -149,6 +149,22 @@ func (r Rates) For(t Tier) (float64, bool) {
 	return r.Base[t], r.Set[t]
 }
 
+// free reports whether these rates price every tier at zero, with no long-context
+// override. A view renders it as free rather than as unset, which is what a zero rate
+// field otherwise means. EVERY tier, not every set one: a view prints "free" across all
+// four columns, so a row with an unset tier would show a coverage gap as free.
+func (r Rates) free() bool {
+	if len(r.Thresholds) > 0 {
+		return false
+	}
+	for t := range r.Set {
+		if !r.Set[t] || r.Base[t] != 0 {
+			return false
+		}
+	}
+	return true
+}
+
 // any reports whether these rates price anything at all, at any prompt size.
 // NewTable uses it to reject a row that prices nothing: such a row would match
 // traffic and then resolve it as unpriced, which is indistinguishable from having
