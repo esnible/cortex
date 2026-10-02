@@ -12,7 +12,7 @@ import (
 // THE SELECTED ROW MUST NOT INVERT ITS CELLS, because one of them encodes a value as INK.
 //
 // bubbles wraps the whole row in Selected.Render, so reverse video swapped foreground and
-// background for every cell in it — and the sessions table's CONTEXT(1M) gauge draws its value as
+// background for every cell in it — and the sessions table's CTX(1M) gauge draws its value as
 // filled blocks against a blank track. Under reverse the blocks rendered in the background colour
 // (reading as empty) and the track in the foreground (reading as filled), so a selected row showed
 // 44% as roughly 56%, filling from the wrong side.

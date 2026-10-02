@@ -7,7 +7,7 @@ package main
 // ToolCount = len(Tools) and MessageCount = len(Messages) and then nils both
 // arrays, so a fixture that sets only the counts has them overwritten with zero
 // on every timeline fetch — and sessions_context.go skips any response whose tool
-// count is zero, leaving CONTEXT(1M) a dash no matter what the counts said. The
+// count is zero, leaving CTX(1M) a dash no matter what the counts said. The
 // manifest has to be real for the gauge to work, and once it is real the detail
 // pane has genuine content to scroll.
 

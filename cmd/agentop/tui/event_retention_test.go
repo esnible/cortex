@@ -95,7 +95,7 @@ func TestSessionsPicker_ListsCachedOnlySessions(t *testing.T) {
 	}
 	// FOUND BY COLUMN, not by position. The marker used to ride in ACTIVE, addressed here as
 	// the last cell — which broke once when COST and SAVED were inserted ahead of it, and again
-	// when ACTIVE was replaced by CONTEXT(1M) and the marker moved into UPDATED. What this test
+	// when ACTIVE was replaced by CTX(1M) and the marker moved into UPDATED. What this test
 	// is about is the marker, not where the row happens to keep it.
 	if got := strings.TrimSpace(sessionsCell(t, m, row, "UPDATED")); got != cachedMarker {
 		t.Errorf("row not marked as cached-only (UPDATED cell %q): %v", got, row)

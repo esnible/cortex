@@ -109,7 +109,7 @@ func (m *model) applyDetailEvent(msg detailEventLoadedMsg) {
 	m.replaceHeldEvent(msg.sessionID, msg.event)
 	m.markFullFetched(msg.sessionID, msg.seq)
 
-	// AND THE SESSIONS ROW, because replaceHeldEvent rebased the CONTEXT(1M) gauge and that
+	// AND THE SESSIONS ROW, because replaceHeldEvent rebased the CTX(1M) gauge and that
 	// table holds BAKED cells — see the snapshot arm in Update for the full reason, and for why
 	// the repaint is not guarded on the focused pane.
 	//
@@ -143,7 +143,7 @@ func (m *model) replaceHeldEvent(sessionID string, full *pipeline.SessionEvent) 
 			//
 			// Not a hypothetical staleness: this is the one path that puts a manifest and a
 			// message count back into a projected timeline, so it is the only thing that can
-			// give the CONTEXT(1M) column an answer for a session agentop never streamed. Held
+			// give the CTX(1M) column an answer for a session agentop never streamed. Held
 			// behind a cache hit, the operator would open the very event that established the
 			// figure and watch the column go on showing a dash.
 			m.rebaseSessionContext(sessionID, held)

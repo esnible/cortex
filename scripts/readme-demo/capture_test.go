@@ -46,7 +46,7 @@ func TestCapture_SessionsTableShowsMoneyAndTitles(t *testing.T) {
 	got := ansi.Strip(c.Screen())
 
 	for _, want := range []string{
-		"SESSION", "TITLE", "TOKENS", "COST", "SAVED~", "CONTEXT(1M)",
+		"SESSION", "TITLE", "TOKENS", "COST", "SAVED~", "CTX(1M)",
 		"fix the retry handler", "add dark mode toggle", "debug the helm chart",
 	} {
 		if !strings.Contains(got, want) {
@@ -59,10 +59,10 @@ func TestCapture_SessionsTableShowsMoneyAndTitles(t *testing.T) {
 	if !strings.Contains(got, ":"+localSessionPort) {
 		t.Errorf("header should show the real local session port, not the harness's ephemeral one:\n%s", got)
 	}
-	// A gauge glyph proves CONTEXT(1M) folded: it is a dash whenever the fixture
+	// A gauge glyph proves CTX(1M) folded: it is a dash whenever the fixture
 	// forgets the tool manifest or the main-agent role.
 	if !strings.Contains(got, "▏") {
-		t.Errorf("CONTEXT(1M) rendered no gauge:\n%s", got)
+		t.Errorf("CTX(1M) rendered no gauge:\n%s", got)
 	}
 }
 

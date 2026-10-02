@@ -27,8 +27,8 @@ var usageState = regexp.MustCompile(`(?s)<g class="st st\d+[^"]*lbl-usage[^"]*">
 // normalize elides the usage chart and nothing else.
 //
 // An earlier version also masked every digit run, as a backstop for ages whose
-// length changes with capture speed. That went too far: it made CONTEXT(1M) and
-// CONTEXT(2M) compare equal, so the check could not see a renamed column, a
+// length changes with capture speed. That went too far: it made CTX(1M) and
+// CTX(2M) compare equal, so the check could not see a renamed column, a
 // reformatted figure or a changed count — most of what it exists to catch. The
 // capturer now canonicalises ages and timestamps at fixed width instead, which
 // removes the need for masking entirely.

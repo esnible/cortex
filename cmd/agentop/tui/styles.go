@@ -58,7 +58,7 @@ var (
 // come through unchanged.
 //
 // SELECTION IS A BACKGROUND TINT, NOT A REVERSE, and the reason is the sessions table's
-// CONTEXT(1M) gauge. bubbles wraps the whole row in Selected.Render, so reverse video swapped
+// CTX(1M) gauge. bubbles wraps the whole row in Selected.Render, so reverse video swapped
 // ink and background for every cell in it — and a gauge encodes its value AS ink. The filled
 // blocks rendered in the background colour (reading as empty) while the blank track rendered in
 // the foreground (reading as filled), so the highlighted row showed 44% as ~56%, from the wrong
