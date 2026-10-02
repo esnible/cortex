@@ -97,7 +97,7 @@ the change lands, and then it comes back with the environment it had. That is wh
   to it. Then they say whether the restarted service is using Cortex (after `enable`) or
   no longer uses it (after `disable`).
 - If the restart fails, they say so: the service may be stopped, or running with its old
-  environment, and `agentop configure opencode status` says which. The change stands,
+  environment, and `opencode service restart` applies the change. The change stands,
   and they exit 0.
 - If a change fails part way, they do not restart the service. They say it may be
   stopped, and running the command again finishes the change.
@@ -204,8 +204,9 @@ agents pane instead of sharing `Other`.
 
 **Its own sessions.** On its inference requests the service sends a session id
 (`ses_…`, the form that appears in the TUI's URLs) in `X-Session-Id`, and on a laptop
-install Cortex groups by it. OpenCode sends its session's affinity id there: the parent session's id for a
-subagent, the source session's for a fork, and otherwise the session's own. So a
+install Cortex groups by it. OpenCode sends its session's affinity id there: the parent
+session's id for a subagent, the source session's for a fork, and otherwise the
+session's own. So a
 subagent or a fork is filed under the session it belongs to, with one row and one cost,
 as Claude Code's subagents are. OpenCode also sends `X-Opencode-Session-Id`, the
 session's own id, and Cortex does not read it. On a laptop install `X-Session-Id` is

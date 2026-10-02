@@ -625,7 +625,8 @@ func finishOpenCodeChange(bin, cortexProxy string, configured, wasRunning bool, 
 	fmt.Fprintln(stdout, done)
 	if _, err := openCodeRun(bin, "service", "restart"); err != nil {
 		fmt.Fprintf(stderr, "agentop: could not restart OpenCode's background service (%v).\n"+
-			"  It may be stopped, or running with its old environment; agentop configure opencode status says which.\n", err)
+			"  It may be stopped, or running with its old environment. To apply the change now:\n"+
+			"    opencode service restart   # interrupts every OpenCode session using it\n", err)
 		return
 	}
 	svc, err := probeOpenCodeService(bin)

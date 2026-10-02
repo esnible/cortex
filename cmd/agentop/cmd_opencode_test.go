@@ -963,9 +963,10 @@ func TestConfigureOpenCode_ChangingTheEnvironmentRestartsTheService(t *testing.T
 	statusErr := errors.New("opencode service status: exit status 1")
 	const couldNotCheck = "Could not check OpenCode's running service (opencode service status: exit status 1); " +
 		"restart it to be sure: opencode service restart\n"
-	// Nothing was probed after the failed restart, so the line says what it may be and how to find out.
+	// Nothing was probed after the failed restart, so the line says what it may be and how to apply the change.
 	const restartFailed = "agentop: could not restart OpenCode's background service (opencode service restart: exit status 1).\n" +
-		"  It may be stopped, or running with its old environment; agentop configure opencode status says which.\n"
+		"  It may be stopped, or running with its old environment. To apply the change now:\n" +
+		"    opencode service restart   # interrupts every OpenCode session using it\n"
 	for _, action := range []string{"enable", "disable"} {
 		// The environment the service started with is the one the change replaces.
 		procEnv := []string{"PATH=/usr/bin"}

@@ -52,8 +52,10 @@ const BobSessionHeader = "X-Task-Id"
 // so a subagent does not get a row of its own.
 //
 // UNNAMESPACED, like BobSessionHeader: any client that sends it captures a bucket named after
-// its value. Accepted for the same reasons; see BobSessionHeader. Canonical casing, for the
-// same reason as the others.
+// its value. Unlike BobSessionHeader it is read by default only on a loopback-only install
+// (config.SessionConfig.SessionIDHeadersFor): in a cluster an agent may send it for its own
+// reasons, as the IBAC demo's does, and filing its calls by it would take them away from the
+// session that holds its user's intent. Canonical casing, for the same reason as the others.
 const SessionIDHeader = "X-Session-Id"
 
 // IDFromHeaders returns the first usable session id found in h among names,
