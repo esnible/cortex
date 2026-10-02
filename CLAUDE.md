@@ -163,6 +163,8 @@ cortex/
 │   ├── memstore/                     #   Process-scoped TTL map (vs storage/, persistent)
 │   ├── bootstrap/                    #   Process startup: logging, health, stats servers
 │   ├── tlsconfig/  tlsbridge/        #   Builds tls.Config values; forges bridge certs
+│   ├── peerproc/                     #   Which process holds a TCP connection
+│   │                                 #   (macOS pcblist_n, Linux /proc)
 │   └── storage/redis/                #   Redis driver for the storage.Store interface
 │                                     #   (its own module, nested but not part of core)
 │
@@ -703,7 +705,7 @@ retired as superseded. Nothing in-tree exercises the Envoy filter chains. Re-ver
 
 | Workflow | Trigger | Purpose |
 |----------|---------|---------|
-| `ci.yaml` | PR to main/release-* | Pre-commit; `go fmt`/`go vet`/build/test for core, both `scripts/*` and the `cmd/*` matrix; `go mod tidy -diff` for all 12 modules; Python tests. Note `go fmt` rewrites rather than fails, so it does not gate |
+| `ci.yaml` | PR to main/release-* | Pre-commit; `go fmt`/`go vet`/build/test for core (plus `core/peerproc`'s tests on a macOS runner), both `scripts/*` and the `cmd/*` matrix; `go mod tidy -diff` for all 12 modules; Python tests. Note `go fmt` rewrites rather than fails, so it does not gate |
 | `build.yaml` | Tag push (`v*`) or manual | Multi-arch Docker builds for all six matrix images: proxy-init, authbridge (proxy-sidecar combined), authbridge-envoy (envoy-sidecar combined), authbridge-lite (proxy Dockerfile built with the `lite` profile from `scripts/profile-tags`), authbridge-cpex, and sparc-service (Python). Every Go image passes `GO_BUILD_TAGS` naming a profile — plugins are all opt-in, so an image built without tags registers none |
 | `security-scans.yaml` | PR to main | Dependency review, shellcheck, YAML lint, Hadolint, Bandit, Trivy, CodeQL |
 | `scorecard.yaml` | Weekly / push to main | OpenSSF Scorecard security health metrics |
