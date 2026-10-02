@@ -359,13 +359,33 @@ func pidExePath(pid int) string {
 	return ""
 }
 
+// samePath reports whether a and b name one file: equal as text, or equal once
+// both are resolved the way install.sh's GNU `readlink -f` resolves them.
 func samePath(a, b string) bool {
 	if a == b {
 		return true
 	}
-	ra, errA := filepath.EvalSymlinks(a)
-	rb, errB := filepath.EvalSymlinks(b)
+	ra, errA := resolvePath(a)
+	rb, errB := resolvePath(b)
 	return errA == nil && errB == nil && ra == rb
+}
+
+// resolvePath is GNU `readlink -f`: p with every link resolved, where the last
+// component alone may be missing, as a binary removed or not yet installed is.
+// The parent comes from filepath.Split, not filepath.Dir: Dir cleans the path
+// first, dropping "link/.." before link is followed, so <ours>/link/../x would
+// resolve into <ours> instead of the link target's parent.
+func resolvePath(p string) (string, error) {
+	r, err := filepath.EvalSymlinks(p)
+	if err == nil || !errors.Is(err, os.ErrNotExist) {
+		return r, err
+	}
+	parent, base := filepath.Split(p)
+	dir, err := filepath.EvalSymlinks(parent)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, base), nil
 }
 
 // isProxyComm reports whether a `ps -o comm=` value names our proxy: its basename is
