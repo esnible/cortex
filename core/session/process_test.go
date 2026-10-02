@@ -311,3 +311,46 @@ func TestSessionForProcess_AToolWhoseSessionIsGoneIsRebound(t *testing.T) {
 		t.Errorf("a tool whose session is gone: %q, want its agent's live s2", got)
 	}
 }
+
+// F4 test: unclaimed processes are evicted first, agents are kept.
+func TestPruneProcs_EvictsToolsBeforeAgents(t *testing.T) {
+	clk := &procTestClock{t: time.Unix(1_700_000_000, 0)}
+	s := New(0, 0, 0, WithClock(clk.now))
+	defer s.Close()
+	// Fill to maxProcs with unclaimed (tool) processes, all with the same old timestamp
+	toolTime := clk.t
+	for pid := int32(1); pid <= maxProcs; pid++ {
+		tool := []Proc{{PID: pid, Start: int64(pid) * 1000}}
+		_ = s.SessionForProcess(tool, "")
+		// Don't advance time so they're all at the same timestamp
+	}
+	if len(s.procs) != maxProcs {
+		t.Fatalf("failed to fill table to %d; got %d", maxProcs, len(s.procs))
+	}
+
+	// Add one claimed (agent) process at the OLDEST time (before any tools)
+	clk.t = toolTime.Add(-time.Hour)
+	agent := []Proc{{PID: maxProcs + 1000, Start: int64(maxProcs+1000) * 1000}}
+	s.ClaimProcess("agent-session", "some-agent", agent)
+	clk.t = toolTime // Restore clock
+
+	// Trigger prune by adding one more process (exceeds maxProcs)
+	clk.t = toolTime.Add(time.Second)
+	tool := []Proc{{PID: maxProcs + 1001, Start: int64(maxProcs+1001) * 1000}}
+	_ = s.SessionForProcess(tool, "")
+
+	// The agent process (claimed, but oldest) should still be in the table
+	// because unclaimed processes (tools) are evicted first
+	agentKey := agent[0].key()
+	if _, ok := s.procs[agentKey]; !ok {
+		t.Error("agent process was evicted; F4 sort should prioritize unclaimed processes")
+	}
+
+	// ProcessHints guard tests
+	if hints := s.ProcessHints(0); hints != nil {
+		t.Errorf("ProcessHints(0) should return nil, got %v", hints)
+	}
+	if hints := s.ProcessHints(-1); hints != nil {
+		t.Errorf("ProcessHints(-1) should return nil, got %v", hints)
+	}
+}

@@ -196,6 +196,9 @@ func (s *Store) SessionForProcess(chain []Proc, agent string) string {
 // ProcessHints are the PIDs of processes that have named a session, most recently seen
 // first and at most limit of them: where a lookup for a new connection looks first.
 func (s *Store) ProcessHints(limit int) []int32 {
+	if limit <= 0 {
+		return nil
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	type seenProc struct {
@@ -247,7 +250,8 @@ func (s *Store) procLocked(p Proc, now time.Time) *procState {
 }
 
 // pruneProcsLocked makes room in the process table: every process not heard from in
-// procIdleTTL, then, if that freed nothing below the cap, the least recently seen quarter.
+// procIdleTTL, then, if that freed nothing below the cap, the least recently seen quarter,
+// processes that never named a session first.
 func (s *Store) pruneProcsLocked(now time.Time) {
 	for k, st := range s.procs {
 		if now.Sub(st.seen) > procIdleTTL {
@@ -258,14 +262,20 @@ func (s *Store) pruneProcsLocked(now time.Time) {
 		return
 	}
 	type aged struct {
-		k    procKey
-		seen time.Time
+		k       procKey
+		claimed bool
+		seen    time.Time
 	}
 	all := make([]aged, 0, len(s.procs))
 	for k, st := range s.procs {
-		all = append(all, aged{k: k, seen: st.seen})
+		all = append(all, aged{k: k, claimed: st.claimed, seen: st.seen})
 	}
-	sort.Slice(all, func(i, j int) bool { return all[i].seen.Before(all[j].seen) })
+	sort.Slice(all, func(i, j int) bool {
+		if all[i].claimed != all[j].claimed {
+			return !all[i].claimed
+		}
+		return all[i].seen.Before(all[j].seen)
+	})
 	for _, a := range all[:len(all)/4] {
 		delete(s.procs, a.k)
 	}
