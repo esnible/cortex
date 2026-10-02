@@ -319,7 +319,10 @@ func applyModificationsToPctx(pctx *pipeline.Context, pres *rcpex.PipelineResult
 		}
 	}
 
-	if len(pres.ModifiedPayload) > 0 {
+	if pres.PayloadModified {
+		if len(pres.ModifiedPayload) == 0 {
+			return fmt.Errorf("CPEX marked payload modified but returned no payload")
+		}
 		payload, err := rcpex.DeserializePayload[rcpex.MessagePayload](pres)
 		if err != nil {
 			return fmt.Errorf("decode modified payload: %w", err)
@@ -860,16 +863,16 @@ func mapResult(p *rcpex.PipelineResult) Result {
 		return res
 	}
 
-	if len(p.ModifiedPayload) > 0 || len(p.ModifiedExtensions) > 0 {
+	if p.PayloadModified || len(p.ModifiedExtensions) > 0 {
 		// Extension changes (headers, labels) and MCP body changes have
 		// already been applied to pctx by applyModificationsToPctx
 		// before mapResult runs. Report modify so the Invocation
 		// reflects that policy touched the message.
 		res.Decision = DecisionModify
 		switch {
-		case len(p.ModifiedPayload) > 0 && len(p.ModifiedExtensions) > 0:
+		case p.PayloadModified && len(p.ModifiedExtensions) > 0:
 			res.Reason = "policy modified headers/labels and body"
-		case len(p.ModifiedPayload) > 0:
+		case p.PayloadModified:
 			res.Reason = "policy modified body"
 		default:
 			res.Reason = "policy modified headers/labels"

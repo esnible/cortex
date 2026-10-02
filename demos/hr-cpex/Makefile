@@ -86,6 +86,7 @@ build-images: preflight  ## Build authbridge-cpex + hr-mcp + agent docker images
 		-f cmd/cortex-cpex/Dockerfile \
 		--build-arg CPEX_FFI_VERSION=$$(cat cmd/cortex-cpex/CPEX_FFI_VERSION | tr -d '[:space:]') \
 		--build-arg CPEX_FFI_ABI=$$(cat cmd/cortex-cpex/CPEX_FFI_ABI | tr -d '[:space:]') \
+		--build-arg GO_BUILD_TAGS="$$(GOWORK=off go -C scripts/profile-tags run . cpex)" \
 		-t $(AUTHBRIDGE_IMAGE) .
 	@echo "[build] hr-mcp from $(HR_MCP_SRC)"
 	cd $(HR_MCP_SRC) && docker build -t $(HR_MCP_IMAGE) .
@@ -162,11 +163,11 @@ port-forward:  ## Forward Keycloak (8081) + agent (8082) + fwd proxy (8083) + se
 	wait
 
 scenarios:  ## Run all demo curl scenarios (assumes port-forward up)
-	@for s in $(CURDIR)/scenarios/0[1-9]-*.sh; do \
+	@status=0; for s in $(CURDIR)/scenarios/0[1-9]-*.sh; do \
 	  PROXY=http://localhost:8083 \
 	  KEYCLOAK_HOST=http://localhost:8081 \
-	  "$$s"; \
-	done
+	  "$$s" || status=1; \
+	done; exit $$status
 
 logs:  ## Tail the authbridge-cpex sidecar logs
 	kubectl -n $(NAMESPACE) logs -f deploy/hr-cpex-agent -c authbridge-cpex

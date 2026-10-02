@@ -25,7 +25,7 @@
 # `authorization.pre_invocation:`. Plugins otherwise resolve by name +
 # hook, so the grouping above is purely for reading.
 #
-# Syntax note: this file uses the CPEX v0.2.2 *canonical* APL shape —
+# Syntax note: this file uses the CPEX v0.2.3 *canonical* APL shape —
 # per-route `authentication:` + `authorization:` sibling blocks, no
 # `apl:` wrapper, `args:`/`result:` as route-level siblings, and `run(...)`
 # to invoke a plugin as an effect (the old `plugin(...)` spelling still
