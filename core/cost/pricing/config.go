@@ -215,6 +215,9 @@ func Build(cfg *Config) (*Table, error) {
 	var mults []MultiplierRule
 	if cfg.BundledEnabled() {
 		entries = append(entries, Bundled()...)
+		// So do the free models' zero rates, kept out of Bundled() because that is the
+		// generated table its golden test pins to the LiteLLM snapshot.
+		entries = append(entries, bundledFreeRates()...)
 		// Shipped gateway discounts travel with the shipped rates: the rates are
 		// vendor list, and for the gateways named here list is a third too high.
 		// Disabling the bundled table disables both, which is the right pairing —

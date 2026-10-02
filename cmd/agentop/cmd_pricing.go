@@ -110,6 +110,7 @@ type effective struct {
 		Model      string  `json:"model"`
 		Provenance string  `json:"provenance"`
 		Unpriced   bool    `json:"unpriced"`
+		Free       bool    `json:"free"`
 		Unit       string  `json:"unit,omitempty"`
 		LongCtx    int     `json:"longContextAbove"`
 		AboveIn    float64 `json:"aboveInputPerMillion"`
@@ -149,9 +150,9 @@ func renderEffective(body []byte, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stdout, "  %-30s %9s %9s %9s %9s  %s\n", m.Model, "-", "-", "-", "-", "UNPRICED")
 			continue
 		}
+		c := rateCells(m.Free, m.In, m.CW, m.CR, m.Out)
 		fmt.Fprintf(stdout, "  %-30s %9s %9s %9s %9s  %s\n", m.Model,
-			rate(m.In), rate(m.CW), rate(m.CR), rate(m.Out),
-			provenanceCell(m.Provenance, m.Unit))
+			c[0], c[1], c[2], c[3], provenanceCell(m.Provenance, m.Unit))
 		// The above-threshold rates, discount already applied, on a continuation line.
 		// Naming the breakpoint alone still left the operator to work out what their long
 		// sessions cost — by reading the raw table and applying the factor by hand, which
@@ -195,6 +196,17 @@ func rate(v float64) string {
 	return fmt.Sprintf("%.4g", v)
 }
 
+// rateCells formats a row's four per-million rates. A row the proxy marks free prices every
+// tier at zero, and its rate fields arrive omitted like an unset tier's, so without the
+// flag a free model would render as "-" — a coverage gap — which is the opposite of what
+// it is.
+func rateCells(free bool, in, cw, cr, out float64) [4]string {
+	if free {
+		return [4]string{"free", "free", "free", "free"}
+	}
+	return [4]string{rate(in), rate(cw), rate(cr), rate(out)}
+}
+
 // thresholdRow is one long-context override on a raw row.
 //
 // Rendered rather than dropped: the raw view already warns that its rates are unscaled,
@@ -214,6 +226,7 @@ type describeBody struct {
 		Host       string         `json:"host"`
 		Model      string         `json:"model"`
 		Provenance string         `json:"provenance"`
+		Free       bool           `json:"free"`
 		In         float64        `json:"inputPerMillion"`
 		CW         float64        `json:"cacheWritePerMillion"`
 		CR         float64        `json:"cacheReadPerMillion"`
@@ -244,8 +257,9 @@ func renderTable(body []byte, stdout, stderr io.Writer) int {
 		if h == "" || h == "*" {
 			h = "(any)"
 		}
+		c := rateCells(r.Free, r.In, r.CW, r.CR, r.Out)
 		fmt.Fprintf(stdout, "  %-22s %-30s %9s %9s %9s %9s  %s\n", h, r.Model,
-			rate(r.In), rate(r.CW), rate(r.CR), rate(r.Out), r.Provenance)
+			c[0], c[1], c[2], c[3], r.Provenance)
 		// Overrides on a continuation line, so the row above is not silently the
 		// below-threshold half of a two-tier answer. A tier the override leaves unset
 		// renders "-", meaning "inherits the row above", which is what At() does.

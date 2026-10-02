@@ -342,3 +342,50 @@ func TestIsDefaultUnit_EveryDefaultSpellingAndNoOthers(t *testing.T) {
 		}
 	}
 }
+
+// OpenCode Zen's free models are priced at zero, and their rate fields arrive omitted like
+// an unset tier's. Rendered as "-" they would read as a coverage gap, the opposite of what
+// they are. And they are Zen's: another endpoint's view must not list them at all.
+func TestRunPricing_ZenFreeModelsRenderAsFree(t *testing.T) {
+	url := realStatServer(t)
+
+	var out, errb bytes.Buffer
+	if code := runPricing([]string{"--stats-url", url, "--host", "opencode.ai"}, &out, &errb); code != 0 {
+		t.Fatalf("exit %d: %s", code, errb.String())
+	}
+	// Columns are: model, input, cache-write, cache-read, output, provenance.
+	for _, m := range []string{"big-pickle", "*-free"} {
+		f := strings.Fields(modelRow(t, out.String(), m))
+		if len(f) < 6 || f[1] != "free" || f[2] != "free" || f[3] != "free" || f[4] != "free" {
+			t.Errorf("%s row = %q, want every rate column \"free\"", m, f)
+		}
+	}
+
+	out.Reset()
+	if code := runPricing([]string{"--stats-url", url, "--host", "api.anthropic.com"}, &out, &errb); code != 0 {
+		t.Fatalf("exit %d: %s", code, errb.String())
+	}
+	for _, line := range strings.Split(out.String(), "\n") {
+		if f := strings.Fields(line); len(f) > 0 && (f[0] == "big-pickle" || f[0] == "*-free") {
+			t.Errorf("api.anthropic.com lists Zen's free model: %q", line)
+		}
+	}
+
+	out.Reset()
+	if code := runPricing([]string{"--stats-url", url}, &out, &errb); code != 0 {
+		t.Fatalf("exit %d: %s", code, errb.String())
+	}
+	// Table view columns are: endpoint, model, input, cache-write, cache-read, output, from.
+	var saw bool
+	for _, line := range strings.Split(out.String(), "\n") {
+		if f := strings.Fields(line); len(f) >= 7 && f[0] == "opencode.ai" && f[1] == "big-pickle" {
+			saw = true
+			if f[2] != "free" || f[5] != "free" {
+				t.Errorf("table row = %q, want its rates \"free\"", f)
+			}
+		}
+	}
+	if !saw {
+		t.Errorf("no opencode.ai big-pickle row in the table view:\n%s", out.String())
+	}
+}

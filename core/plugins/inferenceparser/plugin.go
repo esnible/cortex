@@ -69,10 +69,14 @@ func endpointPath(pctx *pipeline.Context) string {
 // mistake even when it is not.
 const bobPath = "/inference/v1/chat/completions"
 
-// zenPath is OpenCode Zen's inference endpoint (opencode.ai/zen). It speaks the
+// zenPath is OpenCode Zen's (opencode.ai/zen) OpenAI-dialect endpoint. It speaks the
 // OPENAI dialect — the body is {model, messages, ...} — despite living under a
 // /zen prefix, so it needs the same explicit routing bobPath does.
 const zenPath = "/zen/v1/chat/completions"
+
+// zenGoPath is the same OpenAI-dialect endpoint under the /zen/go prefix OpenCode's Go plan
+// uses. Zen's Anthropic-dialect endpoints are in anthropic.go, beside the parser they go to.
+const zenGoPath = "/zen/go/v1/chat/completions"
 
 func (p *InferenceParser) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.Action {
 	// Dispatch by endpoint dialect: OpenAI chat/completions vs Anthropic
@@ -87,11 +91,12 @@ func (p *InferenceParser) OnRequest(_ context.Context, pctx *pipeline.Context) p
 	// the RESPONSE side settles the cost regardless, from the gateway's own header, which
 	// needs neither a model nor a body. See the nil-extension guard in OnResponseFrame.
 	var ext *pipeline.InferenceExtension
-	switch endpointPath(pctx) {
-	case "/v1/chat/completions", "/v1/completions", "/chat/completions", "/completions", bobPath, zenPath:
-		ext = parseOpenAIRequest(pctx.Body)
-	case anthropicMessagesPath:
+	switch path := endpointPath(pctx); {
+	case isAnthropicMessagesPath(path):
 		ext = parseAnthropicRequest(pctx.Body)
+	case path == "/v1/chat/completions", path == "/v1/completions", path == "/chat/completions",
+		path == "/completions", path == bobPath, path == zenPath, path == zenGoPath:
+		ext = parseOpenAIRequest(pctx.Body)
 	default:
 		return pipeline.Action{Type: pipeline.Continue}
 	}
@@ -199,13 +204,13 @@ func (p *InferenceParser) OnResponse(_ context.Context, pctx *pipeline.Context) 
 	}
 
 	if ext.Stream {
-		if endpointPath(pctx) == anthropicMessagesPath {
+		if isAnthropicMessagesPath(endpointPath(pctx)) {
 			parseAnthropicSSE(pctx.ResponseBody, ext)
 		} else {
 			parseInferenceSSE(pctx.ResponseBody, ext)
 		}
 	} else {
-		if endpointPath(pctx) == anthropicMessagesPath {
+		if isAnthropicMessagesPath(endpointPath(pctx)) {
 			parseAnthropicJSON(pctx.ResponseBody, ext)
 		} else {
 			parseInferenceJSON(pctx.ResponseBody, ext)
@@ -433,12 +438,12 @@ func (p *InferenceParser) OnResponseFrame(_ context.Context, pctx *pipeline.Cont
 		// must rewrite cannot also be forwarded as it arrives), and then deliver the
 		// entire stream as this one frame. Folding it as a single chunk parses nothing; it
 		// has to go through the SSE reader.
-		if endpointPath(pctx) == anthropicMessagesPath {
+		if isAnthropicMessagesPath(endpointPath(pctx)) {
 			parseAnthropicSSE(frame, ext)
 		} else {
 			parseInferenceSSE(frame, ext)
 		}
-	} else if endpointPath(pctx) == anthropicMessagesPath {
+	} else if isAnthropicMessagesPath(endpointPath(pctx)) {
 		parseAnthropicJSON(frame, ext)
 	} else {
 		parseInferenceJSON(frame, ext)
@@ -535,7 +540,7 @@ func normalizeSSE(body []byte) []byte {
 // endpoint speaks. Extracted so the mid-stream and terminal call sites cannot drift apart
 // on which parser a path gets.
 func foldResponseFrame(pctx *pipeline.Context, frame []byte, state *inferenceStreamState, ext *pipeline.InferenceExtension) {
-	if endpointPath(pctx) == anthropicMessagesPath {
+	if isAnthropicMessagesPath(endpointPath(pctx)) {
 		foldAnthropicFrame(frame, state, ext)
 		return
 	}
