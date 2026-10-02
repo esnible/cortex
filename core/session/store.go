@@ -195,6 +195,11 @@ type Store struct {
 	// the first Claim, so a store nothing claims from carries neither.
 	owners  map[string]string
 	adopted map[string]string
+
+	// procs and lastProcClaim serve process attribution; see process.go. nil and zero
+	// until a listener with it on first asks.
+	procs         map[procKey]*procState
+	lastProcClaim time.Time
 }
 
 // subscriberChanBuf caps each subscriber's channel depth. 64 absorbs short
@@ -1250,6 +1255,7 @@ func (s *Store) cleanupLocked(now time.Time) {
 		if s.isExpired(sess, now) {
 			delete(s.sessions, id)
 			delete(s.owners, id)
+			s.forgetAdoptedLocked(id)
 			if s.activeID == id {
 				s.activeID = ""
 			}
@@ -1277,6 +1283,7 @@ func (s *Store) evictOldestLocked() {
 	if oldestID != "" {
 		delete(s.sessions, oldestID)
 		delete(s.owners, oldestID)
+		s.forgetAdoptedLocked(oldestID)
 	}
 }
 

@@ -1,6 +1,9 @@
 package session
 
 import (
+	"bytes"
+	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -172,5 +175,25 @@ func TestAdopt_NotifiesRekeyersAndRekeyStillDoesNot(t *testing.T) {
 	s.Claim("task-1", "bob-shell")
 	if len(r.rekeyed) != 1 || r.rekeyed[0] != [2]string{"pending:bob-shell", "task-1"} {
 		t.Fatalf("Rekeyed calls = %v, want exactly [pending:bob-shell task-1]", r.rekeyed)
+	}
+}
+
+// Adoption into a session that already holds events cannot succeed, so Claim tries it on
+// the session's first claim and not on every headered request after, each of which would
+// log that the bucket was not adopted.
+func TestClaim_DoesNotRetryAnAdoptionThatCannotSucceed(t *testing.T) {
+	var logs bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+	s := New(0, 0, 0)
+	defer s.Close()
+	s.Append("resumed", ev())
+	s.Append(PendingSessionID("claude-code"), ev())
+	for range 5 {
+		s.Claim("resumed", "claude-code")
+	}
+	if n := strings.Count(logs.String(), "pending bucket not adopted"); n != 1 {
+		t.Errorf("%d \"not adopted\" lines for 5 claims, want 1", n)
 	}
 }

@@ -1,7 +1,10 @@
 package bootstrap
 
 import (
+	"context"
 	"log/slog"
+	"net"
+	"net/http"
 	"syscall"
 	"testing"
 	"time"
@@ -69,4 +72,32 @@ func waitForLevel(t *testing.T, want slog.Level) {
 		time.Sleep(5 * time.Millisecond)
 	}
 	t.Fatalf("timed out waiting for level %v (still %v)", want, LogLevel())
+}
+
+func TestNewHTTPServer_AppliesItsOptions(t *testing.T) {
+	type key struct{}
+	srv := newHTTPServer("127.0.0.1:0", http.NotFoundHandler(), []ServerOption{
+		WithConnContext(func(ctx context.Context, _ net.Conn) context.Context { return context.WithValue(ctx, key{}, true) }),
+	})
+	if srv.ConnContext == nil {
+		t.Fatal("WithConnContext did not set ConnContext")
+	}
+	if v := srv.ConnContext(context.Background(), nil).Value(key{}); v != true {
+		t.Errorf("ConnContext is not the one given: value %v", v)
+	}
+	if srv.ReadHeaderTimeout != 10*time.Second {
+		t.Errorf("ReadHeaderTimeout = %s, want the default kept", srv.ReadHeaderTimeout)
+	}
+}
+
+func TestStartHTTPServer_PassesItsOptionsOn(t *testing.T) {
+	srv, err := StartHTTPServer("test", http.NotFoundHandler(), "127.0.0.1:0",
+		WithConnContext(func(ctx context.Context, _ net.Conn) context.Context { return ctx }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = srv.Close() }()
+	if srv.ConnContext == nil {
+		t.Error("StartHTTPServer dropped its options: ConnContext is nil")
+	}
 }

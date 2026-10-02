@@ -60,7 +60,11 @@ func (s *Store) Claim(sessionID, client string) {
 		s.owners[sessionID], owner = client, client
 	}
 	if owner == client {
-		s.adoptLocked(PendingSessionID(client), sessionID)
+		// Adoption into a session that already holds events cannot succeed, so past the
+		// session's first claim it is not tried: every headered request would log it.
+		if _, holds := s.sessions[sessionID]; !owned || !holds {
+			s.adoptLocked(PendingSessionID(client), sessionID)
+		}
 	}
 }
 
@@ -156,8 +160,8 @@ func (s *Store) SessionForClient(client string) string {
 		}
 		owner := s.owners[id]
 		if owner == "" {
-			owner = strings.TrimPrefix(id, PendingPrefix)
-			if owner == id {
+			var ok bool
+			if owner, ok = pendingOwner(id); !ok {
 				continue
 			}
 		}

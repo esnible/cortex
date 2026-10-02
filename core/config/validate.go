@@ -28,6 +28,9 @@ func Validate(cfg *Config) error {
 	if err := validateListeners(cfg); err != nil {
 		return err
 	}
+	if err := validateSession(cfg); err != nil {
+		return err
+	}
 	if err := validateCostLedger(cfg); err != nil {
 		return err
 	}
@@ -124,4 +127,15 @@ func validateListeners(cfg *Config) error {
 		}
 	}
 	return nil
+}
+
+// validateSession refuses a session.process_attribution other than auto, on and off. Read
+// as auto, a typo would leave attribution on or off by accident.
+func validateSession(cfg *Config) error {
+	switch cfg.Session.ProcessAttribution {
+	case "", ProcessAttributionAuto, ProcessAttributionOn, ProcessAttributionOff:
+		return nil
+	default:
+		return fmt.Errorf("session.process_attribution must be auto, on or off, got %q", cfg.Session.ProcessAttribution)
+	}
 }

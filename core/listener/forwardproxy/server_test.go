@@ -529,7 +529,7 @@ func TestRecordOutboundReject_EmitsDeniedPhase(t *testing.T) {
 		},
 	}
 	action := pipeline.DenyStatus(403, "ibac.blocked", "unrelated to user intent")
-	s.recordOutboundReject(pctx, action, s.recordingSessionID("", nil))
+	s.recordOutboundReject(pctx, action, s.recordingSessionID("", nil, nil))
 
 	v := store.View("sess-active")
 	if v == nil || len(v.Events) != 2 {
@@ -560,7 +560,7 @@ func TestRecordOutboundReject_SkipsWithoutInvocations(t *testing.T) {
 	s := &Server{Sessions: store}
 
 	action := pipeline.DenyStatus(403, "policy.forbidden", "forbidden")
-	s.recordOutboundReject(&pipeline.Context{Direction: pipeline.Outbound}, action, s.recordingSessionID("", nil))
+	s.recordOutboundReject(&pipeline.Context{Direction: pipeline.Outbound}, action, s.recordingSessionID("", nil, nil))
 
 	if v := store.View(session.DefaultSessionID); v != nil {
 		t.Errorf("expected no event, got %+v", v)

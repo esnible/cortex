@@ -67,7 +67,8 @@ Each recorded row takes the first answer that applies:
      claimer for itself and its descendants, so a `claude -p` started from a Claude
      session's shell does not inherit its parent's session.
    - **No claimer yet, but some process in the chain has sent a known coding agent's
-     User-Agent:** a pending bucket for that agent's **root** — the topmost such process —
+     User-Agent:** a pending bucket for that agent's **root** — the topmost process of an
+     unbroken run of that agent's processes —
      adopted by the first session any process under that root claims.
    - **No agent in the chain:** `default` while some agent has claimed a session within
      the last 5 minutes, else `ActiveSession()`. Your terminal's `curl` is no agent's.
@@ -169,9 +170,16 @@ hijacking, while the client is certainly alive.
 **What the store learns.** A request carrying a session header records the claim against
 the client process `(PID, start)` as well as against the agent name `Claim` uses today.
 Per process the store keeps the sessions it has claimed, each with when it was last
-active; a descendant's binding; and, for pending buckets, the agent root. All of it is
-pruned when a process is seen to have exited, and on session eviction. The existing
-`adopted` map — never pruned today — is pruned on the same eviction.
+active; a descendant's binding; and, for pending buckets, the agent root. Nothing asks the
+kernel whether a process exited: a process is keyed by PID and start time, so a reused PID
+is a new process, and the table is pruned instead: once it reaches 4,096 entries,
+processes not heard from for 24 hours are dropped, and if that frees nothing, the least
+recently seen quarter goes, processes that never named a session first. A claim on a
+session that has left the store is forgotten after a
+minute. The existing `adopted` map — never pruned before — loses a session's records when
+that session is evicted. A pending bucket is per agent process — `pending:<agent>@<pid>.<start>`
+— so two windows of one agent starting at once do not share one; client affinity's agent-wide
+`pending:<agent>` remains for clients the lookup cannot name.
 
 **Multi-session processes** answer with their most recently active session. That was
 correct at both tool calls in the concurrent-OpenCode experiment. The precise rule —
@@ -180,11 +188,16 @@ its next request) is open — is deferred until a misfile is seen; `FinishReason
 `ToolCalls` are already parsed, so it needs no new data.
 
 **Agent self-traffic is not recorded.** A plain-HTTP request whose destination is a
-loopback port whose listener runs the **same executable** as the client is forwarded the
-way `skip_hosts` traffic is — no pipeline, no row — and counted on `/stats`. That is
-OpenCode's TUI and `run` client talking to their own service; it is also what kept
-`default` active. Ollama, LM Studio and every other local server are different
-executables and stay visible.
+loopback port is forwarded the way `skip_hosts` traffic is — no pipeline, no row — when
+the listener is an **agent's own process**, one that has named a session through its own
+header, and runs the **same executable** as the client. That is OpenCode's TUI and `run`
+client talking to their own service; it is also what kept `default` active. Requiring the
+listener to be an agent's is what keeps a node-based agent's calls to a local node MCP
+server visible: same executable, but an MCP server never names a session. Ollama, LM Studio
+and every other local server stay visible for the same reason, and so does a request a
+bridged tunnel decrypted, whose tunnel row waits for it. Each program-and-service pair is
+announced once at INFO, and every skipped request at DEBUG; nothing is counted on
+`/stats`.
 
 **Scope.** `session.process_attribution: auto | on | off`, default `auto`, which means on
 exactly when `listener.bind_loopback_only` is set — the laptop install. In-cluster
@@ -217,6 +230,11 @@ approach used on session 13cdee89.
 - **Agent self-traffic is not recorded.** Rejected: filing it under the session named in
   its URL path, which keeps ~1.3 rows a second of an agent's own UI polling in the
   session people read.
+- **The self-traffic listener must be an agent's process**, not only the same executable:
+  an interpreter (node) makes executables equal across unrelated programs, so Bob's calls
+  to a local node MCP server would vanish. **No `/stats` counter** for it: one INFO line
+  per program and service, DEBUG per request. **cortex-cpex is not wired**: it needs cgo,
+  and never runs on a laptop.
 - **A multi-session process answers with its newest session**; tool windows wait for
   evidence.
 - **A stale OpenCode service gets a warning, not a restart.**

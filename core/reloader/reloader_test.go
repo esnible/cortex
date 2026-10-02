@@ -383,6 +383,7 @@ func TestReloader_RefusesSessionChange(t *testing.T) {
 		// Unset means on, so writing the off switch into a running config is a change
 		// in behaviour, not a no-op — and nothing can reach the running listener.
 		{"client_affinity false", "session: {client_affinity: false}\n", config.SessionConfig{ClientAffinity: &off}},
+		{"process_attribution off", "session: {process_attribution: off}\n", config.SessionConfig{ProcessAttribution: config.ProcessAttributionOff}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			r, b, cfgPath, inH, outH := setup(t)

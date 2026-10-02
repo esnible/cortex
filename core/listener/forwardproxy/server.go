@@ -27,6 +27,7 @@ import (
 	"github.com/rossoctl/cortex/core/listener/internal/bodyread"
 	"github.com/rossoctl/cortex/core/listener/internal/sseframe"
 	"github.com/rossoctl/cortex/core/listener/skiphost"
+	"github.com/rossoctl/cortex/core/peerproc"
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/session"
 	"github.com/rossoctl/cortex/core/spiffe"
@@ -108,9 +109,21 @@ type Server struct {
 	// ClientAffinity; false keeps today's resolution byte for byte.
 	ClientAffinity bool
 
+	// Processes, when non-nil, names the process behind each client connection, and a
+	// request with no session header is filed under that process's session — or its
+	// nearest ancestor's — before client affinity is consulted; see
+	// session.Store.SessionForProcess. Set only where every client is a process on this
+	// host (session.process_attribution) and only from a resolver whose self-test passed
+	// (peerproc.New). The http.Server must carry ConnContext. nil keeps today's
+	// resolution byte for byte.
+	Processes peerproc.Resolver
+
 	// bufferedFallbackOnce keeps the SSE-buffered-path notice to one line per
 	// process; the condition is a supported chain shape, not an error.
 	bufferedFallbackOnce sync.Once
+
+	// selfTrafficSeen holds the (executable, service) pairs selfTraffic has announced.
+	selfTrafficSeen sync.Map
 
 	// Bridge-health counters. When the TLS bridge is enabled but the client
 	// does not trust its CA, every HTTPS request opens a CONNECT tunnel and
@@ -317,6 +330,19 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 			"host", pctx.Host, "pattern", pat, "method", r.Method, "path", r.URL.Path)
 	}
 
+	// The client's process, looked up once per connection; nil when process attribution
+	// is off or the lookup failed, and then resolution is exactly as without it.
+	var chain []session.Proc
+	if !skipped {
+		chain = s.clientChain(r)
+	}
+
+	// An agent talking to its own service on this host is forwarded the way a skip_hosts
+	// destination is: no pipeline, no row. See selfTraffic.
+	if !skipped && !isBridge && s.selfTraffic(r, chain) {
+		skipped = true
+	}
+
 	// Finisher dispatch runs after every exit path. RunFinish is a
 	// no-op when pctx.dispatched is empty (pre-pipeline rejects), so
 	// this defer is safe on every path including the body-too-large
@@ -357,7 +383,7 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 	// assigned from this local after the pipeline has run.
 	var sessionID string
 	if !skipped && s.Sessions != nil {
-		if sessionID = s.resolvePluginSessionID(r.Header); sessionID != "" {
+		if sessionID = s.resolvePluginSessionID(r.Header, chain); sessionID != "" {
 			pctx.Session = s.sessionViewFor(sessionID)
 		}
 	}
@@ -366,7 +392,7 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 		action := s.OutboundPipeline.Run(r.Context(), pctx)
 
 		if action.Type == pipeline.Reject {
-			s.recordOutboundRejectIn(tl, pctx, action, s.recordingSessionID(sessionID, r.Header))
+			s.recordOutboundRejectIn(tl, pctx, action, s.recordingSessionID(sessionID, r.Header, chain))
 			// Render as a JSON-RPC error frame when the rejected
 			// request was MCP JSON-RPC, so the agent's MCP client
 			// surfaces this as one failed tool call rather than a
@@ -378,13 +404,16 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 	}
 
 	if !skipped && s.Sessions != nil {
-		sid := s.recordingSessionID(sessionID, r.Header)
+		sid := s.recordingSessionID(sessionID, r.Header, chain)
 		// Pin this session so the paired response event records into the
 		// same bucket. Without it, recordOutboundResponseEvent re-resolves
 		// ActiveSession() at response time, which interleaving traffic (a
 		// health probe under "default") can flip mid-stream — mis-filing a
 		// streaming inference response away from its request's session.
 		pctx.OutboundSessionID = sid
+		if chain != nil {
+			defer s.Sessions.TouchProcess(sid, chain)
+		}
 		// Snapshot-copy the protocol extension so the request event
 		// doesn't see response-phase mutations on the same MCP/Inference
 		// struct (e.g. token counts assigned in OnResponse).
@@ -641,9 +670,31 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 		}
 	}
 	w.WriteHeader(resp.StatusCode)
-	if _, err := io.Copy(w, resp.Body); err != nil {
+	// A skipped response of unknown length — an event stream, a long poll — is relayed as
+	// it arrives, as httputil.ReverseProxy does; buffered, its first bytes would wait for
+	// the next 4KB. skip_hosts never sent one here, but self-traffic does: OpenCode's TUI
+	// follows its service's event stream through this path.
+	var dst io.Writer = w
+	if f, ok := w.(http.Flusher); ok && skipped && (resp.ContentLength == -1 || isEventStream(resp.Header.Get("Content-Type"))) {
+		f.Flush()
+		dst = flushWriter{w: w, f: f}
+	}
+	if _, err := io.Copy(dst, resp.Body); err != nil {
 		slog.Debug("response copy error", "host", r.Host, "error", err)
 	}
+}
+
+// flushWriter flushes after every write, so a relayed stream reaches the client as the
+// upstream sends it.
+type flushWriter struct {
+	w io.Writer
+	f http.Flusher
+}
+
+func (fw flushWriter) Write(p []byte) (int, error) {
+	n, err := fw.w.Write(p)
+	fw.f.Flush()
+	return n, err
 }
 
 // bridgeServe attempts to terminate the client's TLS and serve the decrypted
@@ -782,6 +833,9 @@ func (s *Server) bridgedHandler(authority string, tl *tunnelLog) http.Handler {
 			return
 		}
 		defer tl.release()
+		if tl.conn != nil {
+			r = r.WithContext(context.WithValue(r.Context(), connProcKey{}, tl.conn))
+		}
 		r.URL.Scheme = "https"
 		r.URL.Host = authority // host:port — preserves non-443 origins
 		s.serveOutbound(w, r, tl)
@@ -815,8 +869,8 @@ func (s *Server) bridgedHandler(authority string, tl *tunnelLog) http.Handler {
 // Safe to call with s.Sessions == nil: ActiveSession() is skipped and the default
 // bucket is returned, so a future caller that forgets the nil check on Sessions
 // gets a usable answer rather than a panic.
-func (s *Server) resolveOutboundSessionID(clientHeaders http.Header) string {
-	if sid := s.resolvePluginSessionID(clientHeaders); sid != "" {
+func (s *Server) resolveOutboundSessionID(clientHeaders http.Header, chain []session.Proc) string {
+	if sid := s.resolvePluginSessionID(clientHeaders, chain); sid != "" {
 		return sid
 	}
 	return session.DefaultSessionID
@@ -827,11 +881,11 @@ func (s *Server) resolveOutboundSessionID(clientHeaders http.Header) string {
 // local so no plugin can rewrite it; "" means hydration found no identity (or ran
 // on a path that has none), and recording — unlike a plugin — must still file the
 // event somewhere, so the full order including the default bucket applies.
-func (s *Server) recordingSessionID(resolved string, clientHeaders http.Header) string {
+func (s *Server) recordingSessionID(resolved string, clientHeaders http.Header, chain []session.Proc) string {
 	if resolved != "" {
 		return resolved
 	}
-	return s.resolveOutboundSessionID(clientHeaders)
+	return s.resolveOutboundSessionID(clientHeaders, chain)
 }
 
 // appendOutbound records ev under sid. For a request decrypted from a bridged tunnel tl is
@@ -849,14 +903,16 @@ func (s *Server) appendOutbound(tl *tunnelLog, sid string, ev pipeline.SessionEv
 // neither sends a tunnel row to default: a CONNECT rarely carries a User-Agent, so the
 // ambiguous answer would file nearly every tunnel away from the request it carries.
 // Those rows keep ActiveSession() at recording time, as without affinity.
-func (s *Server) tunnelSessionID(resolved string, clientHeaders http.Header) string {
-	if s.ClientAffinity && resolved == "" && s.Sessions != nil {
+// With the client's process known, an empty answer means a process of no agent, and the
+// row goes to default like that process's requests.
+func (s *Server) tunnelSessionID(resolved string, clientHeaders http.Header, chain []session.Proc) string {
+	if s.ClientAffinity && resolved == "" && chain == nil && s.Sessions != nil {
 		if sid := s.Sessions.ActiveSession(); sid != "" {
 			return sid
 		}
 		return session.DefaultSessionID
 	}
-	return s.recordingSessionID(resolved, clientHeaders)
+	return s.recordingSessionID(resolved, clientHeaders, chain)
 }
 
 // resolvePluginSessionID is resolveOutboundSessionID without the default-bucket
@@ -896,19 +952,42 @@ func (s *Server) tunnelSessionID(resolved string, clientHeaders http.Header) str
 // cost is sparc's InferenceRequests() correlation for header-identified sessions.
 // Stated in full under "Decision recorded: client-asserted ids as plugin input"
 // in #984, which is where to argue with it.
-func (s *Server) resolvePluginSessionID(clientHeaders http.Header) string {
+//
+// With the client's process known (chain non-nil), a header claims the session for that
+// process as well as for its agent, and a request with no header asks
+// session.Store.SessionForProcess first; client affinity and ActiveSession() answer only
+// what it leaves open.
+func (s *Server) resolvePluginSessionID(clientHeaders http.Header, chain []session.Proc) string {
 	affinity := s.affinityOn()
+	procs := chain != nil && s.processesOn()
+	agent := affinityClient(clientHeaders)
 	if sid := session.IDFromHeaders(clientHeaders, s.SessionIDHeaders); sid != "" {
+		// The process's claim first: it adopts the process's own pending bucket, which is
+		// certainly its calls, before the agent-wide guess can take the session.
+		if procs {
+			s.Sessions.ClaimProcess(sid, agent, chain)
+		}
 		if affinity {
-			s.Sessions.Claim(sid, affinityClient(clientHeaders))
+			s.Sessions.Claim(sid, agent)
 		}
 		return sid
+	}
+	if procs {
+		// The default bucket is SessionForProcess's answer for a process of no agent while
+		// an agent is active, and plugins hear it as "", as they do affinity's below.
+		switch sid := s.Sessions.SessionForProcess(chain, agent); sid {
+		case "":
+		case session.DefaultSessionID:
+			return ""
+		default:
+			return sid
+		}
 	}
 	if affinity {
 		// See session.Store.SessionForClient for the order. The default bucket is its
 		// "ambiguous" answer, and plugins hear that as "" — the no-identity answer this
 		// function exists to give them — while recording files it under default.
-		switch sid := s.Sessions.SessionForClient(affinityClient(clientHeaders)); sid {
+		switch sid := s.Sessions.SessionForClient(agent); sid {
 		case "":
 		case session.DefaultSessionID:
 			return ""
@@ -1416,6 +1495,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var sessionID string
+	var chain []session.Proc
 	if !skipped {
 		defer func() {
 			s.OutboundPipeline.RunFinish(r.Context(), pctx, pipeline.OutcomeFromContext(pctx))
@@ -1428,8 +1508,9 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		// CONNECT request carries the client's own headers, so a client that
 		// announces its session on CONNECT is honored; most do not, and those
 		// fall through to ActiveSession() exactly as before.
+		chain = s.clientChain(r)
 		if s.Sessions != nil {
-			if sessionID = s.resolvePluginSessionID(r.Header); sessionID != "" {
+			if sessionID = s.resolvePluginSessionID(r.Header, chain); sessionID != "" {
 				pctx.Session = s.sessionViewFor(sessionID)
 			}
 		}
@@ -1439,7 +1520,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		// HTTP body (parsers) see no body, which they handle gracefully.
 		action := s.OutboundPipeline.Run(r.Context(), pctx)
 		if action.Type == pipeline.Reject {
-			s.recordOutboundReject(pctx, action, s.tunnelSessionID(sessionID, r.Header))
+			s.recordOutboundReject(pctx, action, s.tunnelSessionID(sessionID, r.Header, chain))
 			// Render as a JSON-RPC error frame when the rejected
 			// request was MCP JSON-RPC, so the agent's MCP client
 			// surfaces this as one failed tool call rather than a
@@ -1455,9 +1536,17 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// its first recorded request instead (tunnelLog.recordWith); only one that records no
 	// request files under this pin, when it settles. Pinned only now, after the pipeline,
 	// for the reason sessionID is a local; left unpinned where affinity had no answer, for
-	// the reason in tunnelSessionID. See recordTunnelOpened.
-	if s.ClientAffinity && !skipped && s.Sessions != nil && sessionID != "" {
-		pctx.OutboundSessionID = sessionID
+	// the reason in tunnelSessionID. See recordTunnelOpened. With process attribution the
+	// pin is the process's answer, which is never empty.
+	if !skipped && s.Sessions != nil {
+		switch {
+		case chain != nil && s.processesOn():
+			// The client's process is known, so the tunnel's own row goes where that
+			// process's requests go — default included, for a process of no agent.
+			pctx.OutboundSessionID = s.recordingSessionID(sessionID, r.Header, chain)
+		case s.ClientAffinity && sessionID != "":
+			pctx.OutboundSessionID = sessionID
+		}
 	}
 
 	// Verify hijack capability BEFORE dialing upstream. If hijacking
@@ -1479,6 +1568,7 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// once when it never opened. Neither is recorded for a SkipHosts destination: no
 	// plugin ran, so there is nothing to attribute them to.
 	tl := s.newTunnelLog(pctx, skipped)
+	tl.conn = connProcOf(r.Context())
 
 	// Plain TCP dial. See package-level comment on why mTLS doesn't
 	// apply here. r.Host on a CONNECT carries "host:port" already.
@@ -1963,6 +2053,9 @@ type tunnelLog struct {
 	s       *Server
 	pctx    *pipeline.Context
 	skipped bool
+	// conn is the CONNECT's client process slot, handed to the requests a bridged tunnel
+	// decrypts; nil off the CONNECT path.
+	conn *connProc
 
 	mu     sync.Mutex
 	opened bool
