@@ -349,3 +349,24 @@ func TestExe_IgnoresWhatTheProcessWritesOverItsExecPath(t *testing.T) {
 		t.Errorf("Exe %q, want %q", p.Exe, real)
 	}
 }
+
+func TestParseProcArgs2(t *testing.T) {
+	var buf []byte
+	buf = binary.LittleEndian.AppendUint32(buf, 2) // argc
+	buf = append(buf, "/usr/local/bin/x\x00\x00\x00"...)
+	buf = append(buf, "x\x00-v\x00"...)
+	buf = append(buf, "A=1\x00B=two=2\x00"...)
+	buf = append(buf, "\x00ptr_munge=\x00main_stack=\x00"...) // Apple's strings, after an empty one
+	env, err := parseProcArgs2(buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(env, "|"); got != "A=1|B=two=2" {
+		t.Errorf("env = %q, want A=1|B=two=2", got)
+	}
+	for _, bad := range [][]byte{nil, {1, 0, 0}, binary.LittleEndian.AppendUint32(nil, 3)} {
+		if _, err := parseProcArgs2(bad); err == nil {
+			t.Errorf("parseProcArgs2(%v) accepted a truncated buffer", bad)
+		}
+	}
+}

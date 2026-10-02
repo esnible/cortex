@@ -67,6 +67,12 @@ type Resolver interface {
 	Ancestry(pid int32, max int) ([]Proc, error)
 }
 
+// Environ is the environment process pid was exec'd with, as "NAME=value" strings. It is
+// the start-time environment, not any change the process has made to its own since. Only
+// this user's processes can be read; another user's answers an error. ErrUnsupported on
+// platforms with no implementation.
+func Environ(pid int32) ([]string, error) { return environ(pid) }
+
 var (
 	// ErrNotFound means no socket or process matched that the caller may inspect.
 	ErrNotFound = errors.New("peerproc: not found")

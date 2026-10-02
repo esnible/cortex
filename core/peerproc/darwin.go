@@ -5,6 +5,7 @@ package peerproc
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"net/netip"
 	"time"
@@ -270,4 +271,48 @@ func exePath(pid int32) string {
 		buf = buf[:i]
 	}
 	return string(buf)
+}
+
+func environ(pid int32) ([]string, error) {
+	buf, err := unix.SysctlRaw("kern.procargs2", int(pid))
+	if err != nil {
+		return nil, fmt.Errorf("peerproc: kern.procargs2 for pid %d: %w", pid, err)
+	}
+	return parseProcArgs2(buf)
+}
+
+// parseProcArgs2 reads the environment out of a kern.procargs2 buffer. The layout is argc
+// as a 32-bit integer, the executable path, NUL padding, argc NUL-terminated arguments,
+// then the NUL-terminated environment, which ends at an empty string. Apple's own strings
+// follow that empty one and are not the environment.
+func parseProcArgs2(buf []byte) ([]string, error) {
+	if len(buf) < 4 {
+		return nil, fmt.Errorf("peerproc: kern.procargs2 is %d bytes", len(buf))
+	}
+	argc := int(binary.LittleEndian.Uint32(buf[:4]))
+	rest := buf[4:]
+	i := bytes.IndexByte(rest, 0)
+	if i < 0 {
+		return nil, errors.New("peerproc: kern.procargs2 has no executable path")
+	}
+	rest = rest[i:]
+	for len(rest) > 0 && rest[0] == 0 {
+		rest = rest[1:]
+	}
+	for n := 0; n < argc; n++ {
+		i := bytes.IndexByte(rest, 0)
+		if i < 0 {
+			return nil, errors.New("peerproc: kern.procargs2 ends inside its arguments")
+		}
+		rest = rest[i+1:]
+	}
+	var env []string
+	for {
+		i := bytes.IndexByte(rest, 0)
+		if i <= 0 {
+			return env, nil
+		}
+		env = append(env, string(rest[:i]))
+		rest = rest[i+1:]
+	}
 }

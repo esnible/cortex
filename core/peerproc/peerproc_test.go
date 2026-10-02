@@ -11,6 +11,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
+	"slices"
 	"syscall"
 	"testing"
 	"time"
@@ -407,5 +409,54 @@ func TestConnOwner_ExeIsResolvedOrUnknown(t *testing.T) {
 				t.Errorf("Exe %q; want %q", p.Exe, real)
 			}
 		})
+	}
+}
+
+// Environ reads a child's environment back from the kernel. The child is this test binary
+// re-run as TestEnvironHelperProcess, not a system binary, which macOS can refuse to show.
+func TestEnviron_ReadsAChildsEnvironment(t *testing.T) {
+	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+		t.Skip("Environ is unsupported on " + runtime.GOOS)
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestEnvironHelperProcess$")
+	cmd.Env = append(os.Environ(), "PEERPROC_ENVIRON_HELPER=1", "PEERPROC_MARKER=a=b c")
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = stdin.Close(); _ = cmd.Wait() }()
+
+	env, err := Environ(int32(cmd.Process.Pid))
+	if err != nil {
+		t.Fatalf("Environ(child): %v", err)
+	}
+	if !slices.Contains(env, "PEERPROC_MARKER=a=b c") {
+		t.Errorf("child's environment lacks the marker; got %d entries", len(env))
+	}
+}
+
+// TestEnvironHelperProcess is the child TestEnviron_ReadsAChildsEnvironment reads: it waits
+// for its stdin to close, so it is alive while the test reads it.
+func TestEnvironHelperProcess(t *testing.T) {
+	if os.Getenv("PEERPROC_ENVIRON_HELPER") != "1" {
+		return
+	}
+	_, _ = io.Copy(io.Discard, os.Stdin)
+	os.Exit(0)
+}
+
+// Another user's process — pid 1 belongs to root — cannot be read.
+func TestEnviron_RefusesAnotherUsersProcess(t *testing.T) {
+	if runtime.GOOS != "darwin" && runtime.GOOS != "linux" {
+		t.Skip("Environ is unsupported on " + runtime.GOOS)
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("root can read every process")
+	}
+	if _, err := Environ(1); err == nil {
+		t.Error("Environ(1) succeeded for a non-root caller")
 	}
 }

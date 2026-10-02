@@ -326,3 +326,22 @@ func readBootTime(path string) (time.Time, error) {
 	}
 	return time.Time{}, fmt.Errorf("%s: no btime line", path)
 }
+
+func environ(pid int32) ([]string, error) {
+	b, err := os.ReadFile("/proc/" + strconv.Itoa(int(pid)) + "/environ")
+	if err != nil {
+		return nil, fmt.Errorf("peerproc: %w", err)
+	}
+	return splitNUL(b), nil
+}
+
+// splitNUL splits /proc/<pid>/environ's NUL-terminated strings, dropping empty ones.
+func splitNUL(b []byte) []string {
+	var out []string
+	for _, f := range bytes.Split(b, []byte{0}) {
+		if len(f) > 0 {
+			out = append(out, string(f))
+		}
+	}
+	return out
+}
