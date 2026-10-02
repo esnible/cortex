@@ -43,6 +43,14 @@ const ClaudeCodeSessionHeader = "X-Claude-Code-Session-Id"
 // directly from these constants, and a raw map literal does not.
 const BobSessionHeader = "X-Task-Id"
 
+// OpenCodeSessionHeader is the request header OpenCode sets on its inference requests to
+// name the session they belong to: its "ses_…" id, the same one in the TUI's URLs. Sent by
+// OpenCode's background service from inside the TLS the bridge terminates, which is what
+// makes the service the session's claimer (see Store.ClaimProcess). OpenCode sends the same
+// value as X-Session-Id too; that name is generic, so this one is read. Verified against
+// OpenCode 2.0.21.
+const OpenCodeSessionHeader = "X-Opencode-Session-Id"
+
 // IDFromHeaders returns the first usable session id found in h among names,
 // in order, or "" when none is present. Callers treat "" as "fall back to
 // whatever bucketing you did before" — never as an error, so a client that

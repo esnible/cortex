@@ -520,7 +520,7 @@ func (s SessionConfig) ProcessAttributionEnabled(loopbackOnly bool) bool {
 // buckets exactly as it did before this option existed.
 func (s SessionConfig) SessionIDHeaders() []string {
 	if s.IDHeaders == nil {
-		return []string{session.ClaudeCodeSessionHeader, session.BobSessionHeader}
+		return []string{session.ClaudeCodeSessionHeader, session.BobSessionHeader, session.OpenCodeSessionHeader}
 	}
 	return s.IDHeaders
 }

@@ -250,7 +250,7 @@ func capUA(s string) string {
 //
 // Deliberately small. Claude Code is the only agent with full support today —
 // cmd/agentop/toolscan/known.go hardcodes its built-in tool names, so the
-// tool-prune analysis only works for it — and OpenCode, Codex and the rest arrive
+// tool-prune analysis only works for it — and Codex and the rest arrive
 // with their own detection work rather than a speculative entry here. A guess
 // that is wrong is worse than an unrecognised agent, because an unrecognised one
 // still shows up under its Raw value and can be identified from the breakdown,
@@ -293,6 +293,12 @@ var knownClients = map[string]string{
 	// its update check ("Code/1.126.0+bob2.2.1 …"). Both carry the VS Code base version rather
 	// than Bob's, and "code" is no agent's token. Neither carries inference.
 	"bob": "ibm-bob",
+	// OpenCode's one User-Agent, sent by its TUI, its background service and its inference
+	// client alike: "opencode/<channel>/<version>/<client>", e.g. "opencode/latest/2.0.21/cli"
+	// (captured from 2.0.21). The version is the field after the channel, not the first one —
+	// see productVersion. It arrives with its own detection work: its session header is
+	// session.OpenCodeSessionHeader, and `agentop configure opencode` sets it up.
+	"opencode": "opencode",
 }
 
 // IsKnownAgent reports whether name is the canonical name of a coding agent ParseUserAgent
@@ -310,6 +316,20 @@ func IsKnownAgent(name string) bool {
 		}
 	}
 	return false
+}
+
+// productVersion is the version in rest, what follows an agent's product token and its
+// slash. For every agent but OpenCode that is all of rest. OpenCode puts a release channel
+// first — "opencode/latest/2.0.21/cli" — so its version is the second field, and taking all
+// of rest would label each release with its channel and client name too.
+func productVersion(name, rest string) string {
+	if name != "opencode" {
+		return rest
+	}
+	if fields := strings.Split(rest, "/"); len(fields) >= 2 {
+		return fields[1]
+	}
+	return rest
 }
 
 // ParseUserAgent derives an EventClient from a User-Agent header value.
@@ -369,7 +389,7 @@ func ParseUserAgent(ua string) *EventClient {
 	product, version, _ := strings.Cut(token, "/")
 	if name, ok := knownClients[strings.ToLower(product)]; ok {
 		c.Name = name
-		c.Version = version
+		c.Version = productVersion(name, version)
 		return c
 	}
 	// SECOND RULE, and a FALLBACK rather than an alternative: reached only when the first
@@ -415,7 +435,7 @@ func trailingKnownClient(ua string) (name, version string, ok bool) {
 	for i := len(fields) - 1; i >= 1; i-- {
 		product, ver, _ := strings.Cut(fields[i], "/")
 		if n, found := knownClients[strings.ToLower(product)]; found {
-			return n, ver, true
+			return n, productVersion(n, ver), true
 		}
 	}
 	return "", "", false

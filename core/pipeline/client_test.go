@@ -221,6 +221,7 @@ func TestIsKnownAgent(t *testing.T) {
 		{"claude-code", true},
 		{"bob-shell", true},
 		{"ibm-bob", true},
+		{"opencode", true},
 		// A product token is not a canonical name: claude-cli is how Claude Code is RECOGNISED.
 		{"claude-cli", false},
 		{"bob", false},
@@ -241,6 +242,28 @@ func TestIsKnownAgent(t *testing.T) {
 		if !IsKnownAgent(name) {
 			t.Errorf("knownClients[%q] = %q, which IsKnownAgent rejects", product, name)
 		}
+	}
+}
+
+// OpenCode sends one User-Agent from its TUI, its background service and its inference
+// client alike, with a release channel before the version. Captured from OpenCode 2.0.21.
+func TestParseUserAgent_OpenCodeVersionIsTheFieldAfterItsChannel(t *testing.T) {
+	for _, tc := range []struct{ ua, version string }{
+		{"opencode/latest/2.0.21/cli", "2.0.21"},
+		{"opencode/beta/2.1.0-beta.3/tui", "2.1.0-beta.3"},
+		{"opencode/2.0.21", "2.0.21"},
+	} {
+		got := ParseUserAgent(tc.ua)
+		if got == nil || got.Name != "opencode" || got.Version != tc.version {
+			t.Errorf("ParseUserAgent(%q) = %+v, want opencode %s", tc.ua, got, tc.version)
+		}
+	}
+}
+
+// Every other agent's version is all of what follows its product token's slash.
+func TestParseUserAgent_OnlyOpenCodeHasAChannelField(t *testing.T) {
+	if got := ParseUserAgent("bob-shell/2.0.5/extra"); got.Version != "2.0.5/extra" {
+		t.Errorf("bob-shell version = %q, want the whole rest", got.Version)
 	}
 }
 

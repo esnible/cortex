@@ -225,3 +225,48 @@ func TestBobSessionHeader_IsCanonicalAndResolves(t *testing.T) {
 		}
 	})
 }
+
+// TestOpenCodeSessionHeader_IsCanonicalAndResolves pins the two properties of the OpenCode
+// header that a wrong constant would break silently rather than loudly.
+//
+// Casing first: IDFromHeaders reads through http.Header.Get, which canonicalizes
+// whatever it is handed, so a lowercase constant would work in production and
+// fail only here — where the fixture is a raw map literal, exactly as every other
+// test in this file builds one. That asymmetry is the trap, so assert the
+// constant's own form rather than relying on a round-trip to reveal it.
+//
+// Then that an OpenCode id actually resolves, and loses to a Claude Code id when both
+// are present. The precedence machinery is already covered generically by
+// TestIDFromHeaders_FirstConfiguredHeaderWins; what this adds is the real pair of
+// constants rather than a stand-in literal.
+func TestOpenCodeSessionHeader_IsCanonicalAndResolves(t *testing.T) {
+	if got := http.CanonicalHeaderKey(OpenCodeSessionHeader); got != OpenCodeSessionHeader {
+		t.Errorf("OpenCodeSessionHeader = %q, want canonical form %q; a raw http.Header literal will not match it",
+			OpenCodeSessionHeader, got)
+	}
+
+	// A local copy of the shipped order, NOT a read of it: core/config imports
+	// this package, so it cannot be imported back here to assert the real default.
+	// That means a reorder in config.SessionIDHeaders would not fail this test —
+	// TestSessionConfig_SessionIDHeaders over in that package is the guard for
+	// that, and it asserts the list in order. What this fixture pins is the
+	// behavior of the pair once ordered, not the ordering itself.
+	names := []string{ClaudeCodeSessionHeader, BobSessionHeader, OpenCodeSessionHeader}
+
+	t.Run("an OpenCode id alone is used", func(t *testing.T) {
+		h := http.Header{OpenCodeSessionHeader: []string{"ses_abcd1234"}}
+		if got := IDFromHeaders(h, names); got != "ses_abcd1234" {
+			t.Errorf("IDFromHeaders() = %q, want %q", got, "ses_abcd1234")
+		}
+	})
+
+	t.Run("a Claude Code id wins when both are present", func(t *testing.T) {
+		h := http.Header{
+			ClaudeCodeSessionHeader: []string{"claude-session"},
+			OpenCodeSessionHeader:   []string{"ses_abcd1234"},
+		}
+		if got := IDFromHeaders(h, names); got != "claude-session" {
+			t.Errorf("IDFromHeaders() = %q, want %q", got, "claude-session")
+		}
+	})
+}
