@@ -92,6 +92,17 @@ Some limitations worth knowing:
   written before the setting existed; `session.client_affinity: false` turns it off and
   puts every header-less request back on timing. It is not hot-reloadable — restart the
   proxy after changing it.
+- **On a laptop, header-less requests are attributed by process.** Cortex asks the
+  kernel which process opened each connection, and files a request with no session
+  header under the session of that process or of its nearest ancestor that named one —
+  so `gh`, `git` and `curl` run by an agent's shell, its `WebFetch` and its MCP calls land
+  in the agent's session, including opaque tunnels that cannot be decrypted, and a process
+  of no agent (your own terminal's `curl`) lands in `default` while an agent is active. An
+  agent talking to its own service on this machine — OpenCode's TUI and its background
+  service — is forwarded without being recorded; the first time, Cortex logs which. It is
+  `session.process_attribution`: `auto` (the default) means on for this loopback-only
+  install and off in a cluster; `on` and `off` force it. Where the lookup is unavailable it
+  logs one warning at startup and client affinity applies. Not hot-reloadable.
 - **Agents other than Claude Code and Bob need to be named.** Set `session.id_headers`
   to a list of headers to consult in precedence order if you run a client with its own
   session header; naming any replaces the built-in list rather than adding to it. An
