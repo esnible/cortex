@@ -2396,6 +2396,14 @@ func TestRunCost_ByCurrencyLabelsEachRowInItsOwnUnit(t *testing.T) {
 	if usdLine := tableRow(t, got, "USD"); !strings.Contains(usdLine, "$146.36") {
 		t.Errorf("the USD row lost its dollar figure:\n%s", usdLine)
 	}
+	// Every row here is a real unit, so the table withholds nothing and has nothing to explain.
+	// Pins the gate to the cells actually withheld rather than to the window being mixed, which is
+	// true of every window this axis exists for.
+	for _, ln := range strings.Split(breakdownSection(t, got, "currency"), "\n") {
+		if strings.HasPrefix(strings.TrimSpace(ln), "!") {
+			t.Errorf("a caveat under a table that withheld nothing:\n%s", got)
+		}
+	}
 }
 
 // On any OTHER axis a mixed window withholds each cell, because a row may itself span units.
@@ -2692,6 +2700,17 @@ func TestRunCost_ByCurrencyWithholdsACappedRowOnAMixedWindow(t *testing.T) {
 	}
 	if usd := tableRow(t, got, "USD"); !strings.Contains(usd, "$146.36") {
 		t.Errorf("the USD row lost its figure:\n%s", usd)
+	}
+	// The withheld cell is explained under the table, and NOT with the other axes' advice: that
+	// sentence ends "use --by currency for a figure per unit", which is the table the reader is
+	// already looking at. Scoped by breakdownSection because the summary above prints that advice
+	// too, legitimately — see TestRunCost_ByAgentOnAMixedWindowWithholdsTheCostCells.
+	section := breakdownSection(t, got, "currency")
+	if !strings.Contains(section, "(other) may hold more than one unit") {
+		t.Errorf("the withheld cell is unexplained on the currency axis:\n%s", got)
+	}
+	if strings.Contains(section, "use --by currency") {
+		t.Errorf("the currency table sends the reader to itself:\n%s", got)
 	}
 }
 
