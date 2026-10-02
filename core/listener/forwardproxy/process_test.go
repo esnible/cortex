@@ -557,3 +557,47 @@ func TestSelfTraffic_ABridgedRequestIsRecorded(t *testing.T) {
 
 	eventually(t, func() bool { return countPath(store, "/api/info") == 1 }, "the bridged request's row")
 }
+
+// Self-traffic is relayed as it arrives. OpenCode's TUI follows its service's event stream
+// through the proxy; buffered, the first event would wait for 4KB more to follow it.
+func TestSelfTraffic_AnEventStreamIsRelayedAsItArrives(t *testing.T) {
+	procs := newFakeProcs(fproc(500, 1, opencodeExe), fproc(510, 60, opencodeExe))
+	store := session.New(0, 0, 0)
+	defer store.Close()
+	release := make(chan struct{})
+	events := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = io.WriteString(w, "data: {\"type\":\"server.connected\"}\n\n")
+		w.(http.Flusher).Flush()
+		select {
+		case <-release:
+		case <-r.Context().Done():
+		}
+	}))
+	t.Cleanup(events.Close)
+	t.Cleanup(func() { close(release) })
+	proxyURL, backendURL, _ := newProcessProxy(t, store, procs, func(s *Server) {
+		s.SessionIDHeaders = append(s.SessionIDHeaders, "X-Opencode-Session-Id")
+	})
+	procs.listens(t, events.URL, 500)
+	sendAs(t, procs.clientFor(proxyURL, 500), backendURL+"/zen/v1/chat/completions", "", "X-Opencode-Session-Id", "ses_1")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, events.URL+"/api/event", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := procs.clientFor(proxyURL, 510).Do(req)
+	if err != nil {
+		t.Fatalf("the event stream's headers never arrived: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	line, err := bufio.NewReader(resp.Body).ReadString('\n')
+	if err != nil || !strings.Contains(line, "server.connected") {
+		t.Fatalf("first event = %q, %v; want it relayed while the stream is still open", line, err)
+	}
+	if n := countPath(store, "/api/event"); n != 0 {
+		t.Errorf("%d /api/event rows; an agent's own event stream must not be recorded", n)
+	}
+}

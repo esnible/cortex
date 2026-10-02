@@ -667,9 +667,31 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 		}
 	}
 	w.WriteHeader(resp.StatusCode)
-	if _, err := io.Copy(w, resp.Body); err != nil {
+	// A skipped response of unknown length — an event stream, a long poll — is relayed as
+	// it arrives, as httputil.ReverseProxy does; buffered, its first bytes would wait for
+	// the next 4KB. skip_hosts never sent one here, but self-traffic does: OpenCode's TUI
+	// follows its service's event stream through this path.
+	var dst io.Writer = w
+	if f, ok := w.(http.Flusher); ok && skipped && (resp.ContentLength == -1 || isEventStream(resp.Header.Get("Content-Type"))) {
+		f.Flush()
+		dst = flushWriter{w: w, f: f}
+	}
+	if _, err := io.Copy(dst, resp.Body); err != nil {
 		slog.Debug("response copy error", "host", r.Host, "error", err)
 	}
+}
+
+// flushWriter flushes after every write, so a relayed stream reaches the client as the
+// upstream sends it.
+type flushWriter struct {
+	w io.Writer
+	f http.Flusher
+}
+
+func (fw flushWriter) Write(p []byte) (int, error) {
+	n, err := fw.w.Write(p)
+	fw.f.Flush()
+	return n, err
 }
 
 // bridgeServe attempts to terminate the client's TLS and serve the decrypted
