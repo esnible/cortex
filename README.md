@@ -42,7 +42,8 @@ Your agent's calls stream into `agentop`. Cortex only reads them; nothing is rew
 - **[Start, stop, remove](./docs/laptop-service.md)** — `agentop service status | start | stop`
 - **[Run it in Kubernetes](./docs/kubernetes.md)** — sidecars, Keycloak, SPIFFE/SPIRE
 
-**Any agent works**, not only Claude Code: point it at `localhost:47600` and trust
+**Any agent works**, not only Claude Code ([OpenCode](./docs/agents/opencode.md) has its
+own `agentop configure` command): point it at `localhost:47600` and trust
 `~/.cortex/ca/ca.crt`.
 
 `curl | sh` never executes unreleased code — the script re-runs the copy from the newest

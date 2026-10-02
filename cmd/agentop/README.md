@@ -625,6 +625,10 @@ readable Cortex config, gives its pid and proxy. When the service's environment
 cannot be read, or `opencode service status` fails, the line says it could not
 check rather than guessing.
 
+[OpenCode's page](../../docs/agents/opencode.md) covers the rest: how to undo this by
+hand, what OpenCode needs to trust Cortex's CA, what Cortex records for it, what was
+verified, and its known issues.
+
 ## Panes
 
 The UI has these panes. `Enter` drills in; `Esc` backs out.
@@ -1252,9 +1256,9 @@ becomes worth showing, so a remembered dismissal would go stale then.
 
 **Agents the proxy does not recognise share one row, `Other`**, listed last. The
 proxy names an agent only from a User-Agent it recognises (`claude-code`,
-`bob-shell`, `ibm-bob`); anything else is reported under its raw User-Agent, and
-one program can send several — the IBM Bob IDE was three rows before it was
-recognised, and none of them could reach its session ([#1210]). Picking `Other`
+`bob-shell`, `ibm-bob`, `opencode`); anything else is reported under its raw
+User-Agent, and one program can send several — the IBM Bob IDE was three rows before
+it was recognised, and none of them could reach its session ([#1210]). Picking `Other`
 lists every session that names no recognised agent, including the `default` and
 `pending:` buckets and sessions only agentop's cache still holds, so every listed
 session belongs to exactly one row. An `Other` row that only sessions put there —

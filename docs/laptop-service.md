@@ -67,7 +67,10 @@ request. Bob, our internal coding agent (not the `bob` demo user), is grouped th
 way, by the `X-Task-Id` it sets, but its buckets are named with a task id rather than a
 session uuid, so one bucket covers however long Bob reuses that task. Note that
 `X-Task-Id` is a generic name: traffic from anything else that sends it will be grouped
-under its value too. Traffic that carries no such header is filed by the process that
+under its value too. [OpenCode](agents/opencode.md) is grouped by the
+`X-Opencode-Session-Id` its background service sets, and its buckets are named with
+OpenCode's own `ses_…` session id. It sends the same id as `X-Session-Id` too, which is
+generic and not read. Traffic that carries no such header is filed by the process that
 sent it (see below), and where that has no answer falls back to the previous behavior —
 the most recently active session, or the `default` bucket. In practice
 `default` collects Claude Code's own connectivity probe (`HEAD /api/hello`) and anything
@@ -107,11 +110,11 @@ Some limitations worth knowing:
   loopback-only install and off in a cluster; `on` and `off` force it. Where the lookup is
   unavailable it logs one warning at startup and client affinity applies. Not
   hot-reloadable.
-- **Agents other than Claude Code and Bob need to be named.** Set `session.id_headers`
-  to a list of headers to consult in precedence order if you run a client with its own
-  session header; naming any replaces the built-in list rather than adding to it. An
-  explicit empty list (`session.id_headers: []`) turns grouping off and puts everything
-  back in one bucket.
+- **Agents other than Claude Code, Bob and OpenCode need to be named.** Set
+  `session.id_headers` to a list of headers to consult in precedence order if you run a
+  client with its own session header; naming any replaces the built-in list rather than
+  adding to it. An explicit empty list (`session.id_headers: []`) turns grouping off and
+  puts everything back in one bucket.
 - **Bucket names are taken on trust.** The id comes from the client's own header and is
   not authenticated, so a client can name any bucket — including another session's, or a
   stream of ids nobody owns, which evicts real buckets once there are more than
