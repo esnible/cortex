@@ -33,15 +33,16 @@ var openCodeKeyOrder = []string{
 // env` prints and `service set env` / `unset env` change, whether the service runs and
 // on which port, and the environment its process started with.
 type openCodeCLI struct {
-	env     map[string]string
-	running bool
-	port    int
-	pid     int32
-	procEnv []string // what openCodeEnviron returns for the service's pid
-	procErr error
-	getEnv  *string // when set, what `service get env` prints instead of env as JSON
-	failSet string  // a key whose `service set env` fails
-	answer  bool    // what opencodeConfirm answers
+	env       map[string]string
+	running   bool
+	statusErr error // what `service status` fails with
+	port      int
+	pid       int32
+	procEnv   []string // what openCodeEnviron returns for the service's pid
+	procErr   error
+	getEnv    *string // when set, what `service get env` prints instead of env as JSON
+	failSet   string  // a key whose `service set env` fails
+	answer    bool    // what opencodeConfirm answers
 
 	calls   []string // every command, its arguments space-joined
 	prompts int
@@ -88,6 +89,9 @@ func stubOpenCodeCLI(t *testing.T, f *openCodeCLI) string {
 		f.calls = append(f.calls, strings.Join(args, " "))
 		switch {
 		case slices.Equal(args, []string{"service", "status"}):
+			if f.statusErr != nil {
+				return "", f.statusErr
+			}
 			if !f.running {
 				return "stopped", nil
 			}
@@ -303,33 +307,83 @@ func TestConfigureOpenCode_EnableUpdatesAnOlderCortexValue(t *testing.T) {
 	}
 }
 
-// The ownership round trip. The prior value is Cortex-shaped (under a .cortex
-// directory) because a foreign one is refused and never reaches the record — see
-// TestConfigureOpenCode_EnableRefusesAForeignValue, where /my/ca.pem is refused.
-func TestConfigureOpenCode_EnableThenDisableRestoresWhatWasThere(t *testing.T) {
-	prior := filepath.Join("/my", ".cortex", "ca.pem")
-	f := &openCodeCLI{env: map[string]string{"NODE_EXTRA_CA_CERTS": prior, "OPENCODE_OTHER": "keep"}}
+// A value enable replaces without asking is Cortex's, so it is recorded as absent and
+// disable removes it. Restoring it would leave OpenCode on Cortex after a disable that
+// says it no longer is.
+func TestConfigureOpenCode_DisableDoesNotPutCortexBack(t *testing.T) {
+	f := &openCodeCLI{env: map[string]string{
+		"HTTPS_PROXY":         "http://127.0.0.1:47601",                  // an old Cortex port
+		"NODE_EXTRA_CA_CERTS": filepath.Join("/my", ".cortex", "ca.pem"), // Cortex-shaped
+	}}
 	home := stubOpenCodeCLI(t, f)
 
 	if code, _, errOut := runOC("enable", "--yes"); code != 0 {
 		t.Fatalf("enable: exit %d: %s", code, errOut)
 	}
-	if f.env["NODE_EXTRA_CA_CERTS"] == prior {
-		t.Fatal("enable left NODE_EXTRA_CA_CERTS alone, so the restore below proves nothing")
+	st, err := readState(openCodeStatePath(home))
+	if err != nil || st == nil {
+		t.Fatalf("state = %v, %v; want a record", st, err)
 	}
-	f.calls = nil
+	for _, k := range []string{"HTTPS_PROXY", "NODE_EXTRA_CA_CERTS"} {
+		if p, ok := st.Prior[k]; !ok || p != nil {
+			t.Errorf("Prior[%s] = %v (recorded %v), want a recorded nil: the value was Cortex's", k, p, ok)
+		}
+	}
 
 	code, out, errOut := runOC("disable", "--yes")
 	if code != 0 {
 		t.Fatalf("disable: exit %d: %s", code, errOut)
 	}
-	if want := map[string]string{"NODE_EXTRA_CA_CERTS": prior, "OPENCODE_OTHER": "keep"}; !maps.Equal(f.env, want) {
+	if len(f.env) != 0 {
+		t.Errorf("service env after disable = %v, want it empty", f.env)
+	}
+	if !strings.Contains(out, "Disabled. OpenCode's service no longer routes through Cortex from its next start.\n") {
+		t.Errorf("stdout lacks the closing line:\n%s", out)
+	}
+	if strings.Contains(out, "Restored") {
+		t.Errorf("restored a Cortex value:\n%s", out)
+	}
+	if _, err := os.Stat(openCodeStatePath(home)); !os.IsNotExist(err) {
+		t.Errorf("state file survived disable: %v", err)
+	}
+
+	_, out, _ = runOC("disable", "--yes")
+	if out != "Nothing to do: none of the Cortex variables are set in OpenCode's service environment.\n" {
+		t.Errorf("second disable: stdout = %q, want Nothing to do", out)
+	}
+}
+
+// A recorded value is put back. enable never records one it may replace, so this
+// record is written by hand, as a user repairing or extending it would.
+func TestConfigureOpenCode_DisableRestoresARecordedValue(t *testing.T) {
+	f := &openCodeCLI{}
+	home := stubOpenCodeCLI(t, f)
+	maps.Copy(f.env, openCodeWant(home))
+	f.env["OPENCODE_OTHER"] = "keep"
+	prior := map[string]any{}
+	for _, k := range openCodeKeyOrder {
+		prior[k] = nil
+	}
+	prior["NODE_EXTRA_CA_CERTS"] = "/my/ca.pem"
+	b, err := json.Marshal(map[string]any{"settings": "opencode service env", "prior": prior})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(openCodeStatePath(home), b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	code, out, errOut := runOC("disable", "--yes")
+	if code != 0 {
+		t.Fatalf("disable: exit %d: %s", code, errOut)
+	}
+	if want := map[string]string{"NODE_EXTRA_CA_CERTS": "/my/ca.pem", "OPENCODE_OTHER": "keep"}; !maps.Equal(f.env, want) {
 		t.Errorf("service env after disable = %v, want %v", f.env, want)
 	}
 	var want []string
 	for _, k := range openCodeKeyOrder {
 		if k == "NODE_EXTRA_CA_CERTS" {
-			want = append(want, "service set env NODE_EXTRA_CA_CERTS "+prior)
+			want = append(want, "service set env NODE_EXTRA_CA_CERTS /my/ca.pem")
 		} else {
 			want = append(want, "service unset env "+k)
 		}
@@ -343,12 +397,53 @@ func TestConfigureOpenCode_EnableThenDisableRestoresWhatWasThere(t *testing.T) {
 	if !strings.Contains(out, "Restored to the value(s) you had before: NODE_EXTRA_CA_CERTS\n") {
 		t.Errorf("stdout lacks the restored list:\n%s", out)
 	}
-	if !strings.Contains(out, "Disabled. OpenCode's service no longer routes through Cortex from its next start.\n") {
-		t.Errorf("stdout lacks the closing line:\n%s", out)
-	}
 	if _, err := os.Stat(openCodeStatePath(home)); !os.IsNotExist(err) {
 		t.Errorf("state file survived disable: %v", err)
 	}
+}
+
+// With no record of a key, disable removes it only when the value is Cortex's. A value
+// someone else set is left, and said so, before anything is asked.
+func TestConfigureOpenCode_DisableLeavesAValueCortexDidNotSet(t *testing.T) {
+	const left = "  HTTPS_PROXY left as \"http://corp:3128\": it is not a value Cortex set.\n"
+	t.Run("no record, nothing else set", func(t *testing.T) {
+		f := &openCodeCLI{env: map[string]string{"HTTPS_PROXY": "http://corp:3128"}}
+		stubOpenCodeCLI(t, f)
+		code, out, errOut := runOC("disable", "--yes")
+		if code != 0 {
+			t.Fatalf("exit %d: %s", code, errOut)
+		}
+		if w := f.writes(); len(w) != 0 {
+			t.Errorf("wrote %v", w)
+		}
+		if out != left {
+			t.Errorf("stdout = %q, want only %q", out, left)
+		}
+	})
+	t.Run("a record that lacks the key", func(t *testing.T) {
+		f := &openCodeCLI{env: map[string]string{
+			"HTTPS_PROXY": "http://corp:3128",
+			"HTTP_PROXY":  "http://127.0.0.1:47600",
+		}}
+		home := stubOpenCodeCLI(t, f)
+		if err := os.WriteFile(openCodeStatePath(home),
+			[]byte(`{"settings":"opencode service env","prior":{"HTTP_PROXY":null}}`), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		code, out, errOut := runOC("disable", "--yes")
+		if code != 0 {
+			t.Fatalf("exit %d: %s", code, errOut)
+		}
+		if want := []string{"service unset env HTTP_PROXY"}; !slices.Equal(f.writes(), want) {
+			t.Errorf("writes = %v, want %v", f.writes(), want)
+		}
+		if !strings.Contains(out, "This will remove from OpenCode's service environment: HTTP_PROXY\n") {
+			t.Errorf("the removal list names a key it leaves:\n%s", out)
+		}
+		if !strings.Contains(out, left) {
+			t.Errorf("stdout lacks %q:\n%s", left, out)
+		}
+	})
 }
 
 func TestConfigureOpenCode_DisableWithNothingSet(t *testing.T) {
@@ -586,6 +681,18 @@ func TestConfigureOpenCode_ServiceNote(t *testing.T) {
 			want: "OpenCode's background service is not running.\n",
 		},
 		{
+			name: "service status fails", action: "enable",
+			fake: &openCodeCLI{statusErr: errors.New("opencode service status: exit status 1")},
+			want: "Could not check OpenCode's running service (opencode service status: exit status 1); " +
+				"restart it to be sure: opencode service restart\n",
+		},
+		{
+			name: "status, service status fails", action: "status",
+			fake: &openCodeCLI{statusErr: errors.New("opencode service status: exit status 1")},
+			want: "Could not check OpenCode's running service (opencode service status: exit status 1); " +
+				"restart it to be sure: opencode service restart\n",
+		},
+		{
 			name: "environment withheld", action: "enable",
 			fake: &openCodeCLI{running: true, procErr: fmt.Errorf("%w: pid 4242's environment is withheld", peerproc.ErrNotFound)},
 			want: "Could not check OpenCode's running service (reading the environment of pid 4242: " +
@@ -625,6 +732,106 @@ func TestConfigureOpenCode_ServiceNote(t *testing.T) {
 	}
 }
 
+// status's service line is judged by the proxy a restart would give the service — the
+// one its service environment yields, in Bun's order — not by the nine-key verdict.
+// A service started under agentop exec is on Cortex without the environment saying so,
+// and telling it to restart would take it off.
+func TestConfigureOpenCode_StatusServiceLineFollowsTheConfiguredProxy(t *testing.T) {
+	onCortex := []string{"HTTPS_PROXY=http://localhost:47600"}
+	offCortex := []string{"PATH=/usr/bin"}
+	const usingButNotConfigured = "OpenCode's background service (pid 4242) is using Cortex, but its service environment does not route it there:\n" +
+		"  a restart takes it off Cortex. agentop configure opencode enable keeps it on.\n"
+	for _, tc := range []struct {
+		name    string
+		env     func(home string) map[string]string
+		procEnv []string
+		verdict string
+		want    string
+	}{
+		{
+			name: "configured, on Cortex", env: openCodeWant, procEnv: onCortex, verdict: "enabled\n",
+			want: "OpenCode's background service (pid 4242) is using Cortex.\n",
+		},
+		{
+			// The proxy is configured; only a CA variable is missing. A restart keeps
+			// the service on Cortex, so there is nothing to restart for.
+			name: "8 of 9, on Cortex",
+			env: func(home string) map[string]string {
+				m := openCodeWant(home)
+				delete(m, "SSL_CERT_FILE")
+				return m
+			},
+			procEnv: onCortex, verdict: "not fully enabled (8 of 9 set)\n",
+			want: "OpenCode's background service (pid 4242) is using Cortex.\n",
+		},
+		{name: "configured, off Cortex", env: openCodeWant, procEnv: offCortex, verdict: "enabled\n", want: openCodeOldEnvNote},
+		{
+			name: "not configured, on Cortex", env: func(string) map[string]string { return map[string]string{} },
+			procEnv: onCortex, verdict: "not fully enabled (0 of 9 set)\n", want: usingButNotConfigured,
+		},
+		{
+			name: "not configured, off Cortex", env: func(string) map[string]string { return map[string]string{} },
+			procEnv: offCortex, verdict: "not fully enabled (0 of 9 set)\n",
+			want: "OpenCode's background service (pid 4242) is not using Cortex.\n",
+		},
+		{
+			// Bun reads https_proxy first, so this environment does not route to Cortex.
+			name: "uppercase Cortex, lowercase another",
+			env: func(string) map[string]string {
+				return map[string]string{"HTTPS_PROXY": "http://127.0.0.1:47600", "https_proxy": "http://corp:3128"}
+			},
+			procEnv: onCortex, verdict: "not fully enabled (1 of 9 set)\n", want: usingButNotConfigured,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := &openCodeCLI{running: true, procEnv: tc.procEnv}
+			home := stubOpenCodeCLI(t, f)
+			maps.Copy(f.env, tc.env(home))
+			code, out, errOut := runOC("status")
+			if code != 0 {
+				t.Fatalf("exit %d: %s", code, errOut)
+			}
+			if want := tc.verdict + tc.want; !strings.HasSuffix(out, want) {
+				t.Errorf("stdout =\n%s\nwant it to end with\n%s", out, want)
+			}
+		})
+	}
+}
+
+// With Cortex's config unreadable, disable compares the running service with the
+// HTTPS_PROXY it took out: that is what a service started under the old environment uses.
+func TestConfigureOpenCode_DisableWithoutACortexConfig(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		procEnv []string
+		note    bool
+	}{
+		{"service on the removed proxy", []string{"HTTPS_PROXY=http://localhost:47600"}, true},
+		{"service off it", []string{"PATH=/usr/bin"}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := &openCodeCLI{running: true, procEnv: tc.procEnv}
+			home := stubOpenCodeCLI(t, f)
+			if code, _, errOut := runOC("enable", "--yes"); code != 0 {
+				t.Fatalf("enable: exit %d: %s", code, errOut)
+			}
+			if err := os.Remove(filepath.Join(home, ".cortex", "config.yaml")); err != nil {
+				t.Fatal(err)
+			}
+			code, out, errOut := runOC("disable", "--yes")
+			if code != 0 {
+				t.Fatalf("disable: exit %d: %s", code, errOut)
+			}
+			if len(f.env) != 0 {
+				t.Errorf("service env = %v, want it empty", f.env)
+			}
+			if got := strings.Contains(out, openCodeOldEnvNote); got != tc.note {
+				t.Errorf("restart note = %v, want %v:\n%s", got, tc.note, out)
+			}
+		})
+	}
+}
+
 // The same refusal claude-code gives: a bridge that terminates no TLS gives OpenCode
 // nothing to trust. It is refused before OpenCode is asked anything.
 func TestConfigureOpenCode_EnableRefusesADisabledBridge(t *testing.T) {
@@ -646,7 +853,7 @@ func TestConfigureOpenCode_EnableRefusesADisabledBridge(t *testing.T) {
 }
 
 func TestConfigureOpenCode_GetEnvMustBeAnObjectOfStrings(t *testing.T) {
-	for _, printed := range []string{"", "null", "[]", `{"A": 1}`, "Error: no such command"} {
+	for _, printed := range []string{"", "null", "[]", `{"A": 1}`, `{"A": null}`, "Error: no such command"} {
 		t.Run(printed, func(t *testing.T) {
 			f := &openCodeCLI{getEnv: &printed}
 			stubOpenCodeCLI(t, f)

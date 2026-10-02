@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 )
@@ -44,6 +45,16 @@ func openCodeCanonicalKey(k string) string {
 	return k
 }
 
+// openCodeIsOurs reports whether v, the value of k, is Cortex's: the value enable
+// sets, or one isCortexValue recognises. Asked under the canonical name, so a lowercase
+// proxy an earlier enable wrote for an older Cortex address counts as Cortex's.
+func openCodeIsOurs(k, v string, want map[string]string) bool {
+	if w, ok := want[k]; ok && v == w {
+		return true
+	}
+	return isCortexValue(openCodeCanonicalKey(k), v)
+}
+
 // opencodeConfirm prompts before enable or disable changes the service environment.
 // Its own var, for the reasons claudeCodeConfirm gives: tests replace it, and stubbing
 // it must not disarm another command's prompt.
@@ -72,10 +83,12 @@ enable sets the nine variables "agentop exec" sets, reading the addresses from
   REQUESTS_CA_BUNDLE  CURL_CA_BUNDLE                    plus the platform roots
 
 "agentop exec --help" says why each gets which file. enable refuses to overwrite a
-value someone else set and leaves every other variable alone. The first run
-records what the nine held in ~/.cortex/opencode-state.json, so disable puts back
-a value you had rather than removing it. status shows the nine and the running
-service, and changes nothing.
+value someone else set and leaves every other variable alone; the only values it
+replaces are Cortex's own, such as a proxy at an older Cortex address. Its first
+run records the nine in ~/.cortex/opencode-state.json, counting Cortex's values as
+absent, so disable removes them rather than putting an old Cortex address back.
+Without that record, disable removes only Cortex's values and leaves any other
+alone. status shows the nine and the running service, and changes nothing.
 
 Neither enable nor disable restarts a running service, because that ends every
 OpenCode session using it. A running service keeps the environment it started
@@ -202,10 +215,19 @@ func openCodeServiceEnv(bin string) (map[string]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	var env map[string]string
-	// A nil map with no error is JSON null, which is not an object either.
-	if err := json.Unmarshal([]byte(out), &env); err != nil || env == nil {
-		return nil, fmt.Errorf("opencode service get env printed %q, which is not a JSON object of strings", out)
+	bad := fmt.Errorf("opencode service get env printed %q, which is not a JSON object of strings", out)
+	// Pointers, because json.Unmarshal leaves a string empty for null rather than
+	// failing; a nil map with no error is a top-level null.
+	var raw map[string]*string
+	if err := json.Unmarshal([]byte(out), &raw); err != nil || raw == nil {
+		return nil, bad
+	}
+	env := make(map[string]string, len(raw))
+	for k, v := range raw {
+		if v == nil {
+			return nil, bad
+		}
+		env[k] = *v
 	}
 	return env, nil
 }
@@ -230,10 +252,9 @@ func planOpenCodeEnable(bin, cortexCfgPath string) (openCodePlan, error) {
 		return openCodePlan{}, err
 	}
 	// Refuse a value someone else set, most likely a corporate proxy or CA, as
-	// claude-code does. Asked under the canonical name, so a lowercase proxy an earlier
-	// enable wrote for an older Cortex address is not taken for someone else's.
+	// claude-code does.
 	for _, k := range openCodeKeys {
-		if cur, ok := env[k]; ok && cur != want[k] && !isCortexValue(openCodeCanonicalKey(k), cur) {
+		if cur, ok := env[k]; ok && !openCodeIsOurs(k, cur, want) {
 			return openCodePlan{}, fmt.Errorf("%s is already set to %q in OpenCode's service environment.\n"+
 				"  Refusing to overwrite a value you set. Remove it first: opencode service unset env %s", k, cur, k)
 		}
@@ -253,7 +274,10 @@ func planOpenCodeEnable(bin, cortexCfgPath string) (openCodePlan, error) {
 func applyOpenCodeEnable(pl openCodePlan, statePath string, stderr io.Writer) error {
 	st := managedState{Settings: opencodeStateSettings, Prior: map[string]*string{}}
 	for _, k := range openCodeKeys {
-		if v, ok := pl.env[k]; ok {
+		// A Cortex-shaped prior is recorded as absent: enable overwrote it without
+		// asking because it is ours, and restoring it would leave OpenCode on Cortex
+		// after disable.
+		if v, ok := pl.env[k]; ok && !openCodeIsOurs(k, v, pl.want) {
 			st.Prior[k] = &v
 		} else {
 			st.Prior[k] = nil
@@ -268,7 +292,7 @@ func applyOpenCodeEnable(pl openCodePlan, statePath string, stderr io.Writer) er
 			if i == 0 {
 				return err
 			}
-			return fmt.Errorf("%w\n  Already set: %s. agentop configure opencode disable puts back what was there",
+			return fmt.Errorf("%w\n  Already set: %s. agentop configure opencode disable undoes them",
 				err, strings.Join(pl.changes[:i], ", "))
 		}
 	}
@@ -285,6 +309,11 @@ func openCodeEnable(bin, cortexCfgPath, statePath string, yes bool, stdout, stde
 		fmt.Fprintln(stdout, "Already enabled: OpenCode's service environment routes it through Cortex.")
 		reportOpenCodeService(bin, pl.want[envProxy], true, false, stdout)
 		return 0
+	}
+	// Where claude-code prints it, and for its reason: the go and gh the service runs
+	// read SSL_CERT_FILE no more than Claude Code's do. See darwinGoNote.
+	if runtime.GOOS == "darwin" {
+		fmt.Fprint(stdout, darwinGoNote(pl.want[envCACerts]))
 	}
 	fmt.Fprintln(stdout, "Sets in OpenCode's background-service environment (opencode service set env):")
 	for _, k := range pl.changes {
@@ -308,48 +337,66 @@ func openCodeEnable(bin, cortexCfgPath, statePath string, yes bool, stdout, stde
 type openCodeDisablePlan struct {
 	bin     string
 	env     map[string]string
-	present []string // managed keys set in the service environment, in openCodeKeys order; none = nothing to do
+	st      *managedState // enable's record; nil when there is none, it is unreadable, or it is not OpenCode's
+	stErr   error         // why the record could not be read
+	present []string      // keys disable changes, in openCodeKeys order; none = nothing to do
+	left    []string      // keys it leaves: no record of them, and not a value Cortex set
 }
 
-func planOpenCodeDisable(bin string) (openCodeDisablePlan, error) {
+// planOpenCodeDisable sorts the managed keys set in the service environment into those
+// disable changes and those it leaves. want is what enable would set, empty when the
+// Cortex config cannot be read.
+func planOpenCodeDisable(bin, statePath string, want map[string]string) (openCodeDisablePlan, error) {
 	env, err := openCodeServiceEnv(bin)
 	if err != nil {
 		return openCodeDisablePlan{}, err
 	}
-	pl := openCodeDisablePlan{bin: bin, env: env}
+	st, stErr := readState(statePath)
+	if st != nil && st.Settings != opencodeStateSettings {
+		st = nil
+	}
+	pl := openCodeDisablePlan{bin: bin, env: env, st: st, stErr: stErr}
 	for _, k := range openCodeKeys {
-		if _, ok := env[k]; ok {
+		v, ok := env[k]
+		if !ok {
+			continue
+		}
+		// A key the record names was enable's to change. One it does not name is
+		// removed only if its value is Cortex's: with nothing to say otherwise, any
+		// other value is someone else's, and removing it would lose it.
+		if _, recorded := openCodePrior(st, k); recorded || openCodeIsOurs(k, v, want) {
 			pl.present = append(pl.present, k)
+		} else {
+			pl.left = append(pl.left, k)
 		}
 	}
 	return pl, nil
 }
 
-// applyOpenCodeDisable puts back what enable recorded, unsets what it added, and
-// deletes the record. It returns the keys restored to a value the user had set.
+// applyOpenCodeDisable puts back what enable recorded, unsets the rest of the keys it
+// changes, and deletes the record. It returns the keys restored to a recorded value.
 //
 // The record is deleted only once every key is done, so a failure part way leaves it
 // for the next disable, which then finishes the job.
 func applyOpenCodeDisable(pl openCodeDisablePlan, statePath string, stderr io.Writer) ([]string, error) {
-	st, sterr := readState(statePath)
-	if sterr != nil {
+	if pl.stErr != nil {
 		// Proceed, as claude-code does: the user asked for this off. But say what is
 		// about to be lost.
 		fmt.Fprintf(stderr, "agentop: cannot read the record of what you had before enabling (%v).\n"+
 			"  Falling back to removing these keys outright. If you had set any of them\n"+
 			"  yourself before running enable, that value is not recoverable from here —\n"+
-			"  check opencode service get env afterwards.\n\n", sterr)
+			"  check opencode service get env afterwards.\n\n", pl.stErr)
 	}
 	var restored []string
 	for _, k := range pl.present {
 		var err error
-		if prior := openCodePrior(st, k); prior != nil {
+		if prior, _ := openCodePrior(pl.st, k); prior != nil {
 			_, err = openCodeRun(pl.bin, "service", "set", "env", k, *prior)
 			if err == nil {
 				restored = append(restored, k)
 			}
 		} else {
-			// Absent before enable, or no usable record: removing it is all that is left.
+			// Absent before enable, or Cortex's with no record: removing it is all that is left.
 			_, err = openCodeRun(pl.bin, "service", "unset", "env", k)
 		}
 		if err != nil {
@@ -360,26 +407,42 @@ func applyOpenCodeDisable(pl openCodeDisablePlan, statePath string, stderr io.Wr
 	return restored, nil
 }
 
-// openCodePrior is the value st recorded for k before enable, or nil when it recorded
-// none: k was absent, or st is not an OpenCode record.
-func openCodePrior(st *managedState, k string) *string {
-	if st == nil || st.Settings != opencodeStateSettings {
-		return nil
+// openCodePrior is what st recorded for k before enable: the value, nil when k was
+// absent, and whether st recorded k at all.
+func openCodePrior(st *managedState, k string) (*string, bool) {
+	if st == nil {
+		return nil, false
 	}
-	return st.Prior[k]
+	p, ok := st.Prior[k]
+	return p, ok
 }
 
 func openCodeDisable(bin, cortexCfgPath, statePath string, yes bool, stdout, stderr io.Writer) int {
-	pl, err := planOpenCodeDisable(bin)
+	// The config is not required: disable has to work when Cortex is gone. Without it,
+	// only isCortexValue says which values are Cortex's.
+	want, cortexProxy := map[string]string{}, ""
+	if w, _, werr := wantedFromConfig(cortexCfgPath); werr == nil {
+		want, cortexProxy = openCodeValues(w), w[envProxy]
+	}
+	pl, err := planOpenCodeDisable(bin, statePath, want)
 	if err != nil {
 		fmt.Fprintf(stderr, "agentop: %v\n", err)
 		return 1
 	}
-	if len(pl.present) == 0 {
+	if len(pl.present) == 0 && len(pl.left) == 0 {
 		fmt.Fprintln(stdout, "Nothing to do: none of the Cortex variables are set in OpenCode's service environment.")
 		return 0
 	}
-	fmt.Fprintf(stdout, "This will remove from OpenCode's service environment: %s\n\n", strings.Join(pl.present, ", "))
+	if len(pl.present) > 0 {
+		fmt.Fprintf(stdout, "This will remove from OpenCode's service environment: %s\n", strings.Join(pl.present, ", "))
+	}
+	for _, k := range pl.left {
+		fmt.Fprintf(stdout, "  %s left as %q: it is not a value Cortex set.\n", k, pl.env[k])
+	}
+	if len(pl.present) == 0 {
+		return 0
+	}
+	fmt.Fprintln(stdout)
 	if !yes && !opencodeConfirm(stdout) {
 		fmt.Fprintln(stdout, "Not changed.")
 		return exitDeclined
@@ -395,11 +458,15 @@ func openCodeDisable(bin, cortexCfgPath, statePath string, yes bool, stdout, std
 	fmt.Fprintln(stdout, "\nDisabled. OpenCode's service no longer routes through Cortex from its next start.")
 
 	// The running service is compared with Cortex's proxy. When the config cannot be
-	// read, the HTTPS_PROXY just taken out stands in for it: that is what a service
+	// read, the proxy disable just took out stands in for it: that is what a service
 	// still running with its old environment uses.
-	cortexProxy := pl.env[envProxy]
-	if want, _, werr := wantedFromConfig(cortexCfgPath); werr == nil {
-		cortexProxy = want[envProxy]
+	if cortexProxy == "" {
+		for _, k := range pl.present {
+			if openCodeCanonicalKey(k) == envProxy {
+				cortexProxy = pl.env[k]
+				break
+			}
+		}
 	}
 	reportOpenCodeService(bin, cortexProxy, false, false, stdout)
 	return 0
@@ -437,24 +504,32 @@ func openCodeStatus(bin, cortexCfgPath string, stdout, stderr io.Writer) int {
 			set++
 		}
 	}
-	enabled := set == len(openCodeKeys)
-	if enabled {
+	if set == len(openCodeKeys) {
 		fmt.Fprintln(stdout, "enabled")
 	} else {
 		fmt.Fprintf(stdout, "not fully enabled (%d of %d set)\n", set, len(openCodeKeys))
 	}
-	reportOpenCodeService(bin, vals[envProxy], enabled, true, stdout)
+	// The service line is judged by the proxy a restart would give the service, read as
+	// Bun reads it, not by the verdict above: a missing CA variable does not take the
+	// service off Cortex, and a service started under agentop exec is on Cortex
+	// whatever its service environment says.
+	list := make([]string, 0, len(env))
+	for k, v := range env {
+		list = append(list, k+"="+v)
+	}
+	reportOpenCodeService(bin, vals[envProxy], sameProxy(environProxy(list), vals[envProxy]), true, stdout)
 	return 0
 }
 
-// reportOpenCodeService says how the running service compares with the environment
-// just configured. It never restarts the service: that would end every OpenCode
-// session using it.
+// reportOpenCodeService says how the running service compares with its service
+// environment. It never restarts the service: that would end every OpenCode session
+// using it.
 //
-// cortexProxy is Cortex's proxy URL, "" when it is not known. enabled is whether the
-// service environment now routes OpenCode through it. status asks for a line in every
-// case; enable and disable say only what needs doing or what was confirmed.
-func reportOpenCodeService(bin, cortexProxy string, enabled, status bool, stdout io.Writer) {
+// cortexProxy is Cortex's proxy URL, "" when it is not known. configured is whether the
+// service environment routes OpenCode through it: true after enable, false after
+// disable, and for status whatever the environment's proxy says. status asks for a line
+// in every case; enable and disable say only what needs doing or what was confirmed.
+func reportOpenCodeService(bin, cortexProxy string, configured, status bool, stdout io.Writer) {
 	svc, err := probeOpenCodeService(bin)
 	if err == nil && svc.Running {
 		err = svc.EnvErr
@@ -462,10 +537,12 @@ func reportOpenCodeService(bin, cortexProxy string, enabled, status bool, stdout
 	switch {
 	case err != nil:
 		fmt.Fprintf(stdout, "Could not check OpenCode's running service (%v); restart it to be sure: opencode service restart\n", err)
+		return
 	case !svc.Running:
 		if status {
 			fmt.Fprintln(stdout, "OpenCode's background service is not running.")
 		}
+		return
 	case cortexProxy == "":
 		if !status {
 			return
@@ -475,11 +552,23 @@ func reportOpenCodeService(bin, cortexProxy string, enabled, status bool, stdout
 		} else {
 			fmt.Fprintf(stdout, "OpenCode's background service (pid %d) is running with proxy %s.\n", svc.PID, svc.Proxy)
 		}
-	case sameProxy(svc.Proxy, cortexProxy) != enabled:
-		fmt.Fprintf(stdout, "OpenCode's background service (pid %d) is running with its old environment.\n"+
-			"  It picks this up when it restarts: opencode service restart   # ends every OpenCode session using it\n", svc.PID)
-	case enabled:
+		return
+	}
+	const oldEnv = "OpenCode's background service (pid %d) is running with its old environment.\n" +
+		"  It picks this up when it restarts: opencode service restart   # ends every OpenCode session using it\n"
+	running := sameProxy(svc.Proxy, cortexProxy)
+	switch {
+	case running && configured:
 		fmt.Fprintf(stdout, "OpenCode's background service (pid %d) is using Cortex.\n", svc.PID)
+	case configured:
+		fmt.Fprintf(stdout, oldEnv, svc.PID)
+	case running && status:
+		// Started some other way, most likely under agentop exec. A restart would take
+		// it off Cortex, which is the opposite of the note above.
+		fmt.Fprintf(stdout, "OpenCode's background service (pid %d) is using Cortex, but its service environment does not route it there:\n"+
+			"  a restart takes it off Cortex. agentop configure opencode enable keeps it on.\n", svc.PID)
+	case running:
+		fmt.Fprintf(stdout, oldEnv, svc.PID)
 	case status:
 		fmt.Fprintf(stdout, "OpenCode's background service (pid %d) is not using Cortex.\n", svc.PID)
 	}
