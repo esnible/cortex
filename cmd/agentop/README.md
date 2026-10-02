@@ -578,6 +578,42 @@ Bob/User/settings.json`). Elsewhere `--settings PATH` is required rather than
 guessed — writing a proxy setting into a file nothing reads is a silent no-op,
 which is worse than a refusal that names the flag.
 
+## Routing OpenCode through Cortex (`agentop configure opencode`)
+
+OpenCode does not send its traffic from the process you run. One background
+service per user, `opencode serve --service`, sends every session's requests: the
+first client starts it, later clients reuse it, and it outlives them with the
+environment it started with. So `agentop exec -- opencode` changes nothing for a
+service that is already running, and warns when it finds one running without
+Cortex. The service also keeps an environment of its own, set with `opencode
+service set env`, which it takes over the one it inherited. That is where
+`enable` puts the routing:
+
+```sh
+agentop configure opencode enable    # set the nine variables in the service's environment
+agentop configure opencode disable   # put back what was there
+agentop configure opencode status    # the nine, and the running service
+```
+
+The nine are the ones `agentop exec` sets (the table above), derived from
+`~/.cortex/config.yaml` as `configure claude-code enable` derives them. Every
+change goes through the `opencode` CLI, one `set env` or `unset env` per variable,
+and nothing else in the service's environment is touched. `enable` refuses to
+overwrite a value someone else set, such as a corporate proxy, and names the
+`opencode service unset env` that removes it. The first run records what each
+variable held in `~/.cortex/opencode-state.json`, so `disable` restores a value
+you had rather than deleting it. Declined, or with no terminal to ask on, both
+write nothing and exit **3**. `--yes` skips the question, `--config PATH` reads
+another Cortex config, and `--opencode BIN` names the CLI when it is neither on
+`PATH` nor in `~/.opencode/bin`.
+
+Neither verb restarts a running service, because that ends every OpenCode session
+using it. Both compare the proxy in the environment the service's process started
+with against the one just configured, and when the two disagree, say so and name
+`opencode service restart`. `status` prints the same line, or that the service is
+not running. When that environment cannot be read, the line says it could not
+check rather than guessing.
+
 ## Panes
 
 The UI has these panes. `Enter` drills in; `Esc` backs out.

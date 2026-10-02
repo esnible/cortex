@@ -15,7 +15,8 @@ Usage:
   agentop configure bob disable [--yes] [--settings PATH] [--config PATH]
   agentop configure bob status  [--settings PATH] [--config PATH]
   agentop configure bobshell enable | disable | status
-  agentop configure codex | opencode
+  agentop configure opencode enable | disable | status [--yes] [--config PATH]
+  agentop configure codex
 
 Agents:
   claude-code    writes the proxy and CA variables into ~/.claude/settings.json, so
@@ -28,24 +29,27 @@ Agents:
                  "bob" runs it through Cortex. A different thing from "bob" above,
                  and the two are independent. Run
                  "agentop configure bobshell --help" for the detail.
+  opencode       sets the proxy and CA variables in OpenCode's background-service
+                 environment, which sends all of OpenCode's traffic. Run
+                 "agentop configure opencode --help" for the detail.
   codex          not yet persistent — use "agentop exec -- codex"
-  opencode       not yet persistent — use "agentop exec -- opencode"
 
 One verb for every agent, because "how do I point X at Cortex" is the same question
 whatever X is, and the answer used to be spelled differently per agent: a top-level
 "agentop claude-code" for the one agent with a settings file, and nothing at all for
-the ones without. The agents that cannot yet be configured persistently say so and
-name the command that works today, rather than being absent and leaving the reader
-to conclude Cortex cannot drive them.
+the ones without. An agent that cannot yet be configured persistently says so and
+names the command that works today, rather than being absent and leaving the reader
+to conclude Cortex cannot drive it.
 
-Three agents persist, by two different mechanisms. Claude Code and Bob read settings
+Four agents persist, by three different mechanisms. Claude Code and Bob read settings
 files, so their configuration goes there — the key differs (Claude Code keeps an "env"
 block, Bob is a VS Code fork and reads "http.proxy"), and Bob additionally needs the
 bridge CA trusted by the OS, which "configure bob enable" prints rather than performs.
 Bob Shell gets a shell function written into the rc file instead, so the routing is
-applied when you type the command. Codex and OpenCode read the process environment and
-nothing else, so their routing lasts exactly as long as the process — which is what
-"agentop exec" is for.
+applied when you type the command. OpenCode's background service keeps an environment
+of its own, so its configuration goes there, through the opencode CLI. Codex reads the
+process environment and nothing else, so its routing lasts exactly as long as the
+process — which is what "agentop exec" is for.
 
 "agentop claude-code" is the old spelling of "agentop configure claude-code". It still
 works, and prints a notice pointing here.
@@ -132,8 +136,9 @@ func runConfigure(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprint(stdout, comingSoon("Codex", "codex"))
 		return 0
 	case "opencode":
-		fmt.Fprint(stdout, comingSoon("OpenCode", "opencode"))
-		return 0
+		// OpenCode's background service keeps an environment of its own, which is what
+		// made it configurable at all: see cmd_opencode.go.
+		return runOpenCode(args[1:], stdout, stderr)
 	default:
 		// The named list is the answer to a typo; the usage block after it is the
 		// answer to "what else can this do", which is what someone who guessed an
