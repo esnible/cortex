@@ -627,9 +627,9 @@ change restarts it, with its pid, and ask; when whether it runs cannot be told,
 they say only that the change stops it if it is. `--yes` skips the question, not
 the warning. After the restart they say whether the service's proxy matches the
 change, judged by the environment its new process started with; when it does
-not, they name `opencode service restart`. A restart that fails is reported, with
-`agentop configure opencode status` to tell whether the service is stopped or
-running with its old environment, and the command still exits 0, because the
+not, they name `opencode service restart`. A restart that fails is reported: the
+service may be stopped, or running with its old environment, and `opencode
+service restart` applies the change. The command still exits 0, because the
 change itself succeeded. A change that fails part way is not followed by a
 restart, and they say the service may be stopped. A service that was not running
 starts with the new environment the next time you run OpenCode.

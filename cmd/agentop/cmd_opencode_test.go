@@ -10,6 +10,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -1084,6 +1085,52 @@ func TestConfigureOpenCode_ChangingTheEnvironmentRestartsTheService(t *testing.T
 					t.Errorf("calls = %v, want service status after the restart", f.calls)
 				}
 			})
+		}
+	}
+}
+
+// The docs that say what a failed restart does name the command agentop prints for it.
+// The command is read from finishOpenCodeChange's own output, so the docs are held to
+// the code rather than to a literal here. cmd/agentop/README.md named `agentop
+// configure opencode status` instead, which after disable advises enabling again.
+func TestOpenCodeDocs_AFailedRestartNamesTheCommandAgentopPrints(t *testing.T) {
+	stubOpenCodeCLI(t, &openCodeCLI{running: true, restartErr: errors.New("opencode service restart: exit status 1")})
+	// enable and disable print the same command, and the docs describe them together.
+	var cmd string
+	for _, configured := range []bool{true, false} {
+		var stdout, stderr bytes.Buffer
+		finishOpenCodeChange(fakeOpenCodePath, "", configured, true, &stdout, &stderr)
+		_, after, ok := strings.Cut(stderr.String(), "To apply the change now:\n")
+		if !ok {
+			t.Fatalf("configured=%v: a failed restart printed no command to apply the change:\n%s", configured, stderr.String())
+		}
+		line, _, _ := strings.Cut(after, "\n")
+		got, _, _ := strings.Cut(line, "#")
+		got = strings.TrimSpace(got)
+		if cmd != "" && got != cmd {
+			t.Fatalf("enable names %q after a failed restart and disable names %q", cmd, got)
+		}
+		cmd = got
+	}
+
+	failed := regexp.MustCompile(`(?i)\brestart (that )?fails\b`)
+	for _, doc := range []string{"README.md", filepath.Join("..", "..", "docs", "agents", "opencode.md")} {
+		raw, err := os.ReadFile(doc)
+		if err != nil {
+			t.Fatalf("read %s: %v", doc, err)
+		}
+		found := 0
+		for _, s := range strings.SplitAfter(strings.Join(strings.Fields(string(raw)), " "), ". ") {
+			if !failed.MatchString(s) {
+				continue
+			}
+			found++
+			if !strings.Contains(s, "`"+cmd+"`") {
+				t.Errorf("%s says what a failed restart does without naming `%s`, which agentop prints for it:\n%s", doc, cmd, s)
+			}
+		}
+		if found == 0 {
+			t.Errorf("%s no longer says what a failed restart does; this test pins that sentence and cannot find it", doc)
 		}
 	}
 }
