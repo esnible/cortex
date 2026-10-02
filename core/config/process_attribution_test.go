@@ -25,12 +25,14 @@ func TestProcessAttributionEnabled(t *testing.T) {
 // A typo must not quietly mean auto: it would leave attribution on, or off, by accident.
 func TestValidate_RejectsAnUnknownProcessAttribution(t *testing.T) {
 	c := &Config{Mode: ModeProxySidecar, Listener: forwardOnlyListener(), Session: SessionConfig{ProcessAttribution: "maybe"}}
-	err := c.Validate()
+	err := Validate(c)
 	if err == nil || !strings.Contains(err.Error(), "process_attribution") {
 		t.Errorf("Validate = %v, want an error naming session.process_attribution", err)
 	}
-	c.Session.ProcessAttribution = ProcessAttributionOn
-	if err := c.Validate(); err != nil {
-		t.Errorf("Validate with %q: %v", ProcessAttributionOn, err)
+	for _, v := range []string{"", ProcessAttributionAuto, ProcessAttributionOn, ProcessAttributionOff} {
+		c.Session.ProcessAttribution = v
+		if err := Validate(c); err != nil {
+			t.Errorf("Validate with %q: %v", v, err)
+		}
 	}
 }

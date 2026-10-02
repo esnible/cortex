@@ -139,8 +139,3 @@ func validateSession(cfg *Config) error {
 		return fmt.Errorf("session.process_attribution must be auto, on or off, got %q", cfg.Session.ProcessAttribution)
 	}
 }
-
-// Validate is a method wrapper around the Validate function for use with *Config receivers.
-func (cfg *Config) Validate() error {
-	return Validate(cfg)
-}

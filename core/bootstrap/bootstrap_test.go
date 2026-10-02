@@ -89,3 +89,15 @@ func TestNewHTTPServer_AppliesItsOptions(t *testing.T) {
 		t.Errorf("ReadHeaderTimeout = %s, want the default kept", srv.ReadHeaderTimeout)
 	}
 }
+
+func TestStartHTTPServer_PassesItsOptionsOn(t *testing.T) {
+	srv, err := StartHTTPServer("test", http.NotFoundHandler(), "127.0.0.1:0",
+		WithConnContext(func(ctx context.Context, _ net.Conn) context.Context { return ctx }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = srv.Close() }()
+	if srv.ConnContext == nil {
+		t.Error("StartHTTPServer dropped its options: ConnContext is nil")
+	}
+}

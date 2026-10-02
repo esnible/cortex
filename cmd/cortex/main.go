@@ -898,11 +898,12 @@ func main() {
 		fpSrv.ClientAffinity = cfg.Session.ClientAffinityEnabled()
 		// Process attribution: header-less requests filed by the process that sent them.
 		// On by default only for a loopback-bound install (session.process_attribution:
-		// auto), and only behind a lookup whose self-test passed — a failure costs one
+		// auto), only with header bucketing on — a process's session is the one its header
+		// named — and only behind a lookup whose self-test passed: a failure costs one
 		// warning and leaves resolution as it was.
-		if sessions != nil && cfg.Session.ProcessAttributionEnabled(cfg.Listener.BindLoopbackOnly) {
+		if sessions != nil && len(fpSrv.SessionIDHeaders) > 0 && cfg.Session.ProcessAttributionEnabled(cfg.Listener.BindLoopbackOnly) {
 			if procs, perr := peerproc.New(); perr != nil {
-				slog.Warn("process attribution off: this host's process lookup failed its self-test", "error", perr)
+				slog.Warn("process attribution off: this host's process lookup is unavailable", "error", perr)
 			} else {
 				fpSrv.Processes = procs
 				slog.Info("process attribution on: header-less requests are filed by the process that sent them")

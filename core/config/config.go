@@ -472,8 +472,8 @@ type SessionConfig struct {
 	// tunnels and its WebFetch land in the agent's session, and a process of no agent in
 	// none. "auto", the default (and what an empty value means), turns it on exactly when
 	// listener.bind_loopback_only is set: only there is every client a process on this
-	// host. "on" and "off" force it. Needs id_headers non-empty, like client_affinity. Not
-	// hot-reloadable. See session.Store.SessionForProcess.
+	// host. "on" and "off" force it. Needs id_headers non-empty, like client_affinity. Only
+	// the cortex binary acts on it. Not hot-reloadable. See session.Store.SessionForProcess.
 	ProcessAttribution string `yaml:"process_attribution" json:"process_attribution"`
 }
 
