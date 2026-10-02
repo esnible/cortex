@@ -283,22 +283,65 @@ func TestProcessAttribution_LooksEachConnectionUpOnce(t *testing.T) {
 
 // An opaque tunnel — git to GitHub, which cannot be bridged — has no decrypted request to
 // take a session from; its process names it.
+//
+// Bob speaks last, so ActiveSession() is task-1 and two agents are active: without the
+// process lookup git's tunnel would land in task-1, and the stranger's would not land in
+// default.
 func TestProcessAttribution_AnOpaqueTunnelJoinsItsProcessSession(t *testing.T) {
-	procs := newFakeProcs(fproc(100, 50, "/bin/claude"), fproc(200, 100, "/bin/bash"), fproc(310, 200, "/usr/bin/git"))
+	procs := newFakeProcs(
+		fproc(100, 50, "/bin/claude"), fproc(200, 100, "/bin/bash"), fproc(310, 200, "/usr/bin/git"),
+		fproc(800, 60, "/usr/bin/node"), fproc(700, 60, "/usr/bin/python3"),
+	)
 	store := session.New(0, 0, 0)
 	defer store.Close()
 	proxyURL, backendURL, _ := newProcessProxy(t, store, procs, nil)
 	sendAs(t, procs.clientFor(proxyURL, 100), backendURL+"/v1/messages", procClaudeUA, session.ClaudeCodeSessionHeader, "s1")
+	sendAs(t, procs.clientFor(proxyURL, 800), backendURL+"/inference", "bob-shell/2.0.5", session.BobSessionHeader, "task-1")
 
 	raw, br, resp := connectAs(t, procs, proxyURL, pingPongOrigin(t), 310)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("CONNECT status %d", resp.StatusCode)
 	}
 	pingPong(t, raw, br)
-	eventually(t, func() bool { _, closes := tunnelRows(store, "s1"); return len(closes) == 1 }, "the tunnel's close row in s1")
+	eventually(t, func() bool { _, closes := tunnelRows(store, "s1"); return len(closes) == 1 }, "the git tunnel's close row in s1")
 	onePair(t, store, "s1")
-	if v := store.View(session.DefaultSessionID); v != nil {
-		t.Errorf("default holds %d event(s); the tunnel belongs to s1", len(v.Events))
+
+	// A process of no agent while agents are active: its tunnel goes to default.
+	raw, br, resp = connectAs(t, procs, proxyURL, pingPongOrigin(t), 700)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("CONNECT status %d", resp.StatusCode)
+	}
+	pingPong(t, raw, br)
+	eventually(t, func() bool {
+		_, closes := tunnelRows(store, session.DefaultSessionID)
+		return len(closes) == 1
+	}, "the stranger's tunnel close row in default")
+	onePair(t, store, session.DefaultSessionID)
+	if v := store.View(session.DefaultSessionID); len(v.Events) != 2 {
+		t.Errorf("default holds %d event(s), want only the stranger's tunnel pair", len(v.Events))
+	}
+	onePair(t, store, "s1")
+	if opens, closes := tunnelRows(store, "task-1"); len(opens)+len(closes) != 0 {
+		t.Errorf("task-1 holds %d tunnel row(s); neither tunnel is Bob's", len(opens)+len(closes))
+	}
+}
+
+// ConnContext runs on the accept loop, so it must not look the client up: a connection
+// that sends nothing costs no lookup.
+func TestProcessAttribution_AConnectionWithNoRequestIsNotLookedUp(t *testing.T) {
+	procs := newFakeProcs(fproc(100, 50, "/bin/claude"))
+	store := session.New(0, 0, 0)
+	defer store.Close()
+	proxyURL, _, _ := newProcessProxy(t, store, procs, nil)
+	raw, err := net.Dial("tcp", strings.TrimPrefix(proxyURL, "http://"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	procs.own(raw, 100)
+	time.Sleep(50 * time.Millisecond) // let the server accept it and run ConnContext
+	_ = raw.Close()
+	if n := procs.lookupCount(); n != 0 {
+		t.Errorf("%d lookups for a connection that sent no request, want 0", n)
 	}
 }
 
