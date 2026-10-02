@@ -217,10 +217,22 @@ approach used on session 13cdee89.
 - `X-Opencode-Session-Id` joins the default `id_headers`, so OpenCode's inference rows
   land in OpenCode's own sessions, and its service claims them.
 - `docs/agents/opencode.md`, linked from the README, as every supported agent has.
-- `agentop exec -- opencode` reads the running service's PID from OpenCode's
-  `service.json` and **warns** when that process lacks the proxy environment, naming the
-  fix (`opencode service restart` under `agentop exec`). It does not restart the service
-  itself: that would cut the user's other OpenCode sessions.
+- **`agentop configure opencode enable | disable | status`** routes OpenCode through Cortex
+  persistently. OpenCode's background service, not the process you run, sends all of
+  OpenCode's traffic, and it keeps an environment of its own: `opencode service set env
+  NAME VALUE` writes it to `service.json`'s `env`, and on start the service takes those
+  values over what it inherited (verified on 2.0.21: a client started with a dead proxy
+  spawned a service pointed at Cortex). Enable sets the proxy and CA variables `agentop
+  exec` sets, through the `opencode` CLI, and records prior values in
+  `~/.cortex/opencode-state.json` so disable can restore them; it refuses to overwrite a
+  value someone else set. It never restarts a running service — that would cut every
+  OpenCode session using it — and says when one is running without the change.
+- **`agentop exec -- opencode` warns** when a service is already running without Cortex's
+  proxy: it finds the service by its port (`opencode service status`), its PID with
+  `peerproc.ListenerOwner`, and reads that process's environment with a new
+  `peerproc.Environ` (macOS `kern.procargs2`, Linux `/proc/<pid>/environ`, same user only).
+  `service.json` holds a password, a port and the `env` block, but no PID, which is why the
+  original plan to read the PID from it could not work.
 
 ## Decisions recorded
 
@@ -238,6 +250,11 @@ approach used on session 13cdee89.
 - **A multi-session process answers with its newest session**; tool windows wait for
   evidence.
 - **A stale OpenCode service gets a warning, not a restart.**
+- **OpenCode is configured through its service's own environment**, not by `agentop exec`
+  alone: the service outlives its clients and keeps the environment of whichever started
+  it, so `agentop exec -- opencode` does nothing for a service already running.
+- **The stale-service check reads the running process's environment**, not the config: a
+  service started before `configure opencode enable` has the config but not the values.
 - **The deferred open row takes its first row's time.** This reverses the earlier "keep
   the CONNECT's time", for the pager reason above.
 - **`traceparent` is not a correlation key** — per-process in OpenCode.
