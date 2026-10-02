@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -502,9 +503,21 @@ func TestHandleConnect_FallOpenRedialFailureRecordsTheError(t *testing.T) {
 // bridgingProxy is a proxy whose TLS bridge terminates CONNECTs to a trusted TLS origin.
 func bridgingProxy(t *testing.T, store *session.Store) (proxyAddr, target string, bridgeCA []byte, done <-chan struct{}) {
 	t.Helper()
-	origin := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	return bridgingProxyWith(t, store, nil)
+}
+
+// bridgingProxyWith is bridgingProxy with configure applied to the server before it
+// serves anything.
+func bridgingProxyWith(t *testing.T, store *session.Store, configure func(*Server)) (proxyAddr, target string, bridgeCA []byte, done <-chan struct{}) {
+	t.Helper()
+	origin := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("ok"))
 	}))
+	// handleConnect dials the origin before it decides to bridge and closes that
+	// connection unused, which the origin logs as a TLS handshake error. Expected, and
+	// only noise in the test output.
+	origin.Config.ErrorLog = log.New(io.Discard, "", 0)
+	origin.StartTLS()
 	t.Cleanup(origin.Close)
 	originCA := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: origin.Certificate().Raw})
 	u, err := url.Parse(origin.URL)
@@ -512,7 +525,11 @@ func bridgingProxy(t *testing.T, store *session.Store) (proxyAddr, target string
 		t.Fatalf("parse origin URL: %v", err)
 	}
 	engine := bridgeEngine(t, portOf(u.Host), originCA)
-	proxyAddr, done = connectProxy(t, connectServer(t, store, engine))
+	s := connectServer(t, store, engine)
+	if configure != nil {
+		configure(s)
+	}
+	proxyAddr, done = connectProxy(t, s)
 	return proxyAddr, u.Host, engine.CAPEM, done
 }
 
@@ -586,7 +603,7 @@ func TestBridgedHandler_RequestAfterTheCloseRecordsNothing(t *testing.T) {
 	s := connectServer(t, store, nil)
 	tl := s.newTunnelLog(&pipeline.Context{Direction: pipeline.Outbound, Host: "example.com:443"}, false)
 	tl.open("")
-	tl.closeUnserved() // ServeConn returned before any handler started
+	tl.finish() // ServeConn returned before any handler started
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
@@ -599,22 +616,36 @@ func TestBridgedHandler_RequestAfterTheCloseRecordsNothing(t *testing.T) {
 	}
 }
 
-// The other order: a request admitted before ServeConn returns is what answers the tunnel,
-// so no close is recorded for it.
-func TestTunnelLog_AdmittedRequestSuppressesTheClose(t *testing.T) {
+// The transparent listener records its open before it bridges, so a bridged tunnel there
+// has no open left to defer: markBridged must change nothing, and its decrypted requests
+// record as plain rows. The first of them still answers the tunnel, so no close follows.
+func TestTunnelLog_EagerOpenIsNotDeferred(t *testing.T) {
 	store := session.New(5*time.Minute, 100, 0)
 	defer store.Close()
 	s := &Server{Sessions: store}
-	tl := s.newTunnelLog(&pipeline.Context{Direction: pipeline.Outbound, Host: "example.com:443"}, false)
-	tl.open("")
+	tl := s.newTunnelLog(&pipeline.Context{Direction: pipeline.Outbound, Method: http.MethodConnect, Host: "example.com:443"}, false)
+	tl.open("")    // HandleTransparentConn, before bridgeServe
+	tl.deferOpen() // markBridged, once the forged handshake succeeds
 
 	if !tl.admit() {
-		t.Fatal("a request arriving before the close was refused")
+		t.Fatal("a request on a live tunnel was refused")
 	}
-	tl.closeUnserved()
+	s.appendOutbound(tl, "sess-1", decryptedRequest("/x"))
+	tl.release()
+	tl.finish()
 
-	if _, closes := tunnelRows(store, session.DefaultSessionID); len(closes) != 0 {
-		t.Errorf("a tunnel that served a request recorded %d close(s); want none", len(closes))
+	// The eager open went where recordTunnelOpened files it: ActiveSession() was empty
+	// when it recorded, so default.
+	opens, closes := tunnelRows(store, session.DefaultSessionID)
+	if len(opens) != 1 {
+		t.Errorf("default holds %d tunnel open(s), want the one recorded before bridging", len(opens))
+	}
+	if len(closes) != 0 {
+		t.Errorf("default holds %d close(s); a tunnel its request answered records none", len(closes))
+	}
+	v := store.View("sess-1")
+	if v == nil || len(v.Events) != 1 || v.Events[0].Tunnel || v.Events[0].HTTPPath != "/x" {
+		t.Fatalf("sess-1 = %+v, want only the decrypted request — no second open, no close", v)
 	}
 }
 
