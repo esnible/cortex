@@ -66,10 +66,10 @@ func TestClientAffinity_InClusterResolutionIsUnchanged(t *testing.T) {
 						h.Set(session.ClaudeCodeSessionHeader, tc.header)
 					}
 				}
-				if got := s.resolvePluginSessionID(h); got != tc.wantPlugin {
+				if got := s.resolvePluginSessionID(h, nil); got != tc.wantPlugin {
 					t.Errorf("affinity=%v: plugin identity = %q, want %q", affinity, got, tc.wantPlugin)
 				}
-				if got := s.resolveOutboundSessionID(h); got != tc.wantRecord {
+				if got := s.resolveOutboundSessionID(h, nil); got != tc.wantRecord {
 					t.Errorf("affinity=%v: recording bucket = %q, want %q", affinity, got, tc.wantRecord)
 				}
 			})
@@ -247,7 +247,7 @@ func TestClientAffinity_OffKeepsTodaysAttribution(t *testing.T) {
 	s := &Server{Sessions: store, SessionIDHeaders: []string{session.ClaudeCodeSessionHeader, session.BobSessionHeader}}
 	store.Append("claude-1", pipeline.SessionEvent{At: time.Now(), Direction: pipeline.Outbound, Phase: pipeline.SessionRequest})
 	h := http.Header{"User-Agent": []string{"bob-shell/2.0.5"}}
-	if got := s.resolveOutboundSessionID(h); got != "claude-1" {
+	if got := s.resolveOutboundSessionID(h, nil); got != "claude-1" {
 		t.Fatalf("knob off: Bob's header-less probe = %q, want claude-1 (today's ActiveSession answer)", got)
 	}
 }
@@ -260,7 +260,7 @@ func TestClientAffinity_NeedsHeaderBucketing(t *testing.T) {
 	defer store.Close()
 	s := &Server{Sessions: store, SessionIDHeaders: []string{}, ClientAffinity: true}
 	h := http.Header{"User-Agent": []string{"bob-shell/2.0.5"}}
-	if got := s.resolveOutboundSessionID(h); got != session.DefaultSessionID {
+	if got := s.resolveOutboundSessionID(h, nil); got != session.DefaultSessionID {
 		t.Fatalf("id_headers: [] with client_affinity = %q, want %q (affinity inert)", got, session.DefaultSessionID)
 	}
 }
@@ -329,7 +329,7 @@ func TestClientAffinity_TunnelRowsKeepTodaysSessionWhenTheOwnerIsAmbiguous(t *te
 	connect("User-Agent: bob-shell/2.0.5\r\n")
 	waitFor("task-1", 1)
 	// The reject paths file through tunnelSessionID rather than the pin.
-	if got, def := srv.tunnelSessionID("", nil), srv.recordingSessionID("", nil); got != "task-1" || def != session.DefaultSessionID {
+	if got, def := srv.tunnelSessionID("", nil, nil), srv.recordingSessionID("", nil, nil); got != "task-1" || def != session.DefaultSessionID {
 		t.Errorf("ambiguous denial filed under %q (recordingSessionID %q), want task-1, today's ActiveSession()", got, def)
 	}
 }

@@ -40,7 +40,7 @@ func TestResolveOutboundSessionID_HeaderWinsOverActiveSession(t *testing.T) {
 	// A request from the OTHER concurrent session must not be filed under A.
 	clientHeaders := http.Header{session.ClaudeCodeSessionHeader: []string{sidB}}
 
-	if got := s.resolveOutboundSessionID(clientHeaders); got != sidB {
+	if got := s.resolveOutboundSessionID(clientHeaders, nil); got != sidB {
 		t.Fatalf("resolveOutboundSessionID() = %q, want %q (header must win over ActiveSession)", got, sidB)
 	}
 }
@@ -262,7 +262,7 @@ func TestResolveOutboundSessionID_RejectsControlCharacters(t *testing.T) {
 		"abc\x00def",    // NUL
 	} {
 		clientHeaders := http.Header{session.ClaudeCodeSessionHeader: []string{bad}}
-		if got := s.resolveOutboundSessionID(clientHeaders); got != session.DefaultSessionID {
+		if got := s.resolveOutboundSessionID(clientHeaders, nil); got != session.DefaultSessionID {
 			t.Errorf("resolveOutboundSessionID(%q) = %q, want %q (must refuse control characters)",
 				bad, got, session.DefaultSessionID)
 		}
@@ -281,7 +281,7 @@ func TestResolveOutboundSessionID_RejectsOverlongID(t *testing.T) {
 
 	overlong := strings.Repeat("a", session.MaxSessionIDLen+1)
 	clientHeaders := http.Header{session.ClaudeCodeSessionHeader: []string{overlong}}
-	if got := s.resolveOutboundSessionID(clientHeaders); got != session.DefaultSessionID {
+	if got := s.resolveOutboundSessionID(clientHeaders, nil); got != session.DefaultSessionID {
 		t.Fatalf("resolveOutboundSessionID(len %d) = %q, want %q",
 			len(overlong), got, session.DefaultSessionID)
 	}
@@ -304,7 +304,7 @@ func TestResolveOutboundSessionID_FallsBackWhenHeaderAbsent(t *testing.T) {
 	s := &Server{Sessions: store, SessionIDHeaders: []string{session.ClaudeCodeSessionHeader}}
 
 	clientHeaders := http.Header{}
-	if got := s.resolveOutboundSessionID(clientHeaders); got != "conv-A" {
+	if got := s.resolveOutboundSessionID(clientHeaders, nil); got != "conv-A" {
 		t.Fatalf("resolveOutboundSessionID() = %q, want %q (A2A correlation must survive)", got, "conv-A")
 	}
 
@@ -312,7 +312,7 @@ func TestResolveOutboundSessionID_FallsBackWhenHeaderAbsent(t *testing.T) {
 	empty := session.New(5*time.Minute, 100, 0)
 	defer empty.Close()
 	s2 := &Server{Sessions: empty, SessionIDHeaders: []string{session.ClaudeCodeSessionHeader}}
-	if got := s2.resolveOutboundSessionID(clientHeaders); got != session.DefaultSessionID {
+	if got := s2.resolveOutboundSessionID(clientHeaders, nil); got != session.DefaultSessionID {
 		t.Fatalf("resolveOutboundSessionID() = %q, want %q", got, session.DefaultSessionID)
 	}
 }
@@ -325,7 +325,7 @@ func TestResolveOutboundSessionID_DisabledByEmptyHeaderList(t *testing.T) {
 	s := &Server{Sessions: store, SessionIDHeaders: nil}
 
 	clientHeaders := http.Header{session.ClaudeCodeSessionHeader: []string{"some-session"}}
-	if got := s.resolveOutboundSessionID(clientHeaders); got != session.DefaultSessionID {
+	if got := s.resolveOutboundSessionID(clientHeaders, nil); got != session.DefaultSessionID {
 		t.Fatalf("resolveOutboundSessionID() = %q, want %q (header bucketing disabled)", got, session.DefaultSessionID)
 	}
 }

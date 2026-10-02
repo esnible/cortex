@@ -117,7 +117,7 @@ func (s *Server) HandleTransparentConn(clientConn net.Conn, dst string) {
 	// ActiveSession@T0 versus ActiveSession@T1. resolvePluginSessionID with nil
 	// headers is that same resolver with nothing to read a header from.
 	var sessionID string
-	if sessionID = s.resolvePluginSessionID(nil); sessionID != "" {
+	if sessionID = s.resolvePluginSessionID(nil, nil); sessionID != "" {
 		pctx.Session = s.sessionViewFor(sessionID)
 	}
 
@@ -127,7 +127,7 @@ func (s *Server) HandleTransparentConn(clientConn net.Conn, dst string) {
 	if action.Type == pipeline.Reject {
 		// Carry the identity this connection was gated under, so the denial lands
 		// in the session whose traffic it was.
-		s.recordOutboundReject(pctx, action, s.tunnelSessionID(sessionID, nil))
+		s.recordOutboundReject(pctx, action, s.tunnelSessionID(sessionID, nil, nil))
 		slog.Warn("transparent-proxy: outbound rejected by policy", "host", host)
 		return
 	}
@@ -228,9 +228,10 @@ func (s *Server) appendTunnelOpen(pctx *pipeline.Context, ev pipeline.SessionEve
 	}
 	// Without client affinity this reads ActiveSession() at recording time, as it always
 	// has, ignoring the identity the tunnel was gated under (#1187). With it, the pin set
-	// after gating wins; see handleConnect.
+	// after gating wins; see handleConnect. Process attribution pins it too, with the
+	// client process's answer.
 	var sid string
-	if s.ClientAffinity {
+	if s.ClientAffinity || s.processesOn() {
 		sid = pctx.OutboundSessionID
 	}
 	if sid == "" {
