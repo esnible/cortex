@@ -120,12 +120,20 @@ func writeCA(t *testing.T, dir string, notAfter time.Time) {
 // markLine is the start of a checklist line: its glyph, then the padded label.
 func markLine(glyph, label string) string { return fmt.Sprintf("  %s %-12s ", glyph, label) }
 
-// everyFailHasAFix walks every line of out: each ✗ line is followed by a fix: row.
+// everyFailHasAFix walks every line of out: each ✗ line is followed by a fix:
+// row, after the rows of detail an uninstall ✗ may carry under it.
 func everyFailHasAFix(t *testing.T, out string) {
 	t.Helper()
 	lines := strings.Split(out, "\n")
 	for i, l := range lines {
-		if strings.Contains(l, "✗") && (i+1 == len(lines) || !strings.HasPrefix(lines[i+1], "      fix: ")) {
+		if !strings.Contains(l, "✗") {
+			continue
+		}
+		j := i + 1
+		for j < len(lines) && strings.HasPrefix(lines[j], "      ") && !strings.HasPrefix(lines[j], "      fix: ") {
+			j++ // a detail row
+		}
+		if j == len(lines) || !strings.HasPrefix(lines[j], "      fix: ") {
 			t.Errorf("line %d, %q, is not followed by a fix: line:\n%s", i+1, l, out)
 		}
 	}

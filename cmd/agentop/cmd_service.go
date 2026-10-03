@@ -589,14 +589,14 @@ func serviceUninstall(p servicePaths, yes bool, stdout, stderr io.Writer) int {
 func removeService(p servicePaths, stderr io.Writer) bool {
 	unloadErr, unitErr, stampErr := removeServiceReport(p)
 	if unloadErr != nil {
-		fmt.Fprintf(stderr, "agentop: %v\n", unloadErr)
+		_, _ = fmt.Fprintf(stderr, "agentop: %v\n", unloadErr)
 	}
 	if unitErr != nil {
-		fmt.Fprintf(stderr, "agentop: removing %s: %v\n", p.unitFile, unitErr)
+		_, _ = fmt.Fprintf(stderr, "agentop: removing %s: %v\n", p.unitFile, unitErr)
 		return false
 	}
 	if stampErr != nil {
-		fmt.Fprintf(stderr, "agentop: could not remove %s: %v\n", p.stampFile, stampErr)
+		_, _ = fmt.Fprintf(stderr, "agentop: could not remove %s: %v\n", p.stampFile, stampErr)
 	}
 	return true
 }

@@ -119,7 +119,7 @@ func TestSetupFreshInstallEndToEnd(t *testing.T) {
 		"  ✓ routed       Claude Code → Cortex\n",
 		"  cortex v9.9.9 ready.\n", // the staged agentop's version
 		"    agentop        # watch your agent traffic live\n",
-		"  Undo any time: agentop service uninstall · agentop configure claude-code disable\n",
+		"  Undo any time: agentop uninstall\n",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output lacks %q:\n%s", want, out)

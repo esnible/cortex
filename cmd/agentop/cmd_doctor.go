@@ -25,9 +25,10 @@ const doctorUsage = `agentop doctor — check this machine's Cortex install, cha
 Usage:
   agentop doctor
 
-Runs setup's checks without applying any, then two of its own: the TLS bridge
-CA, and on macOS with Claude Code routed, whether the login keychain holds it.
-Each line is ✓ fine, ! advice, or ✗ a problem with the command that fixes it.
+Runs setup's checks without applying any, then checks of its own, such as the
+TLS bridge CA and, on macOS with Claude Code routed, whether the login keychain
+holds it. Each line is ✓ fine, ! advice, or ✗ a problem with the command that
+fixes it.
 
 Exit status: 0 nothing to fix, 1 something to fix, 2 usage.
 `
@@ -62,9 +63,16 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 		return 1
 	}
 	// Checked, and fixed, as set up: a background proxy as one, and Claude Code's
-	// routing only where Cortex routed it.
+	// routing only where Cortex routed it. A file enable's record names other than
+	// ~/.claude/settings.json, a project's, is checked on its own: setup's step
+	// writes only the default file, so its plan would read that file as unrouted,
+	// and its fix would route Claude Code globally.
 	env.opts.noService = backgroundOnly(env)
-	env.opts.claudeCode = claudeCodeRouted(env)
+	elsewhere := recordedSettings(env)
+	if elsewhere != "" && samePath(elsewhere, filepath.Join(env.home, settingsRel)) {
+		elsewhere = ""
+	}
+	env.opts.claudeCode = elsewhere == "" && claudeCodeRouted(env)
 	fix := "agentop setup"
 	if env.opts.claudeCode {
 		fix += " --claude-code" // so the re-run checks the routing too
@@ -90,7 +98,15 @@ func runDoctor(args []string, stdout, stderr io.Writer) int {
 		if doctorCheck(ui, label, p, prob, fix) {
 			failed = true
 		}
-		if _, ok := s.(serviceStep); ok && !env.opts.claudeCode {
+		if _, ok := s.(serviceStep); !ok {
+			continue
+		}
+		switch {
+		case elsewhere != "":
+			if checkRoutedElsewhere(env, ui, elsewhere, fix) {
+				failed = true
+			}
+		case !env.opts.claudeCode:
 			hint := "agentop setup --claude-code"
 			if env.opts.noService {
 				hint += " --no-service"
@@ -137,13 +153,18 @@ func doctorCheck(ui *checklist.UI, label string, p stepPlan, prob *problem, fix 
 		ui.Done(label, p.doneMsg, 0)
 		return false
 	}
+	ui.Fail(label, wouldChange(p))
+	ui.Remedy("fix: ", fix)
+	return true
+}
+
+// wouldChange is a plan with changes as doctor's ✗ reads it: what setup would do.
+func wouldChange(p stepPlan) string {
 	would := "setup would " + p.verb + " " + p.what
 	if p.where != "" {
 		would += " · " + p.where
 	}
-	ui.Fail(label, would)
-	ui.Remedy("fix: ", fix)
-	return true
+	return would
 }
 
 // claudeCodeRouted reports whether Cortex routed Claude Code: enable's state
@@ -151,12 +172,29 @@ func doctorCheck(ui *checklist.UI, label string, p stepPlan, prob *problem, fix 
 // HTTPS_PROXY is the proxy enable would write from the current config. Any managed
 // key being set is not enough: a corporate HTTPS_PROXY is the user's own, and
 // disable, with no record, would remove it. A settings file that cannot be read,
-// or a config that gives no proxy, leaves only the record to go by.
+// or a config that gives no proxy, leaves only the record to go by. It is the
+// default file's answer: doctor asks it only when the record names no other file.
 func claudeCodeRouted(env *setupEnv) bool {
-	if fileExists(filepath.Join(env.home, stateRel)) {
-		return true
+	return fileExists(filepath.Join(env.home, stateRel)) || cortexProxyIn(env, filepath.Join(env.home, settingsRel))
+}
+
+// recordedSettings is the settings file enable's record names, which --settings
+// may have made a project's: the file doctor checks and uninstall unroutes. It
+// is "" when the record names none: there is no record, it cannot be read, or the
+// path in it is relative, as enable wrote it from where it ran, so it is a guess.
+func recordedSettings(env *setupEnv) string {
+	st, err := readState(filepath.Join(env.home, stateRel))
+	if err != nil || st == nil || !filepath.IsAbs(st.Settings) {
+		return ""
 	}
-	doc, err := readSettings(filepath.Join(env.home, settingsRel))
+	return st.Settings
+}
+
+// cortexProxyIn reports whether the settings file's HTTPS_PROXY is the proxy
+// enable would write from the current config. A file that cannot be read, or a
+// config that gives no proxy, is not.
+func cortexProxyIn(env *setupEnv, settings string) bool {
+	doc, err := readSettings(settings)
 	if err != nil {
 		return false
 	}

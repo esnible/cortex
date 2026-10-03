@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -247,4 +248,100 @@ func TestDoctorFailsAProxyThatStopsAnswering(t *testing.T) {
 	if strings.Contains(out, markLine("✓", "started")) || strings.Contains(out, markLine("!", "started")) {
 		t.Errorf("a second started line beside the ✗:\n%s", out)
 	}
+}
+
+// routeProject routes Claude Code through Cortex in a project's settings file, as
+// configure claude-code enable --settings does, so enable's record names that
+// file. It returns the file.
+func routeProject(t *testing.T, sc doctorScene) string {
+	t.Helper()
+	proj := filepath.Join(sc.home, "proj", ".claude", "settings.json")
+	writeHomeFile(t, proj, "{}\n")
+	var out, errb bytes.Buffer
+	if code := claudeCodeEnable2(proj, filepath.Join(sc.home, ".cortex", "config.yaml"), filepath.Join(sc.home, stateRel), true, &out, &errb); code != 0 {
+		t.Fatalf("fixture: enable --settings exit %d: %s%s", code, out.String(), errb.String())
+	}
+	if st, err := readState(filepath.Join(sc.home, stateRel)); err != nil || st == nil || st.Settings != proj {
+		t.Fatalf("fixture: the record is %+v (%v), want one naming %s", st, err, proj)
+	}
+	return proj
+}
+
+// Enable's record can name a project's settings file, which setup's step never
+// writes. Doctor checks that file, not ~/.claude/settings.json: routed, so nothing
+// to fix, rather than a ✗ whose fix routes Claude Code globally or tells the user
+// to remove their own proxy. The global file is left as it was.
+func TestDoctorChecksTheSettingsFileTheRecordNames(t *testing.T) {
+	for _, c := range []struct{ name, global string }{
+		{"no global settings", ""},
+		{"a corporate proxy in the global settings", `{"env":{"HTTPS_PROXY":"http://corp.example.com:8080","NODE_EXTRA_CA_CERTS":"/etc/corp-ca.pem"}}`},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			sc := newDoctorScene(t)
+			sc.installed(t)
+			global := filepath.Join(sc.home, settingsRel)
+			if c.global != "" {
+				writeHomeFile(t, global, c.global)
+			}
+			routeProject(t, sc)
+			before := homeFiles(t, sc.home)
+			code, out := sc.doctor(t)
+			wantLines(t, code, 0, out, "\n"+markLine("✓", "routed")+"Claude Code → Cortex · ~/proj/.claude/settings.json\n", "\n  Nothing to fix.\n")
+			if strings.Contains(out, "✗") || strings.Contains(out, "is not routed;") {
+				t.Errorf("doctor checked the global settings, not the project's the record names:\n%s", out)
+			}
+			sameFiles(t, before, homeFiles(t, sc.home))
+			if c.global == "" && fileExists(global) {
+				t.Errorf("doctor wrote %s", global)
+			} else if c.global != "" && readFile(t, global) != c.global {
+				t.Errorf("the global settings are %q, want %q as they were", readFile(t, global), c.global)
+			}
+		})
+	}
+}
+
+// The project file the record names no longer routing is a ✗ whose fix routes
+// that file again; its CA files gone, a ✗ whose fix restarts Cortex, which
+// writes them, without --claude-code, which would route the global file.
+func TestDoctorFailsTheRecordedSettingsFileWhenItNoLongerRoutes(t *testing.T) {
+	for _, c := range []struct {
+		name, reason, fix string
+		breakIt           func(t *testing.T, sc doctorScene, proj string)
+	}{
+		{"its proxy removed", "Claude Code is not routed through Cortex in ~/proj/.claude/settings.json",
+			"agentop configure claude-code enable --settings ~/proj/.claude/settings.json",
+			func(t *testing.T, _ doctorScene, proj string) { writeHomeFile(t, proj, "{}\n") }},
+		{"its CA files gone", "Claude Code's CA files are not there: ~/.cortex/ca/ca.crt, ~/.cortex/ca/bundle.crt",
+			"agentop setup --restart",
+			func(t *testing.T, sc doctorScene, _ string) {
+				if err := os.RemoveAll(filepath.Join(sc.home, ".cortex", "ca")); err != nil {
+					t.Fatal(err)
+				}
+			}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			sc := newDoctorScene(t)
+			sc.installed(t)
+			proj := routeProject(t, sc)
+			c.breakIt(t, sc, proj)
+			code, out := sc.doctor(t)
+			wantLines(t, code, 1, out, "\n"+markLine("✗", "routed")+c.reason+"\n      fix: "+c.fix+"\n")
+			everyFailHasAFix(t, out)
+		})
+	}
+}
+
+// Off PATH with no marker, as setup --no-modify-path leaves it, the ✗ PATH line
+// has two fixes: setup, which adds the lines, and the line to add by hand, for
+// whoever chose to keep setup out of their dotfiles.
+func TestDoctorPATHFixAlsoNamesTheLineToAdd(t *testing.T) {
+	sc := newDoctorScene(t)
+	sc.installed(t, "--no-modify-path")
+	code, out := sc.doctor(t)
+	bin := filepath.Join(sc.home, ".local", "bin")
+	want := []string{"agentop setup", `or add it yourself, in ~/.zshrc:  export PATH="` + bin + `:$PATH"`}
+	if fixes := fixesUnder(out, markLine("✗", "PATH")); code != 1 || !slices.Equal(fixes, want) {
+		t.Errorf("exit %d, ✗ PATH fixes %q; want 1 and %q:\n%s", code, fixes, want, out)
+	}
+	everyFailHasAFix(t, out)
 }

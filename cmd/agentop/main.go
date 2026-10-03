@@ -40,7 +40,7 @@ var version = "dev"
 // One list rather than two: the unknown-subcommand error used to hardcode its own
 // copy, so adding a subcommand meant editing both and forgetting one left a typo
 // getting an incomplete list. A test holds the usage block to this slice.
-var dispatchableSubcommands = []string{"observe", "setup", "doctor", "service", "configure", "claude-code", "exec", "tools", "pipeline", "pricing", "cost", "experimental"}
+var dispatchableSubcommands = []string{"observe", "setup", "doctor", "uninstall", "service", "configure", "claude-code", "exec", "tools", "pipeline", "pricing", "cost", "experimental"}
 
 // unknownSubcommandMessage is the error for an unrecognised first argument.
 func unknownSubcommandMessage(name string) string {
@@ -59,6 +59,7 @@ Usage:
   agentop observe              open the traffic viewer (TUI)
   agentop setup                install or repair Cortex on this machine (--help)
   agentop doctor               check this machine's Cortex install (--help)
+  agentop uninstall            remove Cortex from this machine (--help)
   agentop service <action>     run Cortex as a service: install, uninstall,
                                status, stop, start, restart
   agentop configure <agent>    point a coding agent at Cortex: claude-code, bob,
@@ -129,6 +130,8 @@ func main() {
 			os.Exit(runSetup(os.Args[2:], os.Stdout, os.Stderr))
 		case "doctor":
 			os.Exit(runDoctor(os.Args[2:], os.Stdout, os.Stderr))
+		case "uninstall":
+			os.Exit(runUninstall(os.Args[2:], os.Stdout, os.Stderr))
 		default:
 			fmt.Fprintln(os.Stderr, unknownSubcommandMessage(os.Args[1]))
 			os.Exit(2)

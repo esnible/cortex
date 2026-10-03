@@ -261,6 +261,13 @@ func (r *Running) Fail(reason string, detail ...string) {
 	r.u.Fail(r.label, reason, detail...)
 }
 
+// Advise ends the step as one that finished but wants the user to act, drawn as
+// UI.Advise draws it.
+func (r *Running) Advise(reason string, fix ...string) {
+	r.end()
+	r.u.Advise(r.label, reason, fix...)
+}
+
 // Close stops a spinner still running and gives the cursor back. Call it on
 // every exit path, from the goroutine that drives the steps.
 func (u *UI) Close() {

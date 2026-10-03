@@ -208,3 +208,28 @@ func TestRemoveServiceReportReturnsTheUnloadFailure(t *testing.T) {
 		t.Error("fixture: the fake job is not loaded, so the unload did not fail")
 	}
 }
+
+// removeServiceReport stops at a unit it could not remove. The stamp is launch
+// state for that unit, so it stays while the unit does, and it reports no stamp
+// failure of its own.
+func TestRemoveServiceReportStopsAtAUnitItCouldNotRemove(t *testing.T) {
+	fakeSupervisor(t)
+	sc := newServiceScene(t)
+	if err := os.WriteFile(sc.p.stampFile, []byte("stamp\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// A directory with something in it, which os.Remove refuses, where the unit goes.
+	if err := os.MkdirAll(filepath.Join(sc.p.unitFile, "keep"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	_, unitErr, stampErr := removeServiceReport(sc.p)
+	if unitErr == nil {
+		t.Error("unitErr = nil, want the refused removal")
+	}
+	if stampErr != nil {
+		t.Errorf("stampErr = %v, want nil: the stamp was never tried", stampErr)
+	}
+	if _, err := os.Stat(sc.p.stampFile); err != nil {
+		t.Errorf("the stamp went with the unit still there (stat: %v)", err)
+	}
+}

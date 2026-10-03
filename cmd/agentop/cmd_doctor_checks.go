@@ -34,8 +34,14 @@ func backgroundOnly(env *setupEnv) bool {
 
 // doctorRefine adds those checks to a step's done plan: a failed one makes the
 // plan a problem, and a doubtful one gives it advice, unless it has its own. A
-// plan with changes or a problem is left as it is, as setup is its fix either way.
+// plan with changes or a problem is left as it is, as setup is its fix either way;
+// but the PATH lines setup would add get a second fix, the line to add by hand,
+// for whoever set up with --no-modify-path to keep setup out of their dotfiles.
 func doctorRefine(env *setupEnv, s step, p stepPlan, prob *problem, fix string) (stepPlan, *problem) {
+	if _, ok := s.(pathStep); ok && prob == nil && !p.done {
+		return p, &problem{reason: wouldChange(p), fix: []string{fix,
+			"or add it yourself, in " + env.tilde(env.pathProfile) + ":  " + exportLine(env.binDir)}}
+	}
 	if prob != nil || !p.done || p.hidden {
 		return p, prob
 	}
@@ -52,7 +58,7 @@ func doctorRefine(env *setupEnv, s step, p stepPlan, prob *problem, fix string) 
 	case serviceStep:
 		bad, doubt = checkServing(env)
 	case claudeCodeStep:
-		bad = checkTrustFiles(env, fix)
+		bad = checkTrustFiles(env, filepath.Join(env.home, settingsRel), fix)
 	}
 	if bad != nil {
 		return p, bad
@@ -139,11 +145,28 @@ func probe(url string) (bool, string) {
 	return resp.StatusCode/100 == 2, first
 }
 
-// checkTrustFiles fails routing whose CA variables name files that are not there:
-// Claude Code then trusts nothing it can read. Cortex writes them as it starts, so
-// the fix restarts it.
-func checkTrustFiles(env *setupEnv, fix string) *problem {
-	doc, err := readSettings(filepath.Join(env.home, settingsRel))
+// checkRoutedElsewhere checks the routing of a settings file enable's record
+// names other than ~/.claude/settings.json, which setup's step does not write:
+// routed while its HTTPS_PROXY is Cortex's, and then only if the CA files it names
+// are there. Re-routing it is enable's job, for that file.
+func checkRoutedElsewhere(env *setupEnv, ui *checklist.UI, settings, fix string) (failed bool) {
+	if !cortexProxyIn(env, settings) {
+		ui.Fail("routed", "Claude Code is not routed through Cortex in "+env.tilde(settings))
+		ui.Remedy("fix: ", "agentop configure claude-code enable --settings "+env.shellPath(settings))
+		return true
+	}
+	if prob := checkTrustFiles(env, settings, fix); prob != nil {
+		return doctorCheck(ui, "routed", stepPlan{}, prob, fix)
+	}
+	ui.Done("routed", "Claude Code → Cortex · "+env.tilde(settings), 0)
+	return false
+}
+
+// checkTrustFiles fails routing whose CA variables, in settings, name files that
+// are not there: Claude Code then trusts nothing it can read. Cortex writes them
+// as it starts, so the fix restarts it.
+func checkTrustFiles(env *setupEnv, settings, fix string) *problem {
+	doc, err := readSettings(settings)
 	if err != nil {
 		return nil
 	}

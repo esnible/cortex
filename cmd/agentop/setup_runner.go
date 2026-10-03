@@ -93,6 +93,16 @@ func (e *setupEnv) tilde(p string) string {
 	return filepath.Join("~", rel)
 }
 
+// shellPath is p as a fix line's command takes it: ~/… when the rest needs no
+// quoting, so the shell expands the ~; else the whole path, quoted.
+func (e *setupEnv) shellPath(p string) string {
+	t := e.tilde(p)
+	if rest, under := strings.CutPrefix(t, "~/"); (under && shellQuote(rest) == rest) || shellQuote(t) == t {
+		return t
+	}
+	return shellQuote(p)
+}
+
 // tildeText is s with each path under HOME shown as ~/…, for the lines setup
 // passes on from elsewhere: a log, or service install's own messages. HOME counts
 // only as a whole path, so /Users/al does not shorten /Users/alice, nor the
