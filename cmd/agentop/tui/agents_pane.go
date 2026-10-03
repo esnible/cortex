@@ -5,10 +5,10 @@ import (
 	"slices"
 	"time"
 
-	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/rossoctl/cortex/cmd/agentop/money"
+	"github.com/rossoctl/cortex/cmd/agentop/tui/table"
 	"github.com/rossoctl/cortex/core/cost/usage"
 )
 

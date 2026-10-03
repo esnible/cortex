@@ -3,9 +3,8 @@ package tui
 import (
 	"strings"
 
-	"github.com/charmbracelet/bubbles/table"
-
 	"github.com/rossoctl/cortex/cmd/agentop/apiclient"
+	"github.com/rossoctl/cortex/cmd/agentop/tui/table"
 )
 
 // catalogColumns is the full-width column set, fitted to the terminal by layout(). 110

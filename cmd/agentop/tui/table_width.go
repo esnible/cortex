@@ -3,7 +3,7 @@ package tui
 import (
 	"strings"
 
-	"github.com/charmbracelet/bubbles/table"
+	"github.com/rossoctl/cortex/cmd/agentop/tui/table"
 )
 
 // minColumnWidth is the floor a column will not shrink below: enough for a character and the

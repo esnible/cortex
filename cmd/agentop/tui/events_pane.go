@@ -7,10 +7,10 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/table"
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/rossoctl/cortex/cmd/agentop/money"
+	"github.com/rossoctl/cortex/cmd/agentop/tui/table"
 	"github.com/rossoctl/cortex/core/pipeline"
 )
 
@@ -106,10 +106,7 @@ func (m *model) rebuildEventsTable() {
 		if h < 3 {
 			h = 3
 		}
-		// Through setTableHeight, which reconciles the scroll offset when the height
-		// really changed — the restore at the bottom of this function no longer does
-		// that for us, because not scrolling is now its whole point.
-		setTableHeight(&m.eventsTbl, h)
+		m.eventsTbl.SetHeight(h)
 	}
 
 	prevRow := m.eventsTbl.Cursor()

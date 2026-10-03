@@ -2,8 +2,9 @@
 package tui
 
 import (
-	"github.com/charmbracelet/bubbles/table"
 	"github.com/charmbracelet/lipgloss"
+
+	"github.com/rossoctl/cortex/cmd/agentop/tui/table"
 )
 
 // Palette keeps all colors in one place so recoloring the TUI is a single

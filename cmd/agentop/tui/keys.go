@@ -4,11 +4,11 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/rossoctl/cortex/cmd/agentop/apiclient"
 	"github.com/rossoctl/cortex/cmd/agentop/edit"
+	"github.com/rossoctl/cortex/cmd/agentop/tui/table"
 )
 
 // catalogPlugins extracts the plugin slice from a (possibly nil)
@@ -921,9 +921,8 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 		prev := m.pipelineTbl.Cursor()
 		var cmd tea.Cmd
 		m.pipelineTbl, cmd = m.pipelineTbl.Update(msg)
-		// Skip over the divider row when navigating. One more step in the direction
-		// of travel, as a relative move so the offset stays reconciled — see
-		// setCursorVisible for why SetCursor is not used for cursor placement.
+		// Skip over the divider row when navigating: one more step in the direction
+		// of travel.
 		if isDividerRow(m.pipelineTbl.Rows(), m.pipelineTbl.Cursor()) {
 			if m.pipelineTbl.Cursor() > prev {
 				m.pipelineTbl.MoveDown(1)
@@ -981,11 +980,8 @@ func (m *model) refreshActivePane() {
 	}
 }
 
-// goTop and goBottom place the cursor through setCursorVisible, not SetCursor: a
-// jump to the last row is exactly the case where SetCursor leaves the highlight one
-// line below the rendered window, so `G` on any list longer than the screen used to
-// scroll to the bottom with nothing highlighted. The empty-table guards live in
-// setCursorVisible now, and it clamps, so goBottom does not need the row count.
+// goTop and goBottom place the cursor through setCursorVisible, which carries the
+// empty-table guard and clamps, so goBottom does not need the row count.
 func (m *model) goTop() {
 	switch m.pane {
 	case paneCatalog:
@@ -1359,10 +1355,7 @@ func (m *model) layout() {
 	m.catalogTbl.SetColumns(fitTableColumns(catalogColumns(), m.width))
 	m.rebuildAgentsTable()
 
-	// Through setTableHeight, not SetHeight: a height change re-windows the rows
-	// while the viewport keeps the offset it had for the old height, and these
-	// tables are not rebuilt from here, so nothing else would reconcile it.
-	setTableHeight(&m.sessionsTbl, bodyH)
+	m.sessionsTbl.SetHeight(bodyH)
 	m.bodyHeight = bodyH
 	// AFTER the height, so the cursor-visibility maths inside it uses the new window. This is
 	// what fits the sessions header to the new width, rows included — which is also what
@@ -1374,21 +1367,21 @@ func (m *model) layout() {
 	m.rebuildSessionsTable()
 	// Picker tables share the same body area as the session tables so the
 	// terminal real estate stays constant as the user navigates panes.
-	setTableHeight(&m.namespacesTbl, bodyH)
-	setTableHeight(&m.podsTbl, bodyH)
+	m.namespacesTbl.SetHeight(bodyH)
+	m.podsTbl.SetHeight(bodyH)
 	// The events table's height depends on whether the IDENTITY banner
 	// is rendered for the selected session. rebuildEventsTable() applies
 	// the banner-aware adjustment; call it so the size is correct after
 	// a window resize too.
 	m.rebuildEventsTable()
-	setTableHeight(&m.pipelineTbl, bodyH)
+	m.pipelineTbl.SetHeight(bodyH)
 	// The catalog table had no height set anywhere: it kept bubbles' table.New
 	// default of 20 rows for the life of the process, so on a terminal shorter than
 	// that the pane rendered past the bottom (scrolling the title away) and on a
 	// taller one it left the remaining rows unused. TestLayout_EveryPaneFitsTheTerminal
 	// covered this pane but never populated m.catalog, so it only ever measured the
 	// "loading catalog…" line.
-	setTableHeight(&m.catalogTbl, bodyH)
+	m.catalogTbl.SetHeight(bodyH)
 	// The agents table had the catalog's bug, whose comment above is this one's history: nothing
 	// sized it anywhere, so it kept bubbles' table.New default for the life of the process and
 	// rendered past the bottom of any shorter terminal. The catalog's blind spot was an empty
@@ -1396,7 +1389,7 @@ func (m *model) layout() {
 	// TestLayout_EveryPaneFitsTheTerminal enumerates the panes it measures in a HAND-WRITTEN
 	// map, and paneAgents was simply not in it — so no fixture could have helped, and adding a
 	// pane means adding it to that map too.
-	setTableHeight(&m.agentsTbl, bodyH)
+	m.agentsTbl.SetHeight(bodyH)
 	m.detailVp.Width = m.width
 	m.detailVp.Height = bodyH
 	// Re-clamp the scroll offset to the new height, for the PLUGIN detail pane:
