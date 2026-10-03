@@ -685,8 +685,7 @@ func TestUninstallPurgeStillRestoresClaudeCode(t *testing.T) {
 	}
 }
 
-// --purge deletes ~/.cortex only when no removal before it failed: a failed one's
-// fix, and the re-run that finishes it, read the record, config and CA there.
+// --purge deletes ~/.cortex only when no removal before it failed.
 // Something left without a failure, PATH lines the user edited, does not stop it.
 func TestUninstallPurgeKeepsCortexDirAfterAFailure(t *testing.T) {
 	const keptRow, leftLine = "kept ~/.cortex, as a removal above failed\n",

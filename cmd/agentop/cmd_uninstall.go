@@ -921,7 +921,7 @@ func planPurge(env *setupEnv) (removal, bool) {
 		label:        "purged",
 		item:         checklist.Item{Verb: "delete", What: dir, Where: "config, CA, logs and usage history"},
 		fix:          manual("rm -rf " + env.shellPath(env.cortexDir)),
-		unlessFailed: true, // a failed removal's fix, and a re-run, read what it holds
+		unlessFailed: true,
 		run: func(*checklist.Running) (string, []string, error) {
 			if err := os.RemoveAll(env.cortexDir); err != nil {
 				return "", []string{dir}, err
