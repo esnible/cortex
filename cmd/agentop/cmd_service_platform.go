@@ -280,7 +280,11 @@ func lingerEnabled(uid string) bool {
 func unloadService(goos string, p servicePaths) error {
 	if goos == "darwin" {
 		uid := strconv.Itoa(os.Getuid())
-		if out, err := exec.Command("launchctl", "bootout", "gui/"+uid+"/"+launchdLabel).CombinedOutput(); err != nil {
+		// "No such process" is a label already out of the domain — what `service stop`
+		// leaves, and the state this wants — so, as in loadService and controlService,
+		// it is not an error. Reported, it read as a failed uninstall (#1255).
+		out, err := exec.Command("launchctl", "bootout", "gui/"+uid+"/"+launchdLabel).CombinedOutput()
+		if err != nil && !strings.Contains(string(out), "No such process") {
 			return fmt.Errorf("launchctl bootout: %v: %s", err, strings.TrimSpace(string(out)))
 		}
 		return nil

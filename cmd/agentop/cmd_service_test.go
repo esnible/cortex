@@ -32,6 +32,30 @@ func servicePathsFixture(t *testing.T) servicePaths {
 	}
 }
 
+// TestUnloadService_Darwin: a label that is already gone is the state an unload wants,
+// so it is not an error. `agentop service stop` boots the label out, and the uninstall
+// that followed printed launchctl's "No such process" over a removal that had worked
+// (#1255). Passing "darwin" makes this run on any host: only launchctl is stubbed.
+func TestUnloadService_Darwin(t *testing.T) {
+	t.Run("already booted out: nil", func(t *testing.T) {
+		p := servicePathsFixture(t)
+		fakeLaunchctl(t, "#!/bin/sh\necho 'Boot-out failed: 3: No such process' >&2\nexit 3\n")
+		if err := unloadService("darwin", p); err != nil {
+			t.Errorf("err = %v, want nil — nothing loaded is what an unload is for", err)
+		}
+	})
+
+	t.Run("any other bootout failure is reported", func(t *testing.T) {
+		p := servicePathsFixture(t)
+		fakeLaunchctl(t, "#!/bin/sh\necho 'Boot-out failed: 1: Operation not permitted' >&2\nexit 1\n")
+		err := unloadService("darwin", p)
+		if err == nil || !strings.Contains(err.Error(), "launchctl bootout") ||
+			!strings.Contains(err.Error(), "Operation not permitted") {
+			t.Errorf("err = %v, want it to name launchctl bootout and the underlying reason", err)
+		}
+	})
+}
+
 // TestRenderUnit_BothPlatforms exercises the launchd and systemd renderings from
 // either host. Keying off runtime.GOOS meant the systemd unit was written on a Mac
 // and never checked until a Linux user hit it.

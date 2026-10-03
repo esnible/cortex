@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -330,6 +331,27 @@ func TestCharacterize_ServiceUninstall_Declined(t *testing.T) {
 			"Apply? [y/N] Not changed.\n", "")
 	wantFile(t, sc.p.unitFile, true, "after a declined uninstall")
 	wantFile(t, loaded, true, "after a declined uninstall (the job must stay loaded)")
+}
+
+// Stop, then uninstall: the order someone removing Cortex reaches for. stop has already
+// booted the job out, so the uninstall's own bootout finds nothing — the state it wants,
+// so nothing to report. It used to print launchctl's "No such process" over a removal
+// that had worked (#1255). Only darwin can show it: systemctl's disable --now succeeds
+// on a unit that is already disabled, so linux passed this before the fix too.
+func TestCharacterize_ServiceUninstall_AfterStop(t *testing.T) {
+	loaded := fakeSupervisor(t)
+	sc := newServiceScene(t)
+	if r := sc.install(t, true, false); r.code != 0 {
+		t.Fatalf("setup install failed: %+v", r)
+	}
+	if err := controlService(runtime.GOOS, "stop", sc.p, io.Discard); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	wantFile(t, loaded, false, "after stop (the job is booted out)")
+	if r := sc.uninstall(t, true); r.code != 0 || r.errOut != "" {
+		t.Errorf("uninstall after stop: exit = %d, stderr = %q; want 0 and nothing on stderr", r.code, r.errOut)
+	}
+	wantFile(t, sc.p.unitFile, false, "after uninstall")
 }
 
 // wantAcceptStdout and wantAcceptStderr are captured the same way as wantFreshStdout
