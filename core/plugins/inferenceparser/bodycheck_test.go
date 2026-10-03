@@ -9,8 +9,9 @@ import (
 
 // A path that ends like an inference endpoint is not enough: the body has to carry what an
 // inference request cannot do without. Every case here left an extension, marked as an
-// action, before the check existed — except the three non-object bodies, which never
-// decoded, and stay here to pin that.
+// action, before the check existed, JSON null included: it decodes into an empty request
+// with no error. The exceptions are the bodies that never decoded — `{"messages":{}}`,
+// `[]` and `"hi"`, in both dialects — which stay here to pin that.
 func TestInferenceParser_BodyWithoutMessagesIsNotInference(t *testing.T) {
 	for _, tc := range []struct{ name, path, body string }{
 		{"openai empty object", "/v1/chat/completions", `{}`},
@@ -23,8 +24,11 @@ func TestInferenceParser_BodyWithoutMessagesIsNotInference(t *testing.T) {
 		{"openai json string", "/v1/chat/completions", `"hi"`},
 		{"anthropic empty object", "/v1/messages", `{}`},
 		{"anthropic model only", "/v1/messages", `{"model":"claude-sonnet-4-6","max_tokens":64}`},
+		{"anthropic messages not an array", "/v1/messages", `{"model":"claude-sonnet-4-6","messages":{}}`},
 		{"anthropic prompt is not enough", "/v1/messages", `{"model":"claude-sonnet-4-6","prompt":"hi"}`},
 		{"anthropic json null", "/v1/messages", `null`},
+		{"anthropic json array", "/v1/messages", `[]`},
+		{"anthropic json string", "/v1/messages", `"hi"`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pctx := &pipeline.Context{Path: tc.path, Body: []byte(tc.body)}

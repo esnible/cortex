@@ -37,6 +37,7 @@ func TestDialectFor(t *testing.T) {
 		{"/v1/responses", dialectNone},
 		{"/inference/v1/model/info", dialectNone},
 		{"/v1/autocompletions", dialectNone},
+		{"/foov1/messages", dialectNone},                 // the segment boundary, for the suffix checked first
 		{"/inference/v1/chat/completions/", dialectNone}, // trailing slash: not trimmed
 		{"", dialectNone},
 		{"/", dialectNone},
@@ -79,7 +80,8 @@ func TestInferenceParser_PrefixedOpenAIPath_StreamedEndToEnd(t *testing.T) {
 }
 
 // Azure names the deployment in the path and sends no model. The request is still
-// inference, with an empty model, and its response still yields tokens.
+// inference, with an empty model, and its response still yields tokens and a finish
+// reason.
 func TestInferenceParser_AzureDeploymentPath_NoModel(t *testing.T) {
 	p := NewInferenceParser()
 	pctx := &pipeline.Context{
@@ -99,6 +101,9 @@ func TestInferenceParser_AzureDeploymentPath_NoModel(t *testing.T) {
 	p.OnResponseFrame(context.Background(), pctx, body, true)
 	if ext.Completion != "pong" || ext.PromptTokens != 9 || ext.CompletionTokens != 2 {
 		t.Errorf("Completion = %q, tokens = %d/%d; want pong, 9/2", ext.Completion, ext.PromptTokens, ext.CompletionTokens)
+	}
+	if ext.FinishReason != "stop" {
+		t.Errorf("FinishReason = %q, want stop", ext.FinishReason)
 	}
 }
 

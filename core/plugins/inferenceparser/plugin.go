@@ -122,10 +122,12 @@ func parseOpenAIRequest(body []byte) *pipeline.InferenceExtension {
 	}
 	// THE PATH SAID OPENAI; THE BODY HAS TO AGREE. dialectFor matches how a path ends, which
 	// reaches every provider's prefix and also any endpoint that merely ends the same way,
-	// and every extension built here is read downstream as an agent's LLM call. So one is
-	// built only for a body carrying what such a call cannot do without: a messages array,
-	// or a legacy completions prompt. A model is not required — Azure names the deployment
-	// in the path and sends none.
+	// and every extension built here is read downstream as an agent's LLM call. It does more
+	// than label the request: it exempts it from IBAC's judge unless judge_inference is on,
+	// even under unclassified_policy: judge, and from settle's cap on an implausible gateway
+	// cost (implausibleUnparsedCost). So one is built only for a body carrying what such a
+	// call cannot do without: a messages array, or a legacy completions prompt. A model is
+	// not required — Azure names the deployment in the path and sends none.
 	if req.Messages == nil && !jsonPresent(req.Prompt) {
 		return nil
 	}

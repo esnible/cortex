@@ -1,7 +1,7 @@
 # Inference parser: known dialects at any path
 
 **Date:** 2026-10-02
-**Status:** design approved, spec under review
+**Status:** implemented
 
 ## Goal
 
@@ -102,13 +102,38 @@ one; requiring it would reject a request the rule exists to accept.
 
 ## Effects
 
-- **More traffic carries an inference extension.** Requests that were a bare method and
-  path row now carry model, messages and tokens, marked as an action. IBAC judges
-  inference only with `judge_inference` on, which is off by default. OPA policies that
-  read `input.inference` see it.
+Everything keyed on `pctx.Extensions.Inference != nil` now sees the newly parsed traffic —
+OpenRouter, Groq, Azure, the `/anthropic/v1/messages` gateways — as inference. Each such
+request used to be a bare method and path row.
+
+- **IBAC.** Under `unclassified_policy: judge`, the IBAC demo's setting
+  (`demos/ibac/k8s/ibac-patch.yaml`), such a request was unclassified and judged. It is now
+  inference and skipped as `skip/inference_bypass` unless `judge_inference: true`
+  (`core/plugins/ibac/plugin.go`). With `judge_inference: true` it is judged even under the
+  default `passthrough`, which let it through before.
+- **The implausible-cost cap.** `implausibleUnparsedCost` (`core/cost/settle/settle.go`)
+  refuses an implausible gateway-header cost only on a response with no extension, so it no
+  longer applies on these paths. A header there is bounded only by `pricing.MaxCostMicros`,
+  as on any parsed path.
+- **tool-prune** prunes the requests its `paths` match, where it skipped them with
+  `no_inference_extension`.
+- **cpex** hands its policies the request messages one part each and can write a redaction
+  back into them. Before, the body crossed as one text part and a redaction failed closed.
+- **sparc**, in `inference` enforcement, gates their tool calls.
+- **session-budget** counts their calls and tokens.
+- **`/v1/usage`** names a request with a model and no rate in `unpricedBy`. Traffic with no
+  model is left out, as before, so an Azure call still is.
+- **lineage** labels their spans `inference` rather than `http`, and names them by model
+  where the body sends one.
+- **OPA** policies that read `input.inference` see them.
 - **Spend figures rise where a rate applies.** A Claude model reached through OpenRouter,
   for example, is now priced at the bundled Anthropic rates where before it cost nothing
   on the record.
+
+None of this is a new attacker capability. An agent picks its own URLs, so
+`/v1/chat/completions` on any host already got both the IBAC and the cost-cap exemption, and
+`"messages":[]` passes the body check. Nothing here looks at the host; whether a host's cost
+header should be believed at all is rossoctl/cortex#1027.
 
 ## Alternatives considered
 

@@ -66,8 +66,9 @@ func (m *anthropicReqMessage) UnmarshalJSON(data []byte) error {
 }
 
 // parseAnthropicRequest builds an InferenceExtension from an Anthropic Messages
-// request body. Returns nil for an empty or non-JSON body (caller treats nil as
-// "not an inference request we can parse" and continues).
+// request body. Returns nil for an empty or non-JSON body, or one without a
+// messages array (caller treats nil as "not an inference request we can parse"
+// and continues).
 func parseAnthropicRequest(body []byte) *pipeline.InferenceExtension {
 	if len(body) == 0 {
 		return nil

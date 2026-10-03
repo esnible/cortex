@@ -485,12 +485,13 @@ func TestInferenceParser_AnthropicMessages_RequestContentBytes(t *testing.T) {
 //
 // Two distinct failure modes are covered, both previously silent:
 //
-//   - OnRequest's exact-match switch fell to default, leaving
-//     Extensions.Inference nil so the whole exchange went unrecorded;
-//   - had dispatch matched but the four dialect-selection sites not been
-//     normalised, an Anthropic stream would have been folded by the OpenAI
-//     handler, which does not understand message_delta and would report zero
-//     tokens rather than fail.
+//   - OnRequest compared the whole path, query and all, against a list of
+//     endpoints, so it matched none and left Extensions.Inference nil: the
+//     whole exchange went unrecorded;
+//   - had the request matched but the five response-side dialect-selection
+//     sites not been normalised, an Anthropic stream would have been folded by
+//     the OpenAI handler, which does not understand message_delta and would
+//     report zero tokens rather than fail.
 //
 // Asserting the token counts therefore checks the routing, not just the match.
 func TestInferenceParser_AnthropicMessages_QueryStringPath(t *testing.T) {

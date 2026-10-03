@@ -228,7 +228,7 @@ OpenCode's Go plan:
 Cortex picks the dialect from how the path ends, not from the provider: a path ending in
 `/completions` is read as OpenAI and one ending in `/v1/messages` as Anthropic, under any
 prefix. A provider OpenCode is pointed at that speaks either one is parsed the same way:
-Anthropic's own API, LiteLLM, OpenRouter, Groq, Azure OpenAI. The body must also carry a
+Anthropic's own API, LiteLLM, OpenRouter, Groq. The body must also carry a
 `messages` array, or a `prompt` for legacy completions. Zen's `/zen/v1/responses` (its GPT
 and Grok models) and `/zen/v1/models/<id>` (its Gemini models) are other dialects, and are
 recorded with their method and path but not parsed.
