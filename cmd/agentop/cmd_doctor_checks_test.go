@@ -1,0 +1,250 @@
+package main
+
+import (
+	"bytes"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/rossoctl/cortex/cmd/agentop/checklist"
+)
+
+// notRoutedLine is the dim line doctor prints in place of the routed check when
+// Cortex has not routed Claude Code.
+const notRoutedLine = "  · routed       Claude Code is not routed; agentop setup --claude-code routes it\n"
+
+// stubsOnlyPath leaves PATH with installStub's dirs alone: no system dir, so
+// nothing of this machine's, python3 included, is found.
+func stubsOnlyPath(t *testing.T) {
+	t.Helper()
+	var keep []string
+	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
+		if strings.HasPrefix(dir, os.TempDir()) {
+			keep = append(keep, dir)
+		}
+	}
+	t.Setenv("PATH", strings.Join(keep, string(os.PathListSeparator)))
+}
+
+// wantLines checks that out holds each of want, and that doctor exited code.
+func wantLines(t *testing.T, code, wantCode int, out string, want ...string) {
+	t.Helper()
+	if code != wantCode {
+		t.Errorf("exit %d, want %d:\n%s", code, wantCode, out)
+	}
+	for _, w := range want {
+		if !strings.Contains(out, w) {
+			t.Errorf("output lacks %q:\n%s", w, out)
+		}
+	}
+}
+
+// Not routed is a dim line where the routed check would be, after started.
+func TestDoctorSaysWhenClaudeCodeIsNotRouted(t *testing.T) {
+	sc := newDoctorScene(t)
+	sc.installed(t)
+	code, out := sc.doctor(t)
+	wantLines(t, code, 0, out, "\n"+markLine("✓", "started")+supervisorName(runtimeGOOS())+" · healthy\n"+notRoutedLine)
+}
+
+func TestDoctorVersionsMustAgree(t *testing.T) {
+	for _, c := range []struct{ name, cortex, reason string }{
+		{"another version", "#!/bin/sh\necho cortex v9.9.7\n", "agentop is v9.9.9, cortex is v9.9.7"},
+		{"no version", "#!/bin/sh\nexit 3\n", "cortex did not report its version"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			sc := newDoctorScene(t)
+			sc.installed(t)
+			writeExe(t, filepath.Join(sc.home, ".local", "bin", "cortex"), c.cortex)
+			code, out := sc.doctor(t)
+			wantLines(t, code, 1, out, markLine("✗", "installed")+c.reason+"\n      fix: "+installerOneLiner+"\n")
+		})
+	}
+}
+
+func TestDoctorNamesTheAgentopThatWinsOnPath(t *testing.T) {
+	t.Run("another agentop first", func(t *testing.T) {
+		sc := newDoctorScene(t)
+		sc.installed(t)
+		installStub(t, "agentop", "#!/bin/sh\necho agentop v1.2.3\n")
+		other, _ := filepath.Abs(filepath.Dir(lookPathOrFatal(t, "agentop")))
+		code, out := sc.doctor(t)
+		wantLines(t, code, 0, out, markLine("!", "installed")+"the agentop on PATH is "+filepath.Join(other, "agentop")+
+			", not ~/.local/bin/agentop\n      fix: put ~/.local/bin ahead of "+other+" on PATH, or remove that agentop\n")
+	})
+	t.Run("this agentop", func(t *testing.T) {
+		sc := newDoctorScene(t)
+		sc.installed(t)
+		t.Setenv("PATH", filepath.Join(sc.home, ".local", "bin")+string(os.PathListSeparator)+os.Getenv("PATH"))
+		code, out := sc.doctor(t)
+		wantLines(t, code, 0, out, "\n"+markLine("✓", "installed")+"agentop, cortex v9.9.9 · ~/.local/bin\n",
+			"\n"+markLine("✓", "PATH")+"~/.local/bin\n")
+	})
+}
+
+func lookPathOrFatal(t *testing.T, name string) string {
+	t.Helper()
+	for _, dir := range filepath.SplitList(os.Getenv("PATH")) {
+		if p := filepath.Join(dir, name); isExecutable(p) {
+			return p
+		}
+	}
+	t.Fatalf("no %s on PATH", name)
+	return ""
+}
+
+// A bridge that is off is a setting, not a failure: advice naming the key.
+func TestDoctorAdvisesWhenTheBridgeIsOff(t *testing.T) {
+	sc := newDoctorScene(t)
+	sc.installed(t)
+	cfg := filepath.Join(sc.home, ".cortex", "config.yaml")
+	b, err := os.ReadFile(cfg)
+	if err != nil || !strings.Contains(string(b), "\n  mode: enabled\n") {
+		t.Fatalf("the scene's config has no enabled bridge (%v):\n%s", err, b)
+	}
+	if err := os.WriteFile(cfg, []byte(strings.Replace(string(b), "\n  mode: enabled\n", "\n  mode: disabled\n", 1)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	code, out := sc.doctor(t)
+	wantLines(t, code, 0, out, "\n"+markLine("!", "config")+"the TLS bridge is off, so Cortex reads no HTTPS traffic\n"+
+		"      fix: set tls_bridge.mode: enabled, with a ca_dir, in ~/.cortex/config.yaml; then agentop service restart\n")
+	if strings.Contains(out, " CA ") {
+		t.Errorf("a CA line for a bridge that is off:\n%s", out)
+	}
+}
+
+// Up is not ready: /readyz names the plugin still waiting on something.
+func TestDoctorAdvisesWhenPluginsAreNotReady(t *testing.T) {
+	sc := newDoctorScene(t)
+	sc.installed(t)
+	sc.notReady.Store(true)
+	code, out := sc.doctor(t)
+	wantLines(t, code, 0, out, "\n"+markLine("!", "started")+"plugins not ready — outbound plugin not ready: tokenexchange\n"+
+		"      fix: see ~/.cortex/proxy.log for what it waits on\n")
+}
+
+// Routed values that name CA files no longer there trust nothing Claude Code can
+// read; a restart writes them again.
+func TestDoctorFailsRoutingWhoseCAFilesAreGone(t *testing.T) {
+	sc := newDoctorScene(t)
+	sc.installed(t, "--claude-code")
+	if err := os.RemoveAll(filepath.Join(sc.home, ".cortex", "ca")); err != nil {
+		t.Fatal(err)
+	}
+	code, out := sc.doctor(t)
+	wantLines(t, code, 1, out, "\n"+markLine("✗", "routed")+"Claude Code's CA files are not there: ~/.cortex/ca/ca.crt, ~/.cortex/ca/bundle.crt\n"+
+		"      fix: agentop setup --claude-code --restart\n")
+}
+
+func TestDoctorAdvisesWhenPython3IsMissing(t *testing.T) {
+	const advice = "\n  ! python3      cortex-session-dump needs python3, which is not on PATH\n"
+	for _, c := range []struct {
+		name          string
+		dump, python3 bool
+		want          bool
+	}{
+		{"session dump, no python3", true, false, true},
+		{"session dump and python3", true, true, false},
+		{"no session dump", false, false, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			sc := newDoctorScene(t)
+			sc.installed(t)
+			if c.dump {
+				writeExe(t, filepath.Join(sc.home, ".local", "bin", "cortex-session-dump"), "#!/usr/bin/env python3\n")
+			}
+			stubsOnlyPath(t)
+			if c.python3 {
+				installStub(t, "python3", "#!/bin/sh\nexit 0\n")
+			}
+			code, out := sc.doctor(t)
+			if code != 0 || strings.Contains(out, advice) != c.want {
+				t.Errorf("exit %d, want 0 and the python3 advice %v:\n%s", code, c.want, out)
+			}
+		})
+	}
+}
+
+// A healthy --no-service install is checked as one, and its fixes keep it one:
+// setup without --no-service would put a service in its place.
+func TestDoctorChecksABackgroundProxyAsOne(t *testing.T) {
+	sc := newDoctorScene(t)
+	var pid int
+	stopProcessOnCleanup(t, &pid)
+	sc.installed(t, "--no-service")
+	pid = readPIDFile(filepath.Join(sc.home, ".cortex", "proxy.pid"))
+	if pid == 0 {
+		t.Fatal("setup --no-service left no proxy.pid")
+	}
+	// ps names the stub's sleep as cortex, as it names the real background proxy.
+	installStub(t, "ps", "#!/bin/sh\ncase \"$*\" in\n  *comm=*) echo cortex ;;\n  *) exec /bin/ps \"$@\" ;;\nesac\n")
+	code, out := sc.doctor(t)
+	wantLines(t, code, 0, out, "\n"+markLine("✓", "started")+"in the background (no supervisor)\n",
+		"Claude Code is not routed; agentop setup --claude-code --no-service routes it\n")
+	if strings.Contains(out, "✗") {
+		t.Errorf("a ✗ for a healthy background proxy:\n%s", out)
+	}
+
+	rc := filepath.Join(sc.home, ".zshrc")
+	if err := os.WriteFile(rc, nil, 0o644); err != nil { //nolint:gosec
+		t.Fatal(err)
+	}
+	code, out = sc.doctor(t)
+	if fix, _ := fixAfter(out, markLine("✗", "PATH")); code != 1 || fix != "agentop setup --no-service" {
+		t.Errorf("exit %d and the PATH fix %q, want 1 and agentop setup --no-service:\n%s", code, fix, out)
+	}
+}
+
+// A background proxy has no service to restart, and setup without --no-service
+// would put one in its place: the CA's fixes keep it unsupervised.
+func TestDoctorCAFixesKeepABackgroundProxy(t *testing.T) {
+	plainOutput(t)
+	now := time.Date(2026, 11, 3, 9, 0, 0, 0, time.UTC)
+	for _, c := range []struct {
+		name string
+		ca   func(t *testing.T, dir string)
+		want string
+	}{
+		{"expiring", func(t *testing.T, dir string) { writeCA(t, dir, now.Add(12*24*time.Hour)) },
+			"  ! CA           ~/.cortex/ca/ca.crt expires " + now.Add(12*24*time.Hour).Local().Format(time.DateOnly) +
+				"\n      fix: agentop setup --no-service --restart\n"},
+		{"missing", func(*testing.T, string) {}, "  ✗ CA           no ca.crt in ~/.cortex/ca\n      fix: agentop setup --no-service --restart\n"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			env := newTestSetupEnv(t)
+			env.opts.noService = true
+			dir := filepath.Join(env.cortexDir, "ca")
+			writeExe(t, env.configPath(), "mode: proxy-sidecar\nlistener:\n  roles: [forward]\n  forward_proxy_addr: 127.0.0.1:47600\n"+
+				"tls_bridge:\n  mode: enabled\n  ca_dir: "+dir+"\n")
+			c.ca(t, dir)
+			var b bytes.Buffer
+			checkCA(env, checklist.New(&b, false), now)
+			if !strings.HasPrefix(b.String(), c.want) {
+				t.Errorf("got\n%q\nwant it to start\n%q", b.String(), c.want)
+			}
+		})
+	}
+}
+
+// A background proxy is done once its pid is alive, which the plan asks; doctor
+// asks /healthz too, and one that stops answering is a ✗ in place of the ✓.
+func TestDoctorFailsAProxyThatStopsAnswering(t *testing.T) {
+	sc := newDoctorScene(t)
+	var pid int
+	stopProcessOnCleanup(t, &pid)
+	sc.installed(t, "--no-service")
+	pid = readPIDFile(filepath.Join(sc.home, ".cortex", "proxy.pid"))
+	if pid == 0 {
+		t.Fatal("setup --no-service left no proxy.pid")
+	}
+	installStub(t, "ps", "#!/bin/sh\ncase \"$*\" in\n  *comm=*) echo cortex ;;\n  *) exec /bin/ps \"$@\" ;;\nesac\n")
+	sc.down.Store(true)
+	health := resolveHealthURL(filepath.Join(sc.home, ".cortex", "config.yaml"))
+	code, out := sc.doctor(t)
+	wantLines(t, code, 1, out, "\n"+markLine("✗", "started")+"not answering "+health+"\n      fix: agentop setup --no-service --restart\n")
+	if strings.Contains(out, markLine("✓", "started")) || strings.Contains(out, markLine("!", "started")) {
+		t.Errorf("a second started line beside the ✗:\n%s", out)
+	}
+}
