@@ -66,13 +66,18 @@ import (
 // via -ldflags "-X main.version=<tag>". Defaults to "dev" for local builds.
 var version = "dev"
 
-// localMode is set by --local. It suppresses listeners that only make sense with
-// iptables enforce-redirect: the demo uses cooperative HTTPS_PROXY, so nothing
+// localInstall is set when this process was started from a local install's config
+// (startedFromLocalInstall). It suppresses listeners that only make sense with
+// iptables enforce-redirect: a laptop uses cooperative HTTPS_PROXY, so nothing
 // is ever REDIRECTed to the transparent listener and opening it would just be
 // an idle port. The forward-role preset defaults transparent_proxy_addr to
 // :8082, and config can't unset it (the preset refills an empty value), so this
-// gate is the only way to keep the demo to the listeners it actually uses.
-var localMode bool
+// gate is the only way to keep a laptop to the listeners it actually uses.
+//
+// NOT --local alone, which is what it used to be: every service install runs
+// --config, so the supervised proxy bound the transparent listener on a port the
+// installer never probed, and an occupied one crash-looped it (#1254).
+var localInstall bool
 
 // localStatePath is agentop's state file for this --local install, resolved while
 // --local sets up and consumed later, once the bridge CA has been loaded, to warn
@@ -179,7 +184,7 @@ func pluginUsesSPIFFEIdentity(p config.PluginEntry) bool {
 // directory is not a decision, and a k8s image with one baked in would turn on disk writes at
 // 30-day retention. NOR --local ALONE, which sounds right and would reintroduce the regression
 // this rule replaced: --local and --config are mutually exclusive, and every service install
-// runs --config, so an installed laptop has localMode false.
+// runs --config, so an installed laptop never sees --local.
 //
 // The config's LOCATION is the one signal that is a decision rather than a side effect: somebody
 // installed this proxy into their home directory and started it from there.
@@ -227,6 +232,23 @@ func pathUnder(dir, p string) (bool, string) {
 		return false, abs
 	}
 	return true, abs
+}
+
+// startedFromLocalInstall reports whether configPath is inside ~/.cortex: a laptop install,
+// whichever flag started it. --local writes its config there and points --config at it, and
+// `agentop service install` runs --config on that same file, so this is the one signal the two
+// start paths share — the same one ledgerDefaultOn reads, and for the same reason.
+//
+// Accepted: a service installed with `agentop service install --config <elsewhere>` does not
+// count, so it still binds the redirect-only listeners — on the loopback addresses agentop's
+// migration pins.
+func startedFromLocalInstall(configPath string) bool {
+	dir, err := defaultCortexDir()
+	if err != nil {
+		return false
+	}
+	under, _ := pathUnder(dir, configPath)
+	return under
 }
 
 // ledgerDefaultOnValue is ledgerDefaultOn without the reason, for call sites that only need
@@ -313,7 +335,6 @@ func main() {
 			"use", "--local")
 	}
 	if *local || *demoDeprecated {
-		localMode = true
 		if *configPath != "" {
 			log.Fatal("--local and --config are mutually exclusive")
 		}
@@ -381,6 +402,7 @@ func main() {
 	if *configPath == "" {
 		log.Fatal("--config is required (or use --local for a built-in local config)")
 	}
+	localInstall = startedFromLocalInstall(*configPath)
 
 	// Build the SPIFFE Provider when the spiffe block is configured. The
 	// Provider drives both mTLS (via X509Source) and token-exchange's
@@ -845,10 +867,10 @@ func main() {
 				fatalf("creating transparent inbound proxy: %v", rerr)
 			}
 			rpSrv.Shared = sharedStore
-			// Skipped in --local: there is no iptables there, so nothing would ever
-			// be REDIRECTed to the listener and every request would fail closed.
-			if localMode {
-				slog.Warn("demo mode: transparent inbound listener not started (no iptables to REDIRECT to it)")
+			// Skipped for a local install: there is no iptables there, so nothing would
+			// ever be REDIRECTed to the listener and every request would fail closed.
+			if localInstall {
+				slog.Warn("local install: transparent inbound listener not started (no iptables to REDIRECT to it)")
 			} else {
 				rpHTTP, rerr := bootstrap.StartTransparentInboundServer("transparent-inbound", rpSrv, cfg.Listener.TransparentInboundAddr)
 				if rerr != nil {
@@ -926,8 +948,9 @@ func main() {
 		// forward proxy's outbound pipeline via HandleTransparentConn, so explicit
 		// HTTP_PROXY egress and iptables-REDIRECTed bypass egress are gated and
 		// tunnelled identically. Closed explicitly on shutdown (not an *http.Server).
-		// Skipped in --local: no iptables there, so nothing is ever REDIRECTed to it.
-		if !localMode {
+		// Skipped for a local install, --local or not: no iptables there, so nothing
+		// is ever REDIRECTed to it.
+		if !localInstall {
 			transparentLn = startTransparentProxy(fpSrv, cfg.Listener.TransparentProxyAddr)
 		}
 	}
