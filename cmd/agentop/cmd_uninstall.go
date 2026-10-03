@@ -30,8 +30,8 @@ them; stops and removes the service, or the background proxy; removes the PATH
 lines setup added, unless other tools in ~/.local/bin still need them; and
 removes agentop, cortex and cortex-session-dump from ~/.local/bin. ~/.cortex
 stays unless --purge. What to remove is read from disk, not from a record of
-the install. A removal that fails is reported with its fix, the rest still run,
-and the end lists what was left behind.
+the install. A removal that fails is reported with its fix and the rest still
+run, but ~/.cortex then stays; the end lists what was left behind.
 
   --yes, -y   do not ask; needed when there is no terminal
   --purge     delete ~/.cortex too: config, CA, logs and usage history
@@ -53,6 +53,7 @@ type removal struct {
 	run          func(act *checklist.Running) (detail string, left []string, err error)
 	fix          remedy // for a failure whose error carries no remedy of its own
 	dropsAgentop bool   // it removes agentop, so a fix before it cannot use agentop
+	unlessFailed bool   // skipped, and left behind, once a removal before it has failed
 	keep         *kept  // set on a row that removes nothing: it has no consent row and no run
 }
 
@@ -307,6 +308,11 @@ func applyRemovals(env *setupEnv, ui *checklist.UI, removals []removal, sigs <-c
 		}
 		if r.keep != nil {
 			ui.Already(r.label, "kept "+r.keep.what+": "+r.keep.why)
+			continue
+		}
+		if r.unlessFailed && failed {
+			ui.Advise(r.label, "kept "+r.item.What+", as a removal above failed")
+			left = append(left, r.item.What+" — once the fixes above are done: "+r.fix.byHand)
 			continue
 		}
 		act := ui.Start(r.label)
@@ -819,9 +825,10 @@ func planPurge(env *setupEnv) (removal, bool) {
 	}
 	dir := env.tilde(env.cortexDir)
 	return removal{
-		label: "purged",
-		item:  checklist.Item{Verb: "delete", What: dir, Where: "config, CA, logs and usage history"},
-		fix:   manual("rm -rf " + env.shellPath(env.cortexDir)),
+		label:        "purged",
+		item:         checklist.Item{Verb: "delete", What: dir, Where: "config, CA, logs and usage history"},
+		fix:          manual("rm -rf " + env.shellPath(env.cortexDir)),
+		unlessFailed: true, // a failed removal's fix, and a re-run, read what it holds
 		run: func(*checklist.Running) (string, []string, error) {
 			if err := os.RemoveAll(env.cortexDir); err != nil {
 				return "", []string{dir}, err

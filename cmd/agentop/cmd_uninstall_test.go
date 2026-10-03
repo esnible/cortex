@@ -673,6 +673,70 @@ func TestUninstallPurgeStillRestoresClaudeCode(t *testing.T) {
 	}
 }
 
+// --purge deletes ~/.cortex only when no removal before it failed: a failed one's
+// fix, and the re-run that finishes it, read the record, config and CA there.
+// Something left without a failure, PATH lines the user edited, does not stop it.
+func TestUninstallPurgeKeepsCortexDirAfterAFailure(t *testing.T) {
+	const keptRow, leftLine = "kept ~/.cortex, as a removal above failed\n",
+		"    ~/.cortex — once the fixes above are done: rm -rf ~/.cortex\n"
+	for _, c := range []struct {
+		name, label string
+		flags       []string
+	}{
+		{"Claude Code's unroute", "unrouted", []string{"--claude-code"}},
+		{"the service", "stopped", nil},
+		{"the PATH lines", "PATH", nil},
+		{"the binaries", "removed", nil},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			sc := newUninstallScene(t)
+			sc.setUp(t, c.flags...)
+			failRemoval(t, c.label)
+			code, out := sc.uninstall(t, "--yes", "--purge")
+			wantLines(t, code, 1, out, markLine("✗", c.label), markLine("!", "purged")+keptRow, "\n  Left behind:\n", leftLine)
+			if _, err := os.Stat(filepath.Join(sc.home, ".cortex", "config.yaml")); err != nil {
+				t.Errorf("--purge deleted ~/.cortex after a failure: %v", err)
+			}
+		})
+	}
+
+	// Claude Code's unroute fails for real: its fix restores from the record, and
+	// the settings still route to the CA, so both stay.
+	t.Run("a settings file it cannot write", func(t *testing.T) {
+		if os.Geteuid() == 0 {
+			t.Skip("running as root: a 0o500 directory is still writable")
+		}
+		sc := newUninstallScene(t)
+		settings := filepath.Join(sc.home, settingsRel)
+		writeHomeFile(t, settings, `{"env":{"`+envNoTelem+`":"1"}}`)
+		sc.setUp(t, "--claude-code")
+		writeCA(t, filepath.Join(sc.home, ".cortex", "ca"), time.Now().Add(90*24*time.Hour)) // the fake supervisor starts no Cortex to mint it
+		if err := os.Chmod(filepath.Dir(settings), 0o500); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(filepath.Dir(settings), 0o755) })
+		code, out := sc.uninstall(t, "--yes", "--purge")
+		wantLines(t, code, 1, out, markLine("✗", "unrouted"), markLine("!", "purged")+keptRow, leftLine)
+		for _, f := range []string{filepath.Join(sc.home, stateRel), filepath.Join(sc.home, ".cortex", "ca", "ca.crt")} {
+			if !fileExists(f) {
+				t.Errorf("%s went, and the fix lines need it", f)
+			}
+		}
+	})
+
+	t.Run("edited PATH lines", func(t *testing.T) {
+		sc := newUninstallScene(t)
+		sc.setUp(t)
+		rc, bin := filepath.Join(sc.home, ".zshrc"), filepath.Join(sc.home, ".local", "bin")
+		writeHomeFile(t, rc, strings.Replace(readFile(t, rc), `export PATH="`+bin+`:$PATH"`, `export PATH="`+bin+`:$HOME/go/bin:$PATH"`, 1))
+		code, out := sc.uninstall(t, "--yes", "--purge")
+		wantLines(t, code, 1, out, markLine("!", "PATH"), markLine("✓", "purged")+"~/.cortex\n")
+		if _, err := os.Lstat(filepath.Join(sc.home, ".cortex")); !os.IsNotExist(err) {
+			t.Errorf("--purge left ~/.cortex (lstat: %v)", err)
+		}
+	})
+}
+
 // The pre-rename binaries are removed with the rest when they are Cortex's own,
 // as setup's cleanup keeps one while a service or background proxy still runs it.
 // A stranger's file by the same name stays.
