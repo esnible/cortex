@@ -268,8 +268,8 @@ var knownClients = map[string]string{
 	// bob-shell IS the canonical name here, unlike claude-cli above: the product token Bob
 	// Shell sends is already its product name, so renaming it would invent a third spelling
 	// beside the binary (`bob`) and the IDE ("IBM Bob"). It arrives with its own detection
-	// work — the inference endpoint is parsed (inferenceparser's bobPath), its session header
-	// is session.BobSessionHeader, and `agentop configure bobshell` sets it up — so this is a
+	// work — inferenceparser parses its inference endpoint, its session header is
+	// session.BobSessionHeader, and `agentop configure bobshell` sets it up — so this is a
 	// supported agent rather than the speculative entry the paragraph above refuses.
 	//
 	// Earns its place in the FIRST-token map as well as the trailing scan because Bob sends

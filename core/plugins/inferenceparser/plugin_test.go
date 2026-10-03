@@ -353,14 +353,20 @@ func TestInferenceParser_VlessPath_Completions(t *testing.T) {
 	}
 }
 
+// bobInferencePath and zenChatPath are the provider paths the tests below pin.
+const (
+	bobInferencePath = "/inference/v1/chat/completions"
+	zenChatPath      = "/zen/v1/chat/completions"
+)
+
 // TestInferenceParser_BobPath covers IBM Bob, which mounts an OpenAI-dialect
-// inference API under an /inference prefix. The dispatch switch is exact-match, so
-// without the path the parser falls to the default arm and records no telemetry at
-// all — the body is never even looked at.
+// inference API under an /inference prefix. A rule that missed the prefix would send
+// the request to the default arm, which records no telemetry at all — the body is
+// never even looked at.
 func TestInferenceParser_BobPath_ChatCompletions(t *testing.T) {
 	p := NewInferenceParser()
 	pctx := &pipeline.Context{
-		Path: bobPath,
+		Path: bobInferencePath,
 		Body: []byte(`{"model":"granite-3-8b-instruct","messages":[{"role":"user","content":"hi"}],"stream":false}`),
 	}
 	action := p.OnRequest(context.Background(), pctx)
@@ -369,7 +375,7 @@ func TestInferenceParser_BobPath_ChatCompletions(t *testing.T) {
 	}
 	ext := pctx.Extensions.Inference
 	if ext == nil {
-		t.Fatalf("Extensions.Inference is nil for %s", bobPath)
+		t.Fatalf("Extensions.Inference is nil for %s", bobInferencePath)
 	}
 	if ext.Model != "granite-3-8b-instruct" {
 		t.Errorf("Model = %q, want granite-3-8b-instruct", ext.Model)
@@ -383,12 +389,12 @@ func TestInferenceParser_BobPath_ChatCompletions(t *testing.T) {
 }
 
 // TestInferenceParser_ZenPath covers OpenCode Zen (opencode.ai/zen), which mounts an
-// OpenAI-dialect inference API under a /zen prefix. Same failure mode as BobPath:
-// without the path the parser falls to the default arm and records no telemetry.
+// OpenAI-dialect inference API under a /zen prefix. Same failure mode as BobPath: a
+// rule that missed the prefix would record no telemetry.
 func TestInferenceParser_ZenPath_ChatCompletions(t *testing.T) {
 	p := NewInferenceParser()
 	pctx := &pipeline.Context{
-		Path: zenPath,
+		Path: zenChatPath,
 		Body: []byte(`{"model":"claude-sonnet-5","messages":[{"role":"user","content":"hi"}],"stream":false}`),
 	}
 	action := p.OnRequest(context.Background(), pctx)
@@ -397,7 +403,7 @@ func TestInferenceParser_ZenPath_ChatCompletions(t *testing.T) {
 	}
 	ext := pctx.Extensions.Inference
 	if ext == nil {
-		t.Fatalf("Extensions.Inference is nil for %s", zenPath)
+		t.Fatalf("Extensions.Inference is nil for %s", zenChatPath)
 	}
 	if ext.Model != "claude-sonnet-5" {
 		t.Errorf("Model = %q, want claude-sonnet-5", ext.Model)
@@ -415,12 +421,12 @@ func TestInferenceParser_ZenPath_ChatCompletions(t *testing.T) {
 func TestInferenceParser_BobPath_WithQueryString(t *testing.T) {
 	p := NewInferenceParser()
 	pctx := &pipeline.Context{
-		Path: bobPath + "?api-version=2024-02-01",
+		Path: bobInferencePath + "?api-version=2024-02-01",
 		Body: []byte(`{"model":"granite-3-8b-instruct","messages":[{"role":"user","content":"hi"}]}`),
 	}
 	p.OnRequest(context.Background(), pctx)
 	if pctx.Extensions.Inference == nil {
-		t.Fatalf("Extensions.Inference is nil for %s with a query string", bobPath)
+		t.Fatalf("Extensions.Inference is nil for %s with a query string", bobInferencePath)
 	}
 }
 
@@ -430,7 +436,7 @@ func TestInferenceParser_BobPath_WithQueryString(t *testing.T) {
 // token counts.
 func TestInferenceParser_BobPath_Response(t *testing.T) {
 	p := NewInferenceParser()
-	pctx := &pipeline.Context{Path: bobPath}
+	pctx := &pipeline.Context{Path: bobInferencePath}
 	pctx.Extensions.Inference = &pipeline.InferenceExtension{
 		Model: "granite-3-8b-instruct", IsAction: true,
 	}
@@ -452,8 +458,8 @@ func TestInferenceParser_BobPath_Response(t *testing.T) {
 }
 
 // The sibling Bob endpoints seen alongside the inference one are NOT inference and
-// must stay unmatched — an exact-match switch is what keeps /admin/v1/profile from
-// being mistaken for a chat completion.
+// must stay unmatched — matching on how the path ends is what keeps /admin/v1/profile
+// and /inference/v1/model/info from being mistaken for a chat completion.
 func TestInferenceParser_BobNonInferencePathsAreIgnored(t *testing.T) {
 	for _, path := range []string{
 		"/admin/v1/profile",
@@ -468,7 +474,7 @@ func TestInferenceParser_BobNonInferencePathsAreIgnored(t *testing.T) {
 		}
 		p.OnRequest(context.Background(), pctx)
 		if pctx.Extensions.Inference != nil {
-			t.Errorf("%s matched as inference; only %s should", path, bobPath)
+			t.Errorf("%s matched as inference; only %s should", path, bobInferencePath)
 		}
 	}
 }
