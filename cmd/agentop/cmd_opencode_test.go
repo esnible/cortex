@@ -91,6 +91,13 @@ func stubOpenCodeCLI(t *testing.T, f *openCodeCLI) string {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	writeOpenCodeCortexCfg(t, home, cortexCfg)
+	stubOpenCodeSeams(t, f)
+	return home
+}
+
+// stubOpenCodeSeams is stubOpenCodeCLI under the HOME the test already has.
+func stubOpenCodeSeams(t *testing.T, f *openCodeCLI) {
+	t.Helper()
 	if f.env == nil {
 		f.env = map[string]string{}
 	}
@@ -184,7 +191,6 @@ func stubOpenCodeCLI(t *testing.T, f *openCodeCLI) string {
 		}
 		return f.answer
 	}
-	return home
 }
 
 // writeOpenCodeCortexCfg writes body, cmd_claudecode_test.go's fixture shape, as

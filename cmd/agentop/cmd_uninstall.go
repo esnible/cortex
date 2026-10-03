@@ -25,8 +25,8 @@ const uninstallUsage = `agentop uninstall — remove Cortex from this machine, a
 Usage:
   agentop uninstall [--yes] [--purge]
 
-Unroutes Claude Code, IBM Bob and the bob shell function where Cortex routed
-them; stops and removes the service, or the background proxy; removes the PATH
+Unroutes Claude Code, OpenCode, IBM Bob and the bob shell function where Cortex
+routed them; stops and removes the service, or the background proxy; removes the PATH
 lines setup added, unless other tools in ~/.local/bin still need them; and
 removes agentop, cortex and cortex-session-dump from ~/.local/bin. ~/.cortex
 stays unless --purge. What to remove is read from disk, not from a record of
@@ -107,6 +107,10 @@ func (r removal) fixesFor(err error) []remedy {
 
 // uninstallRemovalsHook lets tests inject a failure into the real removal list.
 var uninstallRemovalsHook = func(r []removal) []removal { return r }
+
+// uninstallFindOpenCode finds the opencode CLI the OpenCode row changes OpenCode
+// with. A var so a test names a fake one, or none: no test may run the real one.
+var uninstallFindOpenCode = findOpenCode
 
 // uninstallSignals is the channel Ctrl-C and SIGTERM arrive on, and the func that
 // stops them arriving: setupSignals' seam, for uninstall's tests.
@@ -355,7 +359,7 @@ func applyRemovals(env *setupEnv, ui *checklist.UI, removals []removal, sigs <-c
 // and config, as the service paths read the config. A run uses what its plan read.
 func planUninstall(env *setupEnv, opts uninstallOptions) []removal {
 	rs := planUnrouteClaudeCode(env)
-	for _, plan := range []func(*setupEnv) (removal, bool){planUnrouteBob, planRemoveBobShell, planStopService} {
+	for _, plan := range []func(*setupEnv) (removal, bool){planUnrouteOpenCode, planUnrouteBob, planRemoveBobShell, planStopService} {
 		if r, ok := plan(env); ok {
 			rs = append(rs, r)
 		}
@@ -487,6 +491,95 @@ func someKeys(keys []string) string {
 		return strings.Join(keys[:3], ", ") + ", …"
 	}
 	return strings.Join(keys, ", ")
+}
+
+// planUnrouteOpenCode takes Cortex's values out of OpenCode's service environment,
+// as configure opencode disable does, when it holds any. It is read now, through
+// the opencode CLI, as is enable's record, which --purge deletes. With no CLI there
+// is nothing to change it with; one that cannot read it fails the row only when
+// that record says Cortex routed OpenCode. A service that runs is restarted after
+// the change, as disable restarts it, so it drops the proxy that is about to stop.
+func planUnrouteOpenCode(env *setupEnv) (removal, bool) {
+	bin, err := uninstallFindOpenCode()
+	if err != nil {
+		return removal{}, false
+	}
+	state := filepath.Join(env.home, opencodeStateRel)
+	want := map[string]string{}
+	if w, _, err := wantedFromConfig(env.configPath()); err == nil {
+		want = openCodeValues(w)
+	}
+	// The CLI is judged by Cortex's values, as runOpenCode has it judged.
+	openCodeCLIWant = want
+	defer func() { openCodeCLIWant = nil }()
+	pl, planErr := planOpenCodeDisable(bin, state, want)
+	if (planErr != nil && !fileExists(state)) || (planErr == nil && len(pl.present) == 0) {
+		return removal{}, false
+	}
+	where := "OpenCode's service environment"
+	if svc, err := probeOpenCodeService(bin); err != nil {
+		where += " · stops the service if it runs, interrupting its sessions"
+	} else if svc.Running {
+		where += " · restarts the service, interrupting its sessions"
+	}
+	cli := env.shellPath(bin)
+	return removal{
+		label: "unrouted",
+		item:  checklist.Item{Verb: "unroute", What: "OpenCode", Where: where},
+		fix:   remedy{agentop: "agentop configure opencode disable", byHand: openCodeByHand(env, cli, pl, planErr == nil, state)},
+		run: func(*checklist.Running) (string, []string, error) {
+			openCodeCLIWant = want
+			defer func() { openCodeCLIWant = nil }()
+			left := []string{"Cortex's values in OpenCode's service environment"}
+			if planErr != nil {
+				return "", left, planErr
+			}
+			svc, err := probeOpenCodeService(bin)
+			running := err == nil && svc.Running
+			var errb bytes.Buffer
+			restored, _, err := applyOpenCodeDisable(pl, state, &errb)
+			if err != nil {
+				if cause := errors.Unwrap(err); cause != nil {
+					err = cause // not disable's "run agentop configure opencode disable again": agentop goes
+				}
+				return "", left, err
+			}
+			detail := "OpenCode's service environment no longer routes it through Cortex"
+			if len(restored) > 0 {
+				detail += " · restored your " + strings.Join(restored, ", ")
+			}
+			notes := stderrNotes(env, errb.String())
+			if running {
+				if _, err := openCodeRun(bin, "service", "restart"); err != nil {
+					return detail + notes, []string{"OpenCode's service, which may still run with Cortex's proxy — restart it: " + cli + " service restart"}, nil
+				}
+				detail += " · restarted its service"
+			}
+			return detail + notes, nil, nil
+		},
+	}, true
+}
+
+// openCodeByHand is the OpenCode row's change as fix lines, for when agentop is
+// gone: a line per key to unset, or to set back where enable's record holds an
+// earlier value, then the restart. It names no value, as unrouteByHand names none.
+// Without a plan, from an environment the CLI could not read, which keys hold
+// Cortex's values is for the user to see.
+func openCodeByHand(env *setupEnv, cli string, pl openCodeDisablePlan, planned bool, state string) string {
+	restart := "then, if OpenCode's service runs: " + cli + " service restart"
+	if !planned {
+		return "see which of " + strings.Join(openCodeKeys, ", ") + " hold Cortex's values: " + cli + " service get env\n" +
+			"and unset each of those: " + cli + " service unset env <name>\n" + restart
+	}
+	var lines []string
+	for _, k := range pl.present {
+		if openCodePrior(pl.st, k) != nil {
+			lines = append(lines, "set "+k+" back to your earlier value, in "+env.tilde(state)+": "+cli+" service set env "+k+" <value>")
+		} else {
+			lines = append(lines, cli+" service unset env "+k)
+		}
+	}
+	return strings.Join(append(lines, restart), "\n")
 }
 
 // planUnrouteBob removes IBM Bob's proxy setting when it may be Cortex's: one

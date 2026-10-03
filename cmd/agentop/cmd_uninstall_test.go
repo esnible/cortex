@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -25,17 +26,28 @@ import (
 )
 
 // newUninstallScene is a setup scene for uninstall. Its prompt fails the test
-// unless the test answers it, as an unanswered one would wait on /dev/tty.
+// unless the test answers it, as an unanswered one would wait on /dev/tty. It has
+// no opencode, so this machine's is never run; uninstallUsesOpenCode gives it one.
 func newUninstallScene(t *testing.T) setupScene {
 	t.Helper()
 	sc := newSetupScene(t, ok200)
-	saved := uninstallConfirm
+	saved, find := uninstallConfirm, uninstallFindOpenCode
 	uninstallConfirm = func(io.Writer) bool {
 		t.Error("uninstall asked, and the test gave no answer")
 		return false
 	}
-	t.Cleanup(func() { uninstallConfirm = saved })
+	uninstallFindOpenCode = func() (string, error) { return "", errors.New("no opencode in this scene") }
+	t.Cleanup(func() { uninstallConfirm, uninstallFindOpenCode = saved, find })
 	return sc
+}
+
+// uninstallUsesOpenCode gives the scene f as its opencode, at fakeOpenCodePath.
+func uninstallUsesOpenCode(t *testing.T, f *openCodeCLI) {
+	t.Helper()
+	stubOpenCodeSeams(t, f)
+	saved := uninstallFindOpenCode
+	uninstallFindOpenCode = func() (string, error) { return fakeOpenCodePath, nil }
+	t.Cleanup(func() { uninstallFindOpenCode = saved })
 }
 
 // answerUninstall answers uninstall's prompt with answer.
@@ -734,6 +746,198 @@ func TestUninstallPurgeKeepsCortexDirAfterAFailure(t *testing.T) {
 		if _, err := os.Lstat(filepath.Join(sc.home, ".cortex")); !os.IsNotExist(err) {
 			t.Errorf("--purge left ~/.cortex (lstat: %v)", err)
 		}
+	})
+}
+
+// openCodeEnabled routes the scene's opencode through Cortex as configure opencode
+// enable does, with NO_PROXY, a variable of the user's own, beside Cortex's. It
+// returns the fake, its service running or not, and its calls so far forgotten.
+func openCodeEnabled(t *testing.T, sc setupScene, running bool) *openCodeCLI {
+	t.Helper()
+	f := &openCodeCLI{env: map[string]string{"NO_PROXY": "corp.example"}}
+	uninstallUsesOpenCode(t, f)
+	if code, _, errOut := runOC("enable", "--yes"); code != 0 {
+		t.Fatalf("fixture: configure opencode enable exit %d: %s", code, errOut)
+	}
+	if len(f.env) != len(openCodeKeyOrder)+1 || !fileExists(filepath.Join(sc.home, opencodeStateRel)) {
+		t.Fatalf("fixture: enable left the service environment %v, and a record: %v", f.env, fileExists(filepath.Join(sc.home, opencodeStateRel)))
+	}
+	f.running, f.calls = running, nil
+	return f
+}
+
+// configure opencode enable routes OpenCode through its service environment, and
+// names disable as the off switch. Uninstall runs that disable before the proxy
+// stops and agentop goes: Cortex's values come out, NO_PROXY stays, and a service
+// that runs is restarted so it drops them now. Its CLI is judged by Cortex's
+// values, as configure opencode has it judged.
+func TestUninstallUnroutesOpenCode(t *testing.T) {
+	for _, running := range []bool{true, false} {
+		t.Run(fmt.Sprintf("running=%v", running), func(t *testing.T) {
+			sc := newUninstallScene(t)
+			sc.setUp(t)
+			f := openCodeEnabled(t, sc, running)
+			cortexs := maps.Clone(f.env)
+			delete(cortexs, "NO_PROXY")
+			code, out := sc.uninstall(t, "--yes")
+			where, done, restarts := "OpenCode's service environment", "OpenCode's service environment no longer routes it through Cortex", 0
+			if running {
+				where, done, restarts = where+" · restarts the service, interrupting its sessions", done+" · restarted its service", 1
+			}
+			wantLines(t, code, 0, out, markLine("✓", "unrouted")+done+"\n", "\n  Uninstalled.\n")
+			if row := consentRow(out, "unroute"); !strings.Contains(row, " OpenCode ") || !strings.HasSuffix(row, where) {
+				t.Errorf("the consent row is %q, want OpenCode and %q:\n%s", row, where, out)
+			}
+			if !maps.Equal(f.env, map[string]string{"NO_PROXY": "corp.example"}) {
+				t.Errorf("the service environment is %v, want only NO_PROXY left", f.env)
+			}
+			if got := f.restarts(); got != restarts {
+				t.Errorf("%d service restarts, want %d", got, restarts)
+			}
+			if !maps.Equal(f.cliWant, cortexs) {
+				t.Errorf("the CLI ran judged by %v, want Cortex's values %v", f.cliWant, cortexs)
+			}
+			if fileExists(filepath.Join(sc.home, opencodeStateRel)) {
+				t.Error("enable's record is still there")
+			}
+			if i, j := strings.Index(out, markLine("✓", "unrouted")+"OpenCode"), strings.Index(out, markLine("✓", "stopped")); i < 0 || j < i {
+				t.Errorf("OpenCode is not unrouted before the service stops:\n%s", out)
+			}
+		})
+	}
+}
+
+// An OpenCode whose service environment holds nothing of Cortex's gets no row and
+// no change: a proxy of the user's own stays. Nor does one there is no opencode to
+// change it with, or one whose environment cannot be read with no record of
+// enable's to say Cortex routed it.
+func TestUninstallLeavesAnOpenCodeCortexDidNotRoute(t *testing.T) {
+	notJSON := "not json"
+	for _, c := range []struct {
+		name string
+		f    *openCodeCLI // nil: no opencode
+	}{
+		{"a proxy of the user's own", &openCodeCLI{env: map[string]string{"HTTPS_PROXY": "http://proxy.corp.example:8080"}, running: true}},
+		{"no opencode", nil},
+		{"an environment it cannot read", &openCodeCLI{getEnv: &notJSON, running: true}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			sc := newUninstallScene(t)
+			sc.setUp(t)
+			before := map[string]string{}
+			if c.f != nil {
+				uninstallUsesOpenCode(t, c.f)
+				before = maps.Clone(c.f.env)
+			}
+			code, out := sc.uninstall(t, "--yes")
+			if code != 0 || strings.Contains(out, "OpenCode") {
+				t.Errorf("exit %d, and OpenCode named; want 0 and no OpenCode row:\n%s", code, out)
+			}
+			if c.f != nil && (!maps.Equal(c.f.env, before) || len(c.f.writes()) > 0 || c.f.restarts() > 0) {
+				t.Errorf("the service environment went from %v to %v, by %q", before, c.f.env, c.f.calls)
+			}
+		})
+	}
+}
+
+// A failed OpenCode row's fix is the change by hand, as agentop is gone by the
+// time it is read: a row per key to unset, then the restart. Not disable's own
+// "run agentop configure opencode disable again". An environment that cannot be
+// read fails the row only where enable's record says Cortex routed it, and its
+// fix shows what to look for. Either way ~/.cortex stays under --purge.
+func TestUninstallNamesTheFixForOpenCode(t *testing.T) {
+	restart := "then, if OpenCode's service runs: " + fakeOpenCodePath + " service restart"
+	var unsets []string
+	for _, k := range openCodeKeyOrder {
+		unsets = append(unsets, fakeOpenCodePath+" service unset env "+k)
+	}
+	notJSON := "not json"
+	for _, c := range []struct {
+		name    string
+		breakIt func(f *openCodeCLI)
+		want    []string
+	}{
+		{"an unset that fails part way", func(f *openCodeCLI) { f.failUnset = "HTTP_PROXY" }, append(slices.Clone(unsets), restart)},
+		{"an environment it cannot read", func(f *openCodeCLI) { f.getEnv = &notJSON }, []string{
+			"see which of " + strings.Join(openCodeKeyOrder, ", ") + " hold Cortex's values: " + fakeOpenCodePath + " service get env",
+			"and unset each of those: " + fakeOpenCodePath + " service unset env <name>", restart}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			sc := newUninstallScene(t)
+			sc.setUp(t)
+			f := openCodeEnabled(t, sc, true)
+			c.breakIt(f)
+			code, out := sc.uninstall(t, "--yes", "--purge")
+			if fixes := fixesUnder(out, markLine("✗", "unrouted")); code != 1 || !slices.Equal(fixes, c.want) {
+				t.Errorf("exit %d and the ✗ unrouted fixes %q, want 1 and %q:\n%s", code, fixes, c.want, out)
+			}
+			if strings.Contains(out, "disable again") {
+				t.Errorf("a line names agentop, which uninstall removes:\n%s", out)
+			}
+			everyFailHasAFix(t, out)
+			if !fileExists(filepath.Join(sc.home, opencodeStateRel)) {
+				t.Error("enable's record went: --purge ran after the failure")
+			}
+		})
+	}
+}
+
+// A value written into enable's record by hand goes back, as disable puts it back;
+// the fix for a failed row says so by key, never printing the value, which can
+// carry a password. A restart that fails leaves the row ! with the restart to run.
+func TestUninstallOpenCodeRecordAndRestart(t *testing.T) {
+	const corp = "http://alice:s3cret@proxy.corp.example:8080"
+	record := func(t *testing.T, sc setupScene) {
+		t.Helper()
+		st, err := readState(filepath.Join(sc.home, opencodeStateRel))
+		if err != nil || st == nil {
+			t.Fatalf("fixture: no record (%v)", err)
+		}
+		v := corp
+		st.Prior["HTTPS_PROXY"] = &v
+		b, err := json.Marshal(st) // not writeState, which keeps the record it finds
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(sc.home, opencodeStateRel), b, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Run("restored", func(t *testing.T) {
+		sc := newUninstallScene(t)
+		sc.setUp(t)
+		f := openCodeEnabled(t, sc, false)
+		record(t, sc)
+		code, out := sc.uninstall(t, "--yes")
+		wantLines(t, code, 0, out, markLine("✓", "unrouted")+"OpenCode's service environment no longer routes it through Cortex · restored your HTTPS_PROXY\n")
+		if !maps.Equal(f.env, map[string]string{"NO_PROXY": "corp.example", "HTTPS_PROXY": corp}) {
+			t.Errorf("the service environment is %v, want NO_PROXY and the recorded HTTPS_PROXY", f.env)
+		}
+	})
+	t.Run("a failure's fix", func(t *testing.T) {
+		sc := newUninstallScene(t)
+		sc.setUp(t)
+		f := openCodeEnabled(t, sc, false)
+		record(t, sc)
+		f.failSet = "HTTPS_PROXY"
+		code, out := sc.uninstall(t, "--yes")
+		fixes := fixesUnder(out, markLine("✗", "unrouted"))
+		want := "set HTTPS_PROXY back to your earlier value, in ~/.cortex/opencode-state.json: " + fakeOpenCodePath + " service set env HTTPS_PROXY <value>"
+		if code != 1 || len(fixes) == 0 || fixes[0] != want {
+			t.Errorf("exit %d and the fixes %q, want 1 and first %q:\n%s", code, fixes, want, out)
+		}
+		if strings.Contains(out, "s3cret") {
+			t.Errorf("a recorded value was printed:\n%s", out)
+		}
+	})
+	t.Run("a restart that fails", func(t *testing.T) {
+		sc := newUninstallScene(t)
+		sc.setUp(t)
+		f := openCodeEnabled(t, sc, true)
+		f.restartErr = errors.New("opencode service restart: exit status 1")
+		code, out := sc.uninstall(t, "--yes")
+		wantLines(t, code, 1, out, markLine("!", "unrouted")+"OpenCode's service environment no longer routes it through Cortex\n",
+			"\n  Left behind:\n    OpenCode's service, which may still run with Cortex's proxy — restart it: "+fakeOpenCodePath+" service restart\n")
 	})
 }
 
