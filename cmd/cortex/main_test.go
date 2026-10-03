@@ -286,6 +286,53 @@ func TestLedgerDefaultOn_NeedsEvidenceOfSomewhereDurable(t *testing.T) {
 	}
 }
 
+// THE REDIRECT-ONLY LISTENERS ARE KEYED ON THE INSTALL, NOT ON WHICH FLAG STARTED THE BINARY.
+//
+// They used to be skipped only under --local, the same mistake the ledger default made: every
+// service install runs --config, so an installed laptop bound the transparent listener on
+// 127.0.0.1:47603 — a port nothing on a laptop redirects to, that the installer never probed,
+// and whose bind failure is fatal. An occupied 47603 crash-looped the supervised proxy (#1254).
+// The first row is that case; --local reaches it too, because it writes the config there and
+// points --config at it.
+func TestStartedFromLocalInstall(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		home string
+		// configIn names where this process was started from: ".cortex" is a local install,
+		// ".cortex-old" a sibling that only shares the prefix, "etc" anywhere else. Empty
+		// means no --config at all.
+		configIn     string
+		installedDir bool
+		want         bool
+	}{
+		{name: "started from a local install's config", home: t.TempDir(), configIn: ".cortex", want: true},
+		{name: "a pod's config, with a home", home: t.TempDir(), configIn: "etc"},
+		{name: "leftover .cortex but started from elsewhere", home: t.TempDir(), configIn: "etc", installedDir: true},
+		{name: "a sibling that shares the prefix", home: t.TempDir(), configIn: ".cortex-old"},
+		{name: "no home", configIn: "etc"},
+		{name: "no config", home: t.TempDir()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv("HOME", tc.home)
+			var configPath string
+			switch tc.configIn {
+			case ".cortex", ".cortex-old":
+				configPath = filepath.Join(tc.home, tc.configIn, localConfigName)
+			case "etc":
+				configPath = filepath.Join(t.TempDir(), "authbridge", "config.yaml")
+			}
+			if tc.installedDir {
+				if merr := os.MkdirAll(filepath.Join(tc.home, cortexDirName), 0o700); merr != nil {
+					t.Fatalf("seed the leftover directory: %v", merr)
+				}
+			}
+			if got := startedFromLocalInstall(configPath); got != tc.want {
+				t.Errorf("startedFromLocalInstall(%q) = %v, want %v", configPath, got, tc.want)
+			}
+		})
+	}
+}
+
 // An explicit cost_ledger.enabled still wins in BOTH directions, so the derived default is a
 // default and not a policy. The false case is the escape hatch for a full or read-only disk;
 // the true case is a filesystem the operator knows persists even though this process cannot

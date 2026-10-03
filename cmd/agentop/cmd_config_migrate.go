@@ -53,8 +53,8 @@ var listenerPins = []pinnedListener{
 	{
 		key:   "transparent_proxy_addr",
 		value: "127.0.0.1:47603",
-		comment: "Added by agentop: unpinned, the preset binds :8082 on every interface. --local skips\n" +
-			"this listener but --config does not, and the service runs with --config.",
+		comment: "Added by agentop: unpinned, the preset binds :8082 on every interface. A proxy\n" +
+			"started from ~/.cortex never opens this listener; one started from elsewhere does.",
 		unpinnedDefault: ":8082",
 	},
 }

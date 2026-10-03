@@ -65,7 +65,7 @@ func TestDemoConfig_WriteLoadsAndValidates(t *testing.T) {
 	// installer probes/prints, never a wildcard that would expose an open forward
 	// proxy, the stats endpoint, or the unauthenticated session API (decrypted
 	// bodies + injected tokens) to the LAN. The transparent listener isn't started
-	// under --local (main.go gates it), so it's not asserted here.
+	// for a local install (main.go gates it), so it's not asserted here.
 	if got := cfg.Listener.ForwardProxyAddr; got != "127.0.0.1:47600" {
 		t.Errorf("ForwardProxyAddr = %q, want loopback 127.0.0.1:47600", got)
 	}
