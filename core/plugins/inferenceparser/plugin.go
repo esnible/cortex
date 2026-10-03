@@ -128,15 +128,25 @@ func (p *InferenceParser) OnRequest(_ context.Context, pctx *pipeline.Context) p
 
 // parseOpenAIRequest builds an InferenceExtension from an OpenAI
 // chat/completions (or completions) request body. Returns nil for an empty or
-// non-JSON body. Every populated extension is an outbound LLM call — an agent
-// action (IsAction); the "don't judge inference by default" choice is operator
-// policy in IBAC, independent of this classification.
+// non-JSON body, and for one that is not an inference request. Every populated
+// extension is an outbound LLM call — an agent action (IsAction); the "don't
+// judge inference by default" choice is operator policy in IBAC, independent of
+// this classification.
 func parseOpenAIRequest(body []byte) *pipeline.InferenceExtension {
 	if len(body) == 0 {
 		return nil
 	}
 	var req inferenceRequest
 	if err := json.Unmarshal(body, &req); err != nil {
+		return nil
+	}
+	// THE PATH SAID OPENAI; THE BODY HAS TO AGREE. dialectFor matches how a path ends, which
+	// reaches every provider's prefix and also any endpoint that merely ends the same way,
+	// and every extension built here is read downstream as an agent's LLM call. So one is
+	// built only for a body carrying what such a call cannot do without: a messages array,
+	// or a legacy completions prompt. A model is not required — Azure names the deployment
+	// in the path and sends none.
+	if req.Messages == nil && !jsonPresent(req.Prompt) {
 		return nil
 	}
 	ext := &pipeline.InferenceExtension{
@@ -166,6 +176,12 @@ func parseOpenAIRequest(body []byte) *pipeline.InferenceExtension {
 		})
 	}
 	return ext
+}
+
+// jsonPresent reports whether a field was sent with a value. An absent field decodes to an
+// empty RawMessage and an explicit null to the bytes "null"; neither counts.
+func jsonPresent(raw json.RawMessage) bool {
+	return len(raw) > 0 && !bytes.Equal(raw, []byte("null"))
 }
 
 // OnResponse is the legacy buffered-path response hook. Because this
@@ -287,8 +303,9 @@ func (p *InferenceParser) OnResponseFrame(_ context.Context, pctx *pipeline.Cont
 		// THE FOURTH BODY-LESS PATH, and the one not about a body at all: the guards below handle a
 		// response whose BODY could not be read, this one a response whose REQUEST was never
 		// parsed. OnRequest leaves Extensions.Inference nil for /v1/embeddings, /v1/rerank,
-		// anything else the gateway mounts, and any body that was not JSON — and returning here
-		// made all of it free, with the gateway's figure sitting unread on the response headers.
+		// anything else the gateway mounts, and any body it does not take for inference — and
+		// returning here made all of it free, with the gateway's figure sitting unread on the
+		// response headers.
 		//
 		// EVERY path, not an allowlist of the ones that look priceable. The predicate that
 		// decides whether money moves is "the gateway reported a cost", which
@@ -806,6 +823,9 @@ type inferenceRequest struct {
 	Stream      bool               `json:"stream"`
 	Tools       []inferenceTool    `json:"tools"`
 	ToolChoice  any                `json:"tool_choice"` // "auto"/"none" or object
+	// Prompt is read only to tell a legacy completions request from a body that is not
+	// inference at all; see parseOpenAIRequest. It is not surfaced.
+	Prompt json.RawMessage `json:"prompt"`
 }
 
 // inferenceMessage accepts both OpenAI content shapes:

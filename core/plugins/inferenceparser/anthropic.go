@@ -103,6 +103,12 @@ func parseAnthropicRequest(body []byte) *pipeline.InferenceExtension {
 		return nil
 	}
 
+	// The path said Anthropic; the body has to agree — see parseOpenAIRequest. A messages
+	// array is the one thing every Messages API request carries.
+	if req.Messages == nil {
+		return nil
+	}
+
 	ext := &pipeline.InferenceExtension{
 		Model:       req.Model,
 		Temperature: req.Temperature,
