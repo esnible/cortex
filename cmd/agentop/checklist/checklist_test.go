@@ -235,3 +235,31 @@ func TestWaitingShowsAfterThreeSeconds(t *testing.T) {
 		t.Errorf("waiting text missing at 4s: %q", b.String())
 	}
 }
+
+// A running step's Advise draws what UI.Advise draws, its fixes below: on a
+// terminal once the spinner's line is cleared, and with no timing, as UI.Advise
+// shows none.
+func TestRunningAdviseEndsAsUIAdviseDraws(t *testing.T) {
+	noForcedColour(t)
+	const want = "  ! PATH         edited; left as it is\n      fix: delete the two lines\n"
+	var plain bytes.Buffer
+	u := New(&plain, false)
+	u.Start("PATH").Advise("edited; left as it is", "delete the two lines")
+	u.Close()
+	if plain.String() != want {
+		t.Errorf("plain: got %q, want %q", plain.String(), want)
+	}
+
+	var b lockedBuffer
+	a := New(&b, true)
+	r := a.Start("PATH")
+	time.Sleep(150 * time.Millisecond)
+	r.Advise("edited; left as it is", "delete the two lines")
+	a.Close()
+	out := b.String()
+	for _, w := range []string{"\x1b[?25l", "\r\x1b[K" + want, "\x1b[?25h"} {
+		if !strings.Contains(out, w) {
+			t.Errorf("animated output lacks %q: %q", w, out)
+		}
+	}
+}

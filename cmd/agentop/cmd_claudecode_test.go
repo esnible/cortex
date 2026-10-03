@@ -846,3 +846,53 @@ func TestManualUninstallDocListsEveryManagedKey(t *testing.T) {
 		}
 	}
 }
+
+// Applying a disable with nothing present touches nothing, so uninstall can call it
+// without checking first. It must not create a settings.json where there was none,
+// or rewrite one that holds none of the keys (which also writes a .bak). And it must
+// not delete the state record.
+func TestClaudeCodeDisableWithNothingPresentTouchesNothing(t *testing.T) {
+	for _, tc := range []struct{ name, settings string }{
+		{"no managed keys", settingsWithSecret},
+		{"no settings file", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			settings, _ := fixture(t, tc.settings)
+			state := filepath.Join(t.TempDir(), "state.json")
+			if err := writeState(state, managedState{Settings: settings, Prior: map[string]*string{envProxy: nil}}); err != nil {
+				t.Fatal(err)
+			}
+			stateBefore, err := os.ReadFile(state)
+			if err != nil {
+				t.Fatal(err)
+			}
+			before, beforeErr := os.ReadFile(settings)
+			if (beforeErr != nil) != (tc.settings == "") {
+				t.Fatalf("fixture: reading %s: %v", settings, beforeErr)
+			}
+			pl, err := planClaudeCodeDisable(settings)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(pl.present) != 0 {
+				t.Fatalf("fixture: present = %q, want none", pl.present)
+			}
+
+			var errb bytes.Buffer
+			restored, err := applyClaudeCodeDisable(pl, state, &errb)
+			if err != nil || restored != nil {
+				t.Errorf("apply = %q, %v; want nil, nil", restored, err)
+			}
+			after, afterErr := os.ReadFile(settings)
+			if (afterErr != nil) != (beforeErr != nil) || !bytes.Equal(before, after) {
+				t.Errorf("settings.json changed: before %q (%v), after %q (%v)", before, beforeErr, after, afterErr)
+			}
+			if _, err := os.Stat(settings + ".bak"); !os.IsNotExist(err) {
+				t.Errorf("a backup was written (stat: %v)", err)
+			}
+			if stateAfter, err := os.ReadFile(state); err != nil || !bytes.Equal(stateBefore, stateAfter) {
+				t.Errorf("the state record changed: %q (%v), was %q", stateAfter, err, stateBefore)
+			}
+		})
+	}
+}

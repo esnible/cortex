@@ -16,19 +16,12 @@ import (
 const stopBackgroundLine = "  Cortex runs without a supervisor here; stop it with: kill $(cat ~/.cortex/proxy.pid)\n"
 
 // A background proxy already running leaves the service step done: only a proxy
-// the run started gets the stop line. The undo hint names the same stop, so it
-// prints only when it has more to say.
+// the run started gets the stop line. The undo line follows either way, as
+// uninstall undoes more than the stop.
 func TestSetupEndingNamesTheStopCommandOnlyForAProxyItStarted(t *testing.T) {
 	plainOutput(t)
-	const undoStop = "  Undo any time: kill $(cat ~/.cortex/proxy.pid)\n"
-	for _, c := range []struct {
-		started, claudeCode bool
-		undo                string
-	}{
-		{false, false, undoStop},
-		{true, false, ""},
-		{true, true, "  Undo any time: kill $(cat ~/.cortex/proxy.pid) · agentop configure claude-code disable\n"},
-	} {
+	const undo = "  Undo any time: agentop uninstall\n"
+	for _, c := range []struct{ started, claudeCode bool }{{false, false}, {true, false}, {true, true}} {
 		var out bytes.Buffer
 		env := &setupEnv{home: "/h", binDir: "/h/.local/bin", cortexDir: "/h/.cortex", freshInstall: true, binOnPath: true,
 			unsupervised: true, startedBackground: c.started, opts: setupOptions{claudeCode: c.claudeCode}}
@@ -36,24 +29,24 @@ func TestSetupEndingNamesTheStopCommandOnlyForAProxyItStarted(t *testing.T) {
 		if got := strings.Contains(out.String(), stopBackgroundLine); got != c.started {
 			t.Errorf("started a background proxy=%v, stop line printed=%v:\n%s", c.started, got, out.String())
 		}
-		if c.undo == "" && strings.Contains(out.String(), "Undo any time") || c.undo != "" && !strings.HasSuffix(out.String(), c.undo) {
-			t.Errorf("started=%v claude-code=%v: want the undo line %q:\n%s", c.started, c.claudeCode, c.undo, out.String())
+		if !strings.HasSuffix(out.String(), undo) {
+			t.Errorf("started=%v claude-code=%v: want the undo line %q last:\n%s", c.started, c.claudeCode, undo, out.String())
 		}
 	}
 }
 
-// The undo hint names what stops this run's Cortex: service uninstall for a
-// supervised one, the pidfile for a background one.
-func TestUndoHintNamesTheStopForHowCortexRuns(t *testing.T) {
+// The undo hint is agentop uninstall however Cortex runs, as uninstall stops a
+// background proxy and unroutes Claude Code too. An install-only run has none.
+func TestUndoHintIsUninstallHoweverCortexRuns(t *testing.T) {
 	for _, c := range []struct {
 		name string
 		env  setupEnv
 		want string
 	}{
-		{"supervised", setupEnv{}, "Undo any time: agentop service uninstall"},
-		{"background", setupEnv{unsupervised: true}, "Undo any time: kill $(cat ~/.cortex/proxy.pid)"},
+		{"supervised", setupEnv{}, "Undo any time: agentop uninstall"},
+		{"background", setupEnv{unsupervised: true}, "Undo any time: agentop uninstall"},
 		{"background, Claude Code routed", setupEnv{unsupervised: true, opts: setupOptions{claudeCode: true}},
-			"Undo any time: kill $(cat ~/.cortex/proxy.pid) · agentop configure claude-code disable"},
+			"Undo any time: agentop uninstall"},
 		{"install only", setupEnv{unsupervised: true, opts: setupOptions{installOnly: true}}, ""},
 	} {
 		env := c.env

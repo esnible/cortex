@@ -311,21 +311,14 @@ func stopBackgroundByHand(env *setupEnv) string {
 	return "kill $(cat " + env.tilde(filepath.Join(env.cortexDir, "proxy.pid")) + ")"
 }
 
-// undoHint names the commands that undo this run, as of PR 2; PR 3's
-// `agentop uninstall` replaces it. A proxy run without a supervisor is stopped
-// by its pidfile: service uninstall would leave it running.
+// undoHint names the command that undoes this run: agentop uninstall, which
+// unroutes Claude Code and stops a background proxy as well as a service. An
+// install-only run gets none.
 func undoHint(env *setupEnv) string {
 	if env.opts.installOnly {
 		return ""
 	}
-	hint := "Undo any time: agentop service uninstall"
-	if env.unsupervised {
-		hint = "Undo any time: " + stopBackgroundByHand(env)
-	}
-	if env.opts.claudeCode {
-		hint += " · agentop configure claude-code disable"
-	}
-	return hint
+	return "Undo any time: agentop uninstall"
 }
 
 func printSetupEnding(env *setupEnv, ui *checklist.UI, took time.Duration) {
@@ -365,9 +358,6 @@ func printSetupEnding(env *setupEnv, ui *checklist.UI, took time.Duration) {
 	ui.Blank()
 	if env.startedBackground {
 		ui.Faint("Cortex runs without a supervisor here; stop it with: " + stopBackgroundByHand(env))
-		if !env.opts.claudeCode {
-			return // the undo hint would name the same stop, and nothing else
-		}
 	}
 	ui.Faint(undoHint(env))
 }

@@ -513,9 +513,6 @@ exit 0
 		if prob != nil || !p.done || p.advice == nil || p.advice.reason != want {
 			t.Errorf("plan = %+v advice=%+v %v", p, p.advice, prob)
 		}
-		if hint := undoHint(env); hint != "Undo any time: agentop service uninstall" {
-			t.Errorf("beside a supervised Cortex the undo hint is %q, not its uninstall", hint)
-		}
 	})
 	t.Run("an upgrade in a sandbox", func(t *testing.T) {
 		fakeNoSupervisor(t)

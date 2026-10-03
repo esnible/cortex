@@ -47,7 +47,7 @@ func (s serviceStep) plan(env *setupEnv) (stepPlan, *problem) {
 			if !changing {
 				p.done = true
 				p.advice = &problem{reason: "Cortex is already running under " + sup + "; not starting a second copy"}
-				env.unsupervised = false // the Cortex that serves is supervised, so the undo hint names its uninstall
+				env.unsupervised = false // the Cortex that serves is supervised
 				return p, nil
 			}
 			if env.opts.noService {
