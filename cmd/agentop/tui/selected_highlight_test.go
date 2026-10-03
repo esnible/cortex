@@ -4,9 +4,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/charmbracelet/bubbles/table"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
+
+	"github.com/rossoctl/cortex/cmd/agentop/tui/table"
 )
 
 // THE SELECTED ROW MUST NOT INVERT ITS CELLS, because one of them encodes a value as INK.

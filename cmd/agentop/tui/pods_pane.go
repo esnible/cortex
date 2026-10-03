@@ -3,10 +3,10 @@ package tui
 import (
 	"context"
 
-	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/rossoctl/cortex/cmd/agentop/cluster"
+	"github.com/rossoctl/cortex/cmd/agentop/tui/table"
 )
 
 // newPodsTable builds an empty pods picker table.

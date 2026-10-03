@@ -3,9 +3,8 @@ package tui
 import (
 	"fmt"
 
-	"github.com/charmbracelet/bubbles/table"
-
 	"github.com/rossoctl/cortex/cmd/agentop/apiclient"
+	"github.com/rossoctl/cortex/cmd/agentop/tui/table"
 )
 
 // newPipelineTable builds the plugins table shown on the Pipeline top-level

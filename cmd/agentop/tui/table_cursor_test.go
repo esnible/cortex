@@ -6,10 +6,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/rossoctl/cortex/cmd/agentop/apiclient"
+	"github.com/rossoctl/cortex/cmd/agentop/tui/table"
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/session"
 )
@@ -162,21 +162,19 @@ func TestSetCursorVisible_ClampsAndSurvivesEmpty(t *testing.T) {
 			t.Errorf("%s empty table: cursor moved %d -> %d, want it left alone", tc.name, before, got)
 		}
 
-		// setTableHeight shares the promise, because it reaches the cursor through
-		// GotoTop. table's clamp is min(max(v, low), high) and does NOT swap inverted
-		// bounds (viewport's does — different package, and not the one MoveUp uses), so
-		// GotoTop on a table with no rows resolves clamp(0, 0, -1) to −1 and would walk
-		// a fresh table's cursor off row 0. The height must still be applied.
+		// A resize shares the promise. It used to reach the cursor through GotoTop, which
+		// on a table with no rows resolves clamp(0, 0, -1) to −1 and walked a fresh table's
+		// cursor off row 0; SetHeight must still not, and must still apply the height.
 		resized := tc.build()
 		before = resized.Cursor()
 		wasHeight := resized.Height()
-		setTableHeight(&resized, wasHeight+7)
+		resized.SetHeight(wasHeight + 7)
 		if got := resized.Cursor(); got != before {
-			t.Errorf("%s empty table: setTableHeight moved the cursor %d -> %d, want it left alone",
+			t.Errorf("%s empty table: SetHeight moved the cursor %d -> %d, want it left alone",
 				tc.name, before, got)
 		}
 		if got := resized.Height(); got == wasHeight {
-			t.Errorf("%s empty table: setTableHeight did not apply the new height (still %d)",
+			t.Errorf("%s empty table: SetHeight did not apply the new height (still %d)",
 				tc.name, got)
 		}
 	}
@@ -686,6 +684,46 @@ func TestEventsTable_TailStillFollowsOnNewEvent(t *testing.T) {
 	assertSelectionVisible(t, m.eventsTbl, "tail-follow onto a new event")
 }
 
+// TestEventsTable_ArrowDownAfterScrollingBackKeepsTheWindow is the reported bug: on a table
+// between one and two screens long, jump to the last row, arrow up past the middle of the
+// screen, then arrow back down. The rows should stay put and the highlight walk down them;
+// instead each press scrolled the rows down a line and moved the highlight down two.
+//
+// Short is the whole trigger, and it is how an ordinary session gets there: a filter, or
+// `s` hiding the probe traffic that made up 1,942 of one OpenCode session's last 2,000
+// rows, leaves a table of a few dozen. bubbles' MoveDown lowers the viewport offset on
+// every press that keeps the last row rendered, which only cancels out while the rendered
+// window's first row (cursor − height) moves down with the cursor. Inside the first
+// screenful that row is pinned at 0, so the offset falls alone and the view scrolls up.
+// A long table never reaches that state from its tail, which is why it went unseen.
+func TestEventsTable_ArrowDownAfterScrollingBackKeepsTheWindow(t *testing.T) {
+	m := cursorModel(t, 16)
+	h := m.eventsTbl.Height()
+	if n := len(m.eventsTbl.Rows()); n <= h || n >= 2*h {
+		t.Fatalf("fixture must be between one and two screens long: %d rows at height %d", n, h)
+	}
+	m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("G")})
+	// Past the middle of the screen, which takes the cursor into the first screenful.
+	for i := 0; i < h-2; i++ {
+		m.handleKey(tea.KeyMsg{Type: tea.KeyUp})
+	}
+	want := renderedWindow(t, m.eventsTbl)
+	start := m.eventsTbl.Cursor()
+
+	// Down until the highlight reaches the bottom row on screen, and not one press more:
+	// from there the window is supposed to scroll.
+	for i := 1; i < h-2; i++ {
+		m.handleKey(tea.KeyMsg{Type: tea.KeyDown})
+		if got := m.eventsTbl.Cursor(); got != start+i {
+			t.Fatalf("press %d: cursor %d, want %d", i, got, start+i)
+		}
+		if got := renderedWindow(t, m.eventsTbl); got != want {
+			t.Fatalf("press %d scrolled the pane: showing rows %s, want %s", i, got, want)
+		}
+	}
+	assertSelectionVisible(t, m.eventsTbl, "arrowing back down")
+}
+
 // The sessions picker restores its cursor BY ID on the same two-second poll, so it had
 // the same jerk — and unlike the events pane it is the first thing an operator lands on.
 func TestSessionsTable_PollRebuildKeepsScrollPosition(t *testing.T) {
@@ -714,21 +752,21 @@ func TestSessionsTable_PollRebuildKeepsScrollPosition(t *testing.T) {
 // TestTables_ResizeKeepsSelectionVisible guards the sharp edge of that fix.
 //
 // Restoring the cursor to the row it is already on no longer touches the scroll
-// offset — that is the fix — so the blanket re-anchor that used to happen on every
-// poll is gone, and with it the accidental repair of an offset invalidated by a
-// resize. SetHeight re-windows the rendered rows (start = cursor − height) while the
-// viewport keeps the offset it computed for the old height, and the pane can end up
-// rendering a window entirely below the row it highlights.
+// position — that is the fix — so the blanket re-anchor that used to happen on every
+// poll is gone, and with it the accidental repair of a position invalidated by a
+// resize. bubbles' SetHeight re-windowed the rendered rows (start = cursor − height)
+// while its viewport kept the offset it computed for the old height, and the pane could
+// end up rendering a window entirely below the row it highlights. The table package now
+// settles the position on every resize, and this pins that it does.
 //
-// Arrow keys are what make this reachable: each MoveUp raises the offset, so the
-// deeper the operator has scrolled up, the further the stale offset is from anything
+// Arrow keys are what made this reachable: each MoveUp raised the offset, so the
+// deeper the operator had scrolled up, the further the stale offset was from anything
 // true. Driven through layout() rather than SetHeight, because layout() is where the
-// tables it does not rebuild get their height — and therefore the only place that can
-// reconcile them.
+// tables it does not rebuild get their height.
 func TestTables_ResizeKeepsSelectionVisible(t *testing.T) {
 	// Not every combination exercises both halves, and it is worth knowing which:
-	// termH 15 lands on the height sessionsModel already set, so setTableHeight takes
-	// its early return and nothing resizes — that row checks only that the selection
+	// termH 15 lands on the height sessionsModel already set, so SetHeight changes
+	// nothing and nothing resizes — that row checks only that the selection
 	// survives a poll. termH 60 gives the 40-row fixture more rows than it has, so
 	// every row renders and the visibility half holds at any offset. 7, 9, 11 and 33
 	// all resize AND leave rows off screen, which is where the assertion has teeth.
