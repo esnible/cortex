@@ -2,9 +2,11 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -122,5 +124,87 @@ func TestRemoveService_AStampThatWillNotGoIsReportedNotFatal(t *testing.T) {
 	}
 	if want := "could not remove " + sc.p.stampFile; !strings.Contains(errb.String(), want) {
 		t.Errorf("stderr = %q, want it to contain %q", errb.String(), want)
+	}
+}
+
+// removeService prints what removeServiceReport returns, exactly as it printed before
+// the two were split. The calls under test go through failingUnload, so each one
+// prints the unload line as well: once beside a stamp that will not go, which still
+// returns true, and once with the unit already gone, which returns false.
+func TestRemoveServiceStillReportsToStderr(t *testing.T) {
+	loaded := fakeSupervisor(t)
+	sc := newServiceScene(t)
+	var out, errb bytes.Buffer
+	if r := runServiceInstall(sc.p, 0, false, false, &out, &errb); r.exit != 0 {
+		t.Fatalf("install: %+v %s", r, errb.String())
+	}
+	failingUnload(t, loaded)
+	// The refused unload leaves the job loaded, so asking again gets the same error.
+	unloadErr := unloadService(runtime.GOOS, sc.p)
+	if unloadErr == nil {
+		t.Fatal("fixture: the unload did not fail")
+	}
+	if err := os.Remove(sc.p.stampFile); err != nil {
+		t.Fatalf("clearing the stamp: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(sc.p.stampFile, "keep"), 0o755); err != nil {
+		t.Fatalf("putting a directory in the stamp's place: %v", err)
+	}
+	stampErr := os.Remove(sc.p.stampFile)
+	if stampErr == nil {
+		t.Fatal("fixture: the stamp's directory could be removed")
+	}
+
+	errb.Reset()
+	if !removeService(sc.p, &errb) {
+		t.Error("removeService reported failure with the unit gone")
+	}
+	if want := fmt.Sprintf("agentop: %v\nagentop: could not remove %s: %v\n", unloadErr, sc.p.stampFile, stampErr); errb.String() != want {
+		t.Errorf("stderr =\n%q\nwant\n%q", errb.String(), want)
+	}
+
+	unitErr := os.Remove(sc.p.unitFile)
+	if unitErr == nil {
+		t.Fatal("fixture: the unit was still there to remove")
+	}
+	errb.Reset()
+	if removeService(sc.p, &errb) {
+		t.Error("removeService reported success with no unit to remove")
+	}
+	if want := fmt.Sprintf("agentop: %v\nagentop: removing %s: %v\n", unloadErr, sc.p.unitFile, unitErr); errb.String() != want {
+		t.Errorf("stderr =\n%q\nwant\n%q", errb.String(), want)
+	}
+}
+
+// uninstall says a job is still loaded when the supervisor refused to unload it, so
+// removeServiceReport returns that failure apart from the unit's. The unit still
+// goes, and a stamp that is already gone is not a failure either.
+func TestRemoveServiceReportReturnsTheUnloadFailure(t *testing.T) {
+	loaded := fakeSupervisor(t)
+	sc := newServiceScene(t)
+	var out, errb bytes.Buffer
+	if r := runServiceInstall(sc.p, 0, false, false, &out, &errb); r.exit != 0 {
+		t.Fatalf("install: %+v %s", r, errb.String())
+	}
+	failingUnload(t, loaded)
+	if err := os.Remove(sc.p.stampFile); err != nil {
+		t.Fatalf("clearing the stamp: %v", err)
+	}
+
+	unloadErr, unitErr, stampErr := removeServiceReport(sc.p)
+	if unloadErr == nil || !strings.Contains(unloadErr.Error(), "unload refused") {
+		t.Errorf("unloadErr = %v, want the supervisor's refusal", unloadErr)
+	}
+	if unitErr != nil {
+		t.Errorf("unitErr = %v, want nil: the unit was there to remove", unitErr)
+	}
+	if stampErr != nil {
+		t.Errorf("stampErr = %v, want nil: a stamp that does not exist is not a failure", stampErr)
+	}
+	if _, err := os.Stat(sc.p.unitFile); !os.IsNotExist(err) {
+		t.Errorf("unit still on disk (stat: %v)", err)
+	}
+	if _, err := os.Stat(loaded); err != nil {
+		t.Error("fixture: the fake job is not loaded, so the unload did not fail")
 	}
 }

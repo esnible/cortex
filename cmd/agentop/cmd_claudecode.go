@@ -558,7 +558,14 @@ func planClaudeCodeDisable(settingsPath string) (claudeCodeDisablePlan, error) {
 
 // applyClaudeCodeDisable puts back what enable recorded, removes what it added, and
 // deletes the record. It returns the keys restored to a value the user had set.
+//
+// With none of the keys present it touches nothing, so a caller need not check
+// first. Going on would create a settings.json where there was none, rewrite one
+// that holds none of the keys (and back it up), and delete the record.
 func applyClaudeCodeDisable(pl claudeCodeDisablePlan, statePath string, stderr io.Writer) ([]string, error) {
+	if len(pl.present) == 0 {
+		return nil, nil
+	}
 	st, sterr := readState(statePath)
 	if sterr != nil {
 		// Proceed — the user asked for this off — but say what is about to be lost.

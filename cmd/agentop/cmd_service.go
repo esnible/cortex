@@ -587,22 +587,36 @@ func serviceUninstall(p servicePaths, yes bool, stdout, stderr io.Writer) int {
 // unit file could not be removed: the one failure that leaves the service looking
 // installed.
 func removeService(p servicePaths, stderr io.Writer) bool {
-	if err := unloadService(runtime.GOOS, p); err != nil {
-		// Report but keep going: leaving the unit file behind would make a
-		// reinstall look installed-but-dead.
-		fmt.Fprintf(stderr, "agentop: %v\n", err)
+	unloadErr, unitErr, stampErr := removeServiceReport(p)
+	if unloadErr != nil {
+		fmt.Fprintf(stderr, "agentop: %v\n", unloadErr)
 	}
-	if err := os.Remove(p.unitFile); err != nil {
-		fmt.Fprintf(stderr, "agentop: removing %s: %v\n", p.unitFile, err)
+	if unitErr != nil {
+		fmt.Fprintf(stderr, "agentop: removing %s: %v\n", p.unitFile, unitErr)
 		return false
+	}
+	if stampErr != nil {
+		fmt.Fprintf(stderr, "agentop: could not remove %s: %v\n", p.stampFile, stampErr)
+	}
+	return true
+}
+
+// removeServiceReport is removeService without the printing. uninstall needs the
+// unload failure as well as the unit's, so it can say a job is still loaded.
+func removeServiceReport(p servicePaths) (unloadErr, unitErr, stampErr error) {
+	// A failed unload does not stop the removal: leaving the unit file behind would
+	// make a reinstall look installed-but-dead.
+	unloadErr = unloadService(runtime.GOOS, p)
+	if err := os.Remove(p.unitFile); err != nil {
+		return unloadErr, err, nil
 	}
 	// Launch state, so it goes with the unit rather than surviving in ~/.cortex beside
 	// the config and CA the message serviceUninstall prints promises are untouched.
 	// Left behind, it would describe a service that no longer exists.
 	if err := os.Remove(p.stampFile); err != nil && !os.IsNotExist(err) {
-		fmt.Fprintf(stderr, "agentop: could not remove %s: %v\n", p.stampFile, err)
+		stampErr = err
 	}
-	return true
+	return unloadErr, nil, stampErr
 }
 
 func serviceStatus(p servicePaths, stdout io.Writer) int {
