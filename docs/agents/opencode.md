@@ -221,14 +221,17 @@ and Cortex parses two of them, under both the `/zen` prefix and the `/zen/go` pr
 OpenCode's Go plan:
 
 - the OpenAI dialect (model, messages, tools and the response) on
-  `/zen/v1/chat/completions`, and on OpenAI-compatible providers' `/v1/chat/completions`
-  or `/chat/completions`, LiteLLM among them;
+  `/zen/v1/chat/completions`;
 - the Anthropic dialect on `/zen/v1/messages`, where Zen serves its Claude models and
-  most of its Qwen ones, and on Anthropic's own `/v1/messages`.
+  most of its Qwen ones.
 
-The path has to match exactly. Zen's `/zen/v1/responses` (its GPT and Grok models) and
-`/zen/v1/models/<id>` (its Gemini models), and a provider mounted under a prefix of its
-own, are recorded with their method and path but not parsed.
+Cortex picks the dialect from how the path ends, not from the provider: a path ending in
+`/completions` is read as OpenAI and one ending in `/v1/messages` as Anthropic, under any
+prefix. A provider OpenCode is pointed at that speaks either one is parsed the same way:
+Anthropic's own API, LiteLLM, OpenRouter, Groq, Azure OpenAI. The body must also carry a
+`messages` array, or a `prompt` for legacy completions. Zen's `/zen/v1/responses` (its GPT
+and Grok models) and `/zen/v1/models/<id>` (its Gemini models) are other dialects, and are
+recorded with their method and path but not parsed.
 
 **Tokens and cost.** Token counts come from the usage block in the response. A streamed
 OpenAI-dialect response includes one only when the request asked for it
