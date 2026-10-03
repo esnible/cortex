@@ -195,7 +195,13 @@ func TestAgentScope_EveryListedSessionBelongsToExactlyOneRow(t *testing.T) {
 func TestPickerRows_SessionsAloneShowOtherButNeverOpenThePane(t *testing.T) {
 	m := otherSessionsFixture()
 	m.agents = []agentRow{{label: "claude-code"}}
-	if agentsPaneApplies(m.agents) {
+	// Without Bob's session, which is a second recognised agent and opens the pane by itself (see
+	// TestAgentsPane_APressOpensWhenOnlySessionsNameTheSecondAgent). What is left is one agent
+	// and the sessions that belong to Other.
+	m.sessions = slices.DeleteFunc(slices.Clone(m.sessions), func(s session.SessionSummary) bool {
+		return s.Agent == "bob-shell"
+	})
+	if agentsPaneApplies(m.agentChoices()) {
 		t.Fatal("one recognised agent opens the pane")
 	}
 	if entered, _ := m.enterAgentsOrRefuse(paneSessions); entered {
