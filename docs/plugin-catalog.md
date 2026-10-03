@@ -109,9 +109,19 @@ model to point it at, see
 
 ## `inference-parser`
 
-Parses outbound OpenAI-compatible LLM inference requests/responses into
-`pctx.Extensions.Inference` for downstream policy plugins, **and prices the finished
-response** — it is the one place tokens become dollars.
+Parses outbound LLM inference requests/responses into `pctx.Extensions.Inference` for
+downstream policy plugins, **and prices the finished response** — it is the one place
+tokens become dollars.
+
+It reads two dialects, chosen by how the request path ends, under any prefix: a path ending
+in `/completions` is OpenAI chat completions (or legacy completions), and one ending in
+`/v1/messages` is Anthropic Messages. That covers providers that mount the same API under a
+prefix of their own — IBM Bob's `/inference`, OpenCode Zen's `/zen`, OpenRouter's `/api`,
+Groq's `/openai`, Azure's `/openai/deployments/<d>` — with no code change. A body is taken
+for inference only if it carries a `messages` array, or a `prompt` for legacy completions.
+A body that fails that check is recorded the way an unrecognised path is: with no inference
+record, and still priced from a gateway's cost header. Other dialects — the Responses API,
+Gemini's native API, Bedrock's native API — are not parsed.
 
 Costing lives here because this is the only component that knows when usage is *final*: it
 owns the three response-finalization paths and the assembled-usage handling (Claude Code's

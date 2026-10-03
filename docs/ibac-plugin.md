@@ -373,6 +373,15 @@ NetworkPolicy, JWT validation) for the cases IBAC isn't suited to.
   `tools/call` that doesn't align with user intent) is covered by
   default — `mcp-parser` populates `MCPExtension{IsAction:true}` and
   the request flows to the judge regardless of `unclassified_policy`.
+- **Inference-shaped exfiltration** (a request whose path ends in
+  `/completions` or `/v1/messages`, with a `messages` array in the
+  body — or, on `/completions`, a `prompt`) is covered only when
+  `judge_inference: true` is set. `inference-parser` classifies
+  such a request as inference on any host, and IBAC skips inference
+  as `skip/inference_bypass` by default, `unclassified_policy:
+  "judge"` included. The host plays no part in the classification;
+  host trust is tracked, for gateway cost headers, in
+  [#1027](https://github.com/rossoctl/cortex/issues/1027).
 
 ## Failure Modes (Detailed)
 

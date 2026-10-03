@@ -149,16 +149,19 @@ func TestUnparsedEndpoint_RecordsNoInvocationRow(t *testing.T) {
 }
 
 // TestUnparseableBody_GatewayCostIsCharged is the same bug reached the other way: a
-// RECOGNISED path whose body the parser could not decode.
+// RECOGNISED path whose body the parser could not decode, or decoded and did not take for
+// inference.
 //
 // OnRequest is driven for real rather than hand-waved, so the test pins the actual
 // consequence of the ext == nil arm instead of a state a test author asserted was
-// equivalent to it. An empty body and a non-JSON body are both covered, because they are
-// two different arms of parseOpenAIRequest and the Anthropic parser has the pair as well.
+// equivalent to it. An empty body, a non-JSON body and a JSON body with no messages are
+// all covered, because they are three different arms of parseOpenAIRequest and the
+// Anthropic parser has all three as well.
 func TestUnparseableBody_GatewayCostIsCharged(t *testing.T) {
 	bodies := map[string][]byte{
-		"empty":    nil,
-		"not-json": []byte("<html>502 Bad Gateway</html>"),
+		"empty":       nil,
+		"not-json":    []byte("<html>502 Bad Gateway</html>"),
+		"no-messages": []byte(`{"model":"gpt-4o"}`),
 	}
 	for _, path := range []string{"/v1/chat/completions", anthropicMessagesPath} {
 		for name, body := range bodies {

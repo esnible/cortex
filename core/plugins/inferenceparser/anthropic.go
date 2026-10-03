@@ -10,32 +10,6 @@ import (
 	"github.com/rossoctl/cortex/core/plugins/internal/parsercommon"
 )
 
-// anthropicMessagesPath is the Anthropic Messages API endpoint. Clients
-// (e.g. claude-code via a LiteLLM/Anthropic-compatible gateway) POST here
-// instead of the OpenAI /v1/chat/completions endpoint, so the parser must
-// recognize both dialects.
-const anthropicMessagesPath = "/v1/messages"
-
-// zenMessagesPath and zenGoMessagesPath are OpenCode Zen's Anthropic-dialect endpoints:
-// Zen (opencode.ai/zen) serves its Claude models, and most of its Qwen ones, on an
-// Anthropic Messages endpoint under its /zen prefix, and OpenCode's Go plan mounts the
-// same under /zen/go.
-const (
-	zenMessagesPath   = "/zen/v1/messages"
-	zenGoMessagesPath = "/zen/go/v1/messages"
-)
-
-// isAnthropicMessagesPath reports whether path speaks the Anthropic Messages dialect. One
-// predicate for the request and every response-side call site, so no path can be read as
-// Anthropic on the way out and as OpenAI on the way back.
-func isAnthropicMessagesPath(path string) bool {
-	switch path {
-	case anthropicMessagesPath, zenMessagesPath, zenGoMessagesPath:
-		return true
-	}
-	return false
-}
-
 // --- request ---
 
 // anthropicRequest is the subset of the Anthropic Messages request we surface.
@@ -92,14 +66,21 @@ func (m *anthropicReqMessage) UnmarshalJSON(data []byte) error {
 }
 
 // parseAnthropicRequest builds an InferenceExtension from an Anthropic Messages
-// request body. Returns nil for an empty or non-JSON body (caller treats nil as
-// "not an inference request we can parse" and continues).
+// request body. Returns nil for an empty or non-JSON body, or one without a
+// messages array (caller treats nil as "not an inference request we can parse"
+// and continues).
 func parseAnthropicRequest(body []byte) *pipeline.InferenceExtension {
 	if len(body) == 0 {
 		return nil
 	}
 	var req anthropicRequest
 	if err := json.Unmarshal(body, &req); err != nil {
+		return nil
+	}
+
+	// The path said Anthropic; the body has to agree — see parseOpenAIRequest. A messages
+	// array is the one thing every Messages API request carries.
+	if req.Messages == nil {
 		return nil
 	}
 

@@ -50,39 +50,20 @@ func (p *InferenceParser) Capabilities() pipeline.PluginCapabilities {
 // so this is defense in depth for contexts constructed outside a listener
 // (tests, future transports). It stays because the failure mode it guards is
 // silent: Claude Code posts to /v1/messages?beta=true, and with a query
-// attached the exact-match dialect dispatch below falls to the default arm and
-// records no inference telemetry at all — or worse, sends an Anthropic stream
-// to the OpenAI parser.
+// attached the path no longer ends the way dialectFor looks for, so it falls to
+// the default arm and records no inference telemetry at all — or worse, sends an
+// Anthropic stream to the OpenAI parser.
 func endpointPath(pctx *pipeline.Context) string {
 	path, _, _ := strings.Cut(pctx.Path, "?")
 	return path
 }
 
-// bobPath is IBM Bob's inference endpoint. It speaks the OPENAI dialect — the
-// body is {model, messages, ...} — despite the path not matching any of the
-// OpenAI spellings above, because Bob mounts the API under an /inference prefix.
-//
-// A named const rather than another string in the switch: the prefix is what
-// makes it non-obvious that this is OpenAI-shaped, and the name is where that
-// gets said. It lives here, beside parseOpenAIRequest, rather than in
-// anthropic.go — routing an Anthropic-file const to the OpenAI parser reads as a
-// mistake even when it is not.
-const bobPath = "/inference/v1/chat/completions"
-
-// zenPath is OpenCode Zen's (opencode.ai/zen) OpenAI-dialect endpoint. It speaks the
-// OPENAI dialect — the body is {model, messages, ...} — despite living under a
-// /zen prefix, so it needs the same explicit routing bobPath does.
-const zenPath = "/zen/v1/chat/completions"
-
-// zenGoPath is the same OpenAI-dialect endpoint under the /zen/go prefix OpenCode's Go plan
-// uses. Zen's Anthropic-dialect endpoints are in anthropic.go, beside the parser they go to.
-const zenGoPath = "/zen/go/v1/chat/completions"
-
 func (p *InferenceParser) OnRequest(_ context.Context, pctx *pipeline.Context) pipeline.Action {
 	// Dispatch by endpoint dialect: OpenAI chat/completions vs Anthropic
-	// Messages. No Invocation is recorded when the parser doesn't apply
-	// (unrecognized path, empty body, or non-JSON body) — operators infer
-	// "inference-parser is in this pipeline" from config, not per-event rows.
+	// Messages. No Invocation is recorded when the parser doesn't apply (a path
+	// dialectFor does not recognise, or a body not taken for inference) —
+	// operators infer "inference-parser is in this pipeline" from config, not
+	// per-event rows.
 	//
 	// LEAVING Extensions.Inference NIL IS THE POINT on both arms below, and it is not the
 	// same thing as ignoring the request. Populating it for an endpoint this parser cannot
@@ -91,11 +72,10 @@ func (p *InferenceParser) OnRequest(_ context.Context, pctx *pipeline.Context) p
 	// the RESPONSE side settles the cost regardless, from the gateway's own header, which
 	// needs neither a model nor a body. See the nil-extension guard in OnResponseFrame.
 	var ext *pipeline.InferenceExtension
-	switch path := endpointPath(pctx); {
-	case isAnthropicMessagesPath(path):
+	switch dialectFor(endpointPath(pctx)) {
+	case dialectAnthropic:
 		ext = parseAnthropicRequest(pctx.Body)
-	case path == "/v1/chat/completions", path == "/v1/completions", path == "/chat/completions",
-		path == "/completions", path == bobPath, path == zenPath, path == zenGoPath:
+	case dialectOpenAI:
 		ext = parseOpenAIRequest(pctx.Body)
 	default:
 		return pipeline.Action{Type: pipeline.Continue}
@@ -128,15 +108,27 @@ func (p *InferenceParser) OnRequest(_ context.Context, pctx *pipeline.Context) p
 
 // parseOpenAIRequest builds an InferenceExtension from an OpenAI
 // chat/completions (or completions) request body. Returns nil for an empty or
-// non-JSON body. Every populated extension is an outbound LLM call — an agent
-// action (IsAction); the "don't judge inference by default" choice is operator
-// policy in IBAC, independent of this classification.
+// non-JSON body, and for one that is not an inference request. Every populated
+// extension is an outbound LLM call — an agent action (IsAction); the "don't
+// judge inference by default" choice is operator policy in IBAC, independent of
+// this classification.
 func parseOpenAIRequest(body []byte) *pipeline.InferenceExtension {
 	if len(body) == 0 {
 		return nil
 	}
 	var req inferenceRequest
 	if err := json.Unmarshal(body, &req); err != nil {
+		return nil
+	}
+	// THE PATH SAID OPENAI; THE BODY HAS TO AGREE. dialectFor matches how a path ends, which
+	// reaches every provider's prefix and also any endpoint that merely ends the same way,
+	// and every extension built here is read downstream as an agent's LLM call. It does more
+	// than label the request: it exempts it from IBAC's judge unless judge_inference is on,
+	// even under unclassified_policy: judge, and from settle's cap on an implausible gateway
+	// cost (implausibleUnparsedCost). So one is built only for a body carrying what such a
+	// call cannot do without: a messages array, or a legacy completions prompt. A model is
+	// not required — Azure names the deployment in the path and sends none.
+	if req.Messages == nil && !jsonPresent(req.Prompt) {
 		return nil
 	}
 	ext := &pipeline.InferenceExtension{
@@ -166,6 +158,12 @@ func parseOpenAIRequest(body []byte) *pipeline.InferenceExtension {
 		})
 	}
 	return ext
+}
+
+// jsonPresent reports whether a field was sent with a value. An absent field decodes to an
+// empty RawMessage and an explicit null to the bytes "null"; neither counts.
+func jsonPresent(raw json.RawMessage) bool {
+	return len(raw) > 0 && !bytes.Equal(raw, []byte("null"))
 }
 
 // OnResponse is the legacy buffered-path response hook. Because this
@@ -204,13 +202,13 @@ func (p *InferenceParser) OnResponse(_ context.Context, pctx *pipeline.Context) 
 	}
 
 	if ext.Stream {
-		if isAnthropicMessagesPath(endpointPath(pctx)) {
+		if dialectFor(endpointPath(pctx)) == dialectAnthropic {
 			parseAnthropicSSE(pctx.ResponseBody, ext)
 		} else {
 			parseInferenceSSE(pctx.ResponseBody, ext)
 		}
 	} else {
-		if isAnthropicMessagesPath(endpointPath(pctx)) {
+		if dialectFor(endpointPath(pctx)) == dialectAnthropic {
 			parseAnthropicJSON(pctx.ResponseBody, ext)
 		} else {
 			parseInferenceJSON(pctx.ResponseBody, ext)
@@ -287,8 +285,9 @@ func (p *InferenceParser) OnResponseFrame(_ context.Context, pctx *pipeline.Cont
 		// THE FOURTH BODY-LESS PATH, and the one not about a body at all: the guards below handle a
 		// response whose BODY could not be read, this one a response whose REQUEST was never
 		// parsed. OnRequest leaves Extensions.Inference nil for /v1/embeddings, /v1/rerank,
-		// anything else the gateway mounts, and any body that was not JSON — and returning here
-		// made all of it free, with the gateway's figure sitting unread on the response headers.
+		// anything else the gateway mounts, and any body it does not take for inference — and
+		// returning here made all of it free, with the gateway's figure sitting unread on the
+		// response headers.
 		//
 		// EVERY path, not an allowlist of the ones that look priceable. The predicate that
 		// decides whether money moves is "the gateway reported a cost", which
@@ -438,12 +437,12 @@ func (p *InferenceParser) OnResponseFrame(_ context.Context, pctx *pipeline.Cont
 		// must rewrite cannot also be forwarded as it arrives), and then deliver the
 		// entire stream as this one frame. Folding it as a single chunk parses nothing; it
 		// has to go through the SSE reader.
-		if isAnthropicMessagesPath(endpointPath(pctx)) {
+		if dialectFor(endpointPath(pctx)) == dialectAnthropic {
 			parseAnthropicSSE(frame, ext)
 		} else {
 			parseInferenceSSE(frame, ext)
 		}
-	} else if isAnthropicMessagesPath(endpointPath(pctx)) {
+	} else if dialectFor(endpointPath(pctx)) == dialectAnthropic {
 		parseAnthropicJSON(frame, ext)
 	} else {
 		parseInferenceJSON(frame, ext)
@@ -540,7 +539,7 @@ func normalizeSSE(body []byte) []byte {
 // endpoint speaks. Extracted so the mid-stream and terminal call sites cannot drift apart
 // on which parser a path gets.
 func foldResponseFrame(pctx *pipeline.Context, frame []byte, state *inferenceStreamState, ext *pipeline.InferenceExtension) {
-	if isAnthropicMessagesPath(endpointPath(pctx)) {
+	if dialectFor(endpointPath(pctx)) == dialectAnthropic {
 		foldAnthropicFrame(frame, state, ext)
 		return
 	}
@@ -806,6 +805,9 @@ type inferenceRequest struct {
 	Stream      bool               `json:"stream"`
 	Tools       []inferenceTool    `json:"tools"`
 	ToolChoice  any                `json:"tool_choice"` // "auto"/"none" or object
+	// Prompt is read only to tell a legacy completions request from a body that is not
+	// inference at all; see parseOpenAIRequest. It is not surfaced.
+	Prompt json.RawMessage `json:"prompt"`
 }
 
 // inferenceMessage accepts both OpenAI content shapes:
