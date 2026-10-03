@@ -329,6 +329,10 @@ func TestDoctorChecksTheCA(t *testing.T) {
 		return fmt.Sprintf(mark, "!") + caFile + " expires " + date(d) + "\n      fix: agentop service restart\n" +
 			"      Cortex mints a new CA as it restarts; restart the agents that use it afterwards\n"
 	}
+	expired := func(d time.Duration) string {
+		return fmt.Sprintf(mark, "✗") + caFile + " expired " + date(d) + "\n      fix: agentop service restart\n" +
+			"      Cortex mints a new CA as it restarts; restart the agents that use it afterwards\n"
+	}
 	remint := "\n      fix: agentop setup --restart\n"
 	enabled := func(dir string) string { return "tls_bridge:\n  mode: enabled\n  ca_dir: " + dir + "\n" }
 	for _, c := range []struct {
@@ -344,7 +348,10 @@ func TestDoctorChecksTheCA(t *testing.T) {
 			fmt.Sprintf(mark, "✓") + caFile + " · expires " + date(31*day) + "\n", false},
 		{"29 days", enabled, func(t *testing.T, dir string) { writeCA(t, dir, now.Add(29*day)) }, expiring(29 * day), false},
 		{"soon", enabled, func(t *testing.T, dir string) { writeCA(t, dir, now.Add(10*day)) }, expiring(10 * day), false},
-		{"expired", enabled, func(t *testing.T, dir string) { writeCA(t, dir, now.Add(-3*day)) }, expiring(-3 * day), false},
+		// x509 reads a certificate as valid through its NotAfter, and expired a second later.
+		{"at its NotAfter", enabled, func(t *testing.T, dir string) { writeCA(t, dir, now) }, expiring(0), false},
+		{"a second past", enabled, func(t *testing.T, dir string) { writeCA(t, dir, now.Add(-time.Second)) }, expired(-time.Second), true},
+		{"expired", enabled, func(t *testing.T, dir string) { writeCA(t, dir, now.Add(-3*day)) }, expired(-3 * day), true},
 		{"no ca.crt", enabled, func(*testing.T, string) {}, fmt.Sprintf(mark, "✗") + "no ca.crt in ~/.cortex/ca" + remint, true},
 		{"no bundle.crt", enabled, func(t *testing.T, dir string) {
 			writeCA(t, dir, now.Add(60*day))

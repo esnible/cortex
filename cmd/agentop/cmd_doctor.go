@@ -241,6 +241,12 @@ func checkCA(env *setupEnv, ui *checklist.UI, now time.Time) (failed bool) {
 		return true
 	}
 	expires := crt.NotAfter.Local().Format(time.DateOnly)
+	if now.After(crt.NotAfter) {
+		ui.Fail("CA", env.tilde(caFile)+" expired "+expires)
+		ui.Remedy("fix: ", restart)
+		ui.Faint("    Cortex mints a new CA as it restarts; restart the agents that use it afterwards") // at the fix's indent
+		return true
+	}
 	if crt.NotAfter.Sub(now) <= caExpiryWarning {
 		ui.Advise("CA", env.tilde(caFile)+" expires "+expires, restart)
 		ui.Faint("    Cortex mints a new CA as it restarts; restart the agents that use it afterwards") // at the fix's indent

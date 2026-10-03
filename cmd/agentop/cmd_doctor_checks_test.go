@@ -211,6 +211,9 @@ func TestDoctorCAFixesKeepABackgroundProxy(t *testing.T) {
 		{"expiring", func(t *testing.T, dir string) { writeCA(t, dir, now.Add(12*24*time.Hour)) },
 			"  ! CA           ~/.cortex/ca/ca.crt expires " + now.Add(12*24*time.Hour).Local().Format(time.DateOnly) +
 				"\n      fix: agentop setup --no-service --restart\n"},
+		{"expired", func(t *testing.T, dir string) { writeCA(t, dir, now.Add(-2*24*time.Hour)) },
+			"  ✗ CA           ~/.cortex/ca/ca.crt expired " + now.Add(-2*24*time.Hour).Local().Format(time.DateOnly) +
+				"\n      fix: agentop setup --no-service --restart\n"},
 		{"missing", func(*testing.T, string) {}, "  ✗ CA           no ca.crt in ~/.cortex/ca\n      fix: agentop setup --no-service --restart\n"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
