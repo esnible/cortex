@@ -5,7 +5,9 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -196,6 +198,51 @@ func TestDoctorChecksABackgroundProxyAsOne(t *testing.T) {
 	if fix, _ := fixAfter(out, markLine("✗", "PATH")); code != 1 || fix != "agentop setup --no-service" {
 		t.Errorf("exit %d and the PATH fix %q, want 1 and agentop setup --no-service:\n%s", code, fix, out)
 	}
+}
+
+// Nothing removes proxy.pid as the background proxy goes, after a reboot say, so
+// a --no-service install whose proxy is gone still has one: doctor checks it as
+// that install, and its fixes keep it one. A unit beside a stale proxy.pid is a
+// service install.
+func TestDoctorChecksABackgroundInstallWhoseProxyIsGone(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		pidfile func(pid int) string // proxy.pid once the proxy is gone
+	}{
+		{"its pid is gone", func(pid int) string { return strconv.Itoa(pid) + "\n" }},
+		{"it names no pid", func(int) string { return "\n" }},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			sc := newDoctorScene(t)
+			var pid int
+			stopProcessOnCleanup(t, &pid)
+			sc.installed(t, "--no-service")
+			pidFile := filepath.Join(sc.home, ".cortex", "proxy.pid")
+			if pid = readPIDFile(pidFile); pid == 0 {
+				t.Fatal("setup --no-service left no proxy.pid")
+			}
+			_ = syscall.Kill(pid, syscall.SIGKILL)
+			for i := 0; i < 50 && alive(pid); i++ {
+				time.Sleep(100 * time.Millisecond)
+			}
+			if alive(pid) {
+				t.Fatalf("fixture: pid %d is still alive", pid)
+			}
+			writeHomeFile(t, pidFile, c.pidfile(pid))
+			code, out := sc.doctor(t)
+			if fix, _ := fixAfter(out, markLine("✗", "started")); code != 1 || fix != "agentop setup --no-service" {
+				t.Errorf("exit %d and the started fix %q, want 1 and agentop setup --no-service:\n%s", code, fix, out)
+			}
+			wantLines(t, code, 1, out, "Claude Code is not routed; agentop setup --claude-code --no-service routes it\n")
+		})
+	}
+	t.Run("a unit beside it", func(t *testing.T) {
+		sc := newDoctorScene(t)
+		sc.installed(t)
+		writeHomeFile(t, filepath.Join(sc.home, ".cortex", "proxy.pid"), "2147483646\n")
+		code, out := sc.doctor(t)
+		wantLines(t, code, 0, out, "\n"+markLine("✓", "started")+supervisorName(runtimeGOOS())+" · healthy\n"+notRoutedLine)
+	})
 }
 
 // A background proxy has no service to restart, and setup without --no-service

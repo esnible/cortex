@@ -19,7 +19,7 @@ import (
 // proxyBinaryUnchanged is the stamp check). /healthz is asked here as well: the
 // unsupervised done state asks only whether the pid is alive.
 
-// backgroundOnly reports whether Cortex runs here as a background proxy with no
+// backgroundOnly reports whether Cortex is set up here as a background proxy with no
 // unit, as setup --no-service leaves it, so doctor plans it as one: otherwise the
 // service plan reads it as not started, and its fix would put a service in place
 // of the mode the user chose.
@@ -28,8 +28,7 @@ func backgroundOnly(env *setupEnv) bool {
 	if err != nil || serviceInstalled(sp) {
 		return false
 	}
-	_, running := proxyRunning(filepath.Join(env.cortexDir, "proxy.pid"))
-	return running
+	return fileExists(filepath.Join(env.cortexDir, "proxy.pid"))
 }
 
 // doctorRefine adds those checks to a step's done plan: a failed one makes the
