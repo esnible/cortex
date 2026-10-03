@@ -760,6 +760,15 @@ type model struct {
 	// agentsErr is the last fetch failure, shown in the pane rather than swallowed: an empty
 	// breakdown and an unreachable endpoint look identical otherwise.
 	agentsErr error
+	// agentsGateOwesALook is the startup gate held open for one session list. Its reply can land
+	// before the connection's first list, and the list now votes — agentChoices counts the agents
+	// its sessions name — so a decline made without one is provisional. Set when the gate declines
+	// on Sessions; spent by the next sessionsLoadedMsg, whatever it decides. ONE look, not a
+	// watch: a later list naming a new agent must not pull the operator into the picker
+	// mid-session. Where the list had already landed, the look sees what the gate saw unless the
+	// list changed in the refresh between. Cleared by backToPodsPane, since it is owed by the
+	// connection being left.
+	agentsGateOwesALook bool
 
 	pickerErr string // single-line picker error shown in footer
 
@@ -1018,6 +1027,9 @@ func (m *model) backToPodsPane() {
 	// list empties, so this assignment is not what closes the hole; it is here because this
 	// function's job is to discard what described the pod being left, and the set describes it.
 	m.untitledCounted = nil
+	// The startup gate's owed look belongs to the connection being left. Kept, the next pod's
+	// first list would spend it against the rows the last pod reported.
+	m.agentsGateOwesALook = false
 	m.previousPane = paneNone
 	// Same reason: a return pane recorded against the pod being left would send
 	// the next `P`-then-esc back into a pane belonging to the previous connection.
@@ -1264,8 +1276,18 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.sessions = []session.SessionSummary(msg)
 		m.connState.phase = connOpen
 		m.rebuildSessionsTable()
-		if len(m.agents) > 0 {
+		// agentChoices, not m.agents: the pane can be open on agents only sessions name, and
+		// their SESSIONS cells move with this list.
+		if len(m.agentChoices()) > 0 {
 			m.rebuildAgentsTable()
+		}
+		// The startup gate's one look at a session list, owed when it declined before this list
+		// could vote. Only from Sessions, for the reason the gate itself gives.
+		if m.agentsGateOwesALook {
+			m.agentsGateOwesALook = false
+			if m.pane == paneSessions {
+				m.enterAgentsAtStartup()
+			}
 		}
 		if m.pane == paneEvents {
 			m.rebuildEventsTable()
@@ -1402,16 +1424,10 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			//
 			// ONLY FROM SESSIONS: the reply lands a round trip after the view opened, and an
 			// operator who has already moved is left where they are.
-			if msg.err == nil && m.pane == paneSessions && agentsPaneApplies(m.agents) {
-				// paneNone, and msg.from is deliberately NOT read here. The gate has no caller
-				// pane to return to — it interrupted the sessions view — and the esc arm's
-				// existing paneNone fallback already lands on Sessions, which that arm documents
-				// as the one pane always defensible to land on. Reading msg.from instead would
-				// put the correctness of esc in an argument supplied a round trip earlier, where
-				// a test driving this message cannot see what production passes.
-				m.previousPane = paneNone
-				m.pane = paneAgents
-				m.rebuildAgentsTable()
+			if msg.err == nil && m.pane == paneSessions {
+				// A decline here may have been made before the first session list landed, so
+				// that list gets one look. See agentsGateOwesALook.
+				m.agentsGateOwesALook = !m.enterAgentsAtStartup()
 			}
 		case msg.err != nil:
 			// The `A` press cannot open a pane whose contents failed to load, and it must not
@@ -2304,7 +2320,7 @@ func (m *model) paneView() string {
 			// Named, not blank: an unreachable endpoint and a quiet day look identical
 			// otherwise, and only one of them is worth waiting out.
 			body = styleHint.Render("(agent breakdown unavailable: " + m.agentsErr.Error() + ")")
-		case len(m.agents) == 0:
+		case len(m.agentChoices()) == 0:
 			// Reachable in principle only by a refresh emptying the rows after entry — `A`
 			// refuses this state — so it says what happened rather than rendering an empty grid.
 			body = styleHint.Render("(no agent traffic in this window)")

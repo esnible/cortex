@@ -1254,7 +1254,7 @@ Layered on top of all of them:
 | `Esc` | pipeline | back to the pane `P` was pressed on |
 | `C` | any session-view pane (not the picker) | open the registered-plugin catalog. Was `P` until the pipeline took that letter |
 | `r` | catalog | refresh the catalog from `/v1/plugins` |
-| `A` | any session-view pane (not the picker) | open the per-agent cost breakdown — what each coding agent has spent today. Capital `A` because lowercase `a` cycles the spend drawer's axis. Refetches on every press, then **refuses below two agents** and says which one it found: a one-row breakdown restates a total already on screen. Not in the footer for that reason; the `?` overlay names it |
+| `A` | any session-view pane (not the picker) | open the per-agent cost breakdown — what each coding agent has spent today, plus a row of dashes for any agent that owns a listed session but has spent nothing today, since the sessions list is not limited to today and every session in it needs a row to scope to. Capital `A` because lowercase `a` cycles the spend drawer's axis. Refetches on every press, then **refuses below two agents**, counting both kinds of row, and says which one it found: a one-row breakdown restates a total already on screen. Not in the footer for that reason; the `?` overlay names it |
 | `↑↓` / `jk` | agents | move the cursor |
 | `↵` | agents | scope to the agent under the cursor, and leave — including the agent already scoped, which stays scoped. **The first row, All agents, clears the scope.** It reaches the sessions list, the usage pane, and the spend band and its drawer; `agentop cost --agent` is a separate process |
 | `Esc` | agents | back to the pane `A` was pressed on, leaving the scope as it is |
@@ -1267,8 +1267,11 @@ Layered on top of all of them:
 | `q` / `Ctrl+C` | any | quit (closes the key-help overlay first, if open) |
 
 **The picker also opens itself at startup**, once per connection, when two or more
-agents have been seen in the window — the same two-agent rule `A` applies, so a
-one-agent proxy goes straight to the sessions pane and says nothing. The cursor
+agents have spent in the window or own a listed session — the same two-agent rule `A`
+applies, so a one-agent proxy goes straight to the sessions pane and says nothing. The
+`default` bucket and unrecognised clients' sessions never count toward the two. When the
+spending reply beats the first session list, that list gets one more look, and only
+while the sessions pane is still showing. The cursor
 starts on `All agents`, so `↵` and `Esc` both keep every agent in view. Nothing is
 remembered between runs: a second agent appearing is exactly when the picker
 becomes worth showing, so a remembered dismissal would go stale then.

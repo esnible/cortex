@@ -139,25 +139,26 @@ func (m *model) otherSessionsCount() int {
 	return n
 }
 
-// pickerRows is the AGENTS table's rows: m.agents, plus an Other row when sessions belong to Other
-// but no unrecognised traffic in the window put one there.
+// pickerRows is the AGENTS table's rows: agentChoices, plus an Other row when sessions belong to
+// Other but no unrecognised traffic in the window put one there.
 //
-// THAT EXTRA ROW NEVER OPENS THE PANE BY ITSELF, which is why it is added here and not to m.agents,
-// where agentsPaneApplies would count it. The default bucket names no agent and exists on nearly
-// every proxy, so counting it would put the picker in front of every single-agent user at startup
-// — the cost agentsPaneApplies exists to avoid. Where the pane opens anyway it is shown, so a
-// scope never leaves the default bucket unreachable.
+// THAT EXTRA ROW NEVER OPENS THE PANE BY ITSELF, which is why it is added here and not in
+// agentChoices, which agentsPaneApplies counts. The default bucket names no agent and exists on
+// nearly every proxy, so counting it would put the picker in front of every single-agent user at
+// startup — the cost agentsPaneApplies exists to avoid. Where the pane opens anyway it is shown,
+// so a scope never leaves the default bucket unreachable.
 //
 // Only when some session names its agent: with none named the list ignores every scope (see
 // sessionsScope), so an Other row would scope nothing.
 func (m *model) pickerRows() []agentRow {
-	for _, a := range m.agents {
+	choices := m.agentChoices()
+	for _, a := range choices {
 		if a.label == otherAgents {
-			return m.agents
+			return choices
 		}
 	}
 	if !m.sessionsNameAgents() || m.otherSessionsCount() == 0 {
-		return m.agents
+		return choices
 	}
-	return append(slices.Clip(m.agents), agentRow{label: otherAgents})
+	return append(slices.Clip(choices), agentRow{label: otherAgents})
 }

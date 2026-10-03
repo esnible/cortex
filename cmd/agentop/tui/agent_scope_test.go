@@ -152,11 +152,13 @@ func TestAgentsPane_SessionsColumnOnlyOnceSessionsNameAgents(t *testing.T) {
 	}
 	m.sessions = sessionsFixture()
 	m.rebuildAgentsTable()
-	// The fixture's default bucket names no agent, so it is Other's, and Other gets a row. Row 0 is
-	// All agents.
-	if rows := m.agentsTbl.Rows(); len(rows) != 4 || rows[1][1] != "1" || rows[2][1] != emptyCell ||
-		rows[3][0] != otherAgents || rows[3][1] != "1" {
-		t.Errorf("SESSIONS cells = %v, want bob's 1, node's dash and Other's 1", rows)
+	// The fixture's default bucket names no agent, so it is Other's, and Other gets a row. Its
+	// Claude Code session is a recognised agent's with nothing in the window, so that agent gets a
+	// row too, after the window's; see agentChoices. Row 0 is All agents.
+	if rows := m.agentsTbl.Rows(); len(rows) != 5 || rows[1][1] != "1" || rows[2][1] != emptyCell ||
+		rows[3][0] != "claude-code/2.1.284" || rows[3][1] != "1" ||
+		rows[4][0] != otherAgents || rows[4][1] != "1" {
+		t.Errorf("SESSIONS cells = %v, want bob's 1, node's dash, claude-code's 1 and Other's 1", rows)
 	}
 }
 

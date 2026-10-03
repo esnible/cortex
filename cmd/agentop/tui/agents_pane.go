@@ -133,6 +133,53 @@ func agentsPaneRefusal(rows []agentRow) string {
 	return ""
 }
 
+// agentChoices is m.agents plus a row for every recognised agent that owns a listed session but
+// has no row there, because the window saw no traffic from it. It is what agentsPaneApplies and
+// agentsPaneRefusal are asked about, and what pickerRows builds on.
+//
+// THE PICKER SCOPES THE SESSIONS LIST, AND THE LIST IS NOT WINDOWED. Sessions outlive the day
+// (session.ttl defaults to never), so rows taken from today's spending alone go stale at midnight:
+// the morning after a night of three agents, the list still held OpenCode's and Bob's sessions
+// while the window had seen only Claude Code, so `A` refused with "only claude-code has been
+// seen" and nothing could narrow the list to the other two. An agent with sessions is an agent
+// the reader can pick, whatever it spent today.
+//
+// RECOGNISED AGENTS ONLY, so the gate stays what it was for the single-agent user. The default
+// bucket names no agent, and a session from an unrecognised client belongs to Other — counting
+// either would put the picker in front of every one-agent proxy at startup. See pickerRows for
+// where Other is added instead.
+//
+// MATCHED ON THE EXACT LABEL, the way sessionListed scopes and agentSessionsCell counts, so each
+// added row lists exactly its own sessions. The added rows go after the window's, ordered by
+// label — they have no figures to rank by — and before Other, which stays last.
+func (m *model) agentChoices() []agentRow {
+	var extra []string
+	for _, s := range m.sessions {
+		if !knownAgentLabel(s.Agent) || slices.Contains(extra, s.Agent) ||
+			slices.ContainsFunc(m.agents, func(a agentRow) bool { return a.label == s.Agent }) {
+			continue
+		}
+		extra = append(extra, s.Agent)
+	}
+	if len(extra) == 0 {
+		return m.agents
+	}
+	slices.Sort(extra)
+	out := make([]agentRow, 0, len(m.agents)+len(extra))
+	var other []agentRow
+	for _, a := range m.agents {
+		if a.label == otherAgents {
+			other = append(other, a)
+			continue
+		}
+		out = append(out, a)
+	}
+	for _, label := range extra {
+		out = append(out, agentRow{label: label})
+	}
+	return append(out, other...)
+}
+
 // agentsFetchTimeout bounds the one request this pane makes. The same 5s the usage pane
 // allows itself, matched rather than chosen again: both call GetUsage against the same
 // endpoint, and two different bounds on one call would be two different answers to "how long
@@ -289,13 +336,20 @@ func (m *model) rebuildAgentsTable() {
 	}
 	rows = append(rows, all)
 	for _, a := range picker {
+		requests, tokens := formatCount(int(a.Requests)), humanizeCount(a.Tokens)
+		if a.Requests == 0 {
+			// A row listed for its sessions, with no traffic in the window: agentChoices' added
+			// agents and pickerRows' Other. Dashes, as SESSIONS shows for none, because "0"
+			// beside the cost cell's "—" reads as a measured zero with an unknown price.
+			requests, tokens = emptyCell, emptyCell
+		}
 		rows = append(rows, table.Row{
 			// SANITISED AT RENDER TIME. The label is a User-Agent, so it is
 			// request-controlled; tui.sanitizeLabel is the package's render-time copy of the
 			// rule, named as such in ledger's own comment.
 			sanitizeLabel(a.label),
-			formatCount(int(a.Requests)),
-			humanizeCount(a.Tokens),
+			requests,
+			tokens,
 			agentCostCellIn(a.Counts, a.units, agentsCostWidth),
 		})
 		if withSessions {
@@ -361,13 +415,32 @@ func agentCostCellIn(c usage.Counts, units []string, budget int) string {
 // press time, the way `case "C":` does, and agentRowsLoadedMsg.from carries it across the
 // round trip.
 func (m *model) enterAgentsOrRefuse(from paneID) (entered bool, refusal string) {
-	if why := agentsPaneRefusal(m.agents); why != "" {
+	if why := agentsPaneRefusal(m.agentChoices()); why != "" {
 		return false, why
 	}
 	m.previousPane = from
 	m.pane = paneAgents
 	m.rebuildAgentsTable()
 	return true, ""
+}
+
+// enterAgentsAtStartup is the startup gate's entry: it enters when agentsPaneApplies and reports
+// whether it did, and it never speaks. Shared by the gate's reply and its one look at the first
+// session list, so the two cannot decide differently. The caller checks it is on Sessions.
+//
+// paneNone, and the reply's `from` is deliberately NOT read here. The gate has no caller pane to
+// return to — it interrupted the sessions view — and the esc arm's existing paneNone fallback
+// already lands on Sessions, which that arm documents as the one pane always defensible to land
+// on. Reading `from` instead would put the correctness of esc in an argument supplied a round trip
+// earlier, where a test driving this message cannot see what production passes.
+func (m *model) enterAgentsAtStartup() bool {
+	if !agentsPaneApplies(m.agentChoices()) {
+		return false
+	}
+	m.previousPane = paneNone
+	m.pane = paneAgents
+	m.rebuildAgentsTable()
+	return true
 }
 
 // allAgentsLabel is the picker's first row, the one that clears the scope.
