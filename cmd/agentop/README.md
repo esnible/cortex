@@ -1266,6 +1266,16 @@ Layered on top of all of them:
 | `Esc` | edit/{waiting,rollback} | background the watch; result lands as a footer flash |
 | `q` / `Ctrl+C` | any | quit (closes the key-help overlay first, if open) |
 
+**A trackpad or wheel scroll is `↑ ↓`**, in whichever pane has focus, in a terminal that
+turns a scroll over a full-screen program into arrow keys. Terminal.app does that only in
+application cursor-key mode, so when `TERM_PROGRAM=Apple_Terminal` agentop sets the mode,
+as vi does; without it the scroll moves Terminal.app's own scrollback instead. Elsewhere
+the mode stays off, because it makes xterm-style terminals send Home and End in a form
+agentop cannot read. agentop does not ask for mouse reporting, so click-and-drag
+selection stays the terminal's and copying text out of a pane works as it does at a
+shell prompt. The cost is that a scroll moves the focused pane, not the one under the
+pointer.
+
 **The picker also opens itself at startup**, once per connection, when two or more
 agents have spent in the window or own a listed session — the same two-agent rule `A`
 applies, so a one-agent proxy goes straight to the sessions pane and says nothing. The
