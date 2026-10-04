@@ -187,14 +187,14 @@ curl localhost:47601/v1/usage | jq .unpricedBy
 The Bob endpoint above is the worked example for [Billing units](#billing-units): it bills in
 Bobcoins rather than dollars, so closing its gap means giving that endpoint a `unit:` as well as
 rates. Pricing it without one would record Bobcoins as dollars — the figure would look right and be
-neither. The built-in local config (`cortex --local --write-config`, which both
-`install.sh` and `make dev-install` run) ships that entry, so a new install prices Bob already. A
-`~/.cortex/config.yaml` written before it is never rewritten, so `agentop service install` — which
-both of them also run — adds the entry to one that leaves Bob unpriced, keeping the previous file as
-`config.yaml.before-agentop-pricing`. It only ever adds: whatever already prices Bob's host, however
-it is written, is left alone, and a running proxy picks the entry up without a restart. A config
-that reaches Bob only through `cortex --local`, never the service, still needs the block below added
-by hand.
+neither. The built-in local config (`cortex --local --write-config`, which `agentop setup` runs on a
+fresh install, whether the installer or `make dev-install` started it) ships that entry, so a new
+install prices Bob already. A `~/.cortex/config.yaml` written before it is never rewritten, so
+setup's config step — and `agentop service install`, run by hand — adds the entry to one that leaves
+Bob unpriced, keeping the previous file as `config.yaml.before-agentop-pricing`. It only ever adds:
+whatever already prices Bob's host, however it is written, is left alone, and a running proxy picks
+the entry up without a restart. A config only ever run by hand as `cortex --local`, never through
+setup or the service, still needs the block below added by hand.
 
 The TUI annotates the same thing from the other direction: `agentop observe`'s cost total
 carries `[bundled]` or `[configured]` when a total is wholly one provenance, and names the

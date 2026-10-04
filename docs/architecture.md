@@ -36,13 +36,16 @@ root. `cortex` defaults to the `full` plugin profile; pass
 `go build` invocations.
 
 To run what you just built, `make dev-install` from the repo root builds both
-binaries, installs them to `~/.local/bin` (the same place `install.sh` puts the
-released ones), and restarts the local service so the new bytes are serving.
+binaries into `./bin` and hands them to the agentop just built:
+`./bin/agentop setup --from ./bin --yes --no-modify-path --restart`, the same setup
+a release install runs. Setup installs them to `~/.local/bin` (where a release
+install puts them too) and restarts the local service so the new bytes are serving.
 It works on a machine that has never run Cortex — it writes the built-in config
-first — and it accepts the same `PROFILE=`. It restarts every time, which cuts
-whatever is currently talking to the proxy and clears the in-memory session
-store; agents themselves keep working without restarting, because the CA in
-`~/.cortex/ca` is reused rather than re-minted.
+first — and it accepts the same `PROFILE=`. It never edits your shell profile;
+setup says so when `~/.local/bin` is not on PATH. `--restart` makes it restart
+every time, which cuts whatever is currently talking to the proxy and clears the
+in-memory session store; agents themselves keep working without restarting,
+because the CA in `~/.cortex/ca` is reused rather than re-minted.
 
 `PROFILE` has to satisfy the config you are running. `~/.cortex/config.yaml` names the
 plugins it wants, and a profile that omits one is a fatal error at startup rather than a

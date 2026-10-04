@@ -38,9 +38,12 @@ cd deploy/proxy-init && make docker-build-init
 ```
 
 Most day-to-day work needs no cluster: `make agentop` / `make cortex`
-build to `./bin/`, and `make dev-install` puts them on your PATH. Note that
-`dev-install` restarts the shared local Cortex service, which cuts every
-attached session.
+build to `./bin/`, and `make dev-install` builds both and runs
+`./bin/agentop setup --from ./bin --yes --no-modify-path --restart` — the same
+setup a release install hands off to. It installs them to `~/.local/bin` without
+editing your shell profile; setup says so when that directory is not on your PATH.
+Note that `--restart` restarts the shared local Cortex service every time, which
+cuts every attached session.
 
 ## Testing against a local cluster
 
@@ -131,15 +134,18 @@ not "main", in a bug report — the channel moves under you.
 
 Three things to know:
 
-- **Every `--ref=main` run replaces and restarts the service.** The installed build
-  never matches the requested `main`, so the installer always re-downloads and
-  `service install` always reinstalls. That cuts any running Claude Code session,
-  because `HTTPS_PROXY` is fixed in each session's environment at startup.
+- **A `--ref=main` run restarts the service whenever `main` has moved.** The installer
+  always downloads, and setup compares what it staged with what is installed. A newer
+  build replaces the binaries and restarts the service. That cuts any running Claude
+  Code session, because `HTTPS_PROXY` is fixed in each session's environment at
+  startup. The build you already have changes nothing: setup ends on
+  `cortex main-a1b2c3d is installed and healthy.`
 - **`checksums.txt` rolls with the assets.** The installer fetches assets and
   checksums in the same run, so verification is sound. Downloading them hours apart
   will mismatch.
-- **The plain one-liner takes you back.** Running it without `--ref` reinstalls the
-  newest release and reinstalls the service, so there is no stuck state to clean up.
+- **The plain one-liner takes you back.** Running it without `--ref` installs the
+  newest release over the channel build and restarts the service, so there is no stuck
+  state to clean up.
 
 The rolling release is tagged `main-latest`, not `main`. A GitHub release needs a git
 tag, and a tag named `main` would collide with the branch — `git rev-parse main` would
@@ -175,10 +181,12 @@ moment and are inert until then:
 
 The middle step is load-bearing, though not for the reason it first appears. The default
 one-liner is safe as soon as `main` carries the `newest_release()` v-tag filter: it
-resolves a `v` tag, re-execs that released copy, and the copy then matches
-`case "${SCRIPT_REF}" in v*)` and never calls `newest_release` at all. What needs a
-*filtered release* is anyone running a **released** copy as the parent — including the
-pinned one-liner this installer prints in its own "agentop is too old" message. An
+resolves a `v` tag, re-execs that released copy, and the copy's `resolve_version` then
+returns the `v*` tag it was handed without calling `newest_release` at all. What needs a
+*filtered release* is anyone running a **released** copy as the parent, fetched from a
+tag's URL rather than from `main`. v0.7.0 printed exactly such a one-liner in its own
+"has no 'service' command" message. The one this installer prints when an agentop has no
+`setup` command fetches from `main` with `--ref`, so it is not one of them. An
 unfiltered parent resolves the rolling release as its version and installs unreleased
 binaries. Cutting a release first stops that window growing; it cannot fix copies already
 published.

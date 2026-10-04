@@ -12,30 +12,62 @@ g.st0{animation:st0 50s linear infinite}
 @keyframes cx0_0{0%,0.0000%{x:16.0px}9.1560%,100%{x:948.4px}}
 @keyframes cv0_0{0%,0.0000%{visibility:hidden}0.0000%,9.1560%{visibility:visible}9.7560%,100%{visibility:hidden}}
 .cur0_0{animation:cx0_0 50s steps(111,end) infinite,cv0_0 50s linear infinite,blink 1s steps(1,end) infinite}
-@keyframes rv0_1{0%,10.0950%{visibility:hidden}10.0960%,100%{visibility:visible}}
+@keyframes rv0_1{0%,10.1550%{visibility:hidden}10.1560%,100%{visibility:visible}}
 .rv0_1{animation:rv0_1 50s linear infinite}
-@keyframes rv0_2{0%,15.0950%{visibility:hidden}15.0960%,100%{visibility:visible}}
+@keyframes rv0_2{0%,14.9550%{visibility:hidden}14.9560%,100%{visibility:visible}}
 .rv0_2{animation:rv0_2 50s linear infinite}
-@keyframes rv0_3{0%,16.8950%{visibility:hidden}16.8960%,100%{visibility:visible}}
+@keyframes rv0_3{0%,15.0150%{visibility:hidden}15.0160%,100%{visibility:visible}}
 .rv0_3{animation:rv0_3 50s linear infinite}
-@keyframes rv0_4{0%,18.2950%{visibility:hidden}18.2960%,100%{visibility:visible}}
+@keyframes rv0_4{0%,15.0750%{visibility:hidden}15.0760%,100%{visibility:visible}}
 .rv0_4{animation:rv0_4 50s linear infinite}
-@keyframes rv0_5{0%,18.5350%{visibility:hidden}18.5360%,100%{visibility:visible}}
+@keyframes rv0_5{0%,15.5750%{visibility:hidden}15.5760%,100%{visibility:visible}}
 .rv0_5{animation:rv0_5 50s linear infinite}
-@keyframes rv0_6{0%,20.3350%{visibility:hidden}20.3360%,100%{visibility:visible}}
+@keyframes rv0_6{0%,15.6550%{visibility:hidden}15.6560%,100%{visibility:visible}}
 .rv0_6{animation:rv0_6 50s linear infinite}
-@keyframes rv0_7{0%,20.6350%{visibility:hidden}20.6360%,100%{visibility:visible}}
+@keyframes rv0_7{0%,15.7350%{visibility:hidden}15.7360%,100%{visibility:visible}}
 .rv0_7{animation:rv0_7 50s linear infinite}
-@keyframes rv0_8{0%,20.9350%{visibility:hidden}20.9360%,100%{visibility:visible}}
+@keyframes rv0_8{0%,15.8150%{visibility:hidden}15.8160%,100%{visibility:visible}}
 .rv0_8{animation:rv0_8 50s linear infinite}
-@keyframes rv0_9{0%,21.2350%{visibility:hidden}21.2360%,100%{visibility:visible}}
+@keyframes rv0_9{0%,15.8950%{visibility:hidden}15.8960%,100%{visibility:visible}}
 .rv0_9{animation:rv0_9 50s linear infinite}
-@keyframes rv0_10{0%,21.8350%{visibility:hidden}21.8360%,100%{visibility:visible}}
+@keyframes rv0_10{0%,15.9750%{visibility:hidden}15.9760%,100%{visibility:visible}}
 .rv0_10{animation:rv0_10 50s linear infinite}
-@keyframes rv0_11{0%,24.2350%{visibility:hidden}24.2360%,100%{visibility:visible}}
+@keyframes rv0_11{0%,16.0350%{visibility:hidden}16.0360%,100%{visibility:visible}}
 .rv0_11{animation:rv0_11 50s linear infinite}
-@keyframes rv0_12{0%,26.0350%{visibility:hidden}26.0360%,100%{visibility:visible}}
+@keyframes rv0_12{0%,16.0950%{visibility:hidden}16.0960%,100%{visibility:visible}}
 .rv0_12{animation:rv0_12 50s linear infinite}
+@keyframes rv0_13{0%,16.1550%{visibility:hidden}16.1560%,100%{visibility:visible}}
+.rv0_13{animation:rv0_13 50s linear infinite}
+@keyframes rv0_14{0%,18.5550%{visibility:hidden}18.5560%,100%{visibility:visible}}
+.rv0_14{animation:rv0_14 50s linear infinite}
+@keyframes rv0_15{0%,18.6150%{visibility:hidden}18.6160%,100%{visibility:visible}}
+.rv0_15{animation:rv0_15 50s linear infinite}
+@keyframes rv0_16{0%,19.2150%{visibility:hidden}19.2160%,100%{visibility:visible}}
+.rv0_16{animation:rv0_16 50s linear infinite}
+@keyframes rv0_17{0%,19.5150%{visibility:hidden}19.5160%,100%{visibility:visible}}
+.rv0_17{animation:rv0_17 50s linear infinite}
+@keyframes rv0_18{0%,20.0150%{visibility:hidden}20.0160%,100%{visibility:visible}}
+.rv0_18{animation:rv0_18 50s linear infinite}
+@keyframes rv0_19{0%,22.6150%{visibility:hidden}22.6160%,100%{visibility:visible}}
+.rv0_19{animation:rv0_19 50s linear infinite}
+@keyframes rv0_20{0%,23.1150%{visibility:hidden}23.1160%,100%{visibility:visible}}
+.rv0_20{animation:rv0_20 50s linear infinite}
+@keyframes rv0_21{0%,23.1750%{visibility:hidden}23.1760%,100%{visibility:visible}}
+.rv0_21{animation:rv0_21 50s linear infinite}
+@keyframes rv0_22{0%,23.4150%{visibility:hidden}23.4160%,100%{visibility:visible}}
+.rv0_22{animation:rv0_22 50s linear infinite}
+@keyframes rv0_23{0%,23.4750%{visibility:hidden}23.4760%,100%{visibility:visible}}
+.rv0_23{animation:rv0_23 50s linear infinite}
+@keyframes rv0_24{0%,23.5350%{visibility:hidden}23.5360%,100%{visibility:visible}}
+.rv0_24{animation:rv0_24 50s linear infinite}
+@keyframes rv0_25{0%,23.5950%{visibility:hidden}23.5960%,100%{visibility:visible}}
+.rv0_25{animation:rv0_25 50s linear infinite}
+@keyframes rv0_26{0%,23.6550%{visibility:hidden}23.6560%,100%{visibility:visible}}
+.rv0_26{animation:rv0_26 50s linear infinite}
+@keyframes rv0_27{0%,23.7150%{visibility:hidden}23.7160%,100%{visibility:visible}}
+.rv0_27{animation:rv0_27 50s linear infinite}
+@keyframes rv0_28{0%,23.7750%{visibility:hidden}23.7760%,100%{visibility:visible}}
+.rv0_28{animation:rv0_28 50s linear infinite}
 @keyframes st1{0%,27.9990%{opacity:0}28.0000%,39.9990%{opacity:1}40.0000%,100%{opacity:0}}
 g.st1{animation:st1 50s linear infinite}
 @keyframes rv1_0{0%,27.9990%{visibility:hidden}28.0000%,100%{visibility:visible}}
@@ -169,18 +201,34 @@ clipPath rect{width:100000px}
 <clipPath id="cl0_0"><rect x="16.0" y="45.0" width="0" height="18.0"/></clipPath>
 <text clip-path="url(#cl0_0)" y="58.0"><tspan x="16.0" textLength="16.8" lengthAdjust="spacingAndGlyphs" fill="#3fb950" font-weight="600">$ </tspan><tspan x="32.8" textLength="915.6" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">curl -fsSL https://raw.githubusercontent.com/rossoctl/cortex/main/scripts/install.sh | sh -s -- --claude-code</tspan></text>
 <rect class="cur cur0_0" x="16.0" y="46.0" width="8.4" height="14.0"/>
-<text class="rv rv0_1" y="76.0"><tspan x="16.0" textLength="226.8" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">Resolving newest release...</tspan></text>
-<text class="rv rv0_2" y="94.0"><tspan x="16.0" textLength="319.2" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">Downloading v0.9.3 for darwin/arm64...</tspan></text>
-<text class="rv rv0_3" y="112.0"><tspan x="16.0" textLength="378.0" lengthAdjust="spacingAndGlyphs" fill="#3fb950">Installed agentop and cortex to ~/.cortex/bin</tspan></text>
-<text class="rv rv0_4" y="130.0"><tspan x="16.0" textLength="277.2" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">Setting up the launchd service...</tspan></text>
-<text class="rv rv0_5" y="148.0"></text>
-<text class="rv rv0_6" y="166.0"><tspan x="16.0" textLength="428.4" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">Adds to the &quot;env&quot; block of ~/.claude/settings.json:</tspan></text>
-<text class="rv rv0_7" y="184.0"><tspan x="16.0" textLength="319.2" lengthAdjust="spacingAndGlyphs" fill="#8b949e">    HTTPS_PROXY=http://localhost:47600</tspan></text>
-<text class="rv rv0_8" y="202.0"><tspan x="16.0" textLength="310.8" lengthAdjust="spacingAndGlyphs" fill="#8b949e">    HTTP_PROXY=http://localhost:47600</tspan></text>
-<text class="rv rv0_9" y="220.0"><tspan x="16.0" textLength="361.2" lengthAdjust="spacingAndGlyphs" fill="#8b949e">    NODE_EXTRA_CA_CERTS=~/.cortex/ca/ca.crt</tspan></text>
-<text class="rv rv0_10" y="238.0"><tspan x="16.0" textLength="579.6" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">Nothing else in the file changes; a copy is kept as settings.json.bak</tspan></text>
-<text class="rv rv0_11" y="256.0"><tspan x="16.0" textLength="117.6" lengthAdjust="spacingAndGlyphs" fill="#d29922">Apply? [y/N] y</tspan></text>
-<text class="rv rv0_12" y="274.0"><tspan x="16.0" textLength="268.8" lengthAdjust="spacingAndGlyphs" fill="#3fb950">Enabled — run `claude` as usual.</tspan></text>
+<text class="rv rv0_1" y="76.0"><tspan x="16.0" textLength="319.2" lengthAdjust="spacingAndGlyphs" fill="#c9d1d9">Downloading v0.9.3 for darwin/arm64...</tspan></text>
+<text class="rv rv0_2" y="94.0"><tspan x="16.0" textLength="420.0" lengthAdjust="spacingAndGlyphs" fill="#8b949e">  rosso cortex · installer   v0.9.3 · darwin/arm64</tspan></text>
+<text class="rv rv0_3" y="112.0"><tspan x="16.0" textLength="352.8" lengthAdjust="spacingAndGlyphs" fill="#8b949e">  ✓ downloaded   24.0 MB · sha256 verified</tspan></text>
+<text class="rv rv0_4" y="130.0"></text>
+<text class="rv rv0_5" y="148.0"><tspan x="16.0" textLength="100.8" lengthAdjust="spacingAndGlyphs" fill="#8b949e">  This will:</tspan></text>
+<text class="rv rv0_6" y="166.0"><tspan x="16.0" textLength="411.6" lengthAdjust="spacingAndGlyphs" fill="#8b949e">    install  agentop, cortex         ~/.local/bin</tspan></text>
+<text class="rv rv0_7" y="184.0"><tspan x="16.0" textLength="520.8" lengthAdjust="spacingAndGlyphs" fill="#8b949e">    add      ~/.local/bin to PATH    ~/.zshrc (2 marked lines)</tspan></text>
+<text class="rv rv0_8" y="202.0"><tspan x="16.0" textLength="487.2" lengthAdjust="spacingAndGlyphs" fill="#8b949e">    write    the cortex config       ~/.cortex/config.yaml</tspan></text>
+<text class="rv rv0_9" y="220.0"><tspan x="16.0" textLength="613.2" lengthAdjust="spacingAndGlyphs" fill="#8b949e">    run      the cortex proxy        launchd user agent · 127.0.0.1:47600</tspan></text>
+<text class="rv rv0_10" y="238.0"><tspan x="16.0" textLength="504.0" lengthAdjust="spacingAndGlyphs" fill="#8b949e">    route    Claude Code via Cortex  ~/.claude/settings.json</tspan></text>
+<text class="rv rv0_11" y="256.0"></text>
+<text class="rv rv0_12" y="274.0"><tspan x="16.0" textLength="285.6" lengthAdjust="spacingAndGlyphs" fill="#8b949e">  Undo any time: agentop uninstall</tspan></text>
+<text class="rv rv0_13" y="292.0"></text>
+<text class="rv rv0_14" y="310.0"><tspan x="16.0" textLength="159.6" lengthAdjust="spacingAndGlyphs" fill="#8b949e">  Continue? [Y/n] y</tspan></text>
+<text class="rv rv0_15" y="328.0"></text>
+<text class="rv rv0_16" y="346.0"><tspan x="16.0" textLength="394.8" lengthAdjust="spacingAndGlyphs" fill="#8b949e">  ✓ installed    agentop, cortex → ~/.local/bin</tspan></text>
+<text class="rv rv0_17" y="364.0"><tspan x="16.0" textLength="210.0" lengthAdjust="spacingAndGlyphs" fill="#8b949e">  ✓ PATH         ~/.zshrc</tspan></text>
+<text class="rv rv0_18" y="382.0"><tspan x="16.0" textLength="319.2" lengthAdjust="spacingAndGlyphs" fill="#8b949e">  ✓ config       ~/.cortex/config.yaml</tspan></text>
+<text class="rv rv0_19" y="400.0"><tspan x="16.0" textLength="537.6" lengthAdjust="spacingAndGlyphs" fill="#8b949e">  ✓ started      launchd user agent · healthy on 127.0.0.1:47600</tspan></text>
+<text class="rv rv0_20" y="418.0"><tspan x="16.0" textLength="310.8" lengthAdjust="spacingAndGlyphs" fill="#8b949e">  ✓ routed       Claude Code → Cortex</tspan></text>
+<text class="rv rv0_21" y="436.0"></text>
+<text class="rv rv0_22" y="454.0"><tspan x="16.0" textLength="184.8" lengthAdjust="spacingAndGlyphs" fill="#8b949e">  cortex v0.9.3 ready.</tspan></text>
+<text class="rv rv0_23" y="472.0"></text>
+<text class="rv rv0_24" y="490.0"><tspan x="16.0" textLength="235.2" lengthAdjust="spacingAndGlyphs" fill="#8b949e">  Open a new terminal, then:</tspan></text>
+<text class="rv rv0_25" y="508.0"></text>
+<text class="rv rv0_26" y="526.0"><tspan x="16.0" textLength="420.0" lengthAdjust="spacingAndGlyphs" fill="#8b949e">    agentop        # watch your agent traffic live</tspan></text>
+<text class="rv rv0_27" y="544.0"></text>
+<text class="rv rv0_28" y="562.0"><tspan x="16.0" textLength="285.6" lengthAdjust="spacingAndGlyphs" fill="#8b949e">  Undo any time: agentop uninstall</tspan></text>
 </g>
 <g class="st st1 lbl-sessions">
 <text class="rv rv1_0" y="58.0"><tspan x="16.0" textLength="1008.0" lengthAdjust="spacingAndGlyphs" fill="#6e7681">┌─ ~/work/api ─────────────────────────────────────────────────────────────────────────────────────────────────────────┐</tspan></text>

@@ -1,7 +1,8 @@
 #!/bin/sh
 # release_smoke_test_linux.sh — the Linux half of the release smoke test (#957).
 #
-# Exercises install.sh + agentop service exactly as a real user would, against
+# Exercises install.sh (and the agentop setup it hands off to) + agentop service
+# exactly as a real user would, against
 # a real published release: fresh install, upgrade over an existing install
 # (config preserved, and the NEW binary actually serving), a no-op re-run, and
 # a clean uninstall. Run against a real tag/release, not a local build — there
@@ -227,7 +228,13 @@ if ! install_cortex "${TAG}" >"${reinstall_out}" 2>&1; then
 	exit 1
 fi
 cat "${reinstall_out}"
-assert_contains "${reinstall_out}" "Already current" "re-running install was not a no-op"
+# install.sh hands off to `agentop setup`, which plans every step first. With nothing
+# to change it applies nothing and ends on its short-circuit line, "cortex <version>
+# is installed and healthy." (runSetup in cmd/agentop/cmd_setup.go), where a run that
+# changed something ends on "cortex <version> ready." instead. So this line is the
+# no-op, and naming the version also ties it to the build under test.
+assert_contains "${reinstall_out}" "cortex ${expected_version} is installed and healthy\." \
+	"re-running install was not a no-op"
 
 log "Uninstall"
 # Existence alone survives truncation or a rewrite — the promise being tested

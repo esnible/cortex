@@ -26,10 +26,13 @@ curl -fsSL https://raw.githubusercontent.com/rossoctl/cortex/main/scripts/instal
   | sh -s -- --claude-code
 ```
 
-It asks before changing your Claude Code settings, then runs Cortex as a background
-service that survives crashes and logins.
+The script downloads the release, verifies its checksums, and hands off to
+`agentop setup`. Setup lists every change it will make — the binaries, your PATH, the
+config, the service, Claude Code's settings — and asks once. It ticks off each step as
+it finishes, and undoes them all if one fails. Cortex then runs as a background service
+that survives crashes and logins.
 
-Then open two terminals:
+Then open two new terminals:
 
 ```sh
 agentop observe # the viewer
@@ -40,6 +43,8 @@ Your agent's calls stream into `agentop`. Cortex only reads them; nothing is rew
 
 - **[Cut token cost](./docs/laptop-token-savings.md)** — one more command
 - **[Start, stop, remove](./docs/laptop-service.md)** — `agentop service status | start | stop`
+- **Something wrong?** `agentop doctor` checks the install, changes nothing, and names
+  the command that fixes each problem it finds
 - **[Run it in Kubernetes](./docs/kubernetes.md)** — sidecars, Keycloak, SPIFFE/SPIRE
 
 **Any agent works**, not only Claude Code ([OpenCode](./docs/agents/opencode.md) has its
@@ -48,7 +53,8 @@ own `agentop configure` command): point it at `localhost:47600` and trust
 
 `curl | sh` never executes unreleased code — the script re-runs the copy from the newest
 release. Pin or override with `--ref`
-([CONTRIBUTING.md](./CONTRIBUTING.md#installing-an-unreleased-build)).
+([CONTRIBUTING.md](./CONTRIBUTING.md#installing-an-unreleased-build)). Add
+`--no-modify-path` to keep it out of your shell profile.
 
 **Full install guide:** [Cortex on your laptop](https://www.rossoctl.dev/docs/dev/get-started/laptop)
 — prerequisites, step-by-step walkthrough, service management and troubleshooting.
@@ -56,24 +62,28 @@ release. Pin or override with `--ref`
 ## Uninstall
 
 ```sh
-agentop configure opencode disable --yes
-agentop configure claude-code disable --yes && agentop service uninstall --yes
+agentop uninstall
 ```
 
-The first line is for OpenCode. It exits 1 when OpenCode is not installed, so it is a
-line of its own rather than chained with `&&`.
+`agentop uninstall` lists what it will remove and asks once. It unroutes Claude Code and
+OpenCode (and IBM Bob, where Cortex routed it), stops and removes the service, takes out
+the PATH lines setup added unless other tools in `~/.local/bin` still need them, and
+deletes `agentop`, `cortex` and `cortex-session-dump` from `~/.local/bin`. A step that
+fails is reported with its fix, and the rest still run.
 
 Claude Code and OpenCode go straight to their APIs again, and Cortex stops and no longer
-starts at login. Your config, CA and cost history stay in `~/.cortex`, so
-`agentop service install && agentop configure claude-code enable` brings it back as it was
-(and `agentop configure opencode enable` for OpenCode).
+starts at login. Your config, CA and cost history stay in `~/.cortex`, so the install
+command above brings it back as it was (and `agentop configure opencode enable` for
+OpenCode). `agentop uninstall --purge` deletes `~/.cortex` as well, unless a removal
+before it failed: then `~/.cortex` stays, and the end lists it as left behind.
 
 Restart any `claude` that was already running: it still points at Cortex.
 `claude --resume` picks the conversation back up. OpenCode needs no restart from you:
-`disable` restarts its background service when it finds it running.
+`uninstall` restarts its background service when it finds it running.
 
-To delete everything, see [Remove it](./docs/laptop-service.md#remove-it). If
-`agentop` itself is gone, [remove it by hand](./docs/laptop-service.md#if-agentop-is-already-gone).
+To delete everything and check nothing is left, see
+[Remove it](./docs/laptop-service.md#remove-it). If `agentop` itself is gone,
+[remove it by hand](./docs/laptop-service.md#if-agentop-is-already-gone).
 
 ## Feedback
 

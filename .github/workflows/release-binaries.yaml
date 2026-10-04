@@ -46,10 +46,12 @@ jobs:
     #
     # Precisely what that protects, because an earlier version of this comment
     # overstated it: the DEFAULT one-liner is safe as soon as main carries the filter,
-    # since it resolves a v-tag and re-execs the released copy, and that copy then hits
-    # `case "${SCRIPT_REF}" in v*)` and never calls newest_release at all. What needs a
-    # filtered release is anyone invoking a RELEASED copy as the parent — including the
-    # pinned one-liner this script prints in its own agentop-too-old message. An
+    # since it resolves a v-tag and re-execs the released copy, and that copy's
+    # resolve_version then returns the v* tag it was handed without calling
+    # newest_release at all. What needs a filtered release is anyone invoking a
+    # RELEASED copy as the parent, fetched from a tag's URL — as the one-liner in
+    # v0.7.0's own "has no 'service' command" message does. (The one install.sh prints
+    # now, for an agentop with no setup command, fetches main's copy with --ref.) An
     # unfiltered parent resolves the rolling release as its version and installs
     # unreleased binaries.
     #
@@ -197,10 +199,10 @@ jobs:
           add ''
           # The rename shipped with no alias, so it has to be said somewhere a v0.7.0
           # user will look. Drop this once no supported release predates it.
-          add '`agentop` was called `abctl` through v0.7.0. The installer deletes the old'
-          add '`~/.local/bin/abctl`; delete one you installed by hand yourself.'
+          add '`agentop` was called `abctl` through v0.7.0. `agentop setup`, which the installer hands'
+          add 'off to, deletes the old `~/.local/bin/abctl`; delete one you installed by hand yourself.'
           add '`cortex` was called `authbridge-proxy` (and `cortex-envoy`, `-cpex`, `-praxis` were'
-          add '`authbridge-*`); image and container names are unchanged. The installer removes the old'
+          add '`authbridge-*`); image and container names are unchanged. Setup removes the old'
           add 'binary once the service no longer runs it. Stop a proxy you started by hand first.'
           add ''
           add '`cortex` ships in variants matching the container images:'

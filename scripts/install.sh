@@ -3,24 +3,29 @@
 #
 #   curl -fsSL https://raw.githubusercontent.com/rossoctl/cortex/main/scripts/install.sh | sh
 #
-# Detects your OS/arch, downloads the prebuilt `agentop` and `cortex`
-# binaries for the newest release, verifies their SHA-256 checksums, installs
-# them to ~/.local/bin, and starts Cortex in the background — then prints the
-# commands to watch traffic and point an agent at it, plus how to stop it.
-# macOS + Linux, amd64 + arm64. No cluster, Keycloak, or SPIRE needed.
+# Detects your OS/arch, downloads the prebuilt `agentop` and `cortex` binaries for
+# the newest release, verifies their SHA-256 checksums, and stages them in a
+# temporary directory. Then it hands off to `agentop setup --from <stage>`, which
+# lists what it will change, asks once, installs to ~/.local/bin, starts Cortex with
+# its built-in config in ~/.cortex, undoes what it did if a step fails, and deletes
+# the stage. macOS + Linux, amd64 + arm64. No cluster, Keycloak, or SPIRE needed.
 #
-# It installs, starts Cortex with its built-in config in ~/.cortex, and prints the
-# command to send an agent through it. Traffic is decrypted and parsed for viewing;
-# nothing is rewritten. Cutting Claude Code's token cost is one opt-in command
-# afterwards, printed at the end.
+# This script keeps only what has to happen before there is an agentop to run: the
+# bootstrap below, the download, the checksums, and the extract. It prints little of
+# its own: the download's progress (a bar it erases, on a terminal; one plain line
+# otherwise), errors, and a few warnings and notices from those steps, such as a
+# dump helper it could not fetch or a TMPDIR that would not run programs. The rest
+# comes from setup. Traffic is decrypted and parsed for viewing; nothing is rewritten.
 #
 # Options (pass through the pipe with `sh -s --`, e.g.
 #   curl -fsSL ...install.sh | sh -s -- --install-only):
 #
-#   --install-only   install the binaries and stop
-#   --claude-code    after starting, offer to write the three env vars Claude Code
-#                    needs into ~/.claude/settings.json, so it runs as plain
-#                    `claude`. Prompts before changing anything.
+#   --install-only     install the binaries and PATH, and stop
+#   --claude-code      also route Claude Code through Cortex, so it runs as plain
+#                      `claude`. Setup asks before changing anything.
+#   --no-modify-path   never edit a shell profile
+#
+# The rest are in `--help`. Each one this script shares with setup is passed on.
 #
 # There is deliberately only one config. It carries the parsers AND tool-prune,
 # and the proxy preserves edits to it, so a second "cost-optimised" config had
@@ -44,14 +49,15 @@
 # --ref=main opts back in; --ref=vX.Y.Z pins.
 #
 # Every path here installs a RELEASE. To install what is in a checkout instead,
-# use `make dev-install` from the repo root: it compiles both binaries, writes them
-# to the same ~/.local/bin this script uses, and restarts the service. --ref=main
-# is not that — it only chooses which copy of this script runs, and that copy still
-# downloads a build.
+# use `make dev-install` from the repo root: it compiles both binaries to ./bin and
+# runs the same handoff, `./bin/agentop setup --from ./bin`. --ref=main is not that —
+# it only chooses which copy of this script runs, and that copy still downloads a
+# build.
 #
 # Environment (maintainer testing only — not part of the documented interface):
-#   AUTHBRIDGE_SKIP_DOWNLOAD=1  use the already-installed binaries in ~/.local/bin
-#                               instead of downloading (re-run setup offline)
+#   AUTHBRIDGE_SKIP_DOWNLOAD=1  download nothing; hand the agentop already in
+#                               ~/.local/bin to `agentop setup`, which re-checks
+#                               and repairs what is installed
 # set -eu, not -euo pipefail: this is POSIX sh (the documented entry point is
 # `curl ... | sh`), and `pipefail` is a bashism that would abort the script under
 # dash/ash. The repo-wide `set -euo pipefail` convention applies to bash scripts.
@@ -71,60 +77,11 @@ BIN_DIR="${HOME}/.local/bin"
 # Every file Cortex writes for this user lives here: config, CA, keys, logs,
 # pidfiles. One directory to inspect, back up, or delete.
 CORTEX_DIR="${HOME}/.cortex"
-# PATH_MARKER identifies our block in a shell profile, so a re-run does not add a
-# second copy and a person can find what to delete.
-PATH_MARKER="# added by Cortex (rossoctl/cortex) — delete these two lines to undo"
 
-# installed_version prints the version of an already-installed binary, or nothing.
-#
-# Both binaries print "<name> vX.Y.Z"; the tag is the last field. Anything unexpected —
-# missing binary, a build that does not know --version, a quarantined binary that will
-# not run — prints nothing, which reads as "not this version" and re-installs. Erring
-# toward re-installing is right: a wrong skip leaves someone on an old build believing
-# they upgraded.
-installed_version() {
-	[ -x "${BIN_DIR}/$1" ] || return 0
-	"${BIN_DIR}/$1" --version 2>/dev/null | awk 'NR==1{print $NF}'
-}
-
-# remove_stale OLD NEW deletes a binary that a release before the renames installed:
-# abctl (now agentop) and authbridge-proxy (now cortex). There are no aliases, and a
-# stale abctl left on PATH would still manage the same launchd/systemd unit while
-# disagreeing with agentop about which build wrote it.
-#
-# "Ours" is read from the module path Go embeds in every binary, not by running it: a
-# build older than --version would not answer, and a tool of someone else's that
-# happens to share the name is not ours to delete. Stripped release builds keep the
-# path too (v0.7.0's abctl carries it several hundred times); every release is
-# post-org-move, so rossoctl/cortex is the only spelling to match.
-#
-# Nor while an installed service unit still names it. --install-only, or a supervisor
-# that could not take the job, leaves the pre-rename unit in place, and deleting the
-# binary under it would leave launchd or systemd starting a file that is gone. The
-# unit is searched for "/OLD" rather than the full path because both formats escape
-# paths (XML in the plist, shell quoting in the systemd unit); a rewritten unit names
-# only the new binary. `make dev-install` runs this same function, extracted from here.
-remove_stale() {
-	_old="${BIN_DIR}/$1"
-	[ -f "${_old}" ] || return 0
-	grep -qE "github\.com/rossoctl/cortex/(authbridge/)?cmd/$1" "${_old}" 2>/dev/null || return 0
-	for _unit in "${HOME}/Library/LaunchAgents/io.rossoctl.cortex.plist" \
-		"${HOME}/.config/systemd/user/cortex.service"; do
-		if grep -qF "/$1" "${_unit}" 2>/dev/null; then
-			info "Kept ${_old}: the installed service still runs it. It is called $2 now;"
-			info "  \`agentop service install\` moves the service over, then delete the old file."
-			return 0
-		fi
-	done
-	rm -f "${_old}"
-	info "Removed ${_old} — it is called $2 now."
-}
-# SUPERVISOR_NAME is the human label; SUPERVISOR_CMD is the actual command the
-# messages name, so "launchctl may not be used here" reads as the thing the user
-# would otherwise reach for.
+# SUPERVISOR_NAME is the human label --stop names the service by.
 case "$(uname -s)" in
-	Darwin) SUPERVISOR_NAME="launchd user agent"; SUPERVISOR_CMD="launchctl" ;;
-	*) SUPERVISOR_NAME="systemd user unit"; SUPERVISOR_CMD="systemctl --user" ;;
+	Darwin) SUPERVISOR_NAME="launchd user agent" ;;
+	*) SUPERVISOR_NAME="systemd user unit" ;;
 esac
 
 info() { printf '%s\n' "$*"; }
@@ -142,11 +99,11 @@ die()  { printf 'error: %s\n' "$*" >&2; exit 1; }
 # which is the only thing this installer cares about.
 #
 # So instead of detecting and pre-deciding, we ATTEMPT each restricted operation and
-# handle what actually fails: supervisor_usable() (a real `launchctl list` /
-# `systemctl --user` probe) plus the service-install attempt fall back to a plain
-# background process with a clear message, and ensure_tmpdir writes-then-falls-back to
-# a scratch dir under ~/.cortex. Nothing assumes the sandbox is restrictive; nothing
-# assumes it is permissive either.
+# handle what actually fails: ensure_tmpdir writes-then-falls-back to a scratch dir
+# under ~/.cortex, the exec probe re-stages there when TMPDIR will not run programs,
+# and agentop setup does the same for the supervisor (a real `launchctl list` /
+# `systemctl --user` probe, then a plain background process). Nothing assumes the
+# sandbox is restrictive; nothing assumes it is permissive either.
 
 # ensure_tmpdir guarantees TMPDIR names a directory we can actually write, and is
 # exported. mktemp (used by the bootstrap and the download) and the release-tag scratch
@@ -197,28 +154,33 @@ Usage:
   curl -fsSL https://raw.githubusercontent.com/rossoctl/cortex/main/scripts/install.sh | sh
   curl -fsSL ...install.sh | sh -s -- [option]
 
-Installs agentop and cortex to ~/.local/bin, starts the proxy with its
-built-in config in ~/.cortex, and prints the command to send an agent through it.
-Traffic is decrypted and parsed for viewing; nothing is rewritten.
+Downloads agentop and cortex for the newest release, verifies their checksums and
+stages them, then hands off to `agentop setup`. Setup lists what it will change,
+asks once, installs to ~/.local/bin, and starts the proxy with its built-in config
+in ~/.cortex. Traffic is decrypted and parsed for viewing; nothing is rewritten.
 
 Options:
-  --install-only   install the binaries and stop
-  --claude-code    after starting, offer to configure Claude Code to use it, so
-                   it runs as plain `claude` with no environment variables
-  --local          the default, spelled out
-  --no-service     do not use the OS service supervisor (launchd/systemd); start
-                   the proxy directly as a background process instead. Chosen
-                   automatically when the supervisor turns out to be unavailable
-                   (e.g. a macOS seatbelt sandbox that blocks launchctl); either
-                   way it prints how to start, stop, and check it by hand
-  --stop           stop a running Cortex and exit — the supervised service if one
-                   is installed, and the background proxy from its pidfile. Does
-                   not download, install, or start anything. Safe to re-run.
-  --yes, -y        do not prompt; answer yes to configuring Claude Code
-  --ref=REF        install from a git ref instead of the newest release — both
-                   this script and the binaries (e.g. --ref=main for unreleased
-                   changes, --ref=v0.7.0-alpha.4 to pin)
-  -h, --help       this text
+  --install-only     install the binaries and PATH, and stop
+  --claude-code      also configure Claude Code to use it, so it runs as plain
+                     `claude` with no environment variables
+  --local            the default, spelled out
+  --no-service       do not use the OS service supervisor (launchd/systemd); run
+                     the proxy directly as a background process instead. Chosen
+                     automatically when the supervisor turns out to be unavailable
+                     (e.g. a macOS seatbelt sandbox that blocks launchctl)
+  --no-modify-path   never edit a shell profile; only say so when ~/.local/bin is
+                     not on PATH
+  --stop             stop a running Cortex and exit — the supervised service if one
+                     is installed, and the background proxy from its pidfile. Does
+                     not download, install, or start anything. Safe to re-run.
+  --yes, -y          do not ask; apply the changes setup lists
+  --ref=REF          install from a git ref instead of the newest release — both
+                     this script and the binaries (e.g. --ref=main for unreleased
+                     changes, --ref=v0.7.0-alpha.4 to pin)
+  -h, --help         this text
+
+Undo any time:
+  agentop uninstall
 
 After installing, to cut Claude Code's token cost:
   agentop tools scan --write ~/.cortex/config.yaml   (proposes which tools to prune)
@@ -240,6 +202,9 @@ WANT_REF=""
 # restricted operation (the supervisor, a writable TMPDIR) and fall back on whatever
 # actually fails, rather than deciding up front that this is a sandbox.
 NO_SERVICE=""
+# NO_MODIFY_PATH keeps setup out of every shell profile. This loop runs before the
+# bootstrap, so main's copy must accept the flag for a piped install to pass it on.
+NO_MODIFY_PATH=""
 for arg in "$@"; do
 	case "$arg" in
 		--install-only) MODE=install-only ;;
@@ -247,6 +212,7 @@ for arg in "$@"; do
 		--yes | -y) ASSUME_YES=1 ;;
 		--ref=*) WANT_REF="${arg#*=}" ;;
 		--no-service) NO_SERVICE=1 ;;
+		--no-modify-path) NO_MODIFY_PATH=1 ;;
 		--stop) MODE=stop ;;
 		# --local is the default; accepted so writing it out explicitly works, and
 		# so it mirrors the proxy flag of the same name.
@@ -255,7 +221,7 @@ for arg in "$@"; do
 			usage
 			exit 0
 			;;
-		*) die "unknown option: $arg (try --claude-code, --install-only, --local, --no-service, --stop, --ref=REF, --yes, or no argument)" ;;
+		*) die "unknown option: $arg (try --claude-code, --install-only, --local, --no-modify-path, --no-service, --stop, --ref=REF, --yes, or no argument)" ;;
 	esac
 done
 # Removed knobs die rather than being ignored. Left set in someone's shell,
@@ -534,6 +500,17 @@ if [ -n "${_reexec}" ]; then
 			# set -e would abort the parent on a non-zero child before any of the
 			# lines below ran, leaking the downloaded script on every failed
 			# install. The if/else keeps the status and still cleans up.
+			#
+			# A signal would too. A ^C during setup reaches this shell as well as the
+			# child, which catches it: at the prompt it exits 3, and mid-install it
+			# rolls back first. dash dies of an INT it does not catch even while its
+			# child handles it, so the user's shell got 130, the script stayed in
+			# TMPDIR, and the prompt could come back while setup was still printing. A
+			# TERM to the group, or a closed terminal's HUP, kills bash that way too,
+			# not only dash. Caught, each waits here for the child, and this shell
+			# exits with its status. A no-op, not '': an ignored signal is inherited,
+			# and the child could not catch it then.
+			trap : INT TERM HUP
 			if AUTHBRIDGE_SCRIPT_REF="${want_ref}" sh "${boot}" "$@"; then
 				status=0
 			else
@@ -579,32 +556,12 @@ sha_check() {
 	fi
 }
 
-# ca_fingerprint prints a hash of the bridge CA, or nothing when there is no CA yet.
-# Same tool preference as sha_check: shasum on macOS, sha256sum elsewhere. Prints
-# nothing rather than failing when neither exists — this drives one advisory message,
-# and an installer must not die over that.
-ca_fingerprint() {
-	[ -f "${ca_dir}/ca.crt" ] || return 0
-	if command -v shasum >/dev/null 2>&1; then
-		shasum -a 256 "${ca_dir}/ca.crt" 2>/dev/null | cut -d' ' -f1
-	elif command -v sha256sum >/dev/null 2>&1; then
-		sha256sum "${ca_dir}/ca.crt" 2>/dev/null | cut -d' ' -f1
-	fi
-	# Explicit, because the caller assigns this in a bare `fp="$(ca_fingerprint)"` and a
-	# non-zero status there aborts under set -e. An if/elif with no matching branch
-	# happens to yield 0 today, but that stops being true the moment someone adds an
-	# else — too subtle a thing to leave the installer's survival resting on.
-	return 0
-}
-
 # Demo listener ports — loopback, and deliberately uncommon to avoid colliding
 # with common dev tools. Keep in sync with the built-in config in
-# cmd/cortex/local.go.
+# cmd/cortex/local.go. --stop checks each one is free once it has stopped Cortex.
 DEMO_FORWARD_PORT=47600
 DEMO_SESSION_PORT=47601
 DEMO_STATS_PORT=47602
-# Bound too, and previously missing from the preflight — an occupied 47604 let the
-# download finish and then killed the proxy during startup.
 DEMO_HEALTH_PORT=47604
 
 # port_in_use exits 0 if something is already listening on the given loopback port.
@@ -631,17 +588,6 @@ port_in_use() {
 	else
 		return 1
 	fi
-}
-
-# demo_ports_busy exits 0 if ANY of the local listener ports is already in use. Used
-# to tell a real "no supervisor" case (ports free -> safe to run unsupervised) from
-# the benign upgrade race (old proxy still holds the ports -> starting a second one
-# would just crash on the bind).
-demo_ports_busy() {
-	for _p in "${DEMO_FORWARD_PORT}" "${DEMO_SESSION_PORT}" "${DEMO_STATS_PORT}" "${DEMO_HEALTH_PORT}"; do
-		port_in_use "${_p}" && return 0
-	done
-	return 1
 }
 
 # pid_exe_path prints the full executable path of a pid, or nothing when it cannot
@@ -689,212 +635,9 @@ pid_exe_path() { # pid
 	return 1
 }
 
-# port_holder prints "<pid> <executable-path>" for whatever listens on the given
-# loopback port, and nothing when it cannot name both. The binary path is the
-# whole point here: it is what distinguishes our own proxy from a foreign one,
-# since every candidate is named cortex.
-#
-# Two pid sources, mirroring port_in_use: lsof, then `ss -p` (iproute2, the
-# default on modern Linux where lsof is often not installed, and the platform
-# this detection would otherwise silently never fire on). ss cannot name the
-# binary, but it does print the pid — and the pid is all that is needed, because
-# the path is resolved from it separately either way. nc is not a source: it
-# reports only that a port is taken, with no pid to resolve.
-#
-# Address matching follows port_in_use's ss branch: a listener on IPv4 loopback,
-# IPv6 loopback, or a wildcard bind all make the loopback port unavailable, so
-# all three must be seen. A bind on an external interface only does not, and
-# must not be reported as the holder.
-port_holder() {
-	_ph_pid=""
-	if command -v lsof >/dev/null 2>&1; then
-		# Query the loopback addresses and the wildcard separately: -i@127.0.0.1
-		# alone misses a proxy bound to ::1 or to 0.0.0.0, both of which do hold
-		# the port. Plain -i:PORT would also match an external-only bind, which
-		# does not. lsof reports a wildcard listener under -i@0.0.0.0 / -i@[::].
-		for _ph_addr in '127.0.0.1' '[::1]' '0.0.0.0' '[::]'; do
-			_ph_pid=$(lsof -nP -iTCP@"${_ph_addr}":"$1" -sTCP:LISTEN -Fp 2>/dev/null \
-				| sed -n 's/^p//p' | head -1)
-			[ -n "${_ph_pid}" ] && break
-		done
-	fi
-	if [ -z "${_ph_pid}" ] && command -v ss >/dev/null 2>&1; then
-		# -p adds users:(("name",pid=N,fd=M)); take the first pid= on a line whose
-		# Local Address:Port ($4) is loopback or wildcard, exactly as port_in_use
-		# filters it. The trailing fields shift with -p, so match on $4 by name.
-		_ph_pid=$(ss -Hltnp "sport = :$1" 2>/dev/null \
-			| awk -v p=":$1" '($4 ~ ("(^|[^0-9])127\\.0\\.0\\.1"p"$")||($4 ~ ("^\\[::1\\]"p"$"))||($4 ~ ("^(0\\.0\\.0\\.0|\\*|\\[::\\]|::)"p"$"))) && match($0, /pid=[0-9]+/) {print substr($0, RSTART+4, RLENGTH-4); exit}')
-	fi
-	[ -n "${_ph_pid}" ] || return 1
-	# No path means the holder cannot be told apart from our own proxy. Report
-	# nothing rather than a placeholder: the callers treat any non-match as
-	# foreign, so "unidentified" must not travel as a value.
-	_ph_cmd=$(pid_exe_path "${_ph_pid}") || return 1
-	[ -n "${_ph_cmd}" ] || return 1
-	printf '%s %s\n' "${_ph_pid}" "${_ph_cmd}"
-}
-
-# foreign_proxy_holder prints "<pid> <path>" when the forward port is held by a
-# process that is NOT the proxy this script manages, and nothing otherwise.
-#
-# Why this exists: a busy forward port was classified unconditionally as the
-# benign upgrade race, on the assumption that the holder is our own proxy still
-# draining. That assumption fails whenever the holder belongs to a DIFFERENT
-# install — a copy run from a checkout, a second clone, an earlier install whose
-# binary moved. Such a process never drains, so "wait and re-run" never comes
-# true, and the supervised service retries its bind forever. Worse, the squatter
-# keeps serving with its OWN TLS-bridge CA while clients are configured to trust
-# the CA of the install that cannot start, so every intercepted request fails
-# certificate verification. That surfaces to users as a self-signed-certificate
-# error from their agent, which points at the certificate rather than at the two
-# proxies fighting over one port.
-#
-# "Ours" is decided by the pidfile and by the binary path we install to, not by
-# process name: every candidate is named cortex, so the name cannot
-# discriminate.
-#
-# This fails CLOSED in every direction. When the holder cannot be named — no
-# lsof and no ss, or a pid whose executable cannot be read (a process owned by
-# another user, a sandbox that blinds both) — nothing is reported and the
-# previous ports-busy behavior stands, rather than accusing a process that
-# cannot be seen. Same stance proxy_running takes when `ps` is blind: no
-# information means assume it is ours, because the cost of a false "foreign" is
-# a die() telling the user to kill their own proxy mid-upgrade.
-foreign_proxy_holder() {
-	_fp_holder=$(port_holder "${DEMO_FORWARD_PORT}") || return 1
-	[ -n "${_fp_holder}" ] || return 1
-	_fp_pid=${_fp_holder%% *}
-	_fp_cmd=${_fp_holder#* }
-	# Both halves must be present, and there must really be two of them: with no
-	# space in the line, `${_fp_holder#* }` yields the whole line back, so a bare
-	# pid would be compared as though it were a path and read as foreign. A pid
-	# without a path cannot be judged at all — fail closed.
-	[ -n "${_fp_pid}" ] || return 1
-	[ -n "${_fp_cmd}" ] || return 1
-	[ "${_fp_cmd}" != "${_fp_holder}" ] || return 1
-
-	# Our own unsupervised proxy, recorded at start: not foreign.
-	if [ -f "${PROXY_PIDFILE}" ]; then
-		_fp_recorded=$(cat "${PROXY_PIDFILE}" 2>/dev/null)
-		[ -n "${_fp_recorded}" ] && [ "${_fp_pid}" = "${_fp_recorded}" ] && return 1
-	fi
-	# The binary this install manages: a supervised restart of it is the genuine
-	# upgrade race, so leave that to the existing ports-busy path.
-	#
-	# Text equality first, then again with both sides symlink-resolved. The path
-	# resolved for a running process and the path we install to can differ
-	# character-for-character while naming one file: /proc/<pid>/exe resolves
-	# every symlink, so a $HOME that is itself a symlink — or /var -> /private/var
-	# on macOS — yields a different string for the same binary, and that would
-	# read as foreign. `test -ef` would say this in one operator but is not POSIX
-	# and this script is strict /bin/sh, so compare canonical paths instead.
-	# Keeping the plain text check as well matters for the case where the file is
-	# gone: an install whose binary was replaced under a running process still
-	# reads as ours on the string alone.
-	_fp_mine="${BIN_DIR}/cortex"
-	[ "${_fp_cmd}" = "${_fp_mine}" ] && return 1
-	if command -v readlink >/dev/null 2>&1; then
-		_fp_a=$(readlink -f "${_fp_cmd}" 2>/dev/null || true)
-		_fp_b=$(readlink -f "${_fp_mine}" 2>/dev/null || true)
-		[ -n "${_fp_a}" ] && [ "${_fp_a}" = "${_fp_b}" ] && return 1
-	fi
-
-	printf '%s %s\n' "${_fp_pid}" "${_fp_cmd}"
-}
-
-# service_install_action classifies the outcome of `agentop service install` into one
-# word, so the decision is one testable place instead of a chain of greps inline.
-#   $1 = agentop's exit status   $2 = agentop's combined stdout+stderr
-# Prints exactly one of:
-#   supervised — it worked.
-#   refused    — agentop declined ON PURPOSE (a `refus`* message, e.g. a config that
-#                would expose a listener). This is the one failure we must NOT paper
-#                over: running the same proxy unsupervised would defeat that check.
-#   foreign-proxy — the forward port is held by a proxy from a DIFFERENT install,
-#                identified by its executable path. That never drains, so it is not
-#                the upgrade race; reported with the pid and path so the user can
-#                stop the right process. Checked before ports-busy, which would
-#                otherwise absorb it. Only when the holder is positively named as
-#                someone else's: an unidentifiable holder stays ports-busy.
-#   ports-busy — non-zero, but our listener ports are held: the benign upgrade race
-#                (the old proxy is still draining). Falling back would crash a second
-#                proxy on the bound ports, so tell the user to wait and re-run.
-#   fallback   — any other non-zero: the OS supervisor simply cannot take the job here
-#                (launchd EIO in a sandbox, an absent systemd user bus, ...). Do what
-#                --no-service does and run the proxy directly, rather than die after a
-#                clean install. This is the default, so a NEW failure mode falls back
-#                (Cortex runs) instead of leaving it down.
-# The distinction is by exit + `refus` + ports, NOT a positive match on the failure
-# text: agentop prints the launchd EIO to stdout, so a stderr-only signature missed it
-# and the installer died where it should have fallen back.
-service_install_action() { # status output
-	[ "$1" = "0" ] && { printf 'supervised\n'; return 0; }
-	if printf '%s' "$2" | grep -qi 'refus'; then printf 'refused\n'; return 0; fi
-	# Before ports-busy: a foreign holder looks identical at the port level but
-	# needs the opposite advice (stop that process, not wait for it).
-	_sia_foreign=$(foreign_proxy_holder) && [ -n "${_sia_foreign}" ] && {
-		printf 'foreign-proxy %s\n' "${_sia_foreign}"
-		return 0
-	}
-	if demo_ports_busy; then printf 'ports-busy\n'; return 0; fi
-	printf 'fallback\n'
-}
-
-# quiet_service_install is a filter on what `agentop service install` shows during an
-# install. It drops the lines that are true but beside the point here — why there are
-# two cortex processes, that a re-run cuts connections that reconnect on their own,
-# that agentop's timeline restarted — and passes everything else, so warnings, errors,
-# a config migration, and the "Waiting for the previous Cortex to stop" progress still
-# show. Run by hand, `agentop service install` prints all of them.
-#
-# A deny list, not an allow list, so it fails safe: if agentop rewords one of these,
-# that line shows again, rather than a new message going missing. install_test.sh checks
-# every pattern still occurs in cmd/agentop/cmd_service.go, so a reworded line is a
-# red test rather than a filter that quietly matches nothing.
-#
-# `|| true`: grep exits 1 when every line was dropped, which is not a failure.
-quiet_service_install() {
-	grep -v -F \
-		-e 'A supervisor process handles crashes' \
-		-e 'connection(s) will be cut. Clients reconnect on their next' \
-		-e 'a request in flight right now fails.' \
-		-e 'Captured session history is cleared' \
-		-e 'timeline you were reading in agentop starts over.' \
-		|| true
-}
-
 # Where the unsupervised proxy records its pid, so a service-less install still has
 # exactly one process to find, check, and stop.
 PROXY_PIDFILE="${CORTEX_DIR}/proxy.pid"
-
-# supervisor_usable exits 0 when the OS service supervisor can actually be driven
-# here. This is the explicit access check to run BEFORE install, so a supervisor we
-# cannot use becomes a clean fall-through to the background start instead of a fatal
-# `die` after the binaries are already on disk.
-#
-#   macOS: in a seatbelt sandbox `launchctl bootstrap` fails with an I/O error
-#   (exit 5) that agentop surfaces as a plain non-zero exit. `launchctl print` on our
-#   own GUI domain can answer positively even when bootstrap cannot, so probe
-#   `launchctl list`, which needs a real, reachable user domain and fails when
-#   confined.
-#
-#   Linux: agentop installs a systemd *user* unit, which needs both systemctl and a
-#   running per-user manager (a session/D-Bus). That manager is absent in many
-#   containers, minimal images, and non-systemd inits (OpenRC, runit, s6), so a bare
-#   `command -v systemctl` is not enough — `systemctl --user show-environment` is a
-#   read-only call that succeeds only when the user manager is actually reachable.
-#
-# Only a preflight: the install attempt below still catches a supervisor that passes
-# this check but fails for another reason.
-supervisor_usable() {
-	if [ "$os" = "darwin" ]; then
-		command -v launchctl >/dev/null 2>&1 || return 1
-		launchctl list >/dev/null 2>&1
-	else
-		command -v systemctl >/dev/null 2>&1 || return 1
-		systemctl --user show-environment >/dev/null 2>&1
-	fi
-}
 
 # proxy_running exits 0 if the proxy we recorded in the pidfile is still alive AND is
 # actually our proxy. Validating both matters because stop_cortex signals this pid:
@@ -919,16 +662,6 @@ proxy_running() {
 		cortex) return 0 ;;
 		*) return 1 ;;
 	esac
-}
-
-pidfile_process_unnamed() {
-	_pid=$(cat "${PROXY_PIDFILE}" 2>/dev/null) || return 1
-	case "${_pid}" in
-		"" | *[!0-9]*) return 1 ;;
-	esac
-	kill -0 "${_pid}" 2>/dev/null || return 1
-	_comm=$(ps -o comm= -p "${_pid}" 2>/dev/null) || return 0
-	[ -z "${_comm}" ]
 }
 
 pre_rename_proxy_running() {
@@ -963,43 +696,6 @@ stop_pidfile_proxy() {
 		kill -9 "${_pid}" 2>/dev/null || true
 	fi
 	rm -f "${PROXY_PIDFILE}"
-}
-
-# start_unsupervised runs the proxy as a plain background process for environments
-# without a usable launchd/systemd. It uses the proxy's own --supervise restart loop
-# (built for exactly this — "launchd cannot be relied on"), so a crash still comes
-# back, and records the pid so stop/status have one process to target. Verified: on
-# a clean SIGTERM to this pid the listeners close and no child is left behind.
-start_unsupervised() {
-	if pre_rename_proxy_running; then
-		stop_pidfile_proxy
-	fi
-	if proxy_running; then
-		info "Cortex is already running (pid $(cat "${PROXY_PIDFILE}"))."
-		return 0
-	fi
-	nohup "${BIN_DIR}/cortex" --local --supervise \
-		>>"${CORTEX_DIR}/proxy.log" 2>&1 &
-	_pid=$!
-	printf '%s\n' "${_pid}" > "${PROXY_PIDFILE}"
-	# Poll the health port rather than sleeping a fixed guess: come up fast, and fail
-	# fast and loudly if the proxy exits on startup (a taken port, a bad config).
-	_i=0
-	while [ "${_i}" -lt 10 ]; do
-		if ! kill -0 "${_pid}" 2>/dev/null; then
-			rm -f "${PROXY_PIDFILE}"
-			warn "the proxy exited immediately; see ${CORTEX_DIR}/proxy.log"
-			return 1
-		fi
-		port_in_use "${DEMO_HEALTH_PORT}" && return 0
-		_i=$((_i + 1))
-		sleep 1
-	done
-	# Alive but the health port never opened. Unusual, and worth surfacing, but the
-	# process is up — let the caller point at the log rather than kill something that
-	# may still be finishing startup.
-	warn "proxy started (pid ${_pid}) but the health port ${DEMO_HEALTH_PORT} did not open in time; check ${CORTEX_DIR}/proxy.log"
-	return 0
 }
 
 # stop_cortex stops a running Cortex — the supervised service if agentop installed one,
@@ -1052,76 +748,268 @@ stop_cortex() {
 	fi
 }
 
-# print_rows CMD DESC [CMD DESC]... prints a two-column table, the command column
-# padded to its widest entry so the descriptions line up whichever spelling of
-# agentop (bare, or a full path when BIN_DIR is not on PATH) the rows carry.
-print_rows() {
-	_pr_w=0
-	_pr_i=0
-	for _pr_a in "$@"; do
-		# Even positions (0, 2, ...) are commands; only they set the width.
-		if [ $((_pr_i % 2)) -eq 0 ] && [ "${#_pr_a}" -gt "${_pr_w}" ]; then
-			_pr_w=${#_pr_a}
-		fi
-		_pr_i=$((_pr_i + 1))
-	done
-	while [ "$#" -ge 2 ]; do
-		# shellcheck disable=SC2059 # the only variable in the format is the computed width
-		printf "  %-${_pr_w}s   %s\n" "$1" "$2"
-		shift 2
-	done
+# probe_setup AGENTOP asks AGENTOP whether it has the setup command this script hands
+# off to, and exits with what `setup --help` exited with: 0 when it has it; 126 when
+# the file cannot be run at all, typically a TMPDIR mounted noexec; anything else
+# when it is an agentop from before setup, which exits 2 on an unknown subcommand.
+# --help, because that is the one thing setup answers without looking at the machine.
+probe_setup() {
+	"$1" setup --help >/dev/null 2>&1
 }
 
-# print_next_steps prints the closing summary: one line saying what to run next, then
-# a short table of the other commands worth knowing. agentop_disp and SUPERVISED are
-# read from the surrounding script at call time.
+# no_setup AGENTOP dies, saying AGENTOP predates setup and what to run instead.
 #
-# $1 is non-empty when Claude Code routes through Cortex. That decides the headline —
-# agentop has traffic to show only once something is routed — and whether the table
-# offers enable or disable.
+# Only a release tag gets the one-liner. That release's own installer drives its own
+# agentop, and piping it is what makes the bootstrap re-exec into it; a local copy of
+# this script never re-execs, so --ref there would pin only the binaries and land back
+# here. Anything else (the channel build, or the agentop AUTHBRIDGE_SKIP_DOWNLOAD
+# found installed) has no release to name, so the message names the agentop instead.
+no_setup() {
+	case "${version:-}" in
+		v*)
+			die "the ${version} agentop has no 'setup' command, which this installer needs.
+  Use that release's own installer:
+    curl -fsSL https://raw.githubusercontent.com/${REPO}/main/scripts/install.sh | sh -s -- --ref=${version}"
+			;;
+		*)
+			die "the agentop at $1 has no 'setup' command, which this installer needs.
+  Install one that has it: drop AUTHBRIDGE_SKIP_DOWNLOAD, or pass
+  --ref=<a release that has it>."
+			;;
+	esac
+}
+
+# restage copies the stage at $1 to a fresh dir under ~/.cortex/tmp and prints that
+# dir. It is ensure_tmpdir's fallback again, for a TMPDIR that is writable but mounted
+# noexec: the download landed, but nothing in it can run. Only the binaries move, with
+# their modes; the archives go with the old stage.
+restage() {
+	mkdir -p "${CORTEX_DIR}/tmp" || return 1
+	_rs=$(mktemp -d "${CORTEX_DIR}/tmp/stage.XXXXXX") || return 1
+	for _rs_b in agentop cortex cortex-session-dump; do
+		[ ! -f "$1/${_rs_b}" ] || cp -p "$1/${_rs_b}" "${_rs}/${_rs_b}" || {
+			rm -rf "${_rs}"
+			return 1
+		}
+	done
+	printf '%s\n' "${_rs}"
+}
+
+# --- session dump helper ---
 #
-# Every other tool or harness gets `agentop exec` rather than the environment
-# variables themselves. exec derives the same variables from the same config, and
-# `exec --print` prints them for a tool that cannot be wrapped (an IDE, a GUI app).
-# They used to be printed here in full: twenty lines on every install, ahead of the
-# one command the install is for.
-print_next_steps() { # wired
-	_ns_wired=$1
-	info ""
-	if [ -n "${_ns_wired}" ]; then
-		info "Next: run \`${agentop_disp}\` to watch your agent traffic live."
-		set -- "${agentop_disp} tools scan" "propose unused tools to prune"
+# cortex-session-dump writes the in-memory session store to files. The store is
+# memory-only, so without it a restart is unrecoverable data loss and the only
+# readers are agentop and raw curl.
+#
+# STOPGAP: rossoctl/cortex#901 ("persist sessions") is the real fix -- the proxy
+# writing sessions itself, rather than a helper someone has to remember to run.
+# Expect this whole block to be removed when that lands.
+#
+# Fetched from the repo at ${version} rather than added to the release tarballs:
+# the checksum step asserts EXACTLY two verified archives and refuses to install
+# when it sees anything else, so a third asset would mean reworking the one step
+# whose whole job is not to fail open. A helper script does not justify that.
+#
+# Staged beside the binaries; setup installs it when it is there. Never fatal: a
+# missing dump helper must not fail an install that otherwise produces a working
+# proxy. Requires python3, which is not a dependency of anything else here -- so the
+# absence of it is reported, not repaired.
+stage_session_dump() {
+	_dump_url="https://raw.githubusercontent.com/${REPO}/${version}/scripts/dev/cortex-session-dump.py"
+	_dump_dest="${tmp}/cortex-session-dump"
+	_dump_tmp="${tmp}/cortex-session-dump.part"
+
+	if ! curl -fsSL "${_dump_url}" -o "${_dump_tmp}" 2>/dev/null; then
+		rm -f "${_dump_tmp}"
+		warn "could not fetch cortex-session-dump (skipping; the proxy is unaffected)"
+		return 0
+	fi
+	# A 404 body would otherwise install as a "script" that fails on first run.
+	if ! head -n 1 "${_dump_tmp}" | grep -q '^#!/usr/bin/env python3'; then
+		rm -f "${_dump_tmp}"
+		warn "fetched cortex-session-dump did not look like the expected script (skipping)"
+		return 0
+	fi
+	chmod +x "${_dump_tmp}"
+	mv -f "${_dump_tmp}" "${_dump_dest}"
+	if [ "$os" = "darwin" ] && command -v xattr >/dev/null 2>&1; then
+		xattr -d com.apple.quarantine "${_dump_dest}" 2>/dev/null || true
+	fi
+	command -v python3 >/dev/null 2>&1 \
+		|| warn "cortex-session-dump needs python3, which is not on your PATH"
+	return 0
+}
+
+# --- the download's progress bar ---
+#
+# On a terminal the download is one line on stderr, redrawn in place and erased when
+# the download ends, so none of it stays on screen: setup's first line says what was
+# downloaded. Off a terminal (a log, CI, a pipe) a redrawn line would be noise, so the
+# download prints one plain line instead. So it does on a terminal the bar cannot use:
+# TERM=dumb, which cannot erase, or one too narrow for the bar's figures.
+#
+# The sizes are in setup's units (downloadSize in cmd/agentop/cmd_setup.go), so the
+# bar's last figure and setup's "✓ downloaded" line agree. ASCII, and no colour: setup's
+# accent is one shade for a light terminal and another for a dark one, and a shell
+# cannot tell which it is drawing on.
+
+# size_text N prints N bytes as setup does: B under 1000, kB under 999950 (so never
+# "1000.0 kB"), MB from there, to the nearest tenth. Integers only, as sh has no others.
+size_text() {
+	if [ "$1" -lt 1000 ]; then
+		printf '%s B\n' "$1"
+	elif [ "$1" -lt 999950 ]; then
+		_st=$((($1 + 50) / 100))
+		printf '%s.%s kB\n' "$((_st / 10))" "$((_st % 10))"
 	else
-		info "Next: send an agent through Cortex, then run \`${agentop_disp}\` to watch its traffic live."
-		set -- "${agentop_disp} configure claude-code enable" "send Claude Code through Cortex"
+		_st=$((($1 + 50000) / 100000))
+		printf '%s.%s MB\n' "$((_st / 10))" "$((_st % 10))"
 	fi
-	set -- "$@" \
-		"${agentop_disp} exec -- <cmd>" "send any other agent through Cortex" \
-		"${agentop_disp} exec --print" "the same, as env vars to set yourself"
-	if [ -z "${_ns_wired}" ]; then
-		set -- "$@" "${agentop_disp} tools scan" "propose unused tools to prune"
-	fi
-	# `service stop` means nothing where no service was installed; print_local_start_help
-	# carries the pidfile kill for that path instead.
-	if [ -n "${SUPERVISED}" ]; then
-		set -- "$@" "${agentop_disp} service stop" "stop Cortex"
-	fi
-	if [ -n "${_ns_wired}" ]; then
-		set -- "$@" "${agentop_disp} configure claude-code disable" "undo the Claude Code setup"
-	fi
-	info ""
-	print_rows "$@"
 }
 
-# print_local_start_help prints how to start/stop/inspect the proxy when it runs
-# unsupervised (no launchd/systemd), using the pidfile start_unsupervised wrote.
-print_local_start_help() {
-	info "  This environment has no usable OS service supervisor, so Cortex runs as a"
-	info "  plain background process (it will NOT restart after a reboot or logout):"
-	info "    start:   \"${BIN_DIR}/cortex\" --local --supervise   (backgrounded)"
-	info "    stop:    kill \$(cat ${PROXY_PIDFILE})"
-	info "    status:  curl -fsS http://localhost:${DEMO_HEALTH_PORT}/ >/dev/null && echo up || echo down"
-	info "    logs:    tail -f ${CORTEX_DIR}/proxy.log"
+# progress_line DONE TOTAL WIDTH prints the bar's line for DONE of TOTAL bytes: a bar of
+# WIDTH cells, the percentage, and both sizes. With TOTAL unknown (empty, or 0) there is
+# nothing to take a percentage of, so it prints the bytes so far alone. DONE past TOTAL,
+# a server that sized the file wrong, shows as 100% rather than a bar that overflows.
+# WIDTH 0 is the figures without a bar. Pure: no terminal and no escapes, so the suite
+# checks it as text.
+progress_line() {
+	case "$2" in
+		'' | 0)
+			size_text "$1"
+			return 0
+			;;
+	esac
+	_pl_done=$1
+	[ "${_pl_done}" -le "$2" ] || _pl_done=$2
+	_pl_bar=""
+	if [ "$3" -gt 0 ]; then
+		_pl_fill=$((_pl_done * $3 / $2))
+		_pl_i=0
+		while [ "${_pl_i}" -lt "$3" ]; do
+			if [ "${_pl_i}" -lt "${_pl_fill}" ]; then _pl_bar="${_pl_bar}#"; else _pl_bar="${_pl_bar}-"; fi
+			_pl_i=$((_pl_i + 1))
+		done
+		_pl_bar="[${_pl_bar}] "
+	fi
+	printf '%s%3d%%  %s / %s\n' "${_pl_bar}" "$((_pl_done * 100 / $2))" "$(size_text "$1")" "$(size_text "$2")"
+}
+
+# bar_cells COLS PREFIX_LEN prints how many bar cells fit on a COLS-wide terminal after
+# a PREFIX_LEN-character prefix: up to 30, or 0 when fewer than 10 fit. It fails when
+# even the figures do not fit, because a line wider than the terminal wraps, and a
+# wrapped line cannot be redrawn in place: every redraw would leave a line behind. The
+# figures take at most 25 characters ("100%  999.9 MB / 999.9 MB"), the bar 3 more than
+# its cells, and the last column stays empty, since writing it can wrap the line.
+bar_cells() {
+	_bc=$(($1 - 1 - $2 - 25))
+	[ "${_bc}" -ge 0 ] || return 1
+	_bc=$((_bc - 3))
+	[ "${_bc}" -le 30 ] || _bc=30
+	[ "${_bc}" -ge 10 ] || _bc=0
+	printf '%s\n' "${_bc}"
+}
+
+# term_cols prints the width of the terminal on stderr: stty's, else COLUMNS, else 80.
+# stdin is the piped script, so stty reads the terminal through stderr. A size of 0, a
+# pty nobody gave a size, counts as unknown.
+term_cols() {
+	_tc=$(stty size <&2 2>/dev/null) || _tc=""
+	_tc=${_tc##* }
+	case "${_tc}" in '' | *[!0-9]* | 0) _tc=${COLUMNS:-} ;; esac
+	case "${_tc}" in '' | *[!0-9]* | 0) _tc=80 ;; esac
+	printf '%s\n' "${_tc}"
+}
+
+# bar_draw DONE draws the line for DONE bytes over the last one: back to the start of
+# the line (CR), the line, then erase whatever a longer line before it left (ESC[K).
+# The first draw hides the cursor, which would otherwise sit blinking at the bar's end.
+bar_draw() {
+	if [ -z "${bar_shown:-}" ]; then
+		bar_shown=1
+		printf '\033[?25l' >&2
+	fi
+	printf '\r%s%s\033[K' "${bar_prefix}" "$(progress_line "$1" "${bar_total}" "${bar_w}")" >&2
+}
+
+# bar_end erases the bar's line and shows the cursor again, if a bar was drawn. The
+# download calls it the moment it ends, and the EXIT trap calls it too, so neither the
+# handoff, a die, an INT nor a TERM leaves the cursor hidden or half a bar on screen.
+# (A KILL does: nothing can catch it.) The write fails when the terminal has closed,
+# and is no error then: there is nothing left to erase.
+bar_end() {
+	[ -n "${bar_shown:-}" ] || return 0
+	bar_shown=""
+	printf '\r\033[K\033[?25h' >&2 || :
+}
+
+# content_length URL prints the size the server gives for URL: the Content-Length of the
+# last response in its redirect chain, or nothing if that response is not a 2xx or has
+# none. Reset at each response, so a final response without one is unknown rather
+# than the 302's 0. Only the bar uses it, so a HEAD that fails costs the percentage,
+# never the install; --max-time caps how long a HEAD that hangs can hold the script up.
+content_length() {
+	curl -sIL --max-time 10 "$1" 2>/dev/null | tr -d '\r' | awk '
+		/^HTTP\// { st = $2; n = "" }
+		tolower($1) == "content-length:" { n = $2 }
+		END { if (st ~ /^2/ && n ~ /^[0-9]+$/) print n }'
+}
+
+# file_bytes FILE prints how much of FILE has landed so far, 0 before curl creates it.
+file_bytes() {
+	if [ -f "$1" ]; then wc -c <"$1" | tr -d '[:space:]'; else echo 0; fi
+}
+
+# stop_downloads stops any download still running, and waits for it to end: the EXIT
+# trap's first step, so a die, an INT, a TERM or a HUP never leaves a curl writing into
+# a stage being deleted. A script's background jobs ignore INT, so a Ctrl-C does not
+# stop them by itself.
+stop_downloads() {
+	# shellcheck disable=SC2086 # the pids, split into words on purpose
+	[ -z "${dl_pids:-}" ] || kill ${dl_pids} 2>/dev/null || :
+	# shellcheck disable=SC2086 # as above
+	[ -z "${dl_pids:-}" ] || wait ${dl_pids} 2>/dev/null || :
+	dl_pids=""
+}
+
+# hand_off AGENTOP STAGE execs `AGENTOP setup`, which is where this script ends: setup
+# plans, asks once, installs, starts, and owns everything on screen from here. STAGE
+# is the staging dir, passed as --from with the download's counts. Empty, in repair
+# mode, it is neither, and setup re-checks what is installed instead.
+#
+# The flags are frozen. --ref=main runs this script against main-latest binaries,
+# which can be a build older than it, so every flag sent here has to be one setup
+# already takes. Only the ones this script shares with setup are passed on, and not
+# --local, which is setup's default.
+#
+# --handoff-bytes and --handoff-seconds let setup's first line read "✓ downloaded".
+# setup takes the run as the installer's, and deletes STAGE on its way out, only when
+# one of them is above 0, so bytes is never 0, even for a sub-second download. Both
+# must be whole numbers: a fraction is a usage error, which exits before setup knows
+# to delete anything.
+#
+# exec, so nothing of this script runs after it. That includes the EXIT trap, which
+# is cleared first so it holds in every shell; setup deletes the stage instead. stdin
+# is the piped script itself, so setup and everything it starts get the terminal when
+# there is one to open, and /dev/null when there is not, but never the rest of this
+# file. setup asks on /dev/tty either way.
+hand_off() {
+	_ho_bin=$1
+	_ho_stage=$2
+	set --
+	[ -z "${_ho_stage}" ] || set -- --from "${_ho_stage}"
+	[ -z "${WIRE_CLAUDE_CODE}" ] || set -- "$@" --claude-code
+	[ -z "${ASSUME_YES}" ] || set -- "$@" --yes
+	[ -z "${NO_SERVICE}" ] || set -- "$@" --no-service
+	[ "${MODE}" != "install-only" ] || set -- "$@" --install-only
+	[ -z "${NO_MODIFY_PATH}" ] || set -- "$@" --no-modify-path
+	[ -z "${_ho_stage}" ] || set -- "$@" "--handoff-bytes=${bytes}" "--handoff-seconds=${secs}"
+	trap - EXIT
+	# Tried in a subshell: a redirection that fails on `exec` ends the shell it is in.
+	if (exec </dev/tty) 2>/dev/null; then
+		exec "${_ho_bin}" setup "$@" </dev/tty
+	fi
+	exec "${_ho_bin}" setup "$@" </dev/null
 }
 
 # --- detect platform ---
@@ -1148,32 +1036,16 @@ if [ "${MODE}" = "stop" ]; then
 	exit 0
 fi
 
-# --- preflight: fail early (before downloading) if a listener port is taken ---
-if [ "$MODE" = "local" ]; then
-	# A Cortex of ours holding these ports is fine — `agentop service install` adopts
-	# it, and keeping a second copy of that narrow "is this pid really ours" check
-	# here would only let the two drift. This probe is for a FOREIGN listener, and
-	# it runs before the download so the failure is early and cheap.
-	for p in "$DEMO_FORWARD_PORT" "$DEMO_SESSION_PORT" "$DEMO_STATS_PORT" "$DEMO_HEALTH_PORT"; do
-		if port_in_use "$p"; then
-			if [ -f "${CORTEX_DIR}/config.yaml" ]; then
-				# Ours, most likely: let agentop adopt it rather than refusing here.
-				continue
-			fi
-			die "port ${p} is already in use by something else. Free it, or change the ports in ${CORTEX_DIR}/config.yaml, then re-run."
-		fi
-	done
-fi
-
-# --- skip the download entirely when asked (offline re-run) ---
+# --- repair, offline: AUTHBRIDGE_SKIP_DOWNLOAD=1 hands the installed agentop to setup ---
+# Nothing is downloaded, so nothing is staged: setup without --from installs no
+# binaries, and re-checks and repairs the rest. All it needs from here is an agentop
+# new enough to have setup; whether cortex is there is setup's to check.
 if [ "${AUTHBRIDGE_SKIP_DOWNLOAD:-}" = "1" ]; then
-	for b in agentop cortex; do
-		[ -x "${BIN_DIR}/${b}" ] || die "AUTHBRIDGE_SKIP_DOWNLOAD=1 but ${BIN_DIR}/${b} is missing"
-	done
-	version="already installed"
-	skip_install=1
-	info "Using the binaries already in ${BIN_DIR}"
-else
+	[ -x "${BIN_DIR}/agentop" ] || die "AUTHBRIDGE_SKIP_DOWNLOAD=1 but ${BIN_DIR}/agentop is missing"
+	version=""
+	probe_setup "${BIN_DIR}/agentop" || no_setup "${BIN_DIR}/agentop"
+	hand_off "${BIN_DIR}/agentop" ""
+fi
 
 # --- resolve the release tag ---
 # The binaries default to the same ref this script came from, so the script and the
@@ -1182,28 +1054,85 @@ version=$(resolve_version "${VERSION_REF}") \
 	|| die "could not resolve the newest release (pass --ref=vX.Y.Z to pin one)"
 
 # --- download + verify ---
-tmp=$(mktemp -d)
-trap 'rm -rf "$tmp"' EXIT
+# An explicit template under TMPDIR, not a bare `mktemp -d`: macOS's mktemp puts that
+# in its per-user temp dir (_CS_DARWIN_USER_TEMP_DIR) whatever TMPDIR says, which
+# would skip ensure_tmpdir's fallback, and put the stage outside the dirs setup will
+# delete a stage from ($TMPDIR, /tmp, ~/.cortex/tmp) whenever TMPDIR is not the default.
+tmp=$(mktemp -d "${TMPDIR%/}/cortex-stage.XXXXXX")
+dl_pids=""
+bar_shown=""
+# The stage goes before the bar is erased. Erasing writes to the terminal, which is gone
+# when the HUP came from closing it, and under set -e a failed write would end the trap
+# there. The trap is the last thing the script runs, so a live terminal sees no change.
+trap 'stop_downloads; rm -rf "$tmp" || :; bar_end' EXIT
+# exit runs the EXIT trap, so an INT (Ctrl-C), a TERM or a HUP cleans up as a die does.
+# Without these, dash dies of the signal and runs no EXIT trap at all, which leaves the
+# stage behind, the downloads running, and the cursor hidden.
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
 
 base="https://github.com/${REPO}/releases/download/${version}"
 agentop_tgz="agentop_${version}_${os}_${arch}.tar.gz"
 proxy_tgz="cortex_${version}_${os}_${arch}.tar.gz"
 
-# Already at this version? Then there is nothing to download, and nothing to
-# overwrite. Re-running the one-liner is how people upgrade, so it runs constantly
-# against installs that are already current — it should cost nothing and change
-# nothing. Both binaries must match: replacing one and not the other is the version
-# skew that put an older proxy in the launchd unit.
-if installed_version agentop | grep -qx "${version}" &&
-	installed_version cortex | grep -qx "${version}"; then
-	info "Already at ${version} — not re-downloading."
-	skip_install=1
+# tmp is the stage: the download lands in it, the binaries are extracted beside it,
+# and setup gets it as --from. The clock starts here for --handoff-seconds.
+started=$(date +%s 2>/dev/null) || started=""
+
+# A bar when stderr is a terminal that can redraw a line and is wide enough for one;
+# the plain line otherwise.
+bar_on=""
+bar_prefix="Downloading ${version} "
+bar_total=""
+bar_w=0
+if [ -t 2 ] && [ "${TERM:-}" != "dumb" ] && bar_w=$(bar_cells "$(term_cols)" "${#bar_prefix}"); then
+	bar_on=1
+else
+	info "Downloading ${version} for ${os}/${arch}..."
 fi
 
-if [ -z "${skip_install:-}" ]; then
-info "Downloading ${version} for ${os}/${arch}..."
-curl -fsSL "${base}/${agentop_tgz}" -o "${tmp}/${agentop_tgz}" || die "download failed: ${agentop_tgz}"
-curl -fsSL "${base}/${proxy_tgz}" -o "${tmp}/${proxy_tgz}" || die "download failed: ${proxy_tgz}"
+# Both archives at once, each in the background; `wait` gives each one's exit status.
+curl -fsSL "${base}/${agentop_tgz}" -o "${tmp}/${agentop_tgz}" &
+pid_a=$!
+dl_pids="${pid_a}"
+curl -fsSL "${base}/${proxy_tgz}" -o "${tmp}/${proxy_tgz}" &
+pid_c=$!
+dl_pids="${pid_a} ${pid_c}"
+
+# The sizes, for the percentage. Asked while the archives download, so the asking
+# overlaps the download rather than adding to it, unless a HEAD outlasts it (each gives
+# up after 10s). Either size unknown leaves the total unknown, and the bar counts bytes.
+if [ -n "${bar_on}" ]; then
+	size_a=$(content_length "${base}/${agentop_tgz}")
+	size_c=$(content_length "${base}/${proxy_tgz}")
+	[ -z "${size_a}" ] || [ -z "${size_c}" ] || bar_total=$((size_a + size_c))
+fi
+
+# Poll until both have ended: every 0.2s, or every 1s from the first time sleep turns
+# down a fraction, as a sleep that takes whole seconds only does.
+poll_s=0.2
+while kill -0 "${pid_a}" 2>/dev/null || kill -0 "${pid_c}" 2>/dev/null; do
+	if [ -n "${bar_on}" ]; then
+		got_a=$(file_bytes "${tmp}/${agentop_tgz}")
+		got_c=$(file_bytes "${tmp}/${proxy_tgz}")
+		bar_draw "$((got_a + got_c))"
+	fi
+	sleep "${poll_s}" 2>/dev/null || {
+		poll_s=1
+		sleep 1
+	}
+done
+st_a=0
+wait "${pid_a}" || st_a=$?
+st_c=0
+wait "${pid_c}" || st_c=$?
+dl_pids=""
+# Erased now, not just before the handoff: every step from here can print a warning or
+# an error, and a line printed after a bar still on screen would start halfway along it.
+bar_end
+[ "${st_a}" = "0" ] || die "download failed: ${agentop_tgz}"
+[ "${st_c}" = "0" ] || die "download failed: ${proxy_tgz}"
 curl -fsSL "${base}/checksums.txt" -o "${tmp}/checksums.txt" || die "download failed: checksums.txt"
 
 # One grep per archive, not an alternation. An alternation SUCCEEDS on a single
@@ -1250,448 +1179,54 @@ if ! ( cd "$tmp" && sha_check checksums.filtered >"${tmp}/sha.out" 2>&1 ); then
 	die "checksum verification failed — do NOT use these binaries"
 fi
 
-# --- extract + install ---
-mkdir -p "$BIN_DIR"
+# --- the download's counts, for setup's "✓ downloaded" line ---
+# At least 1 byte, and whole seconds: see hand_off for why each matters to setup. A
+# clock reading that is not a number counts as 0 seconds rather than failing here.
+bytes=$(cat "${tmp}/${agentop_tgz}" "${tmp}/${proxy_tgz}" | wc -c | tr -d '[:space:]')
+[ "${bytes:-0}" -gt 0 ] 2>/dev/null || bytes=1
+finished=$(date +%s 2>/dev/null) || finished=""
+case "${started}:${finished}" in
+	*[!0-9:]* | :* | *:) secs=0 ;;
+	*) secs=$((finished - started)) ;;
+esac
+[ "${secs}" -ge 0 ] || secs=0
+
+# --- extract into the stage ---
 tar -xzf "${tmp}/${agentop_tgz}" -C "$tmp"
 tar -xzf "${tmp}/${proxy_tgz}" -C "$tmp"
 for b in agentop cortex; do
 	[ -f "${tmp}/${b}" ] || die "archive did not contain expected binary: ${b}"
 	chmod +x "${tmp}/${b}"
-	mv -f "${tmp}/${b}" "${BIN_DIR}/${b}"
 done
 
 # macOS: clear the quarantine flag so Gatekeeper doesn't block the unsigned binaries.
 if [ "$os" = "darwin" ] && command -v xattr >/dev/null 2>&1; then
-	xattr -dr com.apple.quarantine "${BIN_DIR}/agentop" "${BIN_DIR}/cortex" 2>/dev/null || true
+	xattr -dr com.apple.quarantine "${tmp}/agentop" "${tmp}/cortex" 2>/dev/null || true
 fi
 
-rm -rf "$tmp"
-trap - EXIT
-fi # end of the skip-if-already-at-this-version guard
-fi # end of download block
+stage_session_dump
 
-# Every path above leaves an agentop in BIN_DIR (the skip paths refuse to go on without
-# one), so the abctl it replaces can go — including on a re-run that downloaded nothing.
-# The old proxy waits until the service has been moved off it, after the start below.
-remove_stale abctl agentop
-
-# offer_path_setup adds BIN_DIR to the shell profile, with consent.
-#
-# Warning and printing a line to paste was not enough: the first thing a real user hit
-# was `agentop: command not found`, before any of the actual bugs. An install that
-# succeeds and then cannot run the command it just told you to run is the worst first
-# impression available, and the most common one.
-#
-# Consent, a backup, and a guarded block, matching what `agentop configure claude-code enable` does
-# to settings.json — same pattern, no new concept. Declining keeps the old advice.
-offer_path_setup() {
-	_profile=""
-	case "$(basename "${SHELL:-}")" in
-		zsh) _profile="${HOME}/.zshrc" ;;
-		bash)
-			# bash reads .bash_profile for login shells on macOS and .bashrc elsewhere;
-			# .profile is read by both when the others are absent, so prefer whichever
-			# already exists rather than creating a file the shell may never read.
-			for _c in "${HOME}/.bash_profile" "${HOME}/.bashrc" "${HOME}/.profile"; do
-				[ -f "$_c" ] && _profile="$_c" && break
-			done
-			[ -n "${_profile}" ] || _profile="${HOME}/.bash_profile"
-			;;
-	esac
-
-	if [ -z "${_profile}" ]; then
-		# An unknown shell: we do not know which file it reads, and guessing would edit
-		# the wrong one.
-		warn "${BIN_DIR} is not on your PATH."
-		warn "Add it for future sessions:  export PATH=\"${BIN_DIR}:\$PATH\""
-		return 0
-	fi
-
-	# Already done by an earlier run.
-	if [ -f "${_profile}" ] && grep -q "${PATH_MARKER}" "${_profile}" 2>/dev/null; then
-		info "${BIN_DIR} is in ${_profile} but not in this shell yet. For this terminal:"
-		info "  export PATH=\"${BIN_DIR}:\$PATH\""
-		return 0
-	fi
-
-	info ""
-	info "${BIN_DIR} is not on your PATH, so \`agentop\` will not be found."
-	info "This adds two lines to ${_profile}:"
-	info "  ${PATH_MARKER}"
-	info "  export PATH=\"${BIN_DIR}:\$PATH\""
-	if [ -z "${ASSUME_YES}" ]; then
-		if [ ! -r /dev/tty ]; then
-			warn "no terminal to ask on; add it yourself:  export PATH=\"${BIN_DIR}:\$PATH\""
-			return 0
-		fi
-		printf 'Apply? [y/N] ' > /dev/tty
-		read -r _ans < /dev/tty || _ans=""
-		case "${_ans}" in
-			y | Y | yes | YES) ;;
-			*)
-				info "Not changed. For this terminal:  export PATH=\"${BIN_DIR}:\$PATH\""
-				return 0
-				;;
-		esac
-	fi
-
-	[ -f "${_profile}" ] && cp "${_profile}" "${_profile}.bak"
-	{
-		printf '\n%s\n' "${PATH_MARKER}"
-		# shellcheck disable=SC2016 # $PATH must stay literal: it is expanded by the
-		# shell at startup, not by this script now.
-		printf 'export PATH="%s:$PATH"\n' "${BIN_DIR}"
-	} >> "${_profile}" || {
-		warn "could not write ${_profile}; add it yourself:  export PATH=\"${BIN_DIR}:\$PATH\""
-		return 0
-	}
-	info "Added to ${_profile}. It applies to new terminals; for this one:"
-	info "  export PATH=\"${BIN_DIR}:\$PATH\""
-}
-
-# --- session dump helper ---
-#
-# cortex-session-dump writes the in-memory session store to files. The store is
-# memory-only, so without it a restart is unrecoverable data loss and the only
-# readers are agentop and raw curl.
-#
-# STOPGAP: rossoctl/cortex#901 ("persist sessions") is the real fix -- the proxy
-# writing sessions itself, rather than a helper someone has to remember to run.
-# Expect this whole block to be removed when that lands.
-#
-# Fetched from the repo at ${version} rather than added to the release tarballs:
-# the checksum step above asserts EXACTLY two verified archives and refuses to
-# install when it sees anything else, so a third asset would mean reworking the
-# one step whose whole job is not to fail open. A helper script does not justify
-# that.
-#
-# Never fatal. A missing dump helper must not fail an install that otherwise
-# produced a working proxy, and this runs after the binaries are already in place.
-# Requires python3, which is not a dependency of anything else here -- so the
-# absence of it is reported, not repaired.
-#
-# Called at top level, so it ALSO runs on the "Already at ${version} — not
-# re-downloading" path. That is deliberate, not an oversight: version is a real ref
-# there, so the URL is valid, and it self-heals an install whose helper is missing
-# or predates this change -- which every existing install does. The cost is that a
-# run which just said it was not re-downloading still makes one request. The other
-# skip path, AUTHBRIDGE_SKIP_DOWNLOAD=1, means "do not touch the network" and is
-# guarded inside the function instead.
-install_session_dump() {
-	# AUTHBRIDGE_SKIP_DOWNLOAD=1 means "do not touch the network", and sets version
-	# to a prose string rather than a ref -- which would build a nonsense URL. An
-	# offline re-run keeps whatever copy is already there.
-	if [ "${AUTHBRIDGE_SKIP_DOWNLOAD:-}" = "1" ]; then
-		return 0
-	fi
-	_dump_url="https://raw.githubusercontent.com/${REPO}/${version}/scripts/dev/cortex-session-dump.py"
-	_dump_dest="${BIN_DIR}/cortex-session-dump"
-	# TMPDIR, not CORTEX_DIR: nothing in this script creates CORTEX_DIR, and
-	# ensure_tmpdir only makes CORTEX_DIR/tmp on its fallback path -- so on a fresh
-	# install with a writable TMPDIR the directory does not exist yet and `curl -o`
-	# fails with exit 23 (verified), silently skipping the helper. ensure_tmpdir has
-	# guaranteed TMPDIR is writable and exported by the time this runs.
-	_dump_tmp="${TMPDIR%/}/cortex-session-dump.part"
-
-	if ! curl -fsSL "${_dump_url}" -o "${_dump_tmp}" 2>/dev/null; then
-		rm -f "${_dump_tmp}"
-		warn "could not fetch cortex-session-dump (skipping; the proxy is unaffected)"
-		return 0
-	fi
-	# A 404 body would otherwise install as a "script" that fails on first run.
-	if ! head -n 1 "${_dump_tmp}" | grep -q '^#!/usr/bin/env python3'; then
-		rm -f "${_dump_tmp}"
-		warn "fetched cortex-session-dump did not look like the expected script (skipping)"
-		return 0
-	fi
-	chmod +x "${_dump_tmp}"
-	mv -f "${_dump_tmp}" "${_dump_dest}"
-	if [ "$os" = "darwin" ] && command -v xattr >/dev/null 2>&1; then
-		xattr -d com.apple.quarantine "${_dump_dest}" 2>/dev/null || true
-	fi
-	command -v python3 >/dev/null 2>&1 \
-		|| warn "cortex-session-dump needs python3, which is not on your PATH"
-	return 0
-}
-
-install_session_dump
-
-# --- report ---
-proxy="${BIN_DIR}/cortex"
-ca_dir="${CORTEX_DIR}/ca" # matches defaultCortexDir()+caDirName in local.go
-case ":${PATH}:" in
-	*":${BIN_DIR}:"*) agentop_cmd="agentop" proxy_cmd="cortex" ;;
-	*) agentop_cmd="${BIN_DIR}/agentop" proxy_cmd="$proxy" ;;
-esac
-# agentop_disp is agentop_cmd as the summary prints it: quoted only when the path holds
-# a space, because a quoted bare "agentop" reads as a typo rather than a command.
-case "${agentop_cmd}" in
-	*" "*) agentop_disp="\"${agentop_cmd}\"" ;;
-	*) agentop_disp="${agentop_cmd}" ;;
-esac
-
-# Both skip paths have already said what they did ("Already at <v>" or "Using the
-# binaries already in ..."), so saying "Installed" after them would be both redundant
-# and untrue.
-if [ -z "${skip_install:-}" ]; then
-	info ""
-	info "Installed agentop and cortex to ${BIN_DIR}"
+# --- can the stage run? ---
+# Exit 126 means the file cannot be run at all, so stage it again under ~/.cortex/tmp
+# and ask once more. Anything else non-zero is an agentop from before setup.
+probe_st=0
+probe_setup "${tmp}/agentop" || probe_st=$?
+if [ "${probe_st}" = "126" ]; then
+	# The new stage replaces the old one before the old one goes, so the EXIT trap
+	# always names a stage that exists.
+	restaged=$(restage "${tmp}") \
+		|| die "cannot run programs from ${tmp%/*} (exit 126), and could not stage under ${CORTEX_DIR}/tmp instead"
+	first_dir="${tmp%/*}"
+	first_stage="${tmp}"
+	tmp="${restaged}"
+	rm -rf "${first_stage}"
+	info "${first_dir} does not let programs run (exit 126); staged under ${CORTEX_DIR}/tmp instead."
+	probe_st=0
+	probe_setup "${tmp}/agentop" || probe_st=$?
+	[ "${probe_st}" != "126" ] \
+		|| die "cannot run programs from ${first_dir} or from ${CORTEX_DIR}/tmp (exit 126 from both); both look mounted noexec. Set TMPDIR to a directory that allows running programs, and re-run."
 fi
-case ":${PATH}:" in
-	*":${BIN_DIR}:"*) ;;
-	*)
-		offer_path_setup
-		;;
-esac
+[ "${probe_st}" = "0" ] || no_setup "${tmp}/agentop"
 
-if [ "$MODE" = "install-only" ]; then
-	info ""
-	info "Install-only mode. Start it with:  ${proxy_cmd} --local"
-	exit 0
-fi
-
-# --- start it: under the OS supervisor when we can, as a plain process when we can't ---
-#
-# The preferred path hands the proxy to the OS supervisor (launchd/systemd), so it
-# survives a crash and a logout — once Claude Code's settings point at the proxy, a
-# proxy that dies silently stops Claude Code, most reliably right after a reboot.
-#
-# But not every environment HAS a usable supervisor: a macOS seatbelt sandbox, a
-# container with no user systemd, a minimal or non-systemd distro. There the old flow
-# installed the binaries and then died on `launchctl bootstrap failed` / a systemd
-# bus error. So we check access first (supervisor_usable), fall back to a plain
-# background process when it is missing, and either way print how to start it by hand
-# and how to send any AI harness through it — not just Claude Code.
-
-# If the supervisor was not already ruled out by --no-service, check now
-# whether it can actually be driven. Unusable -> run unsupervised rather than die.
-if [ -z "${NO_SERVICE}" ] && ! supervisor_usable; then
-	info "Detected a restricted environment: ${SUPERVISOR_CMD} may not be used here (no reachable user session)."
-	info "  Cortex will run as a plain background process instead."
-	NO_SERVICE=1
-fi
-
-# The service subcommand is only needed on the supervised path. Skip the agentop-age
-# check entirely when running unsupervised — the proxy binary is all we use there.
-if [ -z "${NO_SERVICE}" ]; then
-	# This script starts the proxy through `agentop service`, so an agentop that predates
-	# that command cannot be driven by it. Say which mismatch it is, rather than
-	# letting `unknown subcommand "service"` surface as a bare non-zero exit after the
-	# binaries are already installed.
-	if ! "${BIN_DIR}/agentop" service status >/dev/null 2>&1 &&
-		"${BIN_DIR}/agentop" service 2>&1 | grep -q "unknown subcommand"; then
-		# Only offer the matching-release URL when $version really is a tag: under
-		# AUTHBRIDGE_SKIP_DOWNLOAD it reads "already installed", which would otherwise
-		# be spliced into a nonsense URL.
-		case "${version}" in
-			v*)
-				die "the ${version} agentop has no 'service' command, which this installer needs
-  in order to start Cortex. Either run that release's own installer, piped -- a
-  local copy of this script never re-execs, so --ref would pin only its binaries
-  and land you back here:
-    curl -fsSL https://raw.githubusercontent.com/${REPO}/main/scripts/install.sh | sh -s -- --ref=${version}
-  or install newer binaries with this script:
-    --ref=<newer tag>"
-				;;
-			*)
-				die "the agentop in ${BIN_DIR} has no 'service' command, which this installer
-  needs in order to start Cortex. Install a newer one — drop
-  AUTHBRIDGE_SKIP_DOWNLOAD, or pass --ref=<a release that has it>."
-				;;
-		esac
-	fi
-fi
-
-# Materialise the config before starting the proxy either way. This used to happen as
-# a side effect of starting `--local` in the background; with the service doing the
-# starting, nothing else creates the file, and `agentop service install` refuses to run
-# without it. The unsupervised start needs it just as much.
-if [ ! -f "${CORTEX_DIR}/config.yaml" ]; then
-	# Executed by explicit path, and REPORTED by the same explicit path. proxy_cmd is
-	# the display form — a bare "cortex" when BIN_DIR is on PATH — so naming
-	# it here would hand back a command that resolves through PATH, which is not
-	# necessarily the binary that just failed. That distinction is the whole point of
-	# pinning the path: an older cortex earlier on PATH is exactly how the
-	# service came up dead in end-to-end testing.
-	if ! "${BIN_DIR}/cortex" --local --write-config; then
-		die "could not write ${CORTEX_DIR}/config.yaml.
-  Run this to see why:
-    \"${BIN_DIR}/cortex\" --local --write-config"
-	fi
-fi
-
-# A fingerprint of the CA as it stands BEFORE anything starts the proxy, so the summary
-# below can tell whether a new one was minted. Sampled here because the proxy mints on
-# first start and afterwards it is too late to ask — and before BOTH start paths, since
-# the --no-service path mints just as the supervised one does.
-#
-# A newly-minted CA invalidates every client that was already running — they read their
-# CA file once, at startup — and that is invisible to them: the bridge tunnels instead
-# of failing, so traffic flows and the parsers just stop seeing it.
-#
-# Comparing the CONTENT rather than testing for ca.crt's existence, because
-# EnsureFileSource mints when ANY of tls.crt / tls.key / ca.crt is missing, not only when
-# all three are. A directory holding ca.crt but no tls.key — a truncated copy, a
-# half-finished cleanup — gets a brand-new CA while an existence check says "already had
-# one" and suppresses the notice, which is exactly the case that needs it. Hashing also
-# covers any future change to the minting condition without this line tracking it.
-ca_fp_before="$(ca_fingerprint)"
-
-# SUPERVISED records which start path actually took, so the closing summary offers
-# `service stop` only where a service really exists.
-SUPERVISED=""
-if [ -n "${NO_SERVICE}" ]; then
-	info ""
-	info "Starting Cortex as a background process (no OS service supervisor here)..."
-	start_unsupervised || die "could not start the proxy; see ${CORTEX_DIR}/proxy.log"
-else
-	info ""
-	info "Setting up the ${SUPERVISOR_NAME}..."
-	set +e
-	# --proxy: use the binary this script just installed, not whatever happens to be
-	# earlier on PATH. An end-to-end run found the unit pointing at an older
-	# cortex from another directory, which rejected --supervise and exited,
-	# so the service never came up.
-	#
-	# Capture agentop's COMBINED output (2>&1) through tee: it stays visible live —
-	# including "Waiting for the previous Cortex to stop (up to 30s)..." — while also
-	# being recorded so service_install_action can read the failure reason. Capturing
-	# stderr alone was the bug behind "could not set up the service (exit 1)": agentop
-	# prints "launchctl bootstrap failed ... Input/output error" to STDOUT, so the old
-	# stderr-only signature matched nothing and the script died instead of falling back.
-	# agentop's exit status is carried through the pipe via a status file (POSIX sh has no
-	# PIPESTATUS). mktemp, not a predictable "$$" name, avoids the symlink-preplant shape
-	# (CWE-59); ensure_tmpdir has resolved a writable TMPDIR by now.
-	#
-	# What is SHOWN passes through quiet_service_install; what is RECORDED is everything,
-	# because tee writes the file before the filter sees a line.
-	svc_out_file=$(mktemp "${TMPDIR}/cortex-svc-out.XXXXXX")
-	svc_st_file=$(mktemp "${TMPDIR}/cortex-svc-st.XXXXXX")
-	{ "${BIN_DIR}/agentop" service install --yes --proxy "${BIN_DIR}/cortex" 2>&1; echo $? >"${svc_st_file}"; } |
-		tee "${svc_out_file}" | quiet_service_install
-	svc_status=$(cat "${svc_st_file}" 2>/dev/null || echo 1)
-	svc_out=$(cat "${svc_out_file}" 2>/dev/null || true)
-	rm -f "${svc_out_file}" "${svc_st_file}"
-	set -e
-	# Captured once: the foreign-proxy verdict carries the holder's pid and path in
-	# the same string, and re-running the classifier to re-read them could observe a
-	# different holder than the one that was classified.
-	svc_action=$(service_install_action "${svc_status}" "${svc_out}")
-	case "${svc_action}" in
-		supervised)
-			SUPERVISED=1
-			;;
-		refused)
-			# agentop declined on purpose (a config that would expose a listener, say).
-			# Running the same proxy unsupervised would defeat that check, so do not.
-			die "agentop refused to set up the service — a safety decision, not an
-  environment limit, so Cortex was NOT started. Its message was:
-    ${svc_out}"
-			;;
-		"foreign-proxy "*)
-			# A proxy from a different install holds the forward port. It will not
-			# drain, so "wait and re-run" would be wrong advice — name the process
-			# and stop, rather than leaving the service to retry its bind forever
-			# while that proxy serves traffic signed by a CA nobody is configured
-			# to trust (which reaches users as a self-signed-certificate error).
-			svc_foreign=${svc_action#foreign-proxy }
-			die "port ${DEMO_FORWARD_PORT} is held by a proxy this install does not manage:
-    pid ${svc_foreign%% *}  ${svc_foreign#* }
-  That process will not shut down on its own, so re-running will not help. It is
-  most likely a cortex started by hand or from another checkout. Stop it
-  and re-run this installer:
-    kill ${svc_foreign%% *}
-  If it comes back on its own, it is another install's supervised service rather
-  than a hand-started copy, and killing it only triggers a respawn. Stop the
-  service that owns it instead — \`agentop service uninstall\` from THAT install, or
-  by hand:
-    macOS:  launchctl bootout gui/\$(id -u)/io.rossoctl.cortex
-    Linux:  systemctl --user disable --now cortex.service
-  (\`systemctl --user stop\` alone leaves the unit enabled, so it returns at the
-  next login; \`disable --now\` is the durable form.)
-  Leaving it running is not a benign duplicate: clients are configured to trust the
-  TLS-bridge CA of THIS install, while that proxy presents its own, so intercepted
-  requests fail certificate verification."
-			;;
-		ports-busy)
-			die "the previous Cortex is still shutting down (its ports are still in use).
-  This is temporary — wait a few seconds and re-run. Starting an unsupervised proxy
-  now would only crash on the ports the old one still holds."
-			;;
-		fallback)
-			# The OS supervisor cannot take the job here (launchd EIO in a sandbox, an
-			# absent systemd user bus, ...). Do exactly what --no-service does rather
-			# than leaving Cortex down after a clean install — no flag required. This is
-			# reached even when supervisor_usable() passed but the real install failed.
-			warn "${SUPERVISOR_CMD} could not set up the service (exit ${svc_status}); running the proxy directly instead"
-			start_unsupervised || die "could not start the proxy; see ${CORTEX_DIR}/proxy.log"
-			;;
-	esac
-fi
-
-# The service now runs cortex wherever it could be set up, so the pre-rename proxy can
-# go. Where it could not (the fallback above), remove_stale finds the old unit still
-# naming it and leaves it in place.
-pidfile_process_unnamed || remove_stale authbridge-proxy cortex
-
-# tool-prune is in the config but INERT: its remove list is empty, so it does
-# nothing until a name is added. That is deliberate for an install.
-#
-# Filling it here would mean a quickstart whose job is to *observe* traffic
-# silently starts *rewriting* it. It is also Claude-Code-specific — the scan reads
-# ~/.claude/projects — so for anyone driving a different agent it would be a
-# mutation with no upside. Opting in is one command, and it belongs to the person
-# who knows whether they want it — so the closing summary names `tools scan`.
-
-# --claude-code: hand off to agentop, which owns the JSON merge (a shell-side edit
-# of a file holding API tokens is not worth attempting) and prompts on /dev/tty —
-# stdin here is the script itself when piped, so it cannot be read for an answer.
-#
-# The current spelling, `configure claude-code`: the old top-level `claude-code`
-# still works but prints a rename notice on every run, and every release that ships
-# an agentop at all (v0.8.0 on) has `configure`.
-wired=""
-if [ -n "${WIRE_CLAUDE_CODE:-}" ]; then
-	info ""
-	set +e
-	if [ -n "${ASSUME_YES}" ]; then
-		"${BIN_DIR}/agentop" configure claude-code enable --yes
-	else
-		"${BIN_DIR}/agentop" configure claude-code enable
-	fi
-	cc_status=$?
-	set -e
-	case "${cc_status}" in
-		0) wired=1 ;;
-		3)
-			# Declined, or no terminal to ask on. A normal outcome — the summary below
-			# offers the same command to run later.
-			info "Claude Code left unchanged."
-			;;
-		*)
-			# Anything else went wrong (a foreign HTTPS_PROXY, unparseable settings).
-			# Reporting that as "left unchanged" and exiting 0 would claim a success
-			# that did not happen.
-			die "agentop configure claude-code enable failed (exit ${cc_status}); Cortex is running but Claude Code is not configured for it"
-			;;
-	esac
-fi
-print_next_steps "${wired}"
-if [ -z "${SUPERVISED}" ]; then
-	info ""
-	print_local_start_help
-fi
-# Said only when the CA actually CHANGED just now, and said late so it is the last
-# thing on screen rather than scrolled past. Silent on the common case — an upgrade
-# leaves all three CA files in place, so nothing is minted and nothing already running
-# is affected.
-ca_fp_after="$(ca_fingerprint)"
-if [ -n "${ca_fp_after}" ] && [ "${ca_fp_before}" != "${ca_fp_after}" ]; then
-	info ""
-	info "  NOTE: a new CA was created for this machine."
-	info "    Agents that were ALREADY RUNNING trust a different CA (or none) and"
-	info "    cannot be observed until restarted — a client reads its CA file once,"
-	info "    at startup. Traffic still flows, so nothing on their side will complain:"
-	info "    it tunnels through unparsed instead. Restart them to see their traffic."
-fi
-info ""
+# --- hand off ---
+hand_off "${tmp}/agentop" "${tmp}"
