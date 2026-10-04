@@ -56,128 +56,203 @@ fixture() { # name; body on stdin. Sets $FIXTURE to the path.
 	cat >"${FIXTURE}"
 }
 
-# emit_curl_stub prints a `curl` replacement that dispatches on the URL.
+# The listing endpoints, as GitHub serves them while a release candidate is out: newest
+# first, prereleases included, so the candidate is the first version listed. install.sh
+# stopped reading them for exactly that reason (see newest_release), and emit_curl_stub
+# serves them anyway: a resolver that went back to listing releases would hand
+# v0.9.0-rc.1 to the plain one-liner and fail every default-path check below, rather
+# than pass against a stub that happened to have no answer for it.
+GH_LISTING_JSON="${TMP}/gh_listing.json"
+cat >"${GH_LISTING_JSON}" <<'EOF'
+[{"tag_name":"main-latest","prerelease":true},{"tag_name":"v0.9.0-rc.1","prerelease":true},{"tag_name":"v0.8.1","prerelease":false}]
+EOF
+GH_LISTING_ATOM="${TMP}/gh_listing.atom"
+cat >"${GH_LISTING_ATOM}" <<'EOF'
+<feed xmlns="http://www.w3.org/2005/Atom">
+  <title>Release notes from cortex</title>
+  <entry><title>v0.9.0-rc.1</title></entry>
+  <entry><title>v0.8.1</title></entry>
+</feed>
+EOF
+
+# emit_curl_stub prints a `curl` replacement that dispatches on the URL, standing in for
+# GitHub.
 #
-# One definition, used by every probe. newest_release() has two sources now, and a stub
-# serving one body to both could not tell them apart: the feed fallback would look
-# exercised while never running. Writing this twice is the drift that has already cost
-# this file two vacuous passes.
+# One definition, used by every probe. newest_release() has two sources, and a stub
+# serving one body to both could not tell them apart: the fallback would look exercised
+# while never running. Writing this twice is the drift that has already cost this file
+# two vacuous passes.
+#
+# The /releases/latest page answers with what install.sh has curl print for it — the
+# redirect target — whatever -o says, because that is where -w output goes.
+#
+# An HTTP error status fails the call only under -f, as it does for the real curl.
+# release_tag_from_api passes no -f because it reads the status itself, and a stub that
+# failed every non-200 regardless left its 403 handling unreachable: `|| _code="000"`
+# overwrote the status before anything could look at it.
 # shellcheck disable=SC2016 # every expression below is literal on purpose: it is
 # expanded by the generated probe, not here. One directive for the whole function beats
 # five identical ones inline.
-emit_curl_stub() { # api-fixture feed-fixture api-http-code
+emit_curl_stub() { # redirect-fixture api-fixture api-http-code
 	printf 'curl() {\n'
 	printf '  _u=""; for _a in "$@"; do case "$_a" in http*) _u="$_a" ;; esac; done\n'
 	printf '  _o=""; _p=""; for _a in "$@"; do [ "${_p}" = "-o" ] && _o="$_a"; _p="$_a"; done\n'
+	printf '  _f=""; for _a in "$@"; do case "$_a" in -[!-]*f*) _f=1 ;; esac; done\n'
+	printf '  _serve() { if [ -n "${_o}" ]; then cat "$1" >"${_o}"; else cat "$1"; fi; }\n'
 	printf '  case "${_u}" in\n'
-	printf '    *api.github.com*)\n'
-	printf '      [ -z "${_o}" ] || cat "%s" > "${_o}"\n' "$1"
-	printf '      [ -n "${_o}" ] || cat "%s"\n' "$1"
-	printf '      printf "%%s" "%s"\n' "$3"
-	printf '      [ "%s" = "200" ] || return 22\n' "$3"
+	printf '    https://api.github.com/repos/*/releases/latest)\n'
+	printf '      _serve "%s"; printf "%%s" "%s"\n' "$2" "$3"
+	printf '      [ "%s" = "200" ] || [ -z "${_f}" ] || return 22\n' "$3"
 	printf '      ;;\n'
-	printf '    *releases.atom*) cat "%s" ;;\n' "$2"
+	printf '    https://api.github.com/repos/*/releases | https://api.github.com/repos/*/releases[?]*)\n'
+	printf '      _serve "%s"; printf 200 ;;\n' "${GH_LISTING_JSON}"
+	printf '    https://github.com/*/releases.atom) _serve "%s" ;;\n' "${GH_LISTING_ATOM}"
+	printf '    https://github.com/*/releases/latest) cat "%s" ;;\n' "$1"
+	printf '    *) return 22 ;;\n'
 	printf '  esac\n'
 	printf '}\n'
 }
 
-# with_newest_release runs install.sh's newest_release() against a fixture.
+# redirect_fixture writes what curl prints for -w '%{redirect_url}': the target, with no
+# trailing newline. Sets $FIXTURE to the path.
+redirect_fixture() { # name target
+	FIXTURE="${TMP}/$1"
+	printf '%s' "$2" >"${FIXTURE}"
+}
+
+# with_newest_release runs install.sh's newest_release() against fixtures and prints
+# what it resolved. Its stderr lands in ${TMP}/nr.err.
 #
-# The function is extracted by line range rather than sourcing install.sh, because
+# The functions are extracted by line range rather than sourcing install.sh, because
 # sourcing would run the whole installer. `curl` is replaced by a function so the
 # extracted code is unmodified — testing what ships, not a copy of it.
-with_newest_release() { # api-fixture-path [feed-fixture-path] [api-http-code]
-	_f=$1
-	_feed=${2:-/dev/null}
-	_code=${3:-200}
+with_newest_release() { # redirect-fixture api-fixture [api-http-code]
 	{
 		printf 'REPO=rossoctl/cortex\n'
 		printf 'warn() { printf "warning: %%s\\n" "$*" >&2; }\n'
-		emit_curl_stub "${_f}" "${_feed}" "${_code}"
+		emit_curl_stub "$1" "$2" "${3:-200}"
 		sed -n '/^newest_release()/,/^}/p' "${INSTALL_SH}"
+		sed -n '/^release_tag_from_redirect()/,/^}/p' "${INSTALL_SH}"
 		sed -n '/^release_tag_from_api()/,/^}/p' "${INSTALL_SH}"
-		sed -n '/^release_tag_from_feed()/,/^}/p' "${INSTALL_SH}"
 		printf 'newest_release\n'
 	} >"${TMP}/probe.sh"
-	sh "${TMP}/probe.sh" 2>/dev/null
+	sh "${TMP}/probe.sh" 2>"${TMP}/nr.err"
 }
 
 printf 'install.sh tests\n'
 
-# --- newest_release: the shape it is documented to handle ---
-
-fixture pretty.json <<'EOF'
-[
-  {
-    "tag_name": "v0.7.0-alpha.7",
-    "name": "v0.7.0-alpha.7"
-  },
-  {
-    "tag_name": "v0.3.1"
-  }
-]
-EOF
-check "pretty JSON resolves the newest tag" "v0.7.0-alpha.7" "$(with_newest_release "${FIXTURE}")"
-
-fixture compact.json <<'EOF'
-[{"tag_name":"v0.7.0-alpha.7"},{"tag_name":"v0.7.0-alpha.6"},{"tag_name":"v0.3.1"}]
-EOF
-check "compact JSON resolves the newest tag, not the oldest" "v0.7.0-alpha.7" "$(with_newest_release "${FIXTURE}")"
-
-# --- newest_release: the main channel must not hijack the default ---
+# --- newest_release: the plain one-liner installs the Latest release ---
 #
-# The rolling `main` release sorts first until the next tagged release, because the
-# API sorts by created_at and created_at is fixed at creation. Unfiltered, the
-# v[0-9]* shape check then rejects it and the whole default install dies.
+# Latest is GitHub's badge, and it never goes to a release flagged as a prerelease,
+# which release-binaries.yaml does for every -rc, -alpha and -beta tag. The listings
+# this used to read put a release candidate first; see GH_LISTING_JSON.
 
-fixture main_first.json <<'EOF'
-[
-  {
-    "tag_name": "main",
-    "prerelease": true
+redirect_fixture latest.loc "https://github.com/rossoctl/cortex/releases/tag/v0.8.1"
+LATEST_LOC="${FIXTURE}"
+check "a release candidate newer than Latest is not the default" "v0.8.1" \
+	"$(with_newest_release "${LATEST_LOC}" /dev/null)"
+
+# The API answers the same question, for when the redirect does not. Shaped like the
+# real response — nested author and assets objects, notes last — cut to one asset.
+fixture api_latest.json <<'EOF'
+{
+  "url": "https://api.github.com/repos/rossoctl/cortex/releases/401136092",
+  "html_url": "https://github.com/rossoctl/cortex/releases/tag/v0.8.1",
+  "id": 401136092,
+  "author": {
+    "login": "github-actions[bot]",
+    "type": "Bot"
   },
-  {
-    "tag_name": "v0.7.0-alpha.7"
-  }
-]
+  "tag_name": "v0.8.1",
+  "target_commitish": "a6cb1d77c489c6b4430fc9574132d3e129e89444",
+  "name": "v0.8.1",
+  "draft": false,
+  "prerelease": false,
+  "assets": [
+    {
+      "name": "agentop_v0.8.1_darwin_amd64.tar.gz",
+      "uploader": {
+        "login": "github-actions[bot]"
+      },
+      "browser_download_url": "https://github.com/rossoctl/cortex/releases/download/v0.8.1/agentop_v0.8.1_darwin_amd64.tar.gz"
+    }
+  ],
+  "body": "Prebuilt `agentop` and `cortex` binaries for linux and macOS (amd64/arm64)."
+}
 EOF
-check "a main release sorting first is skipped" "v0.7.0-alpha.7" "$(with_newest_release "${FIXTURE}")"
+API_LATEST="${FIXTURE}"
+check "no redirect: the API's Latest release is used" "v0.8.1" \
+	"$(with_newest_release /dev/null "${API_LATEST}")"
 
-fixture main_first_compact.json <<'EOF'
-[{"tag_name":"main"},{"tag_name":"v0.7.0-alpha.7"},{"tag_name":"v0.3.1"}]
+# The same response with nothing pretty-printing it: one line, no space after a colon.
+# A parse keyed on GitHub's formatting finds nothing here.
+fixture api_latest_compact.json <<'EOF'
+{"url":"https://api.github.com/repos/rossoctl/cortex/releases/401136092","author":{"login":"github-actions[bot]"},"tag_name":"v0.8.1","name":"v0.8.1","prerelease":false,"assets":[{"name":"agentop_v0.8.1_darwin_amd64.tar.gz"}],"body":"Prebuilt binaries."}
 EOF
-check "main skipped in compact JSON too" "v0.7.0-alpha.7" "$(with_newest_release "${FIXTURE}")"
+check "compact JSON parses the same as pretty" "v0.8.1" \
+	"$(with_newest_release /dev/null "${FIXTURE}")"
 
-fixture only_non_v.json <<'EOF'
-[{"tag_name":"main"},{"tag_name":"nightly"}]
+# Only this repository's tag page is an answer. One with no Latest release redirects to
+# /releases instead (verified against repos that have none), and neither that nor
+# anything else may become a download URL: each falls through to the API.
+redirect_fixture no_latest.loc "https://github.com/rossoctl/cortex/releases"
+check "a redirect to the release list falls back to the API" "v0.8.1" \
+	"$(with_newest_release "${FIXTURE}" "${API_LATEST}")"
+redirect_fixture elsewhere.loc "https://github.com/elsewhere/cortex/releases/tag/v6.6.6"
+check "another repository's tag page is not an answer" "v0.8.1" \
+	"$(with_newest_release "${FIXTURE}" "${API_LATEST}")"
+redirect_fixture channel.loc "https://github.com/rossoctl/cortex/releases/tag/main-latest"
+check "a tag that is not a version is not an answer" "v0.8.1" \
+	"$(with_newest_release "${FIXTURE}" "${API_LATEST}")"
+
+# The redirect goes first because github.com's web side is not bound by the API's
+# 60-requests-per-hour-per-IP quota, shared by everyone behind one NAT. Exhausting it
+# used to kill the documented one-liner and tell the person to look up a version and
+# pass --ref, which is the opposite of a one-line install.
+fixture api_other.json <<'EOF'
+{"tag_name":"v0.0.1","prerelease":false}
+EOF
+check "the redirect is preferred over the API" "v0.8.1" \
+	"$(with_newest_release "${LATEST_LOC}" "${FIXTURE}")"
+fixture ratelimit403.json <<'EOF'
+{"message":"API rate limit exceeded for 203.0.113.7.","documentation_url":"https://x"}
+EOF
+RATELIMIT="${FIXTURE}"
+check "an exhausted API quota is invisible while the redirect answers" "v0.8.1" \
+	"$(with_newest_release "${LATEST_LOC}" "${RATELIMIT}" 403)"
+
+# --- newest_release: no answer is a failure, never a guess ---
+#
+# set +e around each capture: under `set -e` a bare assignment from a failing command
+# substitution aborts the whole suite.
+
+fixture api_non_v.json <<'EOF'
+{"tag_name":"nightly","prerelease":false}
 EOF
 set +e
-_out=$(with_newest_release "${FIXTURE}"); _st=$?
+_st=0; _out=$(with_newest_release /dev/null "${FIXTURE}") || _st=$?
 set -e
-check_fails "a page with no v-tag returns non-zero rather than guessing" "${_st}"
+check_fails "a Latest release with no version tag fails rather than guessing" "${_st}"
 check "and prints nothing on stdout" "" "${_out}"
 
-# --- newest_release: hostile inputs still fail closed ---
-
-fixture ratelimit.json <<'EOF'
-{"message":"API rate limit exceeded","documentation_url":"https://x"}
-EOF
 set +e
-_out=$(with_newest_release "${FIXTURE}"); _st=$?
+_st=0; _out=$(with_newest_release /dev/null "${RATELIMIT}" 403) || _st=$?
 set -e
-check_fails "rate-limit body fails" "${_st}"
+check_fails "no redirect and an exhausted API quota fails" "${_st}"
+check "and prints nothing" "" "${_out}"
+check "and names the quota as the reason" "1" "$(grep -c 'rate limit' "${TMP}/nr.err" || true)"
 
 fixture html.json <<'EOF'
 <html><body>502 Bad Gateway</body></html>
 EOF
 set +e
-_st=0; _out=$(with_newest_release "${FIXTURE}") || _st=$?
+_st=0; _out=$(with_newest_release /dev/null "${FIXTURE}") || _st=$?
 set -e
 check_fails "an HTML error page fails" "${_st}"
 
 fixture empty.json </dev/null
 set +e
-_st=0; _out=$(with_newest_release "${FIXTURE}") || _st=$?
+_st=0; _out=$(with_newest_release /dev/null "${FIXTURE}") || _st=$?
 set -e
 check_fails "an empty body fails" "${_st}"
 
@@ -187,7 +262,7 @@ check_fails "an empty body fails" "${_st}"
 # `--ref=main` set only the script, because there was no main release to download
 # from. One rule now covers both.
 
-with_resolve_version() { # version_ref fixture-path
+with_resolve_version() { # version_ref redirect-fixture-path
 	_ref=$1; _f=$2
 	{
 		printf 'REPO=rossoctl/cortex\n'
@@ -203,8 +278,8 @@ with_resolve_version() { # version_ref fixture-path
 		printf 'info() { printf "%%s\\n" "$*"; }\n'
 		emit_curl_stub "${_f}" /dev/null 200
 		sed -n '/^newest_release()/,/^}/p' "${INSTALL_SH}"
+		sed -n '/^release_tag_from_redirect()/,/^}/p' "${INSTALL_SH}"
 		sed -n '/^release_tag_from_api()/,/^}/p' "${INSTALL_SH}"
-		sed -n '/^release_tag_from_feed()/,/^}/p' "${INSTALL_SH}"
 		sed -n '/^resolve_version()/,/^}/p' "${INSTALL_SH}"
 		printf 'resolve_version "%s"\n' "${_ref}"
 	} >"${TMP}/rv.sh"
@@ -217,14 +292,12 @@ with_resolve_version() { # version_ref fixture-path
 # with_resolve_version_stderr is the same probe, returning stderr instead of stdout —
 # the warnings are the behaviour under test here, and they must not reach stdout because
 # stdout IS the resolved version.
-with_resolve_version_stderr() { # version_ref fixture-path
+with_resolve_version_stderr() { # version_ref redirect-fixture-path
 	with_resolve_version "$1" "$2" >/dev/null
 	cat "${TMP}/rv.err"
 }
 
-fixture rv_releases.json <<'EOF'
-[{"tag_name":"main"},{"tag_name":"v0.7.0-alpha.7"}]
-EOF
+FIXTURE="${LATEST_LOC}"
 # --ref=main resolves to the channel tag, not the literal string "main": a
 # release tagged `main` would collide with the branch. See CHANNEL_TAG in
 # install.sh. The harness must pick the constant up from the script rather than
@@ -237,14 +310,15 @@ check "--ref=main installs the channel tag" "${CHANNEL_TAG}" "$(with_resolve_ver
 # page, so it is what someone types after seeing it there.
 check "--ref=CHANNEL_TAG resolves the same" "${CHANNEL_TAG}" "$(with_resolve_version "${CHANNEL_TAG}" "${FIXTURE}")"
 
-check "--ref=v0.7.0-alpha.4 installs that release" "v0.7.0-alpha.4" "$(with_resolve_version v0.7.0-alpha.4 "${FIXTURE}")"
+# A release candidate is never the default, so naming it is the only way to install it.
+check "--ref=v0.9.0-rc.1 installs that release candidate" "v0.9.0-rc.1" "$(with_resolve_version v0.9.0-rc.1 "${FIXTURE}")"
 
 # An empty VERSION_REF means "nobody named anything installable" and must resolve the
-# newest RELEASE. It must never fall through to the channel: that is what the bootstrap
+# Latest RELEASE. It must never fall through to the channel: that is what the bootstrap
 # passes when the API was unreachable, and the point is that a rate-limited plain
 # one-liner does not silently receive an unreleased build. Asserted here at the function
 # level and again against the real bootstrap block further down.
-check "empty version ref resolves a RELEASE, never the channel" "v0.7.0-alpha.7" "$(with_resolve_version "" "${FIXTURE}")"
+check "empty version ref resolves a RELEASE, never the channel" "v0.8.1" "$(with_resolve_version "" "${FIXTURE}")"
 
 # A branch or a SHA has no published binaries, so the newest release is the only option
 # — but it must SAY so, or it is indistinguishable from the plain one-liner and someone
@@ -264,7 +338,7 @@ set +e
 _out=$(with_resolve_version "" "${FIXTURE}")
 set -e
 check "stdout carries no progress text" "1" "$(printf '%s\n' "${_out}" | wc -l | tr -d ' ')"
-check "stdout is exactly the version" "v0.7.0-alpha.7" "${_out}"
+check "stdout is exactly the version" "v0.8.1" "${_out}"
 
 # --- removed knobs leave no stale advice ---
 #
@@ -504,82 +578,6 @@ check "local file, --ref=v0.5.0: run THIS script, pin v0.5.0 binaries, no re-exe
 	"script= version=v0.5.0" "$(with_bootstrap v0.5.0 200 200 200 v0.7.0-alpha.7 file)"
 check "local file, no --ref: run THIS script, resolve binaries later, no re-exec" \
 	"script= version=" "$(with_bootstrap "" 200 200 200 v0.7.0-alpha.7 file)"
-
-# --- the one-liner survives an exhausted API quota ---
-#
-# This is the reason the feed source exists. 60 requests/hour per IP, unauthenticated,
-# shared behind NAT, two spent per install: exhausting it used to kill the documented
-# one-liner and tell the person to look up a version and pass --ref, which is the
-# opposite of a one-line install. The API failing must be invisible, not fatal.
-
-fixture feed.xml <<'EOF'
-<feed xmlns="http://www.w3.org/2005/Atom">
-  <title>Release notes from cortex</title>
-  <entry>
-    <title>v0.7.0-alpha.8</title>
-    <content type="html">&lt;p&gt;Prebuilt binaries&lt;/p&gt;</content>
-  </entry>
-  <entry>
-    <title>v0.7.0-alpha.7</title>
-  </entry>
-</feed>
-EOF
-FEED="${FIXTURE}"
-
-fixture ratelimit403.json <<'EOF'
-{"message":"API rate limit exceeded for 203.0.113.7.","documentation_url":"https://x"}
-EOF
-check "API 403 falls back to the feed" "v0.7.0-alpha.8" \
-	"$(with_newest_release "${FIXTURE}" "${FEED}" 403)"
-
-# The feed's own <title> is the repo's, not a release, and must not be mistaken for one.
-check "the feed's own title is not mistaken for a release" "v0.7.0-alpha.8" \
-	"$(with_newest_release "${FIXTURE}" "${FEED}" 403)"
-
-# A channel release appears in the feed too, and must be skipped there exactly as it is
-# in the API response — otherwise the fallback would reintroduce the bug the v-tag filter
-# exists to prevent.
-fixture feed_channel.xml <<'EOF'
-<feed xmlns="http://www.w3.org/2005/Atom">
-  <title>Release notes from cortex</title>
-  <entry><title>main-latest</title></entry>
-  <entry><title>v0.7.0-alpha.8</title></entry>
-</feed>
-EOF
-check "the feed skips the channel release" "v0.7.0-alpha.8" \
-	"$(with_newest_release "${TMP}/ratelimit403.json" "${FIXTURE}" 403)"
-
-# Release notes are ours to author and live in the same document, so a version-shaped
-# line inside them must not win. The parse is anchored to the <title> element for this
-# reason; notes arrive HTML-escaped and cannot forge one.
-fixture feed_poisoned.xml <<'EOF'
-<feed xmlns="http://www.w3.org/2005/Atom">
-  <title>Release notes from cortex</title>
-  <entry>
-    <title>v0.7.0-alpha.8</title>
-    <content type="html">v9.9.9-evil is not a release
-&lt;p&gt;notes&lt;/p&gt;</content>
-  </entry>
-</feed>
-EOF
-check "notes text cannot pose as a release title" "v0.7.0-alpha.8" \
-	"$(with_newest_release "${TMP}/ratelimit403.json" "${FIXTURE}" 403)"
-
-# Both sources down is the only remaining failure, and it must stay a failure rather
-# than guess.
-fixture empty_feed.xml </dev/null
-set +e
-_st=0; _out=$(with_newest_release "${TMP}/ratelimit403.json" "${FIXTURE}" 403) || _st=$?
-set -e
-check_fails "both sources failing still fails" "${_st}"
-check "and prints nothing" "" "${_out}"
-
-# A healthy API must still be used — the fallback is a fallback, not a replacement.
-fixture api_ok.json <<'EOF'
-[{"tag_name":"v0.7.0-alpha.8"},{"tag_name":"v0.7.0-alpha.7"}]
-EOF
-check "a healthy API is used without touching the feed" "v0.7.0-alpha.8" \
-	"$(with_newest_release "${FIXTURE}" /dev/null 200)"
 
 # --- the channel tag is one string, in two files ---
 #

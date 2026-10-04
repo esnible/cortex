@@ -4,7 +4,7 @@
 #   curl -fsSL https://raw.githubusercontent.com/rossoctl/cortex/main/scripts/install.sh | sh
 #
 # Detects your OS/arch, downloads the prebuilt `agentop` and `cortex` binaries for
-# the newest release, verifies their SHA-256 checksums, and stages them in a
+# the newest stable release, verifies their SHA-256 checksums, and stages them in a
 # temporary directory. Then it hands off to `agentop setup --from <stage>`, which
 # lists what it will change, asks once, installs to ~/.local/bin, starts Cortex with
 # its built-in config in ~/.cortex, undoes what it did if a step fails, and deletes
@@ -43,10 +43,11 @@
 # --install-only were removed rather than kept as a second spelling: they were the
 # form most likely to be typed and least likely to work.
 #
-# By default this script re-runs the copy from the newest RELEASE rather than
+# By default this script re-runs the copy from the newest stable RELEASE rather than
 # executing whatever is currently on main — main is unstable by definition, and a
 # `curl | sh` should not be the first thing to run a change nobody has released.
-# --ref=main opts back in; --ref=vX.Y.Z pins.
+# --ref=main opts back in; --ref=vX.Y.Z pins, and is the only way to get a release
+# candidate (--ref=vX.Y.Z-rc.N), which the default never picks.
 #
 # Every path here installs a RELEASE. To install what is in a checkout instead,
 # use `make dev-install` from the repo root: it compiles both binaries to ./bin and
@@ -154,8 +155,8 @@ Usage:
   curl -fsSL https://raw.githubusercontent.com/rossoctl/cortex/main/scripts/install.sh | sh
   curl -fsSL ...install.sh | sh -s -- [option]
 
-Downloads agentop and cortex for the newest release, verifies their checksums and
-stages them, then hands off to `agentop setup`. Setup lists what it will change,
+Downloads agentop and cortex for the newest stable release, verifies their checksums
+and stages them, then hands off to `agentop setup`. Setup lists what it will change,
 asks once, installs to ~/.local/bin, and starts the proxy with its built-in config
 in ~/.cortex. Traffic is decrypted and parsed for viewing; nothing is rewritten.
 
@@ -174,9 +175,10 @@ Options:
                      is installed, and the background proxy from its pidfile. Does
                      not download, install, or start anything. Safe to re-run.
   --yes, -y          do not ask; apply the changes setup lists
-  --ref=REF          install from a git ref instead of the newest release — both
-                     this script and the binaries (e.g. --ref=main for unreleased
-                     changes, --ref=v0.7.0-alpha.4 to pin)
+  --ref=REF          install from a git ref instead of the newest stable release —
+                     both this script and the binaries (e.g. --ref=main for
+                     unreleased changes, --ref=v0.8.1 to pin). The only way to
+                     get a release candidate: --ref=v0.9.0-rc.1
   -h, --help         this text
 
 Undo any time:
@@ -239,58 +241,29 @@ ensure_tmpdir
 command -v curl >/dev/null 2>&1 || die "curl is required"
 command -v tar  >/dev/null 2>&1 || die "tar is required"
 
-# newest_release prints the newest VERSION release tag, prereleases included.
-# `releases/latest` excludes prereleases and this project ships them, so list
-# releases (newest first) and take the first tag that looks like a version.
+# newest_release prints the tag of the release GitHub marks Latest: the newest STABLE
+# release. GitHub never gives that badge to a prerelease, and release-binaries.yaml
+# publishes every -rc, -alpha and -beta tag as one, the main-latest channel too — so a
+# release candidate reaches only someone who names it with --ref.
+#
+# This used to list releases and take the newest, whatever its flags. That was right
+# while every release was a prerelease, when Latest named a tag from January; once
+# stable releases existed, it handed every release candidate to everyone running the
+# plain one-liner.
+#
+# TWO sources, because one was not enough. api.github.com allows 60 requests per hour
+# per IP unauthenticated, shared by everyone behind one NAT. Exhausting it killed the
+# documented one-liner outright and told the person to go find a version and pass
+# --ref, which is the opposite of a one-line install. Observed on a normal laptop, not
+# contrived. So the redirect, which that quota does not cover, goes first.
+#
+# The shape check is a backstop: each source prints a version tag or nothing. Reaching
+# it EMPTY means neither answered — an error page, a rate-limit body, a schema change —
+# so fail rather than build a download URL out of it. The caller dies with actionable
+# advice.
 newest_release() {
-	# Four steps, each doing one thing that cannot silently go wrong:
-	#
-	#   tr ',{}' '\n'   put every JSON field on its own line, so nothing greedy can
-	#                   run past the field it was aimed at. Without this the old
-	#                   `sed 's/.*"tag_name": *"//'` depended on GitHub pretty-printing:
-	#                   against a COMPACT response the whole array is one line, the
-	#                   greedy .* runs to the LAST tag_name, and it returns the OLDEST
-	#                   release. Verified — it yields v0.3.1 from compact JSON.
-	#   grep '"tag_name":'
-	#                   match tag_name only where it is a KEY (anchored, colon after).
-	#                   An unanchored match is hijacked by any release whose name or
-	#                   body contains the text "tag_name", and release bodies are ours
-	#                   to author. Every tag, not just the first — the -m1 belongs on
-	#                   the value filter below, so that what gets picked is the first
-	#                   VERSION tag rather than merely the first tag.
-	#   cut -d'"' -f4   take the value by position, not by pattern.
-	#   grep -m1 '^v[0-9]'
-	#                   the developer channel's rolling `main` release sorts first
-	#                   until the next tagged release (the API sorts by created_at,
-	#                   which is fixed at creation). Taking the first entry blindly
-	#                   would hand `main` to someone who never asked for it, and the
-	#                   shape check below would then reject it and kill the install
-	#                   outright. Skipping non-version tags keeps the channel
-	#                   invisible to the default path.
-	#
-	# ?per_page=10 for the same reason: one page has to contain a version tag even
-	# with rolling releases ahead of it. Ten is headroom, not a calculation — there is
-	# one rolling release, so two would do.
-	#
-	# The shape check is now a backstop rather than the filter. Reaching it with a
-	# non-version tag is impossible; reaching it EMPTY is not, and means no version tag
-	# in ten releases — an error page, a rate-limit body, a schema change. Fail rather
-	# than build a download URL out of it. No warning here: the only reachable failure
-	# is "nothing matched", and naming `main` at someone who never mentioned it is
-	# noise. The caller already dies with actionable advice.
-	#
-	# Not jq (not installed everywhere) and not gh (a far larger dependency than a
-	# curl|sh installer should require; this script needs curl, tar and a checksum tool).
-	# Not /releases/latest either: it excludes prereleases, and this project ships them,
-	# so it names a tag from January. Listing releases asks what we actually mean — the
-	# newest release, whatever its flags.
-	# TWO sources, because one was not enough. api.github.com allows 60 requests per
-	# hour per IP unauthenticated — shared by everyone behind one NAT, and each install
-	# spends two. Exhausting it killed the documented one-liner outright and told the
-	# person to go find a version and pass --ref, which is the opposite of a one-line
-	# install. Observed on a normal laptop, not contrived.
-	_tag=$(release_tag_from_api)
-	[ -n "${_tag}" ] || _tag=$(release_tag_from_feed)
+	_tag=$(release_tag_from_redirect)
+	[ -n "${_tag}" ] || _tag=$(release_tag_from_api)
 	case "${_tag}" in
 		v[0-9]*) ;;
 		*) return 1 ;;
@@ -298,7 +271,27 @@ newest_release() {
 	printf '%s\n' "${_tag}"
 }
 
-# release_tag_from_api prints the newest v-tag per the releases API, or nothing.
+# release_tag_from_redirect prints the Latest release's tag, read off where
+# github.com/<repo>/releases/latest redirects, or nothing.
+#
+# The redirect target is the answer, so it is not followed (no -L) and the page behind
+# it is never fetched. Only this repository's tag page counts: a repository with no
+# Latest release redirects to /releases instead, and neither that nor anything else
+# may turn into a download URL.
+release_tag_from_redirect() {
+	_loc=$(curl -s -o /dev/null -w '%{redirect_url}' \
+		"https://github.com/${REPO}/releases/latest" 2>/dev/null) || _loc=""
+	case "${_loc}" in
+		"https://github.com/${REPO}/releases/tag/"v[0-9]*)
+			printf '%s\n' "${_loc#"https://github.com/${REPO}/releases/tag/"}"
+			;;
+	esac
+}
+
+# release_tag_from_api prints the Latest release's tag per the releases API, or nothing.
+#
+# Not jq (not installed everywhere) and not gh (a far larger dependency than a curl|sh
+# installer should require; this script needs curl, tar and a checksum tool).
 release_tag_from_api() {
 	# The status is captured rather than discarded so a 403 can be NAMED. Nearly always
 	# that is the unauthenticated rate limit, which is a wait-or-pin situation and not a
@@ -306,14 +299,26 @@ release_tag_from_api() {
 	# told nobody that waiting would fix it.
 	_body="${TMPDIR:-/tmp}/cortex-rel.$$"
 	_code=$(curl -sSL -o "${_body}" -w '%{http_code}' \
-		"https://api.github.com/repos/${REPO}/releases?per_page=10" 2>/dev/null) || _code="000"
+		"https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null) || _code="000"
 	if [ "${_code}" = "403" ] || [ "${_code}" = "429" ]; then
 		# Only worth saying if it is really the quota; a 403 for another reason should
 		# not be mislabelled.
 		if grep -q 'rate limit' "${_body}" 2>/dev/null; then
-			warn "GitHub's API rate limit for this network is exhausted (60/hour per IP, unauthenticated); trying the releases feed instead"
+			warn "GitHub's API rate limit for this network is exhausted (60/hour per IP, unauthenticated)"
 		fi
 	fi
+	# Four steps, each doing one thing that cannot silently go wrong:
+	#
+	#   tr ',{}' '\n'   put every JSON field on its own line, so the parse does not
+	#                   depend on how GitHub formats the response: pretty-printed or
+	#                   compact, each field is a line, and nothing greedy can run past
+	#                   the field it was aimed at.
+	#   grep '"tag_name":'
+	#                   match tag_name only where it is a KEY (anchored, colon after),
+	#                   never text inside a value.
+	#   cut -d'"' -f4   take the value by position, not by pattern.
+	#   grep -m1 '^v[0-9]'
+	#                   only a version tag is an answer.
 	if [ "${_code}" = "200" ]; then
 		tr ',{}' '\n' <"${_body}" \
 			| grep '^[[:space:]]*"tag_name"[[:space:]]*:' \
@@ -321,23 +326,6 @@ release_tag_from_api() {
 			| grep -m1 '^v[0-9]' || true
 	fi
 	rm -f "${_body}"
-}
-
-# release_tag_from_feed prints the newest v-tag per the releases Atom feed, or nothing.
-#
-# github.com, not api.github.com: the feed is not bound by the API's 60/hour, which is
-# the whole reason it is here. It lists releases newest-first and includes prereleases,
-# so it answers the same question the API does.
-#
-# The parse is anchored to the <title> ELEMENT rather than grepping for a version-shaped
-# line. Release notes are ours to author and appear in the same document, so an
-# unanchored match could be hijacked by a notes line that happens to start with a
-# version — the same shape of bug as the unanchored "tag_name" match this file already
-# guards against. Notes arrive HTML-escaped (&lt;p&gt;), so they cannot forge a <title>.
-release_tag_from_feed() {
-	curl -fsSL "https://github.com/${REPO}/releases.atom" 2>/dev/null \
-		| sed -n 's|.*<title>\(v[0-9][^<]*\)</title>.*|\1|p' \
-		| head -1
 }
 
 # resolve_version prints the release tag whose binaries should be installed, given the

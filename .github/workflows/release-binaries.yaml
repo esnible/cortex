@@ -190,6 +190,15 @@ jobs:
           set -euo pipefail
           # TAG comes from the build step via GITHUB_ENV — one derivation, not two.
           [ -n "${TAG:-}" ] || { echo "TAG not set by the build step" >&2; exit 1; }
+          # This decides who gets the release. A prerelease never takes GitHub's
+          # "Latest" badge, and Latest is what the plain one-liner installs, so a
+          # flagged release reaches only someone who names it with --ref. `main` belongs
+          # here or the rolling release takes the badge, displacing the newest real
+          # release.
+          prerelease=""
+          case "${TAG}" in
+            main-latest | *-rc* | *-alpha* | *-beta*) prerelease="--prerelease" ;;
+          esac
           # Build release notes one line at a time so no single string
           # exceeds yamllint's 150-char cap. Single-quoted arguments keep
           # backticks literal (no shell expansion).
@@ -213,6 +222,13 @@ jobs:
           add ''
           add 'Verify downloads with `sha256sum -c checksums.txt`. On macOS, clear the'
           add 'Gatekeeper quarantine after extracting: `xattr -dr com.apple.quarantine ./agentop`.'
+          # Whoever is asked to try a release candidate lands on this page, and the
+          # one-liner they already know will not install it.
+          if [ -n "${prerelease}" ]; then
+            add ''
+            add 'This is a prerelease: the plain one-liner does not install it. To try it:'
+            add "    curl -fsSL https://raw.githubusercontent.com/rossoctl/cortex/main/scripts/install.sh | sh -s -- --ref=${TAG}"
+          fi
           # The rolling release is not a release, and its notes should not read like
           # one — someone landing on it from a search result needs to know that
           # before they install it.
@@ -224,7 +240,7 @@ jobs:
             add '    curl -fsSL https://raw.githubusercontent.com/rossoctl/cortex/main/scripts/install.sh | sh -s -- --ref=main'
             add ''
             add 'Each binary reports its own build (`agentop --version` -> `main-<sha>`). For a'
-            add 'supported install, use the newest `v*` release instead.'
+            add 'supported install, use the plain one-liner, which installs the newest stable release.'
           fi
           if gh release view "${TAG}" >/dev/null 2>&1; then
             # Uploading assets does not move the tag, so on a REUSED tag the release
@@ -244,13 +260,16 @@ jobs:
             # lines), so this is a note rather than a prune — delete stale assets by hand
             # when retiring a variant.
             gh release upload "${TAG}" dist/*.tar.gz dist/checksums.txt --clobber
+            # A v* release that already exists was created either by an earlier run of
+            # this job, flagged already, or by hand before this ran — from the Releases
+            # page, say, where nothing flags it by its tag. Unflagged, a release
+            # candidate takes the Latest badge and the plain one-liner installs it.
+            # Flagging it here lets the tag decide, whichever path created the
+            # release; for main-latest it changes nothing.
+            if [ -n "${prerelease}" ]; then
+              gh release edit "${TAG}" --prerelease >/dev/null
+            fi
           else
-            prerelease=""
-            # `main` belongs here or the rolling release takes GitHub's "Latest"
-            # badge, displacing the newest real release.
-            case "${TAG}" in
-              main-latest | *-rc* | *-alpha* | *-beta*) prerelease="--prerelease" ;;
-            esac
             # --target "${GITHUB_SHA}": without it the API defaults target_commitish to
             # the repository's default branch at call time, not the commit that was
             # built. Usually the same on a main push, but it is exactly the drift the

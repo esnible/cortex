@@ -118,16 +118,19 @@ curl -fsSL https://raw.githubusercontent.com/rossoctl/cortex/main/scripts/instal
 ```
 
 `--ref=X` means "install X" — both the installer script and the binaries — for any X
-that has published binaries: `main` and any `vX.Y.Z` release. Every push to `main`
-rebuilds a rolling pre-release, so `--ref=main` tracks the tip.
+that has published binaries: `main` and any `vX.Y.Z` release, release candidates
+included. Every push to `main` rebuilds a rolling pre-release, so `--ref=main` tracks
+the tip.
 
 `--ref=` also accepts a branch or a commit, but no binaries are published for those, so
 you get that ref's *script* with the newest *release's* binaries. The installer warns
 when that happens rather than leaving you to infer it.
 
-You should not need `--ref` to get a release. The plain one-liner resolves the newest
-release itself, from the releases API and — when that is unavailable — from
-`releases.atom`, which is not bound by the API's 60-requests-per-hour-per-IP limit.
+You should not need `--ref` to get a stable release. The plain one-liner installs the
+release GitHub marks **Latest**, which is never a prerelease. It reads that from where
+`github.com/rossoctl/cortex/releases/latest` redirects, which is not bound by the API's
+60-requests-per-hour-per-IP limit, and from the releases API when the redirect does not
+answer.
 
 Each binary reports its own build: `agentop --version` → `main-a1b2c3d`. Quote that,
 not "main", in a bug report — the channel moves under you.
@@ -144,8 +147,8 @@ Three things to know:
   checksums in the same run, so verification is sound. Downloading them hours apart
   will mismatch.
 - **The plain one-liner takes you back.** Running it without `--ref` installs the
-  newest release over the channel build and restarts the service, so there is no stuck
-  state to clean up.
+  newest stable release over the channel build and restarts the service, so there is
+  no stuck state to clean up.
 
 The rolling release is tagged `main-latest`, not `main`. A GitHub release needs a git
 tag, and a tag named `main` would collide with the branch — `git rev-parse main` would
@@ -190,6 +193,46 @@ tag's URL rather than from `main`. v0.7.0 printed exactly such a one-liner in it
 unfiltered parent resolves the rolling release as its version and installs unreleased
 binaries. Cutting a release first stops that window growing; it cannot fix copies already
 published.
+
+## Release candidates
+
+A tag with `-rc`, `-alpha` or `-beta` in it publishes a **prerelease**: binaries and
+images like any `v*` tag, but the plain one-liner never installs it. That one-liner
+installs the release carrying GitHub's **Latest** badge, and GitHub never gives the badge
+to a prerelease.
+
+Cut one by pushing the tag and letting CI publish the release:
+
+```sh
+git tag -a v0.9.0-rc.1 -m v0.9.0-rc.1 <commit>
+git push https://github.com/rossoctl/cortex.git v0.9.0-rc.1
+```
+
+Testers install it by name — the release page prints the same command — and the plain
+one-liner takes them back to the newest stable release afterwards:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/rossoctl/cortex/main/scripts/install.sh \
+  | sh -s -- --ref=v0.9.0-rc.1
+```
+
+To promote a candidate, tag the same commit `v0.9.0`.
+
+Things to know:
+
+- **Spell the suffix `-rc.N`, `-alpha.N` or `-beta.N`.** Those are what
+  `release-binaries.yaml` flags as a prerelease. Any other spelling (`v0.9.0-pre1`)
+  publishes an ordinary release, which takes the Latest badge and goes to everyone.
+- **Do not create the release from the Releases page first.** If you do, the tag build
+  flags it by its tag when it uploads the binaries, but until then an unticked "Set as
+  a pre-release" box leaves a candidate with no assets as Latest, and the plain
+  one-liner fails for everyone in that window.
+- **Installers from v0.8.1 and earlier still pick candidates.** Their copy of the
+  script takes the newest release of any kind, so running one directly —
+  `curl …/v0.8.1/scripts/install.sh | sh`, with no `--ref` — installs the candidate.
+  The documented one-liner runs `main`'s copy and is not affected.
+- **Container images are not gated.** A candidate's tag pushes its images under that
+  tag and also moves `latest`, as every `v*` tag and every merge to `main` already does.
 
 ## Issues
 
