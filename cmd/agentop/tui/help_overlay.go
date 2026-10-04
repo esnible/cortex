@@ -372,7 +372,7 @@ var paneKeys = map[paneID]keyGroup{
 		bindings: []keyBinding{
 			{"↑↓ / jk", "navigate"},
 			// Said here too because the footer only describes the row under the cursor.
-			{"↵", "scope to this agent; All agents clears"},
+			{"↵", "scope to this agent and list its sessions; All agents clears"},
 			{"esc", "back, keeping the scope"},
 		},
 		// ONE SHORT NOTE, NOT TWO LONG ONES, and the budget is real rather than stylistic: an

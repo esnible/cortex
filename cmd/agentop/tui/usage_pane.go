@@ -281,7 +281,7 @@ func renderUsageChart(snap *usage.Snapshot, m usageMetric, group usage.Group, wi
 		// Scoping to one agent narrows the window to that agent's units, which is the way out.
 		var ok bool
 		if unit, ok = money.WindowUnit(snap.Currencies); !ok {
-			return []string{"  cost chart withheld: this window mixes billing units — [A] scope to one agent, or view tokens"}
+			return []string{"  cost chart withheld: this window mixes billing units", "  [A] scope to one agent, then [u], or view tokens"}
 		}
 	}
 	if group != "" && group != usage.GroupNone {
@@ -389,7 +389,7 @@ func (m *model) renderUsage(width, height int) string {
 		b.WriteString("\n")
 		b.WriteString("  Response times are recorded per bucket, across every agent that\n")
 		b.WriteString("  shared it, so they cannot be attributed to one. To plot latency for\n")
-		b.WriteString("  all of them, clear the scope: [A], then [enter] on the scoped agent.\n")
+		b.WriteString("  all of them, clear the scope: [A], [enter] on All agents, then [u].\n")
 		b.WriteString("\n")
 		b.WriteString(renderUsageSummary(m.usage.snap))
 		b.WriteString("\n")

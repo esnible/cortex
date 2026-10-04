@@ -875,8 +875,8 @@ agentop is for, and the other three are surfaces you visit and leave.
   both prints them side by side (`$6.20 + 0.03 Bobcoins`), and the drawer, the
   agents pane and the sessions table label each row with its own unit. A row that
   itself spans units reads `(mixed)`, the drawer's tier column is withheld for a
-  mixed window, and so is the Usage pane's cost chart — scope to one agent (`A`)
-  to chart it. Where a column is too narrow for the name it is shortened
+  mixed window, and so is the Usage pane's cost chart — scope to one agent (`A`,
+  then `u`) to chart it. Where a column is too narrow for the name it is shortened
   (`0.03 Bobc…`), down to `¤`. A deployment with no `unit:` configured sees
   exactly the dollar figures it always did.
 
@@ -1256,7 +1256,7 @@ Layered on top of all of them:
 | `r` | catalog | refresh the catalog from `/v1/plugins` |
 | `A` | any session-view pane (not the picker) | open the per-agent cost breakdown — what each coding agent has spent today, plus a row of dashes for any agent that owns a listed session but has spent nothing today, since the sessions list is not limited to today and every session in it needs a row to scope to. Capital `A` because lowercase `a` cycles the spend drawer's axis. Refetches on every press, then **refuses below two agents**, counting both kinds of row, and says which one it found: a one-row breakdown restates a total already on screen. Not in the footer for that reason; the `?` overlay names it |
 | `↑↓` / `jk` | agents | move the cursor |
-| `↵` | agents | scope to the agent under the cursor, and leave — including the agent already scoped, which stays scoped. **The first row, All agents, clears the scope.** It reaches the sessions list, the usage pane, and the spend band and its drawer; `agentop cost --agent` is a separate process |
+| `↵` | agents | scope to the agent under the cursor and list its sessions, whichever pane `A` was pressed on — including the agent already scoped, which stays scoped. **The first row, All agents, clears the scope.** It reaches the sessions list, the usage pane, and the spend band and its drawer; `agentop cost --agent` is a separate process |
 | `Esc` | agents | back to the pane `A` was pressed on, leaving the scope as it is |
 | `e` | pipeline | edit pipeline subtree in `$EDITOR` |
 | `y` | edit/diff | apply the edit |

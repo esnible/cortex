@@ -5,6 +5,9 @@ import (
 	"strings"
 	"testing"
 
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+
 	"github.com/rossoctl/cortex/core/cost/usage"
 )
 
@@ -82,5 +85,69 @@ func TestUsageHeader_LatencyOverflowsEightyAndFitsAt88(t *testing.T) {
 	}
 	if got := header(88); len([]rune(got)) > 88 {
 		t.Errorf("the latency header is %d columns at 88: %q", len([]rune(got)), got)
+	}
+}
+
+// The usage pane's hints that send the reader to the agents picker name [u]. Enter there lists the
+// picked agent's sessions, so a hint that stops at the picker leaves the reader on Sessions; [u]
+// from Sessions is what charts the new scope. The latency hint also names the row that clears the
+// scope, All agents. Every line naming a key fits 80 columns: bubbletea cuts a line at the
+// terminal's width, so a key past it is never seen.
+//
+// Each route is then driven as written, so the keys the hints name are the keys that work.
+func TestUsagePane_PickerHintsNameU(t *testing.T) {
+	latency := &model{agentScope: "bob-shell/2.0.5"}
+	latency.usage.metric = metricLatency
+	latency.usage.snap = costChartSnapshot(nil)
+	latencyHint := latency.renderUsage(80, 24)
+	mixedHint := strings.Join(renderUsageChart(costChartSnapshot([]string{"Bobcoins", "USD"}), metricCost, "", 60, 12), "\n")
+	for name, hint := range map[string]string{"latency": latencyHint, "mixed units": mixedHint} {
+		if !strings.Contains(hint, "[A]") || !strings.Contains(hint, "[u]") {
+			t.Errorf("%s hint does not name [A] and [u]:\n%s", name, hint)
+		}
+		for _, line := range strings.Split(hint, "\n") {
+			if strings.Contains(line, "[") && lipgloss.Width(line) > 80 {
+				t.Errorf("%s hint line is %d columns, past 80:\n%s", name, lipgloss.Width(line), line)
+			}
+		}
+	}
+	if !strings.Contains(latencyHint, "All agents") {
+		t.Errorf("latency hint does not name All agents, the row that clears the scope:\n%s", latencyHint)
+	}
+
+	for _, tc := range []struct {
+		name   string
+		cursor int
+		want   string
+	}{
+		{"latency: clear the scope", 0, ""},
+		{"mixed units: scope to one agent", 2, "bob-shell/2.0.5"},
+	} {
+		m := &model{
+			pane:               paneUsage,
+			previousPane:       paneNone,
+			agentScope:         "claude-code/2.1.270",
+			agentsTbl:          newAgentsTable(),
+			client:             deadClient(),
+			pipelineReturnPane: paneNone,
+		}
+		press, ok := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'A'}})().(agentRowsLoadedMsg)
+		if !ok {
+			t.Fatalf("%s: `A` on Usage did not fetch the agents", tc.name)
+		}
+		m.Update(agentRowsLoadedMsg{rows: []agentRow{
+			{label: "claude-code/2.1.270", Counts: usage.Counts{Requests: 10, PricedRequests: 10}},
+			{label: "bob-shell/2.0.5", Counts: usage.Counts{Requests: 8}},
+		}, open: agentsOpenOnPress, from: press.from})
+		if m.pane != paneAgents {
+			t.Fatalf("%s: `A` on Usage did not open the picker: pane = %v", tc.name, m.pane)
+		}
+		m.agentsTbl.SetCursor(tc.cursor)
+		m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+		m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
+		if m.pane != paneUsage || m.agentScope != tc.want {
+			t.Errorf("%s: [A], [enter], [u] left pane %v scope %q, want Usage scoped to %q",
+				tc.name, m.pane, m.agentScope, tc.want)
+		}
 	}
 }
