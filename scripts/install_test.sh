@@ -340,8 +340,14 @@ with_bootstrap() { # want_ref http_scripts http_root http_legacy newest_release 
 		printf '  esac\n'
 		# shellcheck disable=SC2016 # same.
 		printf '  [ "${_c}" = "200" ] || [ -z "${_out}" ] || : > "${_out}"\n'
-		# shellcheck disable=SC2016 # same.
-		printf '  [ "${_c}" != "200" ] || [ -z "${_out}" ] || printf "#!/bin/sh\\nprintf \\"REEXECED\\\\n\\"\\nexit 0\\n" > "${_out}"\n'
+		# The released script it serves says REEXECED, or is BS_CHILD when that is set.
+		if [ -n "${BS_CHILD:-}" ]; then
+			# shellcheck disable=SC2016 # same.
+			printf '  [ "${_c}" != "200" ] || [ -z "${_out}" ] || cat "%s" > "${_out}"\n' "${BS_CHILD}"
+		else
+			# shellcheck disable=SC2016 # same.
+			printf '  [ "${_c}" != "200" ] || [ -z "${_out}" ] || printf "#!/bin/sh\\nprintf \\"REEXECED\\\\n\\"\\nexit 0\\n" > "${_out}"\n'
+		fi
 		# shellcheck disable=SC2016 # same.
 		printf '  printf "%%s" "${_c}"\n'
 		printf '}\n'
@@ -442,6 +448,49 @@ check "--ref=v0.5.0 with a transport failure refuses to run main" \
 # kind of vacuous pass that hid the unreachable arm above.
 check "--ref=v0.5.0 with a 200 script re-execs into it" \
 	"REEXECED" "$(with_bootstrap v0.5.0 200 200 200 v0.7.0-alpha.7)"
+
+# --- the bootstrap outlives a signal its child catches ---
+#
+# A ^C at setup's prompt reaches the whole process group: the re-exec'd script, which
+# catches it and exits 3, and the bootstrap waiting for it. dash dies of an INT it does
+# not catch even then, so the user's shell got 130 and the script was left in TMPDIR;
+# bash waits to see what its child did, which is why macOS never showed it. A TERM to
+# the group, or a closed terminal's HUP, kills bash too.
+#
+# The fake child is the re-exec'd script. It sends the signal to the bootstrap and to
+# itself, as the terminal does, and exits 3 from its trap a moment later, as setup
+# finishes its own output first. A suite started with the signal ignored (in the
+# background, or under nohup) passes that on, and no shell can undo it, so that is
+# probed first and fails as itself, as the ^C mid-download check below does.
+with_bootstrap_signal() { # INT|TERM|HUP
+	if [ -n "$(sh -c "kill -$1 \$\$; echo ignored" 2>/dev/null || :)" ]; then
+		printf 'cannot run: this suite was started with SIG%s ignored\n' "$1"
+		return 0
+	fi
+	# One file per signal: a child the bootstrap did not wait for may still be running.
+	# Should its trap never run, it gives up after 5s, with 4.
+	# shellcheck disable=SC2016 # literal on purpose: expanded by the child, not here.
+	{
+		printf "trap 'sleep 0.3; exit 3' %s\n" "$1"
+		printf 'kill -%s "${PPID}" "$$"\n' "$1"
+		printf '_i=0\nwhile [ "${_i}" -lt 50 ]; do sleep 0.1; _i=$((_i + 1)); done\nexit 4\n'
+	} >"${TMP}/sig-child-$1.sh"
+	rm -rf "${TMP}/sig-tmp"
+	mkdir -p "${TMP}/sig-tmp"
+	_bs_st=0
+	# A subshell, so BS_CHILD and the TMPDIR the stub's mktemp names reach only this run.
+	(
+		BS_CHILD="${TMP}/sig-child-$1.sh"
+		TMPDIR="${TMP}/sig-tmp"
+		export TMPDIR
+		with_bootstrap v9.9.9 200 404 404 v0.7.0-alpha.7 >/dev/null
+	) || _bs_st=$?
+	printf 'exit %s, %s left in TMPDIR\n' "${_bs_st}" "$(ls -A "${TMP}/sig-tmp" | wc -l | tr -d ' ')"
+}
+check "a ^C the re-exec'd script catches: the bootstrap exits with its status, and removes the script" \
+	"exit 3, 0 left in TMPDIR" "$(with_bootstrap_signal INT)"
+check "  and a TERM to them both" "exit 3, 0 left in TMPDIR" "$(with_bootstrap_signal TERM)"
+check "  and a closed terminal's HUP" "exit 3, 0 left in TMPDIR" "$(with_bootstrap_signal HUP)"
 
 # --- run as a LOCAL FILE: never re-exec the released copy (the reported bug) ---
 #
@@ -705,6 +754,10 @@ check "pre-rename: --stop stops it rather than discarding the pidfile" \
 check "pre-rename: ...but not an authbridge-proxy from another directory" \
 	"old:left pidfile:none" \
 	"$(with_pre_rename /home/u/src/cortex/authbridge-proxy /home/u/.local/bin authbridge-prox)"
+# A live pid that nothing can name may be anyone's, recycled since: not ours to signal.
+check "pre-rename: --stop does not signal a pid whose executable cannot be named" \
+	"old:left pidfile:none" \
+	"$(with_pre_rename __NONE__ /home/u/.local/bin authbridge-prox)"
 # /proc/<pid>/exe resolves symlinks, so a BIN_DIR reached through one must still match.
 mkdir -p "${TMP}/prr_real"
 : >"${TMP}/prr_real/authbridge-proxy"
@@ -1039,6 +1092,10 @@ esac
 if [ -n "${_o}" ]; then cat "${_f}" >"${_o}"; else cat "${_f}"; fi
 EOF
 chmod +x "${TMP}/tbin/curl"
+# lsof, which only --stop runs, to check the ports: nothing is listening. A real Cortex
+# may well hold this machine's ports, and they must not decide a run.
+printf '#!/bin/sh\nexit 1\n' >"${TMP}/tbin/lsof"
+chmod +x "${TMP}/tbin/lsof"
 # sleep, for the runs that put it on PATH: it logs each call to T_SLEEPS, then sleeps
 # 0.2s whatever it was asked, so a run stays short. With T_SLEEP_NOFRAC=1 it rejects a
 # fraction, as a sleep that takes whole seconds only does.
@@ -1101,7 +1158,7 @@ make_release() {
 # (the fake agentop's record), urls (curl's), meet (curl's marks, for T_CURL), sleeps
 # (the stub sleep's calls), and out and err (install.sh's).
 #
-# Four globals change a run, and each is reset after it:
+# Five globals change a run, and each is reset after it:
 #   T_CURL   the stub curl's mode, above
 #   T_SLEEP  put the stub sleep on PATH: frac (it takes fractions), or nofrac
 #   T_BG     run install.sh in the background, and set T_PID instead of T_ST
@@ -1110,11 +1167,14 @@ make_release() {
 #            bar is on screen; hup, to close the terminal at that point instead; dumb,
 #            with TERM=dumb; or narrow, 40 columns wide. out is then the terminal's bytes,
 #            stdout and stderr together, and pty.pid install.sh's pid.
+#   T_PIPE   run it as `curl … | sh -s --` does: the script on stdin, so $0 is "sh" and
+#            the bootstrap may re-exec, from the sandbox, so no file named sh passes for $0
 T_N=0
 T_CURL=""
 T_SLEEP=""
 T_BG=""
 T_PTY=""
+T_PIPE=""
 # t_pty SCRIPT runs `sh SCRIPT` on a pseudo-terminal, with util-linux's script (CI's)
 # or the BSD one (macOS's). With neither, the run fails, and so do its checks.
 # t_pty_bg is the same in the background, with script's own pid in T_SPID.
@@ -1155,13 +1215,14 @@ run_install() {
 			;;
 		bare) _ri_skip=1 ;;
 	esac
+	if [ -n "${T_PIPE}" ]; then set -- -s -- "$@"; else set -- "${INSTALL_SH}" "$@"; fi
 	set -- env -u AUTHBRIDGE_SCRIPT_REF -u AUTHBRIDGE_INSTALL_ONLY -u AUTHBRIDGE_VERSION -u AUTHBRIDGE_REF \
 		HOME="${T_RUN}/home" TMPDIR="${T_RUN}/tmp" PATH="${_ri_path}" \
 		AUTHBRIDGE_SKIP_DOWNLOAD="${_ri_skip}" \
 		T_REL="${T_REL:-}" T_URLS="${T_RUN}/urls" T_LOG="${T_RUN}/log" T_PROBE="${_ri_probe}" \
 		T_CURL="${T_CURL}" T_MEET="${T_RUN}/meet" T_REAL_SLEEP="${T_REAL_SLEEP}" \
 		T_SLEEPS="${T_RUN}/sleeps" T_SLEEP_NOFRAC="$([ "${T_SLEEP}" != nofrac ] || echo 1)" \
-		sh "${INSTALL_SH}" "$@"
+		sh "$@"
 	T_ST=0
 	if [ -n "${T_PTY}" ]; then
 		# A pty starts with no size, so give it one before install.sh asks.
@@ -1197,6 +1258,8 @@ run_install() {
 	elif [ -n "${T_BG}" ]; then
 		"$@" <"${TMP}/piped-script" >"${T_RUN}/out" 2>"${T_RUN}/err" &
 		T_PID=$!
+	elif [ -n "${T_PIPE}" ]; then
+		(cd "${T_RUN}" && exec "$@") <"${INSTALL_SH}" >"${T_RUN}/out" 2>"${T_RUN}/err" || T_ST=$?
 	else
 		"$@" <"${TMP}/piped-script" >"${T_RUN}/out" 2>"${T_RUN}/err" || T_ST=$?
 	fi
@@ -1204,6 +1267,7 @@ run_install() {
 	T_SLEEP=""
 	T_BG=""
 	T_PTY=""
+	T_PIPE=""
 }
 # t_drawn says yes once the terminal has been sent a bar: the cursor hidden, then a line.
 t_drawn() { if tr '\033\r' 'ER' <"${T_RUN}/out" | grep -q 'E\[?25lRDownloading'; then echo yes; fi; }
@@ -1556,6 +1620,19 @@ check "  and is never handed off to" "0" "$(t_nlog argv)"
 run_install ok bare
 check "repair: with no agentop installed it dies" "1 yes" \
 	"${T_ST} $(t_in "AUTHBRIDGE_SKIP_DOWNLOAD=1 but ${T_RUN}/home/.local/bin/agentop is missing" err)"
+
+# --- --stop: stops what runs here, and nothing else ---
+# Piped, as the one-liner runs it, so the bootstrap is in play: --stop re-execs no
+# released copy, since that one may predate the flag, and downloads nothing. With
+# nothing running it says so, and exits 0. A release is there to download, so a --stop
+# that fell through to the install would reach setup, and these checks would see it.
+make_release v9.9.9
+T_PIPE=1
+run_install ok release --ref=v9.9.9 --stop
+check "--stop, piped: exits 0, finding nothing to stop" "0 yes" \
+	"${T_ST} $(t_in 'Cortex is not running (no service, no live pidfile, ports free).' out)"
+check "  fetching nothing: no released script to re-exec, no release" "" "$(cat "${T_RUN}/urls")"
+check "  and never probing or handing off to setup" "0 0" "$(t_nlog probe) $(t_nlog argv)"
 
 # --- --no-modify-path is install.sh's own flag now ---
 # The loop dies on the first unknown option, so reaching --bogus means

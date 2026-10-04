@@ -500,6 +500,17 @@ if [ -n "${_reexec}" ]; then
 			# set -e would abort the parent on a non-zero child before any of the
 			# lines below ran, leaking the downloaded script on every failed
 			# install. The if/else keeps the status and still cleans up.
+			#
+			# A signal would too. A ^C during setup reaches this shell as well as the
+			# child, which catches it: at the prompt it exits 3, and mid-install it
+			# rolls back first. dash dies of an INT it does not catch even while its
+			# child handles it, so the user's shell got 130, the script stayed in
+			# TMPDIR, and the prompt could come back while setup was still printing. A
+			# TERM to the group, or a closed terminal's HUP, kills bash that way too,
+			# not only dash. Caught, each waits here for the child, and this shell
+			# exits with its status. A no-op, not '': an ignored signal is inherited,
+			# and the child could not catch it then.
+			trap : INT TERM HUP
 			if AUTHBRIDGE_SCRIPT_REF="${want_ref}" sh "${boot}" "$@"; then
 				status=0
 			else
