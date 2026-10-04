@@ -22,9 +22,11 @@ before the thing you want to keep is gone. That is the gap #901 closes.
 
 ## Install
 
-`scripts/install.sh` installs it alongside `agentop` and `cortex`, as
-`~/.local/bin/cortex-session-dump` — so any install from the first release after
-this change lands already has it. Check with:
+`scripts/install.sh` fetches it with the release, and `agentop setup` installs it
+alongside `agentop` and `cortex`, as `~/.local/bin/cortex-session-dump` — so any install
+from the first release after this change lands already has it. The fetch is never fatal:
+when it fails, the installer warns and installs the rest. `make dev-install` installs only
+the two binaries it builds, and `agentop uninstall` removes all three. Check with:
 
 ```sh
 cortex-session-dump --help

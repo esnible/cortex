@@ -9,9 +9,15 @@ agentop service status      # is it running, and is it answering?
 agentop service start       # start it
 agentop service stop        # stop it, and keep it stopped
 agentop service restart     # stop and start
-agentop service install     # set it up in the first place (the installer does this)
+agentop service install     # set it up in the first place (agentop setup does this)
 agentop service uninstall   # stop it and remove the service
 ```
+
+Two commands cover the whole install rather than just the service. `agentop doctor`
+runs setup's checks, and its own of the CA, without changing anything — the binaries,
+PATH, the config, the service, Claude Code's routing — and ends each problem with the
+command that fixes it, usually `agentop setup`. `agentop uninstall` removes it, and
+`~/.cortex` too with `--purge`, as [Remove it](#remove-it) describes.
 
 **Never use `kill` or `pkill` to stop it.** The proxy is supervised, so killing it gets
 it restarted within a couple of seconds, which looks like a process refusing to die.
@@ -33,9 +39,12 @@ one process; systemd handles it.
 ## Re-running the installer is safe
 
 The one-liner is how you upgrade, so it is meant to be run repeatedly. When nothing has
-changed it changes nothing: it does not re-download binaries already at that version, and
-`service install` reports `Already current` and leaves the running proxy alone rather
-than restarting it.
+changed it changes nothing. It still downloads the release, but `agentop setup` finds
+the staged binaries identical to the installed ones, asks nothing, and ends on one line,
+`cortex v0.9.3 is installed and healthy.`, leaving the running proxy alone rather than
+restarting it. When something has changed it lists what, and asks first. An upgrade keeps
+the previous binaries until the new Cortex answers its health check, and puts them back
+if it never does.
 
 That last part matters, though less than it used to read here. A restart cuts every
 connection attached to the proxy, and `HTTPS_PROXY` is fixed in each client's environment
@@ -49,8 +58,8 @@ than repeating them, so a re-measurement changes one place and not four.
 
 So what a restart costs is the requests in flight at that moment, not the sessions. A
 session that reports an error has lost one request and will recover; it does not need
-restarting. When a restart genuinely is needed, install says how many connections it is
-about to cut.
+restarting. When a restart genuinely is needed, `agentop service install` says how many
+connections it is about to cut. Setup does not pass that line on.
 
 To restart deliberately: `agentop service restart`.
 
@@ -285,39 +294,53 @@ Two other knobs, same restart rule:
 
 ## `agentop: command not found`
 
-The installer puts both binaries in `~/.local/bin`. If that is not on your PATH it
-offers to add it to your shell profile; new terminals pick it up, and for the one you
+Setup puts both binaries in `~/.local/bin`. If that is not on your PATH, adding it to
+your shell profile is one of the changes its consent screen lists: `~/.zshrc` for zsh,
+and for bash the first of `~/.bash_profile`, `~/.bashrc` and `~/.profile` that exists
+(a new `~/.bash_profile` if none does). New terminals pick it up, and for the one you
 are in:
 
 ```sh
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
-To undo, delete the two lines the installer marked in your profile.
+With `--no-modify-path`, or a shell it has no profile for (fish, sh), setup edits
+nothing and prints an `export PATH=` line for you to add yourself.
+
+To undo, delete the two lines setup marked in your profile (the first starts
+`# added by Cortex`). `agentop uninstall` removes them too, unless other tools in
+`~/.local/bin` still need them.
 
 ## Restricted environments (sandboxes, no launchd session)
 
 Some environments cannot manage services at all — a sandboxed shell, a session without
-a usable launchd domain, CI. `agentop service install` detects this before writing
-anything and tells you so, rather than failing at `launchctl bootstrap` with
-`Input/output error`.
+a usable launchd domain, CI. Setup asks the supervisor before it changes anything, and
+where it cannot be used, runs the proxy in the background instead, as
+`cortex --local --supervise`. Its consent screen says so:
+`unsupervised · won't restart after a reboot — launchd can't be used here`.
+`--no-service` makes the same choice on purpose. The `--supervise` parent restarts the
+proxy after a crash, but nothing brings it back at login. Setup's last lines name the
+stop command, `kill $(cat ~/.cortex/proxy.pid)`, and `agentop uninstall` stops it too.
 
-Cortex still runs there; it just is not supervised:
+`agentop service install`, run there by hand, detects this before writing anything and
+tells you so, rather than failing at `launchctl bootstrap` with `Input/output error`.
+
+You can also run Cortex in a terminal of its own, unsupervised:
 
 ```sh
 cortex --local               # in its own terminal, or backgrounded
 agentop                      # the viewer, as usual
 ```
 
-What you give up: no restart after a crash, and nothing brings it back at login. Stop
-it with `kill $(pgrep -x cortex)` — there is no service to stop.
+What you give up that way: no restart after a crash, and nothing brings it back at
+login. Stop it with `kill $(pgrep -x cortex)` — there is no service to stop.
 
 Two assumptions that do not hold in such environments, and what happens:
 
 | Assumption | If it does not hold |
 |---|---|
-| `launchctl` can manage the user domain | `service install` stops early and prints the command above |
-| `$HOME` is your login home | launchd never scans `$HOME/Library/LaunchAgents`, so the service cannot start at login. `service install` warns and continues; crash recovery still works while you are logged in |
+| `launchctl` can manage the user domain | Setup runs the proxy in the background, as above. `service install` stops early and prints the command above |
+| `$HOME` is your login home | launchd never scans `$HOME/Library/LaunchAgents`, so the service cannot start at login. `service install`, and setup through it, warn and continue; crash recovery still works while you are logged in |
 
 ## Is it working?
 
@@ -526,6 +549,9 @@ through OpenSSL/LibreSSL, which honours the variables on every platform. And on
 Linux `SSL_CERT_FILE` works normally, so nothing extra is needed there.
 `agentop configure claude-code enable` prints a short form of this note on macOS
 when it changes your settings (not on a re-run that finds them already enabled).
+Setup does not print it. `agentop doctor` gives the same advice, with the command above,
+as a `! Go tools` line, when Claude Code is routed and the CA is not in your login
+keychain.
 
 Cortex keeps running; nothing sends traffic to it. `agentop configure claude-code
 enable` puts it back.
@@ -533,29 +559,35 @@ enable` puts it back.
 ### Remove it
 
 ```sh
-agentop configure claude-code disable    # 1. unwire Claude Code
-agentop configure opencode disable --yes # 2. unwire OpenCode, if you configured it
-agentop service uninstall                # 3. stop it and remove the service
-rm -rf ~/.cortex                         # 4. config, CA, logs, cost history, agentop's UI settings
-rm -f ~/.local/bin/agentop ~/.local/bin/cortex
+agentop uninstall --purge
 ```
 
-Order matters: steps 1 and 2 come before step 4, which deletes the config.
-`agentop configure claude-code disable` needs it, and `agentop configure opencode
-disable` uses it to recognise Cortex's values, falling back to their shape without it.
-Step 2 exits 1 when OpenCode is not installed, so it is a line of its own rather than
-chained to the others with `&&`.
+`agentop uninstall` lists what it will remove and asks once; `--yes` skips the question.
+It unroutes Claude Code, OpenCode, IBM Bob and the bob shell function where Cortex
+routed them, restarting OpenCode's background service when it finds it running. It
+stops and removes the service, or the background proxy. It removes the PATH lines setup
+added, unless other tools in `~/.local/bin` still need them, and removes `agentop`,
+`cortex` and `cortex-session-dump` from `~/.local/bin`. A step that fails is reported
+with its fix, the rest still run, and the end lists what was left behind.
+
+`--purge` also deletes `~/.cortex`: config, CA, logs, cost history, agentop's UI
+settings. It goes last, and only when every removal before it worked: after a failed
+one `~/.cortex` stays, and the end lists it, with the `rm -rf` to run once the fixes
+above are done. Without `--purge` `~/.cortex` stays too, so a later install picks up
+where you left off, and a run where every removal worked ends by saying how to delete
+it yourself.
 
 #### Check nothing is left
 
 ```sh
-agentop configure claude-code status # should say "not enabled"
-agentop configure opencode status    # if you use OpenCode: every variable Cortex set should say (unset)
+opencode service get env             # if you use OpenCode: none of it should point at Cortex
+grep '\.cortex/' ~/.claude/settings.json # should print nothing: Cortex's CA variables are gone
+ls ~/.local/bin/agentop ~/.local/bin/cortex 2>/dev/null # should print nothing
 pgrep -lx cortex                     # should print nothing
-ls ~/.cortex 2>/dev/null             # should print nothing
+ls ~/.cortex 2>/dev/null             # should print nothing, after --purge
 ```
 
-The CA that step 3 removes was only ever trusted through the CA variables in
+The CA that `--purge` removes was only ever trusted through the CA variables in
 `~/.claude/settings.json` — *Cortex* never adds it to the system or login keychain.
 `bundle.crt` lives in the same directory and is derived from `ca.crt` plus a copy of
 the public roots, so removing `~/.cortex` takes it with them; it holds no private
@@ -627,11 +659,15 @@ CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC
 its tool's trust store rather than adding to it. Leave them behind with the file
 deleted and git, curl and Python fail **every** TLS call — including calls that have
 nothing to do with Cortex — with `error setting certificate verify locations`, on a
-machine you believe you have just cleaned. `agentop configure claude-code disable` removes all
-seven in the right order, which is why it is step 1 above; this list is only for when
-that binary is already gone.
+machine you believe you have just cleaned. `agentop uninstall` removes all seven first,
+as `agentop configure claude-code disable` does, and `--purge` deletes `~/.cortex` last,
+and not at all if a removal before it failed; this list is only for when that binary is
+already gone.
 
 If you configured OpenCode, its background service's environment holds the same kind of
 variables. Remove the ones that point at Cortex with the `opencode` CLI, as
 [Undoing it by hand](agents/opencode.md#undoing-it-by-hand) shows, also before
 `rm -rf ~/.cortex`.
+
+Last, the files setup installed: `rm -f ~/.local/bin/cortex ~/.local/bin/cortex-session-dump`,
+and the two lines it marked in your shell profile, the first starting `# added by Cortex`.

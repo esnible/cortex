@@ -56,11 +56,15 @@ This file provides context for Claude (AI assistant) when working with the `cort
   - **Worktrees do not isolate the running Cortex.** One `~/.cortex/config.yaml`, one
     launchd label, one proxy on `:47600`, and every session's `HTTPS_PROXY` points at
     it. `agentop service restart` always replaces that instance and cuts every attached
-    session. `agentop service install` only does so when it has something to change or a
-    running proxy to adopt — with nothing to do it prints `Already current` and leaves
-    the proxy alone. `--ref=main` is an `install.sh` flag, not an `agentop` one; it picks
-    which installer script runs, so whether it interrupts anything depends on what that
-    install then finds. Coordinate before any of it.
+    session, and so does `make dev-install`, which runs `agentop setup --restart`.
+    `agentop setup` without `--restart` (what `install.sh` hands off to) only does so when
+    it has something to change: with nothing to do it prints `cortex vX is installed and
+    healthy.` and leaves the proxy alone. `agentop service install` restarts it only when
+    it has something to change or a running proxy to adopt, and otherwise prints
+    `Already current`. `--ref=main` is an
+    `install.sh` flag, not an `agentop` one; it picks which installer script runs, so
+    whether it interrupts anything depends on what that install then finds. Coordinate
+    before any of it.
 
 - **Use `Assisted-By` for attribution** — never add `Co-Authored-By`, `Generated with Claude Code`, or similar trailers. See [Commit Attribution Policy](#commit-attribution-policy) below.
 
@@ -83,9 +87,10 @@ complete** — apart from this rule, every remaining `kagenti` string is inside
 **abctl → agentop is complete too**, and was a clean break: no alias, no reading of
 the old on-disk names (see `docs/superpowers/specs/2026-09-30-abctl-to-agentop-rename-design.md`).
 Outside `docs/superpowers/`, `abctl` survives only in the code that deletes a
-pre-rename binary — `remove_stale` in `install.sh`, its tests, and `make dev-install`
-— in the release-notes line announcing the rename, and in this rule. Treat any other
-new one as a mistake.
+pre-rename binary — setup's cleanup step (`cmd/agentop/setup_step_cleanup.go`) and
+its tests — in comments that explain it (the Makefile's `dev-install`, `agentop
+uninstall`'s ownership rule, the release smoke test), in the release-notes line
+announcing the rename, and in this rule. Treat any other new one as a mistake.
 
 **AuthBridge → Cortex is deliberately partial, and the boundary is the point.**
 `Cortex` is the product: this repo, the registry namespace, the laptop service,
@@ -113,8 +118,9 @@ needs a deprecation window and coordinated PRs in at least two repositories.
 Because image and container names share the binaries' old spelling, `authbridge-envoy`
 or `authbridge-cpex` in a sentence is usually the **image**, and `authbridge-proxy` the
 **container** — not a leftover. Outside those two meanings, `authbridge-proxy` survives
-where the pre-rename binary is deleted (`remove_stale`, `make dev-install`), in
-the tests asserting it is no longer recognised as ours, and in the release notes; the
+where the pre-rename binary is stopped or deleted (setup's cleanup and service steps,
+`install.sh --stop`), in the tests asserting it is no longer recognised as ours, and in
+the release notes; the
 other three old names only in this rule and the spec.
 
 **The rule for prose and comments:** say **Cortex** when the sentence is about the
@@ -209,7 +215,8 @@ cortex/
 │                                     #   not an inert archive.
 │
 ├── scripts/
-│   ├── install.sh                    # Laptop installer (agentop + the local proxy service)
+│   ├── install.sh                    # Laptop installer: downloads, verifies and stages a
+│   │                                 #   release, then execs `agentop setup --from <stage>`
 │   ├── keycloak_sync.py              # Declarative Keycloak sync tool (routes.yaml driven)
 │   ├── dev/                          # Loose dev-only shell scripts
 │   │   ├── local-build-and-test.sh   #   Build every image and load it into Kind
