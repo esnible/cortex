@@ -474,10 +474,11 @@ func (m *model) selectedAgentScope() (scope string, ok bool) {
 	return picker[i-1].label, true
 }
 
-// leaveAgentsPane returns to whichever pane opened the AGENTS pane.
+// leaveAgentsPane returns to whichever pane opened the AGENTS pane: esc's exit.
 //
-// ONE EXIT FOR BOTH KEYS — esc backs out, Enter picks an agent and then backs out — so the two
-// cannot drift on where the pane returns to. A key-opened surface owes its caller a way back;
+// ESC ONLY. Enter shared it until a pick from a session's events returned the reader to that
+// session, which the scope does not narrow; it lists the picked agent's sessions instead (see the
+// Enter arm in keys.go). A key-opened surface still owes its caller a way back, and esc is it;
 // without an exit at all this pane was a dead end reachable only by `q`.
 //
 // THE FALLBACK IS SESSIONS, and for paneCatalog's stated reason rather than by imitation:
@@ -488,9 +489,7 @@ func (m *model) selectedAgentScope() (scope string, ok bool) {
 //
 // RETURNING INTO USAGE RESTARTS ITS POLLING CHAIN. This pane holds no ticker of its own, but the
 // usage pane's tick was dropped by its `m.pane != paneUsage` guard while this pane was up, so
-// without the resume its 20s auto-refresh is silently dead. It matters more now than it did:
-// Enter changes what the usage pane is showing, so landing back on a pane that never refetches
-// would leave the new scope unapplied until the operator pressed something.
+// without the resume its 20s auto-refresh is silently dead.
 func (m *model) leaveAgentsPane() tea.Cmd {
 	if m.previousPane != paneNone {
 		m.pane = m.previousPane

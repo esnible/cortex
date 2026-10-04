@@ -590,7 +590,8 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 	case "enter", "right", "l":
 		switch m.pane {
 		case paneAgents:
-			// Pick the agent the views are narrowed to, then LEAVE: the pane is a picker.
+			// Pick the agent the views are narrowed to, then LIST ITS SESSIONS: the pane is a
+			// picker, and picking an agent is asking for its sessions.
 			//
 			// NOT A TOGGLE: Enter on the agent already scoped keeps it, and the All agents row is
 			// what clears it. See allAgentsLabel.
@@ -599,12 +600,18 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 				return nil
 			}
 			m.agentScope = scope
-			// Same exit as the esc arm above, including the paneNone → Sessions fallback and the
-			// usage-polling resume. Shared through leaveAgentsPane so the two cannot drift on
-			// where the pane returns to. The spend band and drawer restart under the new scope, so
-			// no figure from the old one stays on screen beneath it.
+			// SESSIONS, NOT THE PANE `A` WAS PRESSED ON. This used to share esc's exit and return
+			// there, and from a session's events that hid the pick: the events pane shows one
+			// session whatever the scope, so the reader landed back in the session they were
+			// reading — under a title naming an agent it might not belong to. esc keeps that exit;
+			// it changes nothing, so going back is all it can mean. previousPane is spent as
+			// leaveAgentsPane spends it, since the catalog shares the field. The spend band and
+			// drawer restart under the new scope, so no figure from the old one stays on screen
+			// beneath it.
+			m.pane = paneSessions
+			m.previousPane = paneNone
 			m.rebuildSessionsTable()
-			return tea.Batch(m.leaveAgentsPane(), m.startSpendPolling())
+			return m.startSpendPolling()
 		case paneSessions:
 			id := m.selectedSessionID()
 			if id == "" {

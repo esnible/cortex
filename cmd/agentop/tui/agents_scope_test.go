@@ -82,6 +82,57 @@ func TestAgentsPane_EnterOnAllAgentsClearsTheScope(t *testing.T) {
 	}
 }
 
+// Enter lists the picked agent's sessions, whichever pane `A` was pressed on.
+//
+// IT USED TO RETURN TO THAT PANE, sharing esc's exit, and from a session's events that hid the
+// pick: the events pane shows one session whatever the scope, so `A` there, then Enter on another
+// agent, put the reader back in the session they were reading — under a title naming an agent it
+// did not belong to. Picking an agent is asking for its sessions.
+//
+// Opened by a real `A` press, so the caller under test is the one keys.go records. Every row but
+// Sessions is a caller the old exit returned to, so each can fail; the Sessions row is the case
+// that already worked.
+func TestAgentsPane_EnterListsThePickedAgentsSessionsFromAnyCaller(t *testing.T) {
+	rows := []agentRow{
+		{label: "claude-code/2.1.270", Counts: usage.Counts{Requests: 10, PricedRequests: 10}},
+		{label: "bob-shell/2.0.5", Counts: usage.Counts{Requests: 8}},
+	}
+	for _, from := range []paneID{paneSessions, paneEvents, paneDetail, paneUsage, panePipeline, paneCatalog} {
+		m := &model{
+			pane:               from,
+			previousPane:       paneNone,
+			agentScope:         "claude-code/2.1.270",
+			agentsTbl:          newAgentsTable(),
+			client:             deadClient(),
+			pipelineReturnPane: paneNone,
+		}
+		press, ok := m.handleKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'A'}})().(agentRowsLoadedMsg)
+		if !ok {
+			t.Fatalf("`A` on %v did not fetch the agents", from)
+		}
+		updated, _ := m.Update(agentRowsLoadedMsg{rows: rows, open: agentsOpenOnPress, from: press.from})
+		m = updated.(*model)
+		if m.pane != paneAgents {
+			t.Fatalf("`A` on %v did not open the picker: pane = %v", from, m.pane)
+		}
+		m.handleKey(tea.KeyMsg{Type: tea.KeyDown})
+		m.handleKey(tea.KeyMsg{Type: tea.KeyDown})
+		want, _ := m.selectedAgentScope()
+		if want != "bob-shell/2.0.5" {
+			t.Fatalf("cursor on %q, want the agent not already scoped", want)
+		}
+		m.handleKey(tea.KeyMsg{Type: tea.KeyEnter})
+		if m.pane != paneSessions || m.agentScope != want {
+			t.Errorf("`A` on %v, Enter on %s: pane %v scope %q, want the sessions list scoped to it",
+				from, want, m.pane, m.agentScope)
+		}
+		// Spent, as esc's exit spends it: previousPane is shared with the catalog.
+		if m.previousPane != paneNone {
+			t.Errorf("`A` on %v: Enter left previousPane = %v, want it spent", from, m.previousPane)
+		}
+	}
+}
+
 // usageSnapshotJSON is a two-agent group=agent response, the shape /v1/usage serves.
 const usageSnapshotJSON = `{
   "window":"today","bucketSeconds":60,"group":"agent",
