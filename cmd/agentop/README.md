@@ -875,8 +875,8 @@ agentop is for, and the other three are surfaces you visit and leave.
   both prints them side by side (`$6.20 + 0.03 Bobcoins`), and the drawer, the
   agents pane and the sessions table label each row with its own unit. A row that
   itself spans units reads `(mixed)`, the drawer's tier column is withheld for a
-  mixed window, and so is the Usage pane's cost chart — scope to one agent (`A`)
-  to chart it. Where a column is too narrow for the name it is shortened
+  mixed window, and so is the Usage pane's cost chart — scope to one agent (`A`,
+  then `u`) to chart it. Where a column is too narrow for the name it is shortened
   (`0.03 Bobc…`), down to `¤`. A deployment with no `unit:` configured sees
   exactly the dollar figures it always did.
 
