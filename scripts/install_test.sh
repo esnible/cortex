@@ -854,6 +854,79 @@ check "pid_exe_path: nothing can name the pid -> fails, prints no placeholder" \
 check "ps -o comm= is invoked only where a name, not a path, is wanted" "1" \
 	"$(grep -v '^[[:space:]]*#' "${INSTALL_SH}" | grep -c 'ps .*-o comm=\|ps -o comm=')"
 
+# --- the download's progress bar: what it draws, without a terminal ---
+#
+# The bar is drawn only when stderr is a terminal, so what it draws is checked here one
+# function at a time, as text: size_text (setup's units), progress_line (the arithmetic),
+# bar_cells (how much bar fits), and bar_draw and bar_end (the escapes around the line).
+# The whole-script runs below cover the rest, off a terminal and on a pseudo-terminal.
+#
+# with_bar CODE runs CODE with those functions defined, and shows ESC as E and CR as R.
+with_bar() {
+	{
+		for _wb_f in size_text progress_line bar_cells bar_draw bar_end; do
+			sed -n "/^${_wb_f}()/,/^}/p" "${INSTALL_SH}"
+		done
+		printf '%s\n' "$1"
+	} >"${TMP}/bar.sh"
+	sh "${TMP}/bar.sh" 2>&1 | tr '\033\r' 'ER'
+}
+check "size_text: bytes under 1000" "999 B" "$(with_bar 'size_text 999')"
+check "size_text: kB from 1000" "1.0 kB" "$(with_bar 'size_text 1000')"
+check "size_text: kB, to the nearest tenth (not truncated)" "1.1 kB" "$(with_bar 'size_text 1060')"
+check "size_text: kB up to 999949" "999.9 kB" "$(with_bar 'size_text 999949')"
+check "size_text: MB from 999950, so never 1000.0 kB" "1.0 MB" "$(with_bar 'size_text 999950')"
+check "size_text: MB, to the nearest tenth (not truncated)" "27.4 MB" "$(with_bar 'size_text 27360000')"
+check "progress_line: 0%" "[----------]   0%  0 B / 2.0 MB" "$(with_bar 'progress_line 0 2000000 10')"
+check "progress_line: 50%" "[#####-----]  50%  1.0 MB / 2.0 MB" "$(with_bar 'progress_line 1000000 2000000 10')"
+check "progress_line: 100%" "[##########] 100%  2.0 MB / 2.0 MB" "$(with_bar 'progress_line 2000000 2000000 10')"
+check "progress_line: one byte short is 99%, not 100%" "[#########-]  99%  2.0 MB / 2.0 MB" \
+	"$(with_bar 'progress_line 1999999 2000000 10')"
+check "progress_line: total unknown shows the bytes so far, no percentage" "1.5 MB" \
+	"$(with_bar 'progress_line 1500000 "" 10')"
+check "progress_line: done past total caps at 100%" "[##########] 100%  3.0 MB / 2.0 MB" \
+	"$(with_bar 'progress_line 3000000 2000000 10')"
+check "progress_line: total 0 is unknown, not a division by zero" "1.5 kB" \
+	"$(with_bar 'progress_line 1500 0 10')"
+check "progress_line: width 0 is the figures without a bar" " 50%  1.0 MB / 2.0 MB" \
+	"$(with_bar 'progress_line 1000000 2000000 0')"
+check "bar_cells: a wide terminal gets the 30-cell maximum" "30" "$(with_bar 'bar_cells 200 19')"
+check "bar_cells: a narrower one gets what fits beside the prefix and figures" "12" \
+	"$(with_bar 'bar_cells 60 19')"
+check "bar_cells: under 10 cells is no bar, figures only" "0" "$(with_bar 'bar_cells 50 19')"
+check "bar_cells: no room for the figures fails, so nothing wraps" "fails" \
+	"$(with_bar 'bar_cells 40 19 || echo fails')"
+check "bar_draw: hides the cursor once, redraws the line in place, bar_end erases it and shows the cursor" \
+	"E[?25lRDownloading v1 [#####-----]  50%  1.0 MB / 2.0 MBE[KRDownloading v1 [##########] 100%  2.0 MB / 2.0 MBE[KRE[KE[?25h" \
+	"$(with_bar 'bar_prefix="Downloading v1 " bar_total=2000000 bar_w=10 bar_shown=""
+bar_draw 1000000; bar_draw 2000000; bar_end; bar_end')"
+check "bar_end: with no bar drawn, prints nothing" "" "$(with_bar 'bar_shown=""; bar_end')"
+
+# content_length URL asks with `curl -sIL` and reads the redirect chain's last response.
+# The fixtures are what a HEAD through a proxy really returns from GitHub: the proxy's
+# CONNECT reply, the 302 to the asset host with a length of 0, then the asset.
+with_content_length() { # header-fixture [curl-exit]
+	{
+		printf 'curl() { printf "%%s\\n" "$*" >"%s"; cat "%s"; return %s; }\n' \
+			"${TMP}/cl.args" "$1" "${2:-0}"
+		sed -n '/^content_length()/,/^}/p' "${INSTALL_SH}"
+		printf 'content_length https://example.invalid/a.tar.gz\n'
+	} >"${TMP}/cl.sh"
+	sh "${TMP}/cl.sh" 2>/dev/null
+}
+printf 'HTTP/1.1 200 Connection Established\r\n\r\nHTTP/2 302 \r\nlocation: https://release-assets.example/a\r\ncontent-length: 0\r\n\r\nHTTP/1.1 200 Connection Established\r\n\r\nHTTP/2 200 \r\ncontent-length: 3774359\r\n\r\n' \
+	>"${TMP}/cl-ok"
+check "content_length: the last response's length, past the redirect" "3774359" \
+	"$(with_content_length "${TMP}/cl-ok")"
+check "  asked with curl -sIL" "1" "$(tr ' ' '\n' <"${TMP}/cl.args" | grep -cx -- '-sIL' || true)"
+printf 'HTTP/2 302 \r\ncontent-length: 0\r\n\r\nHTTP/2 200 \r\ntransfer-encoding: chunked\r\n\r\n' >"${TMP}/cl-none"
+check "content_length: a last response with no length is unknown, not the 302's 0" "" \
+	"$(with_content_length "${TMP}/cl-none")"
+printf 'HTTP/2 302 \r\ncontent-length: 0\r\n\r\nHTTP/2 404 \r\ncontent-length: 9\r\n\r\n' >"${TMP}/cl-404"
+check "content_length: a 404's length is not the archive's" "" "$(with_content_length "${TMP}/cl-404")"
+: >"${TMP}/cl-empty"
+check "content_length: a curl that fails is unknown" "" "$(with_content_length "${TMP}/cl-empty" 6)"
+
 # --- the thin installer: stage the release, probe it, hand off to agentop setup ---
 #
 # install.sh's own job ends at a staging dir: download, verify, extract, then exec
@@ -897,6 +970,7 @@ if [ "${1:-}" = setup ] && [ "${2:-}" = --help ]; then
 		*) exit 126 ;;
 	esac
 fi
+[ ! -t 1 ] || printf 'setup:start\n' # on a terminal, where setup's output begins
 { printf 'argv'; for a in "$@"; do printf ' [%s]' "$a"; done; printf '\n'; } >>"${T_LOG}"
 printf 'staged %s\n' "$(ls "${0%/*}" | tr '\n' ' ')" >>"${T_LOG}"
 # Read only when it cannot block: a terminal is a fine stdin, the piped script is not.
@@ -906,22 +980,81 @@ printf '#!/bin/sh\necho "cortex v9.9.9"\n' >"${TMP}/fake-cortex"
 chmod +x "${TMP}/fake-agentop" "${TMP}/fake-cortex"
 
 # curl serves ${T_REL}/<the URL's last segment>, and fails as `curl -f` does on a 404
-# when there is no such file. Every URL it is asked for goes to T_URLS.
+# when there is no such file. Every URL it is asked for goes to T_URLS, a HEAD (-I) as
+# "HEAD <url>", answered with a GitHub-shaped redirect chain and the file's size.
+#
+# T_CURL changes how an archive (*.tar.gz) download behaves, recording in T_MEET:
+#   meet  mark that it started, then wait up to 3s for the other archive's mark, and
+#         log how many it saw. Downloading at once, each sees 2; one after the other,
+#         the first sees only itself.
+#   slow  take 1s first, so the download outlasts a few polls
+#   hold  mark that it started, then hold until killed, and log the kill. It takes 0.3s
+#         to stop, so a script that does not wait for it exits before the log says so
+# Its own waits use the real sleep, by path, so a stub sleep on PATH never sees them.
+T_REAL_SLEEP=$(command -v sleep)
 mkdir -p "${TMP}/tbin"
 cat >"${TMP}/tbin/curl" <<'EOF'
 #!/bin/sh
-_u=""; _o=""; _p=""
+_u=""; _o=""; _p=""; _head=""
 for _a in "$@"; do
-	case "${_a}" in http*) _u="${_a}" ;; esac
+	case "${_a}" in http*) _u="${_a}" ;; -*I*) _head=1 ;; esac
 	[ "${_p}" != -o ] || _o="${_a}"
 	_p="${_a}"
 done
+_n="${_u##*/}"
+_f="${T_REL}/${_n}"
+if [ -n "${_head}" ]; then
+	printf 'HEAD %s\n' "${_u}" >>"${T_URLS}"
+	if [ -f "${_f}" ]; then
+		printf 'HTTP/2 302 \r\ncontent-length: 0\r\n\r\nHTTP/2 200 \r\ncontent-length: %s\r\n\r\n' \
+			"$(wc -c <"${_f}" | tr -d ' ')"
+	else
+		printf 'HTTP/2 404 \r\ncontent-length: 9\r\n\r\n'
+	fi
+	exit 0
+fi
 printf '%s\n' "${_u}" >>"${T_URLS}"
-_f="${T_REL}/${_u##*/}"
+t_marks() { set -- "${T_MEET}"/*.tar.gz; if [ -e "$1" ]; then echo "$#"; else echo 0; fi; }
+case "${T_CURL:-}:${_n}" in
+	meet:*.tar.gz)
+		: >"${T_MEET}/${_n}"
+		_i=0
+		while [ "$(t_marks)" -lt 2 ] && [ "${_i}" -lt 30 ]; do
+			"${T_REAL_SLEEP}" 0.1
+			_i=$((_i + 1))
+		done
+		printf 'met %s %s\n' "${_n}" "$(t_marks)" >>"${T_MEET}/log"
+		;;
+	slow:*.tar.gz) "${T_REAL_SLEEP}" 1 ;;
+	hold:*.tar.gz)
+		"${T_REAL_SLEEP}" 30 &
+		_sp=$!
+		trap 'kill "${_sp}" 2>/dev/null; "${T_REAL_SLEEP}" 0.3; printf "killed %s\n" "${_n}" >>"${T_MEET}/log"; exit 143' TERM
+		: >"${T_MEET}/${_n}"
+		wait "${_sp}"
+		printf 'finished %s\n' "${_n}" >>"${T_MEET}/log"
+		;;
+esac
 [ -f "${_f}" ] || exit 22
 if [ -n "${_o}" ]; then cat "${_f}" >"${_o}"; else cat "${_f}"; fi
 EOF
 chmod +x "${TMP}/tbin/curl"
+# sleep, for the runs that put it on PATH: it logs each call to T_SLEEPS, then sleeps
+# 0.2s whatever it was asked, so a run stays short. With T_SLEEP_NOFRAC=1 it rejects a
+# fraction, as a sleep that takes whole seconds only does.
+mkdir -p "${TMP}/sleepbin"
+cat >"${TMP}/sleepbin/sleep" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$1" >>"${T_SLEEPS}"
+case "${T_SLEEP_NOFRAC:-}:$1" in
+	1:*[!0-9]*)
+		printf 'sleep: invalid time interval: %s\n' "$1" >&2
+		exit 1
+		;;
+esac
+exec "${T_REAL_SLEEP}" 0.2
+EOF
+chmod +x "${TMP}/sleepbin/sleep"
 # What install.sh's stdin holds when piped: the rest of itself. setup must not get it.
 printf 'PIPED-SCRIPT-REMAINDER\n' >"${TMP}/piped-script"
 
@@ -965,8 +1098,34 @@ make_release() {
 #   repair   AUTHBRIDGE_SKIP_DOWNLOAD=1, with the fakes installed in ~/.local/bin
 #   bare     AUTHBRIDGE_SKIP_DOWNLOAD=1, with nothing installed
 # It sets T_RUN (the sandbox) and T_ST (the exit status), and leaves in T_RUN: log
-# (the fake agentop's record), urls (curl's), and out and err (install.sh's).
+# (the fake agentop's record), urls (curl's), meet (curl's marks, for T_CURL), sleeps
+# (the stub sleep's calls), and out and err (install.sh's).
+#
+# Four globals change a run, and each is reset after it:
+#   T_CURL   the stub curl's mode, above
+#   T_SLEEP  put the stub sleep on PATH: frac (it takes fractions), or nofrac
+#   T_BG     run install.sh in the background, and set T_PID instead of T_ST
+#   T_PTY    run it on a pseudo-terminal, 100 columns wide, with TERM=xterm: yes; int,
+#            to type a ^C once both archive downloads have marked their start and the
+#            bar is on screen; hup, to close the terminal at that point instead; dumb,
+#            with TERM=dumb; or narrow, 40 columns wide. out is then the terminal's bytes,
+#            stdout and stderr together, and pty.pid install.sh's pid.
 T_N=0
+T_CURL=""
+T_SLEEP=""
+T_BG=""
+T_PTY=""
+# t_pty SCRIPT runs `sh SCRIPT` on a pseudo-terminal, with util-linux's script (CI's)
+# or the BSD one (macOS's). With neither, the run fails, and so do its checks.
+# t_pty_bg is the same in the background, with script's own pid in T_SPID.
+if script --version 2>/dev/null | grep -q util-linux; then
+	t_pty() { script -qec "sh '$1'" /dev/null; }
+	t_pty_bg() { script -qec "sh '$1'" /dev/null & T_SPID=$!; }
+else
+	t_pty() { script -q /dev/null sh "$1"; }
+	t_pty_bg() { script -q /dev/null sh "$1" & T_SPID=$!; }
+fi
+t_q() { printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"; } # quoted for sh
 run_install() {
 	_ri_probe=$1
 	_ri_where=$2
@@ -980,9 +1139,12 @@ run_install() {
 		"${TMP}"/run*/home) ;;
 		*) printf 'refusing to run install.sh outside %s\n' "${TMP}" >&2; exit 1 ;;
 	esac
-	mkdir -p "${T_RUN}/home" "${T_RUN}/tmp"
+	mkdir -p "${T_RUN}/home" "${T_RUN}/tmp" "${T_RUN}/meet"
 	: >"${T_RUN}/log"
 	: >"${T_RUN}/urls"
+	: >"${T_RUN}/sleeps"
+	_ri_path="${TMP}/tbin:${PATH}"
+	[ -z "${T_SLEEP}" ] || _ri_path="${TMP}/sleepbin:${_ri_path}"
 	_ri_skip=""
 	case "${_ri_where}" in
 		repair)
@@ -993,12 +1155,81 @@ run_install() {
 			;;
 		bare) _ri_skip=1 ;;
 	esac
-	T_ST=0
-	env -u AUTHBRIDGE_SCRIPT_REF -u AUTHBRIDGE_INSTALL_ONLY -u AUTHBRIDGE_VERSION -u AUTHBRIDGE_REF \
-		HOME="${T_RUN}/home" TMPDIR="${T_RUN}/tmp" PATH="${TMP}/tbin:${PATH}" \
+	set -- env -u AUTHBRIDGE_SCRIPT_REF -u AUTHBRIDGE_INSTALL_ONLY -u AUTHBRIDGE_VERSION -u AUTHBRIDGE_REF \
+		HOME="${T_RUN}/home" TMPDIR="${T_RUN}/tmp" PATH="${_ri_path}" \
 		AUTHBRIDGE_SKIP_DOWNLOAD="${_ri_skip}" \
 		T_REL="${T_REL:-}" T_URLS="${T_RUN}/urls" T_LOG="${T_RUN}/log" T_PROBE="${_ri_probe}" \
-		sh "${INSTALL_SH}" "$@" <"${TMP}/piped-script" >"${T_RUN}/out" 2>"${T_RUN}/err" || T_ST=$?
+		T_CURL="${T_CURL}" T_MEET="${T_RUN}/meet" T_REAL_SLEEP="${T_REAL_SLEEP}" \
+		T_SLEEPS="${T_RUN}/sleeps" T_SLEEP_NOFRAC="$([ "${T_SLEEP}" != nofrac ] || echo 1)" \
+		sh "${INSTALL_SH}" "$@"
+	T_ST=0
+	if [ -n "${T_PTY}" ]; then
+		# A pty starts with no size, so give it one before install.sh asks.
+		_ri_cols=100
+		[ "${T_PTY}" != narrow ] || _ri_cols=40
+		_ri_term=xterm
+		[ "${T_PTY}" != dumb ] || _ri_term=dumb
+		{
+			printf 'echo "$$" >%s\n' "$(t_q "${T_RUN}/pty.pid")" # exec keeps it: install.sh's
+			printf 'stty cols %s rows 30 2>/dev/null\nTERM=%s\nexport TERM\nexec' "${_ri_cols}" "${_ri_term}"
+			for _ri_a in "$@"; do printf ' %s' "$(t_q "${_ri_a}")"; done
+			printf '\n'
+		} >"${T_RUN}/pty.sh"
+		: >"${T_RUN}/err"
+		if [ "${T_PTY}" = hup ]; then
+			# script(1) holds the pty's other end, so killing it hangs the pty up, as closing
+			# a terminal window does, and install.sh gets a HUP with no terminal left to
+			# write to. It is waited out by its pid, since it is no child of this shell.
+			: >"${T_RUN}/out"
+			t_pty_bg "${T_RUN}/pty.sh" </dev/null >"${T_RUN}/out" 2>&1
+			t_until 2 t_marks
+			t_until yes t_drawn
+			kill -KILL "${T_SPID}" 2>/dev/null || :
+			wait "${T_SPID}" 2>/dev/null || :
+			t_until gone t_gone
+		elif [ "${T_PTY}" = int ]; then
+			: >"${T_RUN}/out"
+			{ t_until 2 t_marks; t_until yes t_drawn; printf '\003'; "${T_REAL_SLEEP}" 1; } \
+				| t_pty "${T_RUN}/pty.sh" >"${T_RUN}/out" 2>&1 || T_ST=$?
+		else
+			t_pty "${T_RUN}/pty.sh" </dev/null >"${T_RUN}/out" 2>&1 || T_ST=$?
+		fi
+	elif [ -n "${T_BG}" ]; then
+		"$@" <"${TMP}/piped-script" >"${T_RUN}/out" 2>"${T_RUN}/err" &
+		T_PID=$!
+	else
+		"$@" <"${TMP}/piped-script" >"${T_RUN}/out" 2>"${T_RUN}/err" || T_ST=$?
+	fi
+	T_CURL=""
+	T_SLEEP=""
+	T_BG=""
+	T_PTY=""
+}
+# t_drawn says yes once the terminal has been sent a bar: the cursor hidden, then a line.
+t_drawn() { if tr '\033\r' 'ER' <"${T_RUN}/out" | grep -q 'E\[?25lRDownloading'; then echo yes; fi; }
+# t_gone says gone once the pty run's install.sh has exited, and alive until then. A
+# zombie has exited: in a container whose pid 1 is no init, an orphan is never reaped,
+# and kill -0 still finds it.
+t_gone() {
+	_tg_pid=$(cat "${T_RUN}/pty.pid" 2>/dev/null)
+	if kill -0 "${_tg_pid}" 2>/dev/null; then
+		case "$(ps -o stat= -p "${_tg_pid}" 2>/dev/null | tr -d ' ')" in
+			Z*) echo gone ;;
+			*) echo alive ;;
+		esac
+	else
+		echo gone
+	fi
+}
+# t_until N CMD... polls, every 0.1s for up to 5s, until CMD prints N.
+t_until() {
+	_tu_n=$1
+	shift
+	_tu_i=0
+	while [ "$("$@")" != "${_tu_n}" ] && [ "${_tu_i}" -lt 50 ]; do
+		"${T_REAL_SLEEP}" 0.1
+		_tu_i=$((_tu_i + 1))
+	done
 }
 
 t_log() { sed -n "s/^$1 //p" "${T_RUN}/log"; } # one kind of record, without its tag
@@ -1030,6 +1261,16 @@ t_dumps() { # dir -> how many cortex-session-dump* files, whole or partial, it h
 }
 # t_stdin says ok when setup's stdin was the terminal or empty, and shows it if not.
 t_stdin() { case "$(t_log stdin)" in tty | '[]') echo ok ;; *) t_log stdin ;; esac; }
+t_same() { # stage agentop|cortex -> same when the stage holds that archive as released
+	_ts_n="$2_v9.9.9_${T_OS}_${T_ARCH}.tar.gz"
+	if cmp -s "$1/${_ts_n}" "${T_REL}/${_ts_n}"; then echo same; else echo "differs: $1/${_ts_n}"; fi
+}
+t_meet() { grep -c "^$1 " "${T_RUN}/meet/log" 2>/dev/null || true; } # met|killed|finished
+t_marks() { # how many archive downloads have marked their start
+	set -- "${T_RUN}/meet"/*.tar.gz
+	if [ -e "$1" ]; then echo "$#"; else echo 0; fi
+}
+t_tmp_left() { ls -A "${T_RUN}/tmp" | wc -l | tr -d ' '; } # what is left in TMPDIR
 T_NOFLAGS="[setup] [--from] [<stage>] [--handoff-bytes=<N>] [--handoff-seconds=<S>]"
 
 # A release whose checksums.txt has the two lines release-binaries.yaml writes: it is
@@ -1037,12 +1278,20 @@ T_NOFLAGS="[setup] [--from] [<stage>] [--handoff-bytes=<N>] [--handoff-seconds=<
 make_release v9.9.9
 run_install ok release --ref=v9.9.9
 check "stage: two checksum entries reach the handoff" "0 1" "${T_ST} $(t_nlog argv)"
+# Sorted: the two archives download at once, so either can ask first. Off a terminal
+# there is no bar, so no HEAD for the archives' sizes either.
 check "stage: it fetches the two archives, checksums.txt and the dump helper, nothing else" \
 	"https://github.com/rossoctl/cortex/releases/download/v9.9.9/agentop_v9.9.9_${T_OS}_${T_ARCH}.tar.gz
-https://github.com/rossoctl/cortex/releases/download/v9.9.9/cortex_v9.9.9_${T_OS}_${T_ARCH}.tar.gz
 https://github.com/rossoctl/cortex/releases/download/v9.9.9/checksums.txt
+https://github.com/rossoctl/cortex/releases/download/v9.9.9/cortex_v9.9.9_${T_OS}_${T_ARCH}.tar.gz
 https://raw.githubusercontent.com/rossoctl/cortex/v9.9.9/scripts/dev/cortex-session-dump.py" \
-	"$(cat "${T_RUN}/urls")"
+	"$(LC_ALL=C sort "${T_RUN}/urls")"
+check "download: off a terminal, one plain line says what it downloads" "1" \
+	"$(cat "${T_RUN}/out" "${T_RUN}/err" | grep -cxF "Downloading v9.9.9 for ${T_OS}/${T_ARCH}..." || true)"
+check "  and nothing is drawn: no ESC and no CR, on stdout or stderr" "0" \
+	"$(cat "${T_RUN}/out" "${T_RUN}/err" | tr -cd '\033\r' | wc -c | tr -d ' ')"
+check "download: both archives land in the stage, whole" "same same" \
+	"$(t_same "$(t_stage)" agentop) $(t_same "$(t_stage)" cortex)"
 _stage=$(t_stage)
 check "stage: a fresh dir under TMPDIR" "yes" \
 	"$(t_under "${T_RUN}/tmp" "${_stage}")"
@@ -1070,6 +1319,158 @@ check "handoff: --install-only, and -y as --yes" \
 	"$(t_argv)"
 run_install ok release --ref=v9.9.9 --local
 check "handoff: --local is not passed on" "${T_NOFLAGS}" "$(t_argv)"
+
+# --- the download: both archives at once, and every way it can end ---
+T_CURL=meet
+run_install ok release --ref=v9.9.9
+check "download: the two archives download at once (each sees the other start)" "2 2" \
+	"$(sed -n 's/^met [^ ]* //p' "${T_RUN}/meet/log" | tr '\n' ' ' | sed 's/ $//')"
+check "  and still reach the handoff" "0 1" "${T_ST} $(t_nlog argv)"
+
+# One archive failing dies with today's message for it, whichever of the two it is.
+rm -f "${T_REL}/cortex_v9.9.9_${T_OS}_${T_ARCH}.tar.gz"
+run_install ok release --ref=v9.9.9
+check "download: the second archive failing dies, naming it" "1 1" \
+	"${T_ST} $(grep -cxF "error: download failed: cortex_v9.9.9_${T_OS}_${T_ARCH}.tar.gz" "${T_RUN}/err" || true)"
+check "  and nothing runs after it: no probe, no handoff, no stage left" "0 0 0" \
+	"$(t_nlog probe) $(t_nlog argv) $(t_tmp_left)"
+make_release v9.9.9
+rm -f "${T_REL}/agentop_v9.9.9_${T_OS}_${T_ARCH}.tar.gz"
+run_install ok release --ref=v9.9.9
+check "download: the first archive failing dies, naming it" "1 1" \
+	"${T_ST} $(grep -cxF "error: download failed: agentop_v9.9.9_${T_OS}_${T_ARCH}.tar.gz" "${T_RUN}/err" || true)"
+check "  and nothing runs after it: no probe, no handoff, no stage left" "0 0 0" \
+	"$(t_nlog probe) $(t_nlog argv) $(t_tmp_left)"
+
+# The poll: every 0.2s, and every 1s where sleep rejects a fraction, from the first
+# rejection on. The archives take 1s, so the stub sleep (0.2s a call) is polled ~5 times.
+# Shown as the first call, then the distinct calls after it.
+t_sleeps() {
+	printf '%s | %s' "$(sed -n 1p "${T_RUN}/sleeps")" "$(sed 1d "${T_RUN}/sleeps" | sort -u | tr '\n' ' ')"
+}
+make_release v9.9.9
+T_CURL=slow
+T_SLEEP=frac
+run_install ok release --ref=v9.9.9
+check "download: polls every 0.2s" "0.2 | 0.2 " "$(t_sleeps)"
+check "  more than once while the archives download" "yes" \
+	"$(if [ "$(wc -l <"${T_RUN}/sleeps")" -ge 3 ]; then echo yes; else cat "${T_RUN}/sleeps"; fi)"
+# The first run's downloads end before the first poll, so it could not draw a bar if it
+# tried. This one polls several times, so off a terminal it must draw nothing each time.
+check "  and, off a terminal, draws nothing at any poll: no ESC, no CR, no HEAD" "0 0" \
+	"$(cat "${T_RUN}/out" "${T_RUN}/err" | tr -cd '\033\r' | wc -c | tr -d ' ') $(grep -c '^HEAD ' "${T_RUN}/urls" || true)"
+T_CURL=slow
+T_SLEEP=nofrac
+run_install ok release --ref=v9.9.9
+check "download: where sleep 0.2 fails, polls with sleep 1 from then on" "0.2 | 1 " "$(t_sleeps)"
+check "  and still reaches the handoff" "0 1" "${T_ST} $(t_nlog argv)"
+
+# TERM mid-download: the shell traps it, so the EXIT trap runs (dash skips that trap on
+# a signal it has no trap for), the curls are stopped rather than left writing into a
+# stage being deleted, and setup never runs. Background jobs in a script ignore INT, so
+# INT cannot be sent this way; it is typed as a ^C on a pseudo-terminal below.
+T_CURL=hold
+T_BG=1
+run_install ok release --ref=v9.9.9
+t_until 2 t_marks
+kill -TERM "${T_PID}"
+T_ST=0
+wait "${T_PID}" || T_ST=$?
+t_until 2 t_meet killed
+check "TERM mid-download: exits 143" "143" "${T_ST}"
+check "  stopping both downloads" "2 0" "$(t_meet killed) $(t_meet finished)"
+check "  leaving no stage, and never handing off" "0 0 0" \
+	"$(t_tmp_left) $(t_nlog probe) $(t_nlog argv)"
+
+# HUP mid-download: trapped the same way. Untrapped, dash dies of it as it would of an
+# untrapped TERM, and the stage stays behind. The downloads are counted the moment the
+# script has exited, before any wait here: it waits them out itself, so the rm -rf after
+# the kill cannot race a curl still writing into the stage.
+T_CURL=hold
+T_BG=1
+run_install ok release --ref=v9.9.9
+t_until 2 t_marks
+kill -HUP "${T_PID}"
+T_ST=0
+wait "${T_PID}" || T_ST=$?
+_hup_ended=$(t_meet killed)
+t_until 2 t_meet killed
+check "HUP mid-download: exits 129" "129" "${T_ST}"
+check "  with both downloads stopped before it exits" "2 2 0" \
+	"${_hup_ended} $(t_meet killed) $(t_meet finished)"
+check "  leaving no stage, and never handing off" "0 0 0" \
+	"$(t_tmp_left) $(t_nlog probe) $(t_nlog argv)"
+
+# --- on a terminal: the bar, and what is left of it when the download ends ---
+# out is the terminal's bytes with ESC as E and CR as R. The archives take 1s, so the
+# bar is drawn at least once; "setup:start" is the fake setup's first output.
+t_tty() { tr '\033\r' 'ER' <"${T_RUN}/out"; }
+t_ntty() { t_tty | grep -o -- "$1" | wc -l | tr -d ' '; } # how often a string is on screen
+T_CURL=slow
+T_PTY=yes
+run_install ok release --ref=v9.9.9
+check "terminal: the bar is drawn, with the archives' sizes asked for by HEAD" "0 2 1" \
+	"${T_ST} $(grep -c '^HEAD .*\.tar\.gz$' "${T_RUN}/urls" || true) $(t_ntty 'E\[?25l')"
+check "  and the percentage is of their sizes together" "yes" \
+	"$(if t_tty | grep -qF -- "/ $(with_bar "size_text ${T_BYTES}")E[K"; then echo yes; else t_tty; fi)"
+check "  instead of the plain line" "0" "$(t_ntty "for ${T_OS}/${T_ARCH}\.\.\.")"
+# What follows the erase can include a warning of the steps between (no python3 for the
+# dump helper, say), but nothing of the bar, and setup comes after it.
+t_after_erase() { # does what follows the erase hold $1? yes or no
+	if t_tty | tr '\n' 'N' | sed -n 's/.*RE\[KE\[?25h//p' | grep -q -- "$1"; then echo yes; else echo no; fi
+}
+check "  erased, with the cursor shown again, before setup starts" "1 yes no no" \
+	"$(t_ntty 'E\[?25h') $(t_after_erase setup:start) $(t_after_erase Downloading) $(t_after_erase 'E\[')"
+make_release v9.9.9
+rm -f "${T_REL}/cortex_v9.9.9_${T_OS}_${T_ARCH}.tar.gz"
+T_CURL=slow
+T_PTY=yes
+run_install ok release --ref=v9.9.9
+check "terminal: a failed download erases the bar and shows the cursor before the error" "1 1 1" \
+	"${T_ST} $(t_ntty "RE\[KE\[?25herror: download failed: cortex_v9.9.9_${T_OS}_${T_ARCH}.tar.gz") $(t_ntty 'E\[?25h')"
+# A real ^C: typed into the terminal, so the kernel sends SIGINT to everything in the
+# foreground, as it does for a person. The curls ignore it, so the trap has to stop them.
+#
+# Only where SIGINT reaches this suite, though. A shell started with SIGINT ignored (the
+# suite run as a background job, or under nohup) passes that on to everything it starts,
+# install.sh included, and no shell can undo it, so a ^C would do nothing. That is
+# probed first, and fails as itself rather than as a bug in install.sh.
+if [ -n "$(sh -c 'kill -INT $$; echo ignored' 2>/dev/null || :)" ]; then
+	check "terminal: ^C mid-download (cannot run: this suite was started with SIGINT ignored)" \
+		"SIGINT default" "SIGINT ignored"
+else
+	make_release v9.9.9
+	T_CURL=hold
+	T_PTY=int
+	run_install ok release --ref=v9.9.9
+	t_until 2 t_meet killed
+	check "terminal: ^C mid-download exits 130" "130" "${T_ST}"
+	check "  erasing the bar and showing the cursor" "1 1" \
+		"$(t_ntty 'E\[?25l') $(t_tty | grep -c 'RE\[KE\[?25h$' || true)"
+	check "  stopping both downloads, leaving no stage, never handing off" "2 0 0 0" \
+		"$(t_meet killed) $(t_tmp_left) $(t_nlog probe) $(t_nlog argv)"
+fi
+# The terminal closed mid-download, with the bar on screen. The HUP runs the EXIT trap,
+# and the bar's erase then fails, as there is no terminal left to write to: under set -e
+# that ended the trap before it removed the stage. Cleanup must not depend on the erase.
+make_release v9.9.9
+T_CURL=hold
+T_PTY=hup
+run_install ok release --ref=v9.9.9
+check "terminal closed mid-download: the bar was drawn, and install.sh has exited" "yes gone" \
+	"$(t_drawn) $(if [ -s "${T_RUN}/pty.pid" ]; then t_gone; else echo 'no pid'; fi)"
+check "  leaving no stage, and never handing off" "0 0 0" \
+	"$(t_tmp_left) $(t_nlog probe) $(t_nlog argv)"
+# Terminals the bar cannot use get the plain line, and no HEADs: TERM=dumb cannot erase,
+# and a line wider than the terminal would wrap, so each redraw would add a line.
+make_release v9.9.9
+for _tp in dumb narrow; do
+	T_CURL=slow
+	T_PTY=${_tp}
+	run_install ok release --ref=v9.9.9
+	check "terminal, ${_tp}: the plain line instead of the bar" "0 1 0 0" \
+		"${T_ST} $(t_ntty "Downloading v9.9.9 for ${T_OS}/${T_ARCH}\.\.\.") $(t_ntty 'E\[') $(grep -c '^HEAD ' "${T_RUN}/urls" || true)"
+done
 
 # --- the checksum rule: exactly two verified entries, or nothing runs ---
 make_release v9.9.9 one
@@ -1169,9 +1570,11 @@ check "--help lists --no-modify-path" "1" "$(grep -c '^  --no-modify-path ' "${T
 # --- make dev-install is the same handoff, from ./bin ---
 # Setup copies the binaries, writes the config and starts the service, and its cleanup
 # step is what remove_stale was, so the Makefile carries none of that any more.
+# $(BIN_DIR), not ./bin: that is where the build writes, so the two cannot disagree.
 _dev=$(awk '/^dev-install:/ {f = 1; next} f && !/^\t/ {exit} f' "${REPO_ROOT}/Makefile")
-check "make dev-install hands ./bin to agentop setup" "1" \
-	"$(printf '%s\n' "${_dev}" | grep -cF 'bin/agentop setup --from ./bin --yes --no-modify-path --restart' || true)"
+# shellcheck disable=SC2016 # $(BIN_DIR) is make's, matched literally
+check "make dev-install hands \$(BIN_DIR) to agentop setup" "1" \
+	"$(printf '%s\n' "${_dev}" | grep -cF '$(BIN_DIR)/agentop setup --from $(BIN_DIR) --yes --no-modify-path --restart' || true)"
 check "  and does no install of its own" "0" \
 	"$(printf '%s\n' "${_dev}" | grep -v '^	@#' | grep -cE 'cp |service install|service status|--write-config|DEV_BIN_DIR' || true)"
 check "  and nothing in the Makefile uses remove_stale" "0" \

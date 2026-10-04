@@ -11,9 +11,11 @@
 # the stage. macOS + Linux, amd64 + arm64. No cluster, Keycloak, or SPIRE needed.
 #
 # This script keeps only what has to happen before there is an agentop to run: the
-# bootstrap below, the download, the checksums, and the extract. Every line that
-# stays on screen after that comes from setup. Traffic is decrypted and parsed for
-# viewing; nothing is rewritten.
+# bootstrap below, the download, the checksums, and the extract. It prints little of
+# its own: the download's progress (a bar it erases, on a terminal; one plain line
+# otherwise), errors, and a few warnings and notices from those steps, such as a
+# dump helper it could not fetch or a TMPDIR that would not run programs. The rest
+# comes from setup. Traffic is decrypted and parsed for viewing; nothing is rewritten.
 #
 # Options (pass through the pipe with `sh -s --`, e.g.
 #   curl -fsSL ...install.sh | sh -s -- --install-only):
@@ -827,6 +829,138 @@ stage_session_dump() {
 	return 0
 }
 
+# --- the download's progress bar ---
+#
+# On a terminal the download is one line on stderr, redrawn in place and erased when
+# the download ends, so none of it stays on screen: setup's first line says what was
+# downloaded. Off a terminal (a log, CI, a pipe) a redrawn line would be noise, so the
+# download prints one plain line instead. So it does on a terminal the bar cannot use:
+# TERM=dumb, which cannot erase, or one too narrow for the bar's figures.
+#
+# The sizes are in setup's units (downloadSize in cmd/agentop/cmd_setup.go), so the
+# bar's last figure and setup's "✓ downloaded" line agree. ASCII, and no colour: setup's
+# accent is one shade for a light terminal and another for a dark one, and a shell
+# cannot tell which it is drawing on.
+
+# size_text N prints N bytes as setup does: B under 1000, kB under 999950 (so never
+# "1000.0 kB"), MB from there, to the nearest tenth. Integers only, as sh has no others.
+size_text() {
+	if [ "$1" -lt 1000 ]; then
+		printf '%s B\n' "$1"
+	elif [ "$1" -lt 999950 ]; then
+		_st=$((($1 + 50) / 100))
+		printf '%s.%s kB\n' "$((_st / 10))" "$((_st % 10))"
+	else
+		_st=$((($1 + 50000) / 100000))
+		printf '%s.%s MB\n' "$((_st / 10))" "$((_st % 10))"
+	fi
+}
+
+# progress_line DONE TOTAL WIDTH prints the bar's line for DONE of TOTAL bytes: a bar of
+# WIDTH cells, the percentage, and both sizes. With TOTAL unknown (empty, or 0) there is
+# nothing to take a percentage of, so it prints the bytes so far alone. DONE past TOTAL,
+# a server that sized the file wrong, shows as 100% rather than a bar that overflows.
+# WIDTH 0 is the figures without a bar. Pure: no terminal and no escapes, so the suite
+# checks it as text.
+progress_line() {
+	case "$2" in
+		'' | 0)
+			size_text "$1"
+			return 0
+			;;
+	esac
+	_pl_done=$1
+	[ "${_pl_done}" -le "$2" ] || _pl_done=$2
+	_pl_bar=""
+	if [ "$3" -gt 0 ]; then
+		_pl_fill=$((_pl_done * $3 / $2))
+		_pl_i=0
+		while [ "${_pl_i}" -lt "$3" ]; do
+			if [ "${_pl_i}" -lt "${_pl_fill}" ]; then _pl_bar="${_pl_bar}#"; else _pl_bar="${_pl_bar}-"; fi
+			_pl_i=$((_pl_i + 1))
+		done
+		_pl_bar="[${_pl_bar}] "
+	fi
+	printf '%s%3d%%  %s / %s\n' "${_pl_bar}" "$((_pl_done * 100 / $2))" "$(size_text "$1")" "$(size_text "$2")"
+}
+
+# bar_cells COLS PREFIX_LEN prints how many bar cells fit on a COLS-wide terminal after
+# a PREFIX_LEN-character prefix: up to 30, or 0 when fewer than 10 fit. It fails when
+# even the figures do not fit, because a line wider than the terminal wraps, and a
+# wrapped line cannot be redrawn in place: every redraw would leave a line behind. The
+# figures take at most 25 characters ("100%  999.9 MB / 999.9 MB"), the bar 3 more than
+# its cells, and the last column stays empty, since writing it can wrap the line.
+bar_cells() {
+	_bc=$(($1 - 1 - $2 - 25))
+	[ "${_bc}" -ge 0 ] || return 1
+	_bc=$((_bc - 3))
+	[ "${_bc}" -le 30 ] || _bc=30
+	[ "${_bc}" -ge 10 ] || _bc=0
+	printf '%s\n' "${_bc}"
+}
+
+# term_cols prints the width of the terminal on stderr: stty's, else COLUMNS, else 80.
+# stdin is the piped script, so stty reads the terminal through stderr. A size of 0, a
+# pty nobody gave a size, counts as unknown.
+term_cols() {
+	_tc=$(stty size <&2 2>/dev/null) || _tc=""
+	_tc=${_tc##* }
+	case "${_tc}" in '' | *[!0-9]* | 0) _tc=${COLUMNS:-} ;; esac
+	case "${_tc}" in '' | *[!0-9]* | 0) _tc=80 ;; esac
+	printf '%s\n' "${_tc}"
+}
+
+# bar_draw DONE draws the line for DONE bytes over the last one: back to the start of
+# the line (CR), the line, then erase whatever a longer line before it left (ESC[K).
+# The first draw hides the cursor, which would otherwise sit blinking at the bar's end.
+bar_draw() {
+	if [ -z "${bar_shown:-}" ]; then
+		bar_shown=1
+		printf '\033[?25l' >&2
+	fi
+	printf '\r%s%s\033[K' "${bar_prefix}" "$(progress_line "$1" "${bar_total}" "${bar_w}")" >&2
+}
+
+# bar_end erases the bar's line and shows the cursor again, if a bar was drawn. The
+# download calls it the moment it ends, and the EXIT trap calls it too, so neither the
+# handoff, a die, an INT nor a TERM leaves the cursor hidden or half a bar on screen.
+# (A KILL does: nothing can catch it.) The write fails when the terminal has closed,
+# and is no error then: there is nothing left to erase.
+bar_end() {
+	[ -n "${bar_shown:-}" ] || return 0
+	bar_shown=""
+	printf '\r\033[K\033[?25h' >&2 || :
+}
+
+# content_length URL prints the size the server gives for URL: the Content-Length of the
+# last response in its redirect chain, or nothing if that response is not a 2xx or has
+# none. Reset at each response, so a final response without one is unknown rather
+# than the 302's 0. Only the bar uses it, so a HEAD that fails costs the percentage,
+# never the install; --max-time caps how long a HEAD that hangs can hold the script up.
+content_length() {
+	curl -sIL --max-time 10 "$1" 2>/dev/null | tr -d '\r' | awk '
+		/^HTTP\// { st = $2; n = "" }
+		tolower($1) == "content-length:" { n = $2 }
+		END { if (st ~ /^2/ && n ~ /^[0-9]+$/) print n }'
+}
+
+# file_bytes FILE prints how much of FILE has landed so far, 0 before curl creates it.
+file_bytes() {
+	if [ -f "$1" ]; then wc -c <"$1" | tr -d '[:space:]'; else echo 0; fi
+}
+
+# stop_downloads stops any download still running, and waits for it to end: the EXIT
+# trap's first step, so a die, an INT, a TERM or a HUP never leaves a curl writing into
+# a stage being deleted. A script's background jobs ignore INT, so a Ctrl-C does not
+# stop them by itself.
+stop_downloads() {
+	# shellcheck disable=SC2086 # the pids, split into words on purpose
+	[ -z "${dl_pids:-}" ] || kill ${dl_pids} 2>/dev/null || :
+	# shellcheck disable=SC2086 # as above
+	[ -z "${dl_pids:-}" ] || wait ${dl_pids} 2>/dev/null || :
+	dl_pids=""
+}
+
 # hand_off AGENTOP STAGE execs `AGENTOP setup`, which is where this script ends: setup
 # plans, asks once, installs, starts, and owns everything on screen from here. STAGE
 # is the staging dir, passed as --from with the download's counts. Empty, in repair
@@ -914,7 +1048,18 @@ version=$(resolve_version "${VERSION_REF}") \
 # would skip ensure_tmpdir's fallback, and put the stage outside the dirs setup will
 # delete a stage from ($TMPDIR, /tmp, ~/.cortex/tmp) whenever TMPDIR is not the default.
 tmp=$(mktemp -d "${TMPDIR%/}/cortex-stage.XXXXXX")
-trap 'rm -rf "$tmp"' EXIT
+dl_pids=""
+bar_shown=""
+# The stage goes before the bar is erased. Erasing writes to the terminal, which is gone
+# when the HUP came from closing it, and under set -e a failed write would end the trap
+# there. The trap is the last thing the script runs, so a live terminal sees no change.
+trap 'stop_downloads; rm -rf "$tmp" || :; bar_end' EXIT
+# exit runs the EXIT trap, so an INT (Ctrl-C), a TERM or a HUP cleans up as a die does.
+# Without these, dash dies of the signal and runs no EXIT trap at all, which leaves the
+# stage behind, the downloads running, and the cursor hidden.
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
 
 base="https://github.com/${REPO}/releases/download/${version}"
 agentop_tgz="agentop_${version}_${os}_${arch}.tar.gz"
@@ -923,9 +1068,60 @@ proxy_tgz="cortex_${version}_${os}_${arch}.tar.gz"
 # tmp is the stage: the download lands in it, the binaries are extracted beside it,
 # and setup gets it as --from. The clock starts here for --handoff-seconds.
 started=$(date +%s 2>/dev/null) || started=""
-info "Downloading ${version} for ${os}/${arch}..."
-curl -fsSL "${base}/${agentop_tgz}" -o "${tmp}/${agentop_tgz}" || die "download failed: ${agentop_tgz}"
-curl -fsSL "${base}/${proxy_tgz}" -o "${tmp}/${proxy_tgz}" || die "download failed: ${proxy_tgz}"
+
+# A bar when stderr is a terminal that can redraw a line and is wide enough for one;
+# the plain line otherwise.
+bar_on=""
+bar_prefix="Downloading ${version} "
+bar_total=""
+bar_w=0
+if [ -t 2 ] && [ "${TERM:-}" != "dumb" ] && bar_w=$(bar_cells "$(term_cols)" "${#bar_prefix}"); then
+	bar_on=1
+else
+	info "Downloading ${version} for ${os}/${arch}..."
+fi
+
+# Both archives at once, each in the background; `wait` gives each one's exit status.
+curl -fsSL "${base}/${agentop_tgz}" -o "${tmp}/${agentop_tgz}" &
+pid_a=$!
+dl_pids="${pid_a}"
+curl -fsSL "${base}/${proxy_tgz}" -o "${tmp}/${proxy_tgz}" &
+pid_c=$!
+dl_pids="${pid_a} ${pid_c}"
+
+# The sizes, for the percentage. Asked while the archives download, so the asking
+# overlaps the download rather than adding to it, unless a HEAD outlasts it (each gives
+# up after 10s). Either size unknown leaves the total unknown, and the bar counts bytes.
+if [ -n "${bar_on}" ]; then
+	size_a=$(content_length "${base}/${agentop_tgz}")
+	size_c=$(content_length "${base}/${proxy_tgz}")
+	[ -z "${size_a}" ] || [ -z "${size_c}" ] || bar_total=$((size_a + size_c))
+fi
+
+# Poll until both have ended: every 0.2s, or every 1s from the first time sleep turns
+# down a fraction, as a sleep that takes whole seconds only does.
+poll_s=0.2
+while kill -0 "${pid_a}" 2>/dev/null || kill -0 "${pid_c}" 2>/dev/null; do
+	if [ -n "${bar_on}" ]; then
+		got_a=$(file_bytes "${tmp}/${agentop_tgz}")
+		got_c=$(file_bytes "${tmp}/${proxy_tgz}")
+		bar_draw "$((got_a + got_c))"
+	fi
+	sleep "${poll_s}" 2>/dev/null || {
+		poll_s=1
+		sleep 1
+	}
+done
+st_a=0
+wait "${pid_a}" || st_a=$?
+st_c=0
+wait "${pid_c}" || st_c=$?
+dl_pids=""
+# Erased now, not just before the handoff: every step from here can print a warning or
+# an error, and a line printed after a bar still on screen would start halfway along it.
+bar_end
+[ "${st_a}" = "0" ] || die "download failed: ${agentop_tgz}"
+[ "${st_c}" = "0" ] || die "download failed: ${proxy_tgz}"
 curl -fsSL "${base}/checksums.txt" -o "${tmp}/checksums.txt" || die "download failed: checksums.txt"
 
 # One grep per archive, not an alternation. An alternation SUCCEEDS on a single
