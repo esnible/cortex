@@ -614,30 +614,6 @@ LISTEN 0 4096 127.0.0.1:9999 0.0.0.0:*
 EOF
 check "ss: a loopback bind on another port reads free" "free" "$(with_port_in_use_ss 47600 "${FIXTURE}")"
 
-# --- supervisor_usable: attempt-and-detect, with launchctl/systemctl mocked ---
-#
-# The preflight that decides whether to reach for the OS supervisor. The seatbelt
-# sandbox that motivated this PR is "launchctl is present but `launchctl list` fails"
-# — mocked here, plus the systemd-user equivalent, absence, and the working case.
-with_supervisor_usable() { # os(darwin|linux)  present(1|0)  probe_exit
-	_absent=1; [ "$2" = 1 ] && _absent=0
-	{
-		printf 'os=%s\n' "$1"
-		printf 'command() { case "$2" in launchctl|systemctl) return %s ;; *) return 0 ;; esac; }\n' "${_absent}"
-		printf 'launchctl() { return %s; }\n' "$3"
-		printf 'systemctl() { return %s; }\n' "$3"
-		sed -n '/^supervisor_usable()/,/^}/p' "${INSTALL_SH}"
-		printf 'if supervisor_usable; then echo usable; else echo unusable; fi\n'
-	} >"${TMP}/su.sh"
-	sh "${TMP}/su.sh" 2>/dev/null
-}
-check "supervisor: darwin, launchctl absent -> unusable" "unusable" "$(with_supervisor_usable darwin 0 0)"
-check "supervisor: darwin, launchctl present but 'list' fails (sandbox) -> unusable" "unusable" "$(with_supervisor_usable darwin 1 1)"
-check "supervisor: darwin, launchctl present and 'list' ok -> usable" "usable" "$(with_supervisor_usable darwin 1 0)"
-check "supervisor: linux, systemctl absent -> unusable" "unusable" "$(with_supervisor_usable linux 0 0)"
-check "supervisor: linux, user bus unreachable -> unusable" "unusable" "$(with_supervisor_usable linux 1 1)"
-check "supervisor: linux, systemctl reachable -> usable" "usable" "$(with_supervisor_usable linux 1 0)"
-
 # --- proxy_running: five branches, and it gates a kill ---
 #
 # stop_cortex signals the pid this returns, so every branch matters: a non-numeric,
@@ -683,35 +659,35 @@ check "proxy_running: alive, the pre-rename authbridge-proxy -> stopped (clean b
 # --- a v0.7.0 install's background proxy, recorded in the pidfile ---
 #
 # v0.7.0 ran "${BIN_DIR}/authbridge-proxy --local --supervise" wherever no supervisor
-# was usable and wrote its pid to the same pidfile. start_unsupervised and stop_cortex
-# run against the real pidfile; kill, ps, pid_exe_path and nohup are mocked. Pid 4242
-# is the recorded process and reads as dead once it has been sent SIGTERM.
-with_pre_rename() { # start|stop  exe-of-4242(__NONE__)  bin_dir  ps-comm(fail)
+# was usable and wrote its pid to the same pidfile. stop_cortex runs against the real
+# pidfile; kill, ps and pid_exe_path are mocked. Pid 4242 is the recorded process and
+# reads as dead once it has been sent SIGTERM. (Starting is agentop setup's now, so
+# only --stop is left to test here.)
+with_pre_rename() { # exe-of-4242(__NONE__)  bin_dir  ps-comm(fail)
 	_pf="${TMP}/prr_pidfile"
 	_log="${TMP}/prr_log"
 	: >"${_log}"
 	rm -f "${TMP}/prr_termed"
 	printf '4242\n' >"${_pf}"
 	{
-		printf 'PROXY_PIDFILE=%s\nBIN_DIR=%s\nCORTEX_DIR=%s\nSUPERVISOR_NAME=x\n' "${_pf}" "$3" "${TMP}"
+		printf 'PROXY_PIDFILE=%s\nBIN_DIR=%s\nCORTEX_DIR=%s\nSUPERVISOR_NAME=x\n' "${_pf}" "$2" "${TMP}"
 		printf 'DEMO_FORWARD_PORT=47600\nDEMO_SESSION_PORT=47601\nDEMO_STATS_PORT=47603\nDEMO_HEALTH_PORT=47604\n'
-		printf 'info() { :; }\nwarn() { :; }\nsleep() { :; }\nnohup() { :; }\n'
-		if [ "$1" = start ]; then printf 'port_in_use() { [ "$1" = 47604 ]; }\n'
-		else printf 'port_in_use() { return 1; }\n'; fi
+		printf 'info() { :; }\nwarn() { :; }\nsleep() { :; }\n'
+		printf 'port_in_use() { return 1; }\n'
 		printf 'kill() {\n'
 		printf '\tcase "$1" in\n'
 		printf '\t\t-0) [ "$2" = 4242 ] && [ -f "%s" ] && return 1; return 0 ;;\n' "${TMP}/prr_termed"
 		printf '\t\t-9) printf "KILL %%s\\n" "$2" >>"%s" ;;\n' "${_log}"
 		printf '\t\t*) printf "TERM %%s\\n" "$1" >>"%s"; [ "$1" = 4242 ] && : >"%s" ;;\n' "${_log}" "${TMP}/prr_termed"
 		printf '\tesac\n\treturn 0\n}\n'
-		if [ "$4" = fail ]; then printf 'ps() { return 1; }\n'
-		else printf 'ps() { printf "%%s\\n" "%s"; }\n' "$4"; fi
-		if [ "$2" = __NONE__ ]; then printf 'pid_exe_path() { return 1; }\n'
-		else printf 'pid_exe_path() { [ "$1" = 4242 ] && printf "%%s\\n" "%s"; }\n' "$2"; fi
-		for _fn in proxy_running pre_rename_proxy_running stop_pidfile_proxy start_unsupervised stop_cortex; do
+		if [ "$3" = fail ]; then printf 'ps() { return 1; }\n'
+		else printf 'ps() { printf "%%s\\n" "%s"; }\n' "$3"; fi
+		if [ "$1" = __NONE__ ]; then printf 'pid_exe_path() { return 1; }\n'
+		else printf 'pid_exe_path() { [ "$1" = 4242 ] && printf "%%s\\n" "%s"; }\n' "$1"; fi
+		for _fn in proxy_running pre_rename_proxy_running stop_pidfile_proxy stop_cortex; do
 			sed -n "/^${_fn}()/,/^}/p" "${INSTALL_SH}"
 		done
-		if [ "$1" = start ]; then printf 'start_unsupervised\n'; else printf 'stop_cortex\n'; fi
+		printf 'stop_cortex\n'
 	} >"${TMP}/prr.sh"
 	sh "${TMP}/prr.sh" >/dev/null 2>&1
 	if grep -qx 'TERM 4242' "${_log}"; then _old=stopped; else _old=left; fi
@@ -723,65 +699,19 @@ with_pre_rename() { # start|stop  exe-of-4242(__NONE__)  bin_dir  ps-comm(fail)
 	esac
 	printf 'old:%s pidfile:%s\n' "${_old}" "${_now}"
 }
-check "pre-rename: start stops the v0.7.0 proxy in our pidfile, then starts cortex" \
-	"old:stopped pidfile:new" \
-	"$(with_pre_rename start /home/u/.local/bin/authbridge-proxy /home/u/.local/bin authbridge-prox)"
-check "pre-rename: start on macOS, where comm is the full path" \
-	"old:stopped pidfile:new" \
-	"$(with_pre_rename start /Users/u/.local/bin/authbridge-proxy /Users/u/.local/bin /Users/u/.local/bin/authbridge-proxy)"
 check "pre-rename: --stop stops it rather than discarding the pidfile" \
 	"old:stopped pidfile:none" \
-	"$(with_pre_rename stop /home/u/.local/bin/authbridge-proxy /home/u/.local/bin authbridge-prox)"
-check "pre-rename: an authbridge-proxy from another directory is not signalled by start" \
-	"old:left pidfile:new" \
-	"$(with_pre_rename start /home/u/src/cortex/authbridge-proxy /home/u/.local/bin authbridge-prox)"
-check "pre-rename: ...nor by --stop" \
+	"$(with_pre_rename /home/u/.local/bin/authbridge-proxy /home/u/.local/bin authbridge-prox)"
+check "pre-rename: ...but not an authbridge-proxy from another directory" \
 	"old:left pidfile:none" \
-	"$(with_pre_rename stop /home/u/src/cortex/authbridge-proxy /home/u/.local/bin authbridge-prox)"
-check "pre-rename: a pid whose executable cannot be named is not signalled" \
-	"old:left pidfile:new" \
-	"$(with_pre_rename start __NONE__ /home/u/.local/bin authbridge-prox)"
-check "pre-rename: ps and the executable both blind keeps the pidfile's process" \
-	"old:left pidfile:old" \
-	"$(with_pre_rename start __NONE__ /home/u/.local/bin fail)"
-check "pre-rename: our own cortex in the pidfile is left running" \
-	"old:left pidfile:old" \
-	"$(with_pre_rename start /home/u/.local/bin/cortex /home/u/.local/bin cortex)"
+	"$(with_pre_rename /home/u/src/cortex/authbridge-proxy /home/u/.local/bin authbridge-prox)"
 # /proc/<pid>/exe resolves symlinks, so a BIN_DIR reached through one must still match.
 mkdir -p "${TMP}/prr_real"
 : >"${TMP}/prr_real/authbridge-proxy"
 ln -s "${TMP}/prr_real" "${TMP}/prr_link"
-check "pre-rename: a BIN_DIR reached through a symlink still matches" \
-	"old:stopped pidfile:new" \
-	"$(with_pre_rename start "$(cd "${TMP}/prr_real" && pwd -P)/authbridge-proxy" "${TMP}/prr_link" authbridge-prox)"
-
-# --- pidfile_process_unnamed: a live pid that ps cannot name keeps the old binary ---
-#
-# Where a sandbox hides processes from ps, the pidfile's process may be v0.7.0's
-# supervisor, which re-execs its own path after a crash; deleting that file took
-# Cortex down at the next crash (reproduced). kill and ps are mocked.
-with_unnamed() { # pidfile-content(__MISSING__)  kill_exit  ps_mode(fail|empty|COMM)
-	_pf="${TMP}/un_pidfile"
-	if [ "$1" = "__MISSING__" ]; then rm -f "${_pf}"; else printf '%s\n' "$1" >"${_pf}"; fi
-	{
-		printf 'PROXY_PIDFILE=%s\n' "${_pf}"
-		printf 'kill() { return %s; }\n' "$2"
-		case "$3" in
-			fail)  printf 'ps() { return 1; }\n' ;;
-			empty) printf 'ps() { return 0; }\n' ;;
-			*)     printf 'ps() { printf "%%s\\n" "%s"; }\n' "$3" ;;
-		esac
-		sed -n '/^pidfile_process_unnamed()/,/^}/p' "${INSTALL_SH}"
-		printf 'if pidfile_process_unnamed; then echo unnamed; else echo named-or-gone; fi\n'
-	} >"${TMP}/un.sh"
-	sh "${TMP}/un.sh" 2>/dev/null
-}
-check "unnamed: alive, ps prints nothing (sandbox) -> unnamed" "unnamed" "$(with_unnamed 4242 0 empty)"
-check "unnamed: alive, ps fails -> unnamed" "unnamed" "$(with_unnamed 4242 0 fail)"
-check "unnamed: alive, ps names cortex -> named" "named-or-gone" "$(with_unnamed 4242 0 cortex)"
-check "unnamed: dead pid -> gone" "named-or-gone" "$(with_unnamed 4242 1 empty)"
-check "unnamed: no pidfile -> gone" "named-or-gone" "$(with_unnamed __MISSING__ 0 empty)"
-check "unnamed: non-numeric pidfile -> gone" "named-or-gone" "$(with_unnamed abc 0 empty)"
+check "pre-rename: --stop matches a BIN_DIR reached through a symlink" \
+	"old:stopped pidfile:none" \
+	"$(with_pre_rename "$(cd "${TMP}/prr_real" && pwd -P)/authbridge-proxy" "${TMP}/prr_link" authbridge-prox)"
 
 # --- ensure_tmpdir: exports TMPDIR on BOTH paths (regression: unset-TMPDIR abort) ---
 #
@@ -815,162 +745,6 @@ check "ensure_tmpdir: an already-set writable TMPDIR is kept verbatim" "/custom/
 check "ensure_tmpdir: an already-set TMPDIR keeps its trailing slash (not clobbered)" "/custom/t/" "$(with_ensure_tmpdir ok /custom/t/)"
 # A set-but-unwritable TMPDIR still falls back rather than failing.
 check "ensure_tmpdir: set-but-unwritable TMPDIR falls back under CORTEX_DIR" "${TMP}/cortexhome/tmp" "$(with_ensure_tmpdir deny /nope)"
-
-# --- service_install_action: classify `agentop service install` -> what to do ---
-#
-# The reported bug: `agentop service install` failed with `launchctl bootstrap failed:
-# ... Input/output error` (exit 1), but the installer died with "could not set up the
-# service" instead of running the proxy directly. Root cause: agentop prints that on
-# STDOUT, and the decision matched a signature in STDERR only. The rule is now
-# exit + `refus` + ports, so the failure text's stream no longer matters, and any
-# unrecognised failure falls back (Cortex runs) rather than dying. demo_ports_busy is
-# mocked; grep is real.
-with_service_install_action() { # status  output  ports_busy(yes|no)  [foreign-holder]
-	{
-		if [ "$3" = yes ]; then printf 'demo_ports_busy() { return 0; }\n'
-		else printf 'demo_ports_busy() { return 1; }\n'; fi
-		# Stubbed explicitly rather than left undefined: these cases are about the
-		# ORDER of the verdicts, so "no foreign holder" has to be a deliberate
-		# answer. $4 empty means none found (return 1, printing nothing).
-		if [ -n "${4:-}" ]; then
-			printf 'foreign_proxy_holder() { printf "%%s\\n" "%s"; }\n' "$4"
-		else
-			printf 'foreign_proxy_holder() { return 1; }\n'
-		fi
-		sed -n '/^service_install_action()/,/^}/p' "${INSTALL_SH}"
-		printf 'service_install_action "%s" "%s"\n' "$1" "$2"
-	} >"${TMP}/sia.sh"
-	sh "${TMP}/sia.sh" 2>/dev/null
-}
-check "svc action: exit 0 -> supervised" "supervised" \
-	"$(with_service_install_action 0 ok no)"
-check "svc action: launchd EIO (exit 1), ports free -> fallback [the reported bug]" "fallback" \
-	"$(with_service_install_action 1 'launchctl bootstrap failed: exit status 5: Input/output error' no)"
-check "svc action: an agentop refusal -> refused (never fall back past a safety decision)" "refused" \
-	"$(with_service_install_action 1 'agentop: refusing to expose listener' no)"
-check "svc action: non-zero with ports held -> ports-busy (upgrade race)" "ports-busy" \
-	"$(with_service_install_action 1 'bootstrap failed' yes)"
-check "svc action: unknown non-zero, ports free -> fallback (default; Cortex still runs)" "fallback" \
-	"$(with_service_install_action 7 'some unrecognised error' no)"
-# A safety refusal must win over a busy-port race — never downgraded to "wait and
-# re-run", which would eventually run the config agentop refused.
-check "svc action: refusal wins over ports-busy" "refused" \
-	"$(with_service_install_action 1 'refused: unsafe config' yes)"
-
-# foreign-proxy is checked BEFORE ports-busy because the two are indistinguishable
-# at the port level and want opposite advice: wait for it vs stop it. The verdict
-# carries the pid and path through, since die() names them.
-check "svc action: a foreign holder outranks ports-busy (opposite advice)" \
-	"foreign-proxy 84858 /co/.local/bin/cortex" \
-	"$(with_service_install_action 1 'bind: address already in use' yes '84858 /co/.local/bin/cortex')"
-# ...but never over a safety refusal, which must still win outright.
-check "svc action: refusal outranks a foreign holder" "refused" \
-	"$(with_service_install_action 1 'refusing to expose listener' yes '84858 /co/.local/bin/cortex')"
-# An unidentifiable holder must fall through to ports-busy, NOT be accused.
-check "svc action: no identifiable holder + ports held -> ports-busy" "ports-busy" \
-	"$(with_service_install_action 1 'bind: address already in use' yes '')"
-# A foreign holder is irrelevant when the install actually succeeded.
-check "svc action: exit 0 wins even with a foreign holder present" "supervised" \
-	"$(with_service_install_action 0 ok yes '84858 /co/.local/bin/cortex')"
-
-# --- quiet_service_install: what an install SHOWS of `agentop service install` ---
-#
-# A deny list of lines that are true but beside the point mid-install. The danger in a
-# filter on this output is the other direction — swallowing a warning or an error — so
-# most cases here are lines that must survive it.
-with_quiet_service_install() { # input on stdin
-	sed -n '/^quiet_service_install()/,/^}/p' "${INSTALL_SH}" >"${TMP}/qsi.sh"
-	printf 'quiet_service_install\n' >>"${TMP}/qsi.sh"
-	sh "${TMP}/qsi.sh"
-}
-# The lines a healthy re-install on macOS prints, as cmd_service.go renders them.
-check "quiet: a healthy re-install shows only its outcome" \
-	"Running as a launchd user agent, healthy." \
-	"$(with_quiet_service_install <<'EOF'
-  2 connection(s) will be cut. Clients reconnect on their next
-  request — a request in flight right now fails.
-Running as a launchd user agent, healthy.
-A supervisor process handles crashes (launchd will not restart these agents).
-  Captured session history is cleared: the store is in memory, so any
-  timeline you were reading in agentop starts over.
-EOF
-)"
-_qsi_keep='Waiting for the previous Cortex to stop (up to 30s)...
-Updated /h/.cortex/config.yaml (previous kept as /h/.cortex/config.yaml.bak):
-  + listener.bind_loopback_only: true   (was: false)
-agentop: launchctl bootstrap failed: 5: Input/output error
-agentop: the unit loaded but the supervisor does not report it running (exit 1).
-Already current: cortex is running under launchd user agent and healthy.
-  Nothing to change. Use `agentop service restart` to restart it anyway.'
-check "quiet: progress, migrations, warnings and errors all pass through" \
-	"${_qsi_keep}" "$(printf '%s\n' "${_qsi_keep}" | with_quiet_service_install)"
-# grep exits 1 when it selects nothing; under the installer's pipe that must not read
-# as a failure, nor take the status file's place.
-_qsi_st=0
-printf 'A supervisor process handles crashes (x).\n' | with_quiet_service_install >/dev/null || _qsi_st=$?
-check "quiet: dropping every line still exits 0" "0" "${_qsi_st}"
-# Each pattern must still occur, verbatim, where agentop prints it. A reworded line
-# fails safe — it simply shows again — but a pattern matching nothing is dead code
-# that reads as a working filter, so it is a red test here.
-_qsi_n=0
-_qsi_missing=""
-while IFS= read -r _p; do
-	_qsi_n=$((_qsi_n + 1))
-	grep -qF -- "${_p}" "${REPO_ROOT}/cmd/agentop/cmd_service.go" || _qsi_missing="${_qsi_missing} [${_p}]"
-done <<EOF
-$(sed -n '/^quiet_service_install()/,/^}/p' "${INSTALL_SH}" | sed -n "s/^[[:space:]]*-e '\([^']*\)'.*/\1/p")
-EOF
-check "quiet: the pattern list was read (guards the next check from passing vacuously)" "5" "${_qsi_n}"
-check "quiet: every pattern still occurs in cmd/agentop/cmd_service.go" "" "${_qsi_missing}"
-check "install.sh shows service install through the filter, and records it unfiltered" "1" \
-	"$(grep -cxF '		tee "${svc_out_file}" | quiet_service_install' "${INSTALL_SH}" || true)"
-
-# --- print_next_steps: the closing summary ---
-#
-# The one thing an install must end on is the command to run next. The rest is a table
-# whose rows depend on two facts: whether Claude Code was wired up, and whether a
-# service exists for `service stop` to act on.
-with_next_steps() { # wired supervised agentop_disp
-	{
-		sed -n '/^info() /p' "${INSTALL_SH}"
-		printf 'SUPERVISED="%s"\n' "$2"
-		printf "agentop_disp='%s'\n" "$3"
-		sed -n '/^print_rows()/,/^}/p' "${INSTALL_SH}"
-		sed -n '/^print_next_steps()/,/^}/p' "${INSTALL_SH}"
-		printf 'print_next_steps "%s"\n' "$1"
-	} >"${TMP}/ns.sh"
-	sh "${TMP}/ns.sh"
-}
-has() { # needle haystack -> yes/no
-	case "$2" in *"$1"*) printf yes ;; *) printf no ;; esac
-}
-# The descriptions start in one column: rows are "  CMD<pad>   DESC", and no command
-# holds three spaces in a row, so the end of the first run of 3+ spaces is the column.
-desc_columns() {
-	awk '/^  [^ ]/ { if (match($0, /   +[^ ]/)) print RSTART + RLENGTH - 1 }' |
-		sort -u | wc -l | tr -d '[:space:]'
-}
-_ns=$(with_next_steps 1 1 agentop)
-check "summary, wired: leads with running agentop" "yes" \
-	"$(has 'Next: run `agentop` to watch your agent traffic live.' "${_ns}")"
-check "summary, wired: offers the undo" "yes" "$(has 'agentop configure claude-code disable' "${_ns}")"
-check "summary, wired: does not offer enable again" "no" "$(has 'claude-code enable' "${_ns}")"
-check "summary, wired + supervised: offers service stop" "yes" "$(has 'agentop service stop' "${_ns}")"
-check "summary, wired: points every other agent at agentop exec" "yes" "$(has 'agentop exec -- <cmd>' "${_ns}")"
-check "summary, wired: the descriptions line up" "1" "$(printf '%s\n' "${_ns}" | desc_columns)"
-_ns=$(with_next_steps "" "" agentop)
-check "summary, not wired: says to send an agent through first" "yes" \
-	"$(has 'Next: send an agent through Cortex, then run `agentop`' "${_ns}")"
-check "summary, not wired: offers enable" "yes" "$(has 'agentop configure claude-code enable' "${_ns}")"
-check "summary, not wired: does not offer an undo for nothing" "no" "$(has 'disable' "${_ns}")"
-check "summary, unsupervised: no service stop (there is no service)" "no" "$(has 'service stop' "${_ns}")"
-check "summary, not wired: the descriptions line up" "1" "$(printf '%s\n' "${_ns}" | desc_columns)"
-_ns=$(with_next_steps 1 1 '"/Users/a b/.local/bin/agentop"')
-check "summary: a full path with a space keeps its quotes" "yes" \
-	"$(has '"/Users/a b/.local/bin/agentop" service stop' "${_ns}")"
-check "summary: a full path still lines up" "1" "$(printf '%s\n' "${_ns}" | desc_columns)"
-check "install.sh calls configure claude-code, not the renamed spelling" "0" \
-	"$(grep -cF '"${BIN_DIR}/agentop" claude-code' "${INSTALL_SH}" || true)"
 
 # --- pid_exe_path: the full path, because `comm` cannot carry one on Linux ---
 #
@@ -1052,273 +826,9 @@ check "pid_exe_path: no /proc, no lsof -> first field of ps args" \
 check "pid_exe_path: nothing can name the pid -> fails, prints no placeholder" \
 	"__NONE__" "$(with_pid_exe_path '' '' '')"
 
-# --- foreign_proxy_holder: fails closed, and only accuses on a positive mismatch ---
-#
-# Its verdict gates a die(), so a false positive tells a user mid-upgrade to kill
-# their own working proxy. Every "cannot tell" branch must therefore read as ours.
-# port_holder is mocked (the pid/path discovery is covered above); the pidfile is a
-# real file so the cat + comparison is shipped code.
-with_foreign_proxy_holder() { # holder-line(empty=none)  pidfile(__MISSING__)  bin_dir
-	_pf="${TMP}/fph_pidfile"
-	if [ "$2" = "__MISSING__" ]; then rm -f "${_pf}"; else printf '%s\n' "$2" >"${_pf}"; fi
-	{
-		printf 'DEMO_FORWARD_PORT=47600\n'
-		printf 'PROXY_PIDFILE=%s\n' "${_pf}"
-		printf 'BIN_DIR=%s\n' "$3"
-		if [ -n "$1" ]; then printf 'port_holder() { printf "%%s\\n" "%s"; }\n' "$1"
-		else printf 'port_holder() { return 1; }\n'; fi
-		sed -n '/^foreign_proxy_holder()/,/^}/p' "${INSTALL_SH}"
-		printf 'foreign_proxy_holder || echo __OURS__\n'
-	} >"${TMP}/fph.sh"
-	sh "${TMP}/fph.sh" 2>/dev/null
-}
-# The reported bug: a proxy from a checkout, different path, never drains.
-check "foreign: a holder at another path IS foreign (the reported bug)" \
-	"84858 /co/.local/bin/cortex" \
-	"$(with_foreign_proxy_holder '84858 /co/.local/bin/cortex' __MISSING__ /home/u/.local/bin)"
-# The genuine upgrade race: our own managed binary restarting. Must stay ours, or
-# the installer dies on an ordinary upgrade — what the PR promises not to do.
-check "foreign: our own managed binary is NOT foreign (upgrade race preserved)" \
-	"__OURS__" \
-	"$(with_foreign_proxy_holder '29497 /home/u/.local/bin/cortex' __MISSING__ /home/u/.local/bin)"
-# The pidfile identifies our unsupervised proxy even when the path check would not.
-check "foreign: the pid in our pidfile is NOT foreign, whatever its path" \
-	"__OURS__" \
-	"$(with_foreign_proxy_holder '777 /some/other/cortex' 777 /home/u/.local/bin)"
-# An empty pidfile must not match an empty-ish pid field or accuse blindly.
-check "foreign: an empty pidfile does not make a real holder ours" \
-	"84858 /co/.local/bin/cortex" \
-	"$(with_foreign_proxy_holder '84858 /co/.local/bin/cortex' '' /home/u/.local/bin)"
-# Nobody is listening: nothing to report.
-check "foreign: no holder at all -> nothing reported" \
-	"__OURS__" "$(with_foreign_proxy_holder '' __MISSING__ /home/u/.local/bin)"
-# port_holder now refuses to emit a pid without a path, but if a bare pid ever
-# reached here it must not be judged: one field means the path is unknown.
-check "foreign: a pid with no path is unjudgeable, not foreign" \
-	"__OURS__" "$(with_foreign_proxy_holder '84858' __MISSING__ /home/u/.local/bin)"
-# A non-proxy process holding the port is still someone else's, and still blocks
-# the bind — worth naming rather than calling a drain that will never finish.
-check "foreign: an unrelated process holding the port is foreign too" \
-	"3121 /usr/bin/python3" \
-	"$(with_foreign_proxy_holder '3121 /usr/bin/python3' __MISSING__ /home/u/.local/bin)"
-
-# --- foreign_proxy_holder: the readlink -f canonicalisation branch ---
-#
-# The subtlest branch here, and it was the one with no coverage: the cases above all use
-# fictitious paths, where `readlink -f` resolves nothing and the plain text comparison
-# decides the verdict on its own. So nothing exercised a holder path that differs
-# TEXTUALLY from ${BIN_DIR}/cortex while canonicalising EQUAL — which is
-# precisely the false-foreign the branch exists to prevent (a symlinked $HOME, or
-# /var -> /private/var on macOS, makes /proc/<pid>/exe report a different string for the
-# very same file). Getting that wrong dies on an ordinary upgrade.
-#
-# Real files and a real symlink on disk, because readlink -f is shipped code here and a
-# stub would only test the stub. hide_readlink=yes drops `readlink` from view instead, to
-# pin what the `|| true` degrades TO on a platform that lacks it.
-with_foreign_canonical() { # holder-path  bin_dir  hide_readlink(yes|no)
-	_root="${TMP}/canon"; rm -rf "${_root}"
-	mkdir -p "${_root}/real/bin" "${_root}/other/bin"
-	: >"${_root}/real/bin/cortex"
-	: >"${_root}/other/bin/cortex"
-	# An alias directory reaching the SAME binary by a different string — the symlinked
-	# $HOME / /private/var shape, reduced to its essentials.
-	ln -s "${_root}/real" "${_root}/alias"
-	{
-		printf 'DEMO_FORWARD_PORT=47600\n'
-		printf 'PROXY_PIDFILE=%s/no_such_pidfile\n' "${_root}"
-		printf 'BIN_DIR=%s\n' "$2"
-		printf 'port_holder() { printf "84858 %%s\\n" "%s"; }\n' "$1"
-		if [ "$3" = yes ]; then
-			# command -v readlink fails => the canonicalisation block is skipped whole.
-			printf 'command() { case "$2" in readlink) return 1 ;; *) return 0 ;; esac; }\n'
-		fi
-		sed -n '/^foreign_proxy_holder()/,/^}/p' "${INSTALL_SH}"
-		printf 'foreign_proxy_holder || echo __OURS__\n'
-	} >"${TMP}/fphcanon.sh"
-	sh "${TMP}/fphcanon.sh" 2>/dev/null
-}
-_CANON="${TMP}/canon"
-# The false-foreign this branch exists to prevent: two different strings, one file.
-# Without the readlink -f comparison this reads as foreign and the installer dies
-# telling the user to kill their own proxy mid-upgrade.
-check "foreign/canonical: a symlinked path to OUR binary is not foreign" \
-	"__OURS__" \
-	"$(with_foreign_canonical "${_CANON}/alias/bin/cortex" "${_CANON}/real/bin" no)"
-# ...and it holds in the other direction too, so the test is not just asserting that
-# one specific spelling wins.
-check "foreign/canonical: ours via the real path when BIN_DIR is the symlinked one" \
-	"__OURS__" \
-	"$(with_foreign_canonical "${_CANON}/real/bin/cortex" "${_CANON}/alias/bin" no)"
-# The branch must not over-broaden into "anything resolvable is ours": a genuinely
-# different binary canonicalises to a different path and stays foreign.
-check "foreign/canonical: a different real binary still canonicalises foreign" \
-	"84858 ${_CANON}/other/bin/cortex" \
-	"$(with_foreign_canonical "${_CANON}/other/bin/cortex" "${_CANON}/real/bin" no)"
-# No readlink: `|| true` skips canonicalisation and the plain text comparison decides,
-# so the symlinked spelling reads as foreign. That fails CLOSED in the loud direction
-# (a false accusation, not a missed one), which is worth having visible in a test rather
-# than discovered on a platform without readlink. readlink -f does work on current
-# macOS and Linux, so this is the degraded path, not the usual one.
-check "foreign/canonical: without readlink the symlinked path degrades to foreign" \
-	"84858 ${_CANON}/alias/bin/cortex" \
-	"$(with_foreign_canonical "${_CANON}/alias/bin/cortex" "${_CANON}/real/bin" yes)"
-
-# --- port_holder: the lsof branch, and the four addresses it has to probe ---
-#
-# This is the macOS path, and the platform the bug was actually reported on — but every
-# other port_holder case here either stubs lsof away (with_port_holder_ss makes
-# `command -v` fail for everything but ss) or exercises the neither-tool case, so all of
-# the address matching landed on the ss branch and this one had no coverage at all.
-#
-# The four-address loop is load-bearing rather than defensive padding: a `*:PORT`
-# wildcard bind IS matched by -i@0.0.0.0:PORT and missed entirely by -i@127.0.0.1:PORT,
-# so probing only loopback would report "nothing holds it" while a wildcard listener sat
-# on the port. The stub below answers for ONE address, so each case proves its own probe
-# runs rather than riding on a catch-all.
-with_port_holder_lsof() { # port  address-that-answers  [second-address-that-answers]
-	{
-		printf 'command() { case "$2" in lsof) return 0 ;; *) return 1 ;; esac; }\n'
-		# Modelled on real lsof's -i@<addr>:<port> selection: answer only when the
-		# queried address is one this fixture is listening on. $2/$3 are matched against
-		# the -iTCP@... argument, so a probe for a different address prints nothing and
-		# the loop must move on to the next one.
-		printf 'lsof() {\n'
-		printf '\t_want=""\n'
-		printf '\tfor _w in "$@"; do case "${_w}" in -iTCP@*) _want=${_w#-iTCP@} ;; esac; done\n'
-		printf '\tcase "${_want}" in\n'
-		printf '\t\t"%s:%s") printf "p84858\\n" ;;\n' "$2" "$1"
-		if [ -n "${3:-}" ]; then
-			printf '\t\t"%s:%s") printf "p99999\\n" ;;\n' "$3" "$1"
-		fi
-		printf '\t\t*) return 1 ;;\n'
-		printf '\tesac\n'
-		printf '}\n'
-		printf 'pid_exe_path() { printf "/Users/u/.local/bin/cortex\\n"; }\n'
-		sed -n '/^port_holder()/,/^}/p' "${INSTALL_SH}"
-		printf 'port_holder "%s" || echo __NONE__\n' "$1"
-	} >"${TMP}/phlsof.sh"
-	sh "${TMP}/phlsof.sh" 2>/dev/null
-}
-check "port_holder/lsof: IPv4 loopback -> pid from -Fp [the macOS path]" \
-	"84858 /Users/u/.local/bin/cortex" \
-	"$(with_port_holder_lsof 47600 127.0.0.1)"
-# Missed by the 127.0.0.1 probe alone, and it does hold the loopback port.
-check "port_holder/lsof: IPv6 loopback [::1] is probed too" \
-	"84858 /Users/u/.local/bin/cortex" \
-	"$(with_port_holder_lsof 47600 '[::1]')"
-# The case the loop exists for: verified against real lsof that a wildcard bind answers
-# -i@0.0.0.0 and is invisible to -i@127.0.0.1. Dropping that probe fails here.
-check "port_holder/lsof: a wildcard 0.0.0.0 bind is found (invisible to the loopback probe)" \
-	"84858 /Users/u/.local/bin/cortex" \
-	"$(with_port_holder_lsof 47600 0.0.0.0)"
-check "port_holder/lsof: an IPv6 wildcard [::] bind is found" \
-	"84858 /Users/u/.local/bin/cortex" \
-	"$(with_port_holder_lsof 47600 '[::]')"
-# One port, one holder: the loop breaks on the first address that answers rather than
-# collecting every match, so two listening addresses must still yield a single pid.
-# Without the break this reads "84858 99999 <path>" or similar.
-check "port_holder/lsof: the loop breaks on the first hit (one pid, not a concatenation)" \
-	"84858 /Users/u/.local/bin/cortex" \
-	"$(with_port_holder_lsof 47600 127.0.0.1 '[::1]')"
-# Nothing on any of the four addresses: report nothing rather than guess.
-check "port_holder/lsof: nothing listening on any probed address reports nothing" \
-	"__NONE__" "$(with_port_holder_lsof 47600 198.51.100.7)"
-
-# --- port_holder: the ss fallback, and which binds count as holding the port ---
-#
-# lsof-only meant this detection silently never fired on modern Linux, where
-# iproute2 is the default and lsof is often absent — the same platform port_in_use
-# went three-way out of its way to support. ss cannot name the binary, but it
-# prints the pid, and the path is resolved from the pid separately anyway.
-#
-# Address matching must agree with port_in_use: IPv4 loopback, IPv6 loopback and a
-# wildcard bind all make the loopback port unavailable; an external-only bind does
-# not and must not be reported as the holder.
-with_port_holder_ss() { # port  ss-listing-fixture
-	{
-		printf 'command() { case "$2" in ss) return 0 ;; *) return 1 ;; esac; }\n'
-		printf 'ss() { cat "%s"; }\n' "$2"
-		printf 'pid_exe_path() { printf "/home/u/.local/bin/cortex\\n"; }\n'
-		sed -n '/^port_holder()/,/^}/p' "${INSTALL_SH}"
-		printf 'port_holder "%s" || echo __NONE__\n' "$1"
-	} >"${TMP}/phss.sh"
-	sh "${TMP}/phss.sh" 2>/dev/null
-}
-fixture ssp_v4loop.txt <<'EOF'
-LISTEN 0 4096 127.0.0.1:47600 0.0.0.0:* users:(("cortex",pid=84858,fd=7))
-EOF
-check "port_holder/ss: IPv4 loopback -> pid from users:((...)) [lsof absent]" \
-	"84858 /home/u/.local/bin/cortex" "$(with_port_holder_ss 47600 "${FIXTURE}")"
-fixture ssp_v6loop.txt <<'EOF'
-LISTEN 0 4096 [::1]:47600 [::]:* users:(("cortex",pid=84858,fd=7))
-EOF
-check "port_holder/ss: IPv6 loopback [::1] also holds the port" \
-	"84858 /home/u/.local/bin/cortex" "$(with_port_holder_ss 47600 "${FIXTURE}")"
-fixture ssp_wild.txt <<'EOF'
-LISTEN 0 4096 0.0.0.0:47600 0.0.0.0:* users:(("cortex",pid=84858,fd=7))
-EOF
-check "port_holder/ss: a wildcard bind holds the loopback port" \
-	"84858 /home/u/.local/bin/cortex" "$(with_port_holder_ss 47600 "${FIXTURE}")"
-fixture ssp_wild6.txt <<'EOF'
-LISTEN 0 4096 [::]:47600 [::]:* users:(("cortex",pid=84858,fd=7))
-EOF
-check "port_holder/ss: an IPv6 wildcard bind holds it too" \
-	"84858 /home/u/.local/bin/cortex" "$(with_port_holder_ss 47600 "${FIXTURE}")"
-# An external-only listener leaves the loopback port free: reporting it as the
-# holder would accuse an unrelated process of a conflict that does not exist.
-fixture ssp_external.txt <<'EOF'
-LISTEN 0 4096 192.168.1.5:47600 0.0.0.0:* users:(("nginx",pid=999,fd=7))
-EOF
-check "port_holder/ss: an external-only bind is not the loopback holder" \
-	"__NONE__" "$(with_port_holder_ss 47600 "${FIXTURE}")"
-# The port is anchored, so a loopback bind on another port must not be picked up.
-fixture ssp_otherport.txt <<'EOF'
-LISTEN 0 4096 127.0.0.1:9999 0.0.0.0:* users:(("something",pid=555,fd=7))
-EOF
-check "port_holder/ss: a loopback bind on a different port is not the holder" \
-	"__NONE__" "$(with_port_holder_ss 47600 "${FIXTURE}")"
-# ss without -p access (or a kernel that withholds it) prints no users:((...)).
-# No pid means nothing to resolve: report nothing rather than guess.
-fixture ssp_nopid.txt <<'EOF'
-LISTEN 0 4096 127.0.0.1:47600 0.0.0.0:*
-EOF
-check "port_holder/ss: a matching bind with no pid field reports nothing" \
-	"__NONE__" "$(with_port_holder_ss 47600 "${FIXTURE}")"
-fixture ssp_none.txt </dev/null
-check "port_holder/ss: nothing listening reports nothing" \
-	"__NONE__" "$(with_port_holder_ss 47600 "${FIXTURE}")"
-
-# Neither tool present: the no-op the PR promises. Nothing is reported, so the
-# classification stays ports-busy rather than accusing an invisible process.
-neither_tool_port_holder() {
-	{
-		printf 'command() { return 1; }\n'
-		sed -n '/^port_holder()/,/^}/p' "${INSTALL_SH}"
-		printf 'port_holder 47600 || echo __NONE__\n'
-	} >"${TMP}/phnone.sh"
-	sh "${TMP}/phnone.sh" 2>/dev/null
-}
-check "port_holder: no lsof and no ss -> no-op (previous behavior preserved)" \
-	"__NONE__" "$(neither_tool_port_holder)"
-
-# A pid found but unnameable must not yield "<pid> unknown": the placeholder was
-# the second reported defect, since any non-match reads as foreign downstream.
-pid_without_path_port_holder() {
-	{
-		printf 'command() { case "$2" in ss) return 0 ;; *) return 1 ;; esac; }\n'
-		printf 'ss() { printf "LISTEN 0 4096 127.0.0.1:47600 0.0.0.0:* users:((\\"x\\",pid=84858,fd=7))\\n"; }\n'
-		printf 'pid_exe_path() { return 1; }\n'
-		sed -n '/^port_holder()/,/^}/p' "${INSTALL_SH}"
-		printf 'port_holder 47600 || echo __NONE__\n'
-	} >"${TMP}/phnp.sh"
-	sh "${TMP}/phnp.sh" 2>/dev/null
-}
-check "port_holder: a pid whose path cannot be resolved reports nothing (no 'unknown')" \
-	"__NONE__" "$(pid_without_path_port_holder)"
-
 # The regression guard proper: `ps -o comm=` may appear only in the places that want a
-# NAME rather than a path — today proxy_running and pidfile_process_unnamed, which both
-# read the truncated comm deliberately and neither of which compares a path.
+# NAME rather than a path — today only proxy_running, which reads the truncated comm
+# deliberately and compares no path.
 #
 # Counting is the whole point, and the previous form of this check is why. It grepped
 # for `comm=` and the binary name on ONE line and asserted zero — but the defect
@@ -1329,9 +839,10 @@ check "port_holder: a pid whose path cannot be resolved reports nothing (no 'unk
 #
 # Verified against the history: this count is 2 on d5f8abd3 (the commit that shipped the
 # defect — port_holder's capture plus proxy_running's) and was 1 when that was fixed.
-# It is 2 again here for an unrelated reason — pidfile_process_unnamed was added for the
-# pre-rename pidfile handling and reads comm for the same legitimate "name, not path"
-# purpose. That is why the assertion is a COUNT rather than a ceiling of one: a new
+# It was 2 again for a while for an unrelated reason — pidfile_process_unnamed, for the
+# pre-rename pidfile handling, read comm for the same legitimate "name, not path"
+# purpose — and is 1 again now that the start path, and that helper with it, moved to
+# agentop setup. That is why the assertion is a COUNT rather than a ceiling: a new
 # occurrence has to be argued for and the number moved by hand, rather than appearing by
 # accident. If this fails after you touched install.sh, check whether your new `comm=`
 # feeds a path comparison before you edit the expected number.
@@ -1340,130 +851,331 @@ check "port_holder: a pid whose path cannot be resolved reports nothing (no 'unk
 # explains at length why `ps -o comm=` cannot carry a path, quoting it verbatim. Counting
 # prose would make this fire on someone DOCUMENTING the hazard — the opposite of the
 # intent — so only real invocations count.
-check "ps -o comm= is invoked only where a name, not a path, is wanted" "2" \
+check "ps -o comm= is invoked only where a name, not a path, is wanted" "1" \
 	"$(grep -v '^[[:space:]]*#' "${INSTALL_SH}" | grep -c 'ps .*-o comm=\|ps -o comm=')"
 
-# --- the new-CA notice is gated on the CA CHANGING, not on ca.crt existing ---
+# --- the thin installer: stage the release, probe it, hand off to agentop setup ---
 #
-# An existence check has a false negative that matters: EnsureFileSource mints when ANY
-# of tls.crt / tls.key / ca.crt is missing, not only when all three are, so a directory
-# holding ca.crt but no tls.key gets a brand-new CA while "ca.crt exists" reports the
-# machine already had one — suppressing the notice in exactly the case that needs it.
-# Verified against the real proxy: removing tls.key produced a different ca.crt hash.
-
-_fp_fn=$(sed -n '/^ca_fingerprint()/,/^}/p' "${INSTALL_SH}")
-check "the CA gate hashes rather than testing existence" "1" \
-	"$(printf '%s' "${_fp_fn}" | grep -cE 'shasum|sha256sum' >/dev/null && echo 1 || echo 0)"
-check "the notice compares before against after" "1" \
-	"$(grep -c 'ca_fp_before}" != "${ca_fp_after' "${INSTALL_SH}" || true)"
-check "no existence-only gate remains" "0" \
-	"$(grep -c 'ca_existed' "${INSTALL_SH}" || true)"
-
-# The fingerprint helper must not abort the installer when no checksum tool exists: the
-# caller assigns it bare, and a non-zero status there dies under set -e.
-_probe="${TMP}/fp.sh"
-{
-	printf 'set -eu\nca_dir=%s\n' "${TMP}/noca"
-	printf '%s\n' "${_fp_fn}"
-	printf 'fp="$(ca_fingerprint)"\nprintf "survived:[%%s]" "${fp}"\n'
-} >"${_probe}"
-mkdir -p "${TMP}/noca"
-check "fingerprint of a missing CA is empty and does not abort" "survived:[]" "$(sh "${_probe}" 2>/dev/null)"
-: >"${TMP}/noca/ca.crt"
-check "fingerprint of a present CA is non-empty" "1" \
-	"$(sh "${_probe}" 2>/dev/null | grep -c 'survived:\[.\+\]' || true)"
-
-# --- remove_stale: only our own pre-rename binaries go, and never from under a unit ---
+# install.sh's own job ends at a staging dir: download, verify, extract, then exec
+# `agentop setup --from <stage>`. These run the whole script, `sh install.sh`, in a
+# sandbox with every way out of it closed:
+#   - HOME and TMPDIR are fresh dirs under ${TMP}, so BIN_DIR and CORTEX_DIR are too;
+#   - curl is a stub on PATH that serves a fake release from a directory;
+#   - the only agentop that can run is the fake below, which records how it ran.
+# Nothing reaches the network, the real ~/.local/bin, or launchd/systemd. The release
+# is real tarballs and a real checksums.txt, so the checksum filter, sha_check and tar
+# are the shipped code rather than stubs.
 #
-# The fixtures carry NUL bytes because a real Go binary does, and grep's handling of
-# binary input is the part that differs between BSD and GNU. Each one is executable
-# and would drop a sentinel if run: the decision must come from reading the file, so
-# a build too old to know --version (or someone else's) is never executed.
+# The platform as install.sh names it, so the stub serves the archives it asks for.
+case "$(uname -s)" in Darwin) T_OS=darwin ;; *) T_OS=linux ;; esac
+case "$(uname -m)" in x86_64 | amd64) T_ARCH=amd64 ;; *) T_ARCH=arm64 ;; esac
 
-with_remove_stale() { # bin-dir old new [home]
-	{
-		printf 'BIN_DIR=%s\nHOME=%s\n' "$1" "${4:-${TMP}/stale-nohome}"
-		printf 'info() { printf "%%s\\n" "$*"; }\n'
-		sed -n '/^remove_stale()/,/^}/p' "${INSTALL_SH}"
-		printf 'remove_stale %s %s\n' "$2" "$3"
-	} >"${TMP}/stale.sh"
-	sh "${TMP}/stale.sh"
-}
+# The fake agentop. T_PROBE decides how it answers `setup --help`, as each kind of
+# agentop would:
+#   ok          it has setup: exit 0
+#   old         a release from before setup: unknown subcommand, exit 2
+#   noexec      cannot be run (exit 126) unless it runs from under ~/.cortex/tmp, as
+#               from a TMPDIR mounted noexec
+#   noexec-all  cannot be run anywhere
+# Any other call is the handoff. It records its argv, what was staged beside it, and
+# what its stdin holds, to T_LOG.
+cat >"${TMP}/fake-agentop" <<'EOF'
+#!/bin/sh
+if [ "${1:-}" = --version ]; then echo "agentop v9.9.9"; exit 0; fi
+if [ "${1:-}" = setup ] && [ "${2:-}" = --help ]; then
+	printf 'probe %s\n' "$0" >>"${T_LOG}"
+	case "${T_PROBE}" in
+		ok) exit 0 ;;
+		old)
+			printf 'agentop: unknown subcommand "setup" (known: service, configure)\n' >&2
+			exit 2
+			;;
+		noexec)
+			case "$0" in "${HOME}"/.cortex/tmp/*) exit 0 ;; esac
+			exit 126
+			;;
+		*) exit 126 ;;
+	esac
+fi
+{ printf 'argv'; for a in "$@"; do printf ' [%s]' "$a"; done; printf '\n'; } >>"${T_LOG}"
+printf 'staged %s\n' "$(ls "${0%/*}" | tr '\n' ' ')" >>"${T_LOG}"
+# Read only when it cannot block: a terminal is a fine stdin, the piped script is not.
+if [ -t 0 ]; then echo 'stdin tty' >>"${T_LOG}"; else printf 'stdin [%s]\n' "$(cat)" >>"${T_LOG}"; fi
+EOF
+printf '#!/bin/sh\necho "cortex v9.9.9"\n' >"${TMP}/fake-cortex"
+chmod +x "${TMP}/fake-agentop" "${TMP}/fake-cortex"
 
-stale_bin() { # bin-dir name module-path-or-other-text
-	mkdir -p "$1"
-	{
-		printf '#!/bin/sh\ntouch "%s/ran"\nexit 0\n' "$1"
-		printf '\000\177ELF\000path\t%s\000mod\t%s\t(devel)\000' "$3" "$3"
-	} >"$1/$2"
-	chmod +x "$1/$2"
-}
-
-gone_or_kept() { [ -e "$1" ] && echo kept || echo gone; }
-
-for _case in \
-	"abctl agentop github.com/rossoctl/cortex/authbridge/cmd/abctl" \
-	"abctl agentop github.com/rossoctl/cortex/cmd/abctl" \
-	"authbridge-proxy cortex github.com/rossoctl/cortex/authbridge/cmd/authbridge-proxy" \
-	"authbridge-proxy cortex github.com/rossoctl/cortex/cmd/authbridge-proxy"; do
-	set -- ${_case}
-	_bin="${TMP}/stale-$(printf '%s' "$3" | tr '/.' '__')"
-	stale_bin "${_bin}" "$1" "$3"
-	_out=$(with_remove_stale "${_bin}" "$1" "$2")
-	check "our $1 ($3) is removed" "gone" "$(gone_or_kept "${_bin}/$1")"
-	check "  and says so" "1" "$(printf '%s' "${_out}" | grep -c "called $2 now" || true)"
-	check "  without running it" "absent" "$([ -e "${_bin}/ran" ] && echo ran || echo absent)"
+# curl serves ${T_REL}/<the URL's last segment>, and fails as `curl -f` does on a 404
+# when there is no such file. Every URL it is asked for goes to T_URLS.
+mkdir -p "${TMP}/tbin"
+cat >"${TMP}/tbin/curl" <<'EOF'
+#!/bin/sh
+_u=""; _o=""; _p=""
+for _a in "$@"; do
+	case "${_a}" in http*) _u="${_a}" ;; esac
+	[ "${_p}" != -o ] || _o="${_a}"
+	_p="${_a}"
 done
+printf '%s\n' "${_u}" >>"${T_URLS}"
+_f="${T_REL}/${_u##*/}"
+[ -f "${_f}" ] || exit 22
+if [ -n "${_o}" ]; then cat "${_f}" >"${_o}"; else cat "${_f}"; fi
+EOF
+chmod +x "${TMP}/tbin/curl"
+# What install.sh's stdin holds when piped: the rest of itself. setup must not get it.
+printf 'PIPED-SCRIPT-REMAINDER\n' >"${TMP}/piped-script"
 
-# A different tool that shares the name — even one whose --version would print
-# "abctl vX", which is exactly what a --version check would have been fooled by.
-_bin="${TMP}/stale-foreign"
-stale_bin "${_bin}" abctl "example.com/someone/else/abctl"
-printf 'echo abctl v1.0.0\n' >>"${_bin}/abctl"
-_out=$(with_remove_stale "${_bin}" abctl agentop)
-check "someone else's abctl is kept" "kept" "$(gone_or_kept "${_bin}/abctl")"
-check "  silently" "" "${_out}"
-check "  and not run" "absent" "$([ -e "${_bin}/ran" ] && echo ran || echo absent)"
+t_sha256() { # file
+	if command -v shasum >/dev/null 2>&1; then shasum -a 256 "$1" | cut -d' ' -f1
+	else sha256sum "$1" | cut -d' ' -f1; fi
+}
 
-_bin="${TMP}/stale-none"
-mkdir -p "${_bin}"
-check "nothing stale: nothing to do, and success" "0:" \
-	"$(_o=$(with_remove_stale "${_bin}" authbridge-proxy cortex); printf '%s:%s' "$?" "${_o}")"
+# make_release VERSION [SUMS] builds the release run_install serves, in T_REL, and sets
+# T_BYTES to what --handoff-bytes should say. SUMS shapes checksums.txt:
+#   two    one line per archive, as release-binaries.yaml writes them (the default)
+#   one    the cortex line missing
+#   three  agentop listed twice, as ./name and as a bare name
+#   bad    agentop's line carries the wrong hash
+make_release() {
+	T_REL="${TMP}/rel-$1"
+	rm -rf "${T_REL}"
+	mkdir -p "${T_REL}/src"
+	cp "${TMP}/fake-agentop" "${T_REL}/src/agentop"
+	cp "${TMP}/fake-cortex" "${T_REL}/src/cortex"
+	_mr_a="agentop_$1_${T_OS}_${T_ARCH}.tar.gz"
+	_mr_c="cortex_$1_${T_OS}_${T_ARCH}.tar.gz"
+	# COPYFILE_DISABLE: macOS tar would otherwise add AppleDouble ._ entries.
+	COPYFILE_DISABLE=1 tar -C "${T_REL}/src" -czf "${T_REL}/${_mr_a}" agentop
+	COPYFILE_DISABLE=1 tar -C "${T_REL}/src" -czf "${T_REL}/${_mr_c}" cortex
+	_mr_ha=$(t_sha256 "${T_REL}/${_mr_a}")
+	_mr_hc=$(t_sha256 "${T_REL}/${_mr_c}")
+	# Every hex digit moved by one, so the bad hash differs in every position.
+	[ "${2:-two}" != bad ] || _mr_ha=$(printf '%s' "${_mr_ha}" | tr '0-9a-f' '1-9a-f0')
+	{
+		printf '%s  ./%s\n' "${_mr_ha}" "${_mr_a}"
+		[ "${2:-two}" = one ] || printf '%s  ./%s\n' "${_mr_hc}" "${_mr_c}"
+		[ "${2:-two}" != three ] || printf '%s  %s\n' "${_mr_ha}" "${_mr_a}"
+	} >"${T_REL}/checksums.txt"
+	printf '#!/usr/bin/env python3\nprint("dump")\n' >"${T_REL}/cortex-session-dump.py"
+	T_BYTES=$(($(wc -c <"${T_REL}/${_mr_a}") + $(wc -c <"${T_REL}/${_mr_c}")))
+}
 
-# The unit guard. --install-only, or a supervisor that could not take the job, leaves
-# the pre-rename unit in place, and deleting the binary under it would leave launchd
-# or systemd starting a file that is gone. Both unit formats escape paths, so a path
-# with a quote in it must still be found.
-_home="${TMP}/stale-home"
-_bin="${TMP}/stale-guarded"
-mkdir -p "${_home}/Library/LaunchAgents" "${_home}/.config/systemd/user"
-stale_bin "${_bin}" authbridge-proxy github.com/rossoctl/cortex/authbridge/cmd/authbridge-proxy
-printf '  <string>%s/authbridge-proxy</string>\n' "${_bin}" >"${_home}/Library/LaunchAgents/io.rossoctl.cortex.plist"
-_out=$(with_remove_stale "${_bin}" authbridge-proxy cortex "${_home}")
-check "a launchd unit still naming it keeps it" "kept" "$(gone_or_kept "${_bin}/authbridge-proxy")"
-check "  and says why" "1" "$(printf '%s' "${_out}" | grep -c 'still runs it' || true)"
-rm -f "${_home}/Library/LaunchAgents/io.rossoctl.cortex.plist"
-printf "ExecStart='/home/o'\\\\''brien/.local/bin/authbridge-proxy' --config x\n" >"${_home}/.config/systemd/user/cortex.service"
-_out=$(with_remove_stale "${_bin}" authbridge-proxy cortex "${_home}")
-check "a systemd unit still naming it (escaped path) keeps it" "kept" "$(gone_or_kept "${_bin}/authbridge-proxy")"
-# Once agentop has rewritten the unit, it names only cortex, and the old binary can go.
-printf "ExecStart='%s/cortex' --config x\nDescription=Cortex local proxy (cortex)\n" "${_bin}" \
-	>"${_home}/.config/systemd/user/cortex.service"
-_out=$(with_remove_stale "${_bin}" authbridge-proxy cortex "${_home}")
-check "a unit already moved to cortex lets it go" "gone" "$(gone_or_kept "${_bin}/authbridge-proxy")"
+# run_install PROBE WHERE ARGS... runs install.sh ARGS in a fresh sandbox. WHERE:
+#   release  download T_REL's release (pass --ref=<its version>)
+#   repair   AUTHBRIDGE_SKIP_DOWNLOAD=1, with the fakes installed in ~/.local/bin
+#   bare     AUTHBRIDGE_SKIP_DOWNLOAD=1, with nothing installed
+# It sets T_RUN (the sandbox) and T_ST (the exit status), and leaves in T_RUN: log
+# (the fake agentop's record), urls (curl's), and out and err (install.sh's).
+T_N=0
+run_install() {
+	_ri_probe=$1
+	_ri_where=$2
+	shift 2
+	T_N=$((T_N + 1))
+	T_RUN="${TMP}/run${T_N}"
+	# The sandbox HOME keeps every path install.sh can exec under ${TMP}: BIN_DIR and
+	# CORTEX_DIR both hang off it, and the stage off TMPDIR. Refuse to run otherwise.
+	case "${T_RUN}/home" in
+		"${HOME}") printf 'refusing: %s/home is the real HOME\n' "${T_RUN}" >&2; exit 1 ;;
+		"${TMP}"/run*/home) ;;
+		*) printf 'refusing to run install.sh outside %s\n' "${TMP}" >&2; exit 1 ;;
+	esac
+	mkdir -p "${T_RUN}/home" "${T_RUN}/tmp"
+	: >"${T_RUN}/log"
+	: >"${T_RUN}/urls"
+	_ri_skip=""
+	case "${_ri_where}" in
+		repair)
+			mkdir -p "${T_RUN}/home/.local/bin"
+			cp "${TMP}/fake-agentop" "${T_RUN}/home/.local/bin/agentop"
+			cp "${TMP}/fake-cortex" "${T_RUN}/home/.local/bin/cortex"
+			_ri_skip=1
+			;;
+		bare) _ri_skip=1 ;;
+	esac
+	T_ST=0
+	env -u AUTHBRIDGE_SCRIPT_REF -u AUTHBRIDGE_INSTALL_ONLY -u AUTHBRIDGE_VERSION -u AUTHBRIDGE_REF \
+		HOME="${T_RUN}/home" TMPDIR="${T_RUN}/tmp" PATH="${TMP}/tbin:${PATH}" \
+		AUTHBRIDGE_SKIP_DOWNLOAD="${_ri_skip}" \
+		T_REL="${T_REL:-}" T_URLS="${T_RUN}/urls" T_LOG="${T_RUN}/log" T_PROBE="${_ri_probe}" \
+		sh "${INSTALL_SH}" "$@" <"${TMP}/piped-script" >"${T_RUN}/out" 2>"${T_RUN}/err" || T_ST=$?
+}
 
-check "install.sh removes the stale abctl once" "1" \
-	"$(grep -c '^remove_stale abctl agentop$' "${INSTALL_SH}" || true)"
-check "install.sh removes the stale proxy once" "1" \
-	"$(grep -c '^pidfile_process_unnamed || remove_stale authbridge-proxy cortex$' "${INSTALL_SH}" || true)"
-# ...and only after starting the service, which is what rewrites the unit.
-check "the proxy is removed after the service is started" "1" \
-	"$(awk '/^\t\t\tstart_unsupervised \|\| die/{s=NR} /^pidfile_process_unnamed \|\| remove_stale authbridge-proxy cortex$/{r=NR} END{print (s && r > s) ? 1 : 0}' "${INSTALL_SH}")"
-# make dev-install extracts this function rather than carrying a copy.
-check "make dev-install runs install.sh's remove_stale, not a copy" "1" \
-	"$(grep -c "sed -n '/^remove_stale()/,/^}/p' scripts/install.sh" "${REPO_ROOT}/Makefile" || true)"
-check "  and the Makefile holds no ownership regex of its own" "0" \
-	"$(grep -c 'rossoctl/cortex/(authbridge/)' "${REPO_ROOT}/Makefile" || true)"
+t_log() { sed -n "s/^$1 //p" "${T_RUN}/log"; } # one kind of record, without its tag
+t_nlog() { t_log "$1" | wc -l | tr -d '[:space:]'; }
+t_stage() { t_log argv | sed -n 's/^\[setup\] \[--from\] \[\([^]]*\)\].*/\1/p'; }
+# t_argv is the handoff's argv with the stage shown as <stage>, a byte count above 0 as
+# <N>, and a whole number of seconds as <S>. Anything else, a 0 or a fraction, shows as
+# itself and fails the comparison.
+t_argv() {
+	_ta_s=$(t_stage)
+	t_log argv | sed -e "s#\[${_ta_s:-//}\]#[<stage>]#" \
+		-e 's/\[--handoff-bytes=[1-9][0-9]*\]/[--handoff-bytes=<N>]/' \
+		-e 's/\[--handoff-seconds=[0-9][0-9]*\]/[--handoff-seconds=<S>]/'
+}
+t_execs() { # dir -> the setupBinaryNames in it that are executable
+	for _te_b in agentop cortex cortex-session-dump; do
+		[ ! -x "$1/${_te_b}" ] || printf '%s ' "${_te_b}"
+	done | sed 's/ $//'
+}
+t_in() { if grep -qF -- "$1" "${T_RUN}/$2"; then echo yes; else echo no; fi; } # needle out|err
+# t_under DIR PATH says yes when PATH is strictly inside DIR, and names PATH if not.
+# (A function, not an inline `case`: bash 3.2, macOS's sh, misparses a case pattern's
+# `)` inside "$(...)".)
+t_under() { case "$2" in "$1"/?*) echo yes ;; *) echo "no: $2" ;; esac; }
+t_dumps() { # dir -> how many cortex-session-dump* files, whole or partial, it holds
+	_td_n=0
+	for _td_f in "$1"/cortex-session-dump*; do [ ! -e "${_td_f}" ] || _td_n=$((_td_n + 1)); done
+	printf '%s\n' "${_td_n}"
+}
+# t_stdin says ok when setup's stdin was the terminal or empty, and shows it if not.
+t_stdin() { case "$(t_log stdin)" in tty | '[]') echo ok ;; *) t_log stdin ;; esac; }
+T_NOFLAGS="[setup] [--from] [<stage>] [--handoff-bytes=<N>] [--handoff-seconds=<S>]"
+
+# A release whose checksums.txt has the two lines release-binaries.yaml writes: it is
+# downloaded, verified, staged, and handed to setup.
+make_release v9.9.9
+run_install ok release --ref=v9.9.9
+check "stage: two checksum entries reach the handoff" "0 1" "${T_ST} $(t_nlog argv)"
+check "stage: it fetches the two archives, checksums.txt and the dump helper, nothing else" \
+	"https://github.com/rossoctl/cortex/releases/download/v9.9.9/agentop_v9.9.9_${T_OS}_${T_ARCH}.tar.gz
+https://github.com/rossoctl/cortex/releases/download/v9.9.9/cortex_v9.9.9_${T_OS}_${T_ARCH}.tar.gz
+https://github.com/rossoctl/cortex/releases/download/v9.9.9/checksums.txt
+https://raw.githubusercontent.com/rossoctl/cortex/v9.9.9/scripts/dev/cortex-session-dump.py" \
+	"$(cat "${T_RUN}/urls")"
+_stage=$(t_stage)
+check "stage: a fresh dir under TMPDIR" "yes" \
+	"$(t_under "${T_RUN}/tmp" "${_stage}")"
+check "stage: the archives' binaries and the dump helper are extracted into it, executable" \
+	"agentop cortex cortex-session-dump" "$(t_execs "${_stage}")"
+check "stage: setup runs from the stage, with them beside it" "1" \
+	"$(t_log staged | grep -c 'agentop .*cortex .*cortex-session-dump ' || true)"
+check "stage: nothing is put in ~/.local/bin (setup does that)" "absent" \
+	"$([ -e "${T_RUN}/home/.local/bin" ] && echo present || echo absent)"
+check "handoff: setup --from the stage, with the download's counts" "${T_NOFLAGS}" "$(t_argv)"
+check "handoff: --handoff-bytes is the size of the two archives" "${T_BYTES}" \
+	"$(t_log argv | sed -n 's/.*\[--handoff-bytes=\([0-9]*\)\].*/\1/p')"
+check "handoff: setup's stdin is the terminal or /dev/null, never the piped script" "ok" \
+	"$(t_stdin)"
+
+# Each flag install.sh shares with setup is passed on, in one fixed order; --local,
+# setup's default, is not.
+run_install ok release --ref=v9.9.9 --claude-code --yes --no-service --no-modify-path
+check "handoff: --claude-code --yes --no-service --no-modify-path are passed on" \
+	"[setup] [--from] [<stage>] [--claude-code] [--yes] [--no-service] [--no-modify-path] [--handoff-bytes=<N>] [--handoff-seconds=<S>]" \
+	"$(t_argv)"
+run_install ok release --ref=v9.9.9 --install-only -y
+check "handoff: --install-only, and -y as --yes" \
+	"[setup] [--from] [<stage>] [--yes] [--install-only] [--handoff-bytes=<N>] [--handoff-seconds=<S>]" \
+	"$(t_argv)"
+run_install ok release --ref=v9.9.9 --local
+check "handoff: --local is not passed on" "${T_NOFLAGS}" "$(t_argv)"
+
+# --- the checksum rule: exactly two verified entries, or nothing runs ---
+make_release v9.9.9 one
+run_install ok release --ref=v9.9.9
+check "checksums: one entry for two archives dies" "1 yes" \
+	"${T_ST} $(t_in "checksums.txt has no usable entry for cortex_v9.9.9_${T_OS}_${T_ARCH}.tar.gz" err)"
+check "  and runs no agentop" "0 0" "$(t_nlog probe) $(t_nlog argv)"
+make_release v9.9.9 three
+run_install ok release --ref=v9.9.9
+check "checksums: three matching entries die (exactly 2, not at least 2)" "1 yes" \
+	"${T_ST} $(t_in 'expected 2 checksum entries, got 3' err)"
+check "  and runs no agentop" "0 0" "$(t_nlog probe) $(t_nlog argv)"
+make_release v9.9.9 bad
+run_install ok release --ref=v9.9.9
+check "checksums: a hash that does not match dies" "1 yes" \
+	"${T_ST} $(t_in 'checksum verification failed' err)"
+check "  and runs no agentop" "0 0" "$(t_nlog probe) $(t_nlog argv)"
+
+# --- the dump helper is never fatal ---
+make_release v9.9.9
+rm -f "${T_REL}/cortex-session-dump.py"
+run_install ok release --ref=v9.9.9
+check "dump helper: a failed fetch still hands off" "0 1" "${T_ST} $(t_nlog argv)"
+check "  with no helper, whole or partial, in the stage" "0" \
+	"$(t_dumps "$(t_stage)")"
+make_release v9.9.9
+printf '<html>404</html>\n' >"${T_REL}/cortex-session-dump.py"
+run_install ok release --ref=v9.9.9
+check "dump helper: a body without the python3 shebang still hands off" "0 1" "${T_ST} $(t_nlog argv)"
+check "  and is not staged" "0" "$(t_dumps "$(t_stage)")"
+
+# --- the exec probe: noexec TMPDIR, and an agentop too old to have setup ---
+make_release v9.9.9
+run_install noexec release --ref=v9.9.9
+_p1=$(t_log probe | sed -n 1p)
+_p2=$(t_log probe | sed -n 2p)
+check "noexec: exit 126 probes a second time" "2" "$(t_nlog probe)"
+check "  first from the stage under TMPDIR" "yes" \
+	"$(t_under "${T_RUN}/tmp" "${_p1%/agentop}")"
+check "  then from a re-stage under ~/.cortex/tmp" "yes" \
+	"$(t_under "${T_RUN}/home/.cortex/tmp" "${_p2%/agentop}")"
+check "  and hands off from the re-stage" "${_p2%/agentop}" "$(t_stage)"
+check "  with the same argv" "${T_NOFLAGS}" "$(t_argv)"
+check "  the re-stage keeps the binaries' modes" "agentop cortex cortex-session-dump" \
+	"$(t_execs "${_p2%/agentop}")"
+check "  and the first stage is gone" "gone" "$([ -e "${_p1%/agentop}" ] && echo kept || echo gone)"
+run_install noexec-all release --ref=v9.9.9
+check "noexec everywhere: dies, naming both dirs" "1 yes yes" \
+	"${T_ST} $(t_in "${T_RUN}/tmp" err) $(t_in "${T_RUN}/home/.cortex/tmp" err)"
+check "  and never hands off, nor leaves a stage behind" "0 0 0" \
+	"$(t_nlog argv) $(ls -A "${T_RUN}/tmp" | wc -l | tr -d ' ') $(ls -A "${T_RUN}/home/.cortex/tmp" | wc -l | tr -d ' ')"
+
+# An agentop from before setup exits 2 on `setup --help`. The guard names the release
+# and the one-liner that runs that release's own installer.
+run_install old release --ref=v9.9.9
+check "old agentop: the guard dies" "1" "${T_ST}"
+check "  saying why" "1" \
+	"$(grep -cxF "error: the v9.9.9 agentop has no 'setup' command, which this installer needs." "${T_RUN}/err" || true)"
+check "  with the piped --ref one-liner for that release" "1" \
+	"$(grep -cxF '    curl -fsSL https://raw.githubusercontent.com/rossoctl/cortex/main/scripts/install.sh | sh -s -- --ref=v9.9.9' "${T_RUN}/err" || true)"
+check "  and nothing runs after it: one probe, no handoff" "1 0" "$(t_nlog probe) $(t_nlog argv)"
+check "  and the stage is cleaned up" "gone" \
+	"$(_d=$(t_log probe); [ -e "${_d%/agentop}" ] && echo kept || echo gone)"
+# The channel build is not a tag to pin, so the guard names the agentop instead.
+make_release "${CHANNEL_TAG}"
+run_install old release --ref=main
+check "old agentop, channel build: the guard names the agentop it ran" "1 yes" \
+	"${T_ST} $(t_in "the agentop at $(t_log probe) has no 'setup' command" err)"
+check "  and offers no --ref one-liner for the channel" "no" "$(t_in "--ref=${CHANNEL_TAG}" err)"
+
+# --- AUTHBRIDGE_SKIP_DOWNLOAD=1: repair what is installed, offline ---
+run_install ok repair
+check "repair: probes the installed agentop" "${T_RUN}/home/.local/bin/agentop" "$(t_log probe)"
+check "  and execs its setup, with no --from and no counts" "[setup]" "$(t_argv)"
+check "  touching no network" "" "$(cat "${T_RUN}/urls")"
+run_install ok repair --claude-code --yes --no-service --install-only --no-modify-path
+check "repair: the flags are passed on" \
+	"[setup] [--claude-code] [--yes] [--no-service] [--install-only] [--no-modify-path]" "$(t_argv)"
+run_install old repair
+check "repair: an installed agentop without setup hits the guard" "1 yes" \
+	"${T_ST} $(t_in "error: the agentop at ${T_RUN}/home/.local/bin/agentop has no 'setup' command" err)"
+check "  and is never handed off to" "0" "$(t_nlog argv)"
+run_install ok bare
+check "repair: with no agentop installed it dies" "1 yes" \
+	"${T_ST} $(t_in "AUTHBRIDGE_SKIP_DOWNLOAD=1 but ${T_RUN}/home/.local/bin/agentop is missing" err)"
+
+# --- --no-modify-path is install.sh's own flag now ---
+# The loop dies on the first unknown option, so reaching --bogus means
+# --no-modify-path parsed.
+run_install ok release --no-modify-path --bogus
+check "--no-modify-path parses, and an unknown option still dies" "1 yes" \
+	"${T_ST} $(t_in 'unknown option: --bogus' err)"
+check "  before fetching anything" "" "$(cat "${T_RUN}/urls")"
+run_install ok release --help
+check "--help lists --no-modify-path" "1" "$(grep -c '^  --no-modify-path ' "${T_RUN}/out" || true)"
+
+# --- make dev-install is the same handoff, from ./bin ---
+# Setup copies the binaries, writes the config and starts the service, and its cleanup
+# step is what remove_stale was, so the Makefile carries none of that any more.
+_dev=$(awk '/^dev-install:/ {f = 1; next} f && !/^\t/ {exit} f' "${REPO_ROOT}/Makefile")
+check "make dev-install hands ./bin to agentop setup" "1" \
+	"$(printf '%s\n' "${_dev}" | grep -cF 'bin/agentop setup --from ./bin --yes --no-modify-path --restart' || true)"
+check "  and does no install of its own" "0" \
+	"$(printf '%s\n' "${_dev}" | grep -v '^	@#' | grep -cE 'cp |service install|service status|--write-config|DEV_BIN_DIR' || true)"
+check "  and nothing in the Makefile uses remove_stale" "0" \
+	"$(grep -c 'remove_stale' "${REPO_ROOT}/Makefile" || true)"
 
 # --- authbridge/install.sh: the URL v0.7.0 and its docs give, which 404'd ---
 #
