@@ -281,7 +281,7 @@ func renderUsageChart(snap *usage.Snapshot, m usageMetric, group usage.Group, wi
 		// Scoping to one agent narrows the window to that agent's units, which is the way out.
 		var ok bool
 		if unit, ok = money.WindowUnit(snap.Currencies); !ok {
-			return []string{"  cost chart withheld: this window mixes billing units — [A] scope to one agent, then [u], or view tokens"}
+			return []string{"  cost chart withheld: this window mixes billing units", "  [A] scope to one agent, then [u], or view tokens"}
 		}
 	}
 	if group != "" && group != usage.GroupNone {

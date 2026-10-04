@@ -282,7 +282,7 @@ func TestUsagePane_CostIsInTheWindowsUnit(t *testing.T) {
 	}
 
 	mixed := costChartSnapshot([]string{"Bobcoins", "USD"})
-	if chart := renderUsageChart(mixed, metricCost, "", 60, 12); len(chart) != 1 || !strings.Contains(chart[0], "withheld") {
+	if chart := renderUsageChart(mixed, metricCost, "", 60, 12); len(chart) != 2 || !strings.Contains(chart[0], "withheld") {
 		t.Errorf("a mixed cost chart was drawn: %q", chart)
 	}
 	if got := renderCostSummary(mixed); !strings.HasPrefix(got, "COST (mixed): Bobcoins, USD") {

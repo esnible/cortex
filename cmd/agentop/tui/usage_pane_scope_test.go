@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/rossoctl/cortex/core/cost/usage"
 )
@@ -87,13 +88,14 @@ func TestUsageHeader_LatencyOverflowsEightyAndFitsAt88(t *testing.T) {
 	}
 }
 
-// The usage pane's hints that send the reader to the agents picker name the way back. Enter there
-// lists the picked agent's sessions, so a hint that stops at the picker leaves the reader on
-// Sessions; [u] from Sessions is what charts the new scope. The latency hint also names the row
-// that clears the scope, All agents.
+// The usage pane's hints that send the reader to the agents picker name [u]. Enter there lists the
+// picked agent's sessions, so a hint that stops at the picker leaves the reader on Sessions; [u]
+// from Sessions is what charts the new scope. The latency hint also names the row that clears the
+// scope, All agents. Every line naming a key fits 80 columns: bubbletea cuts a line at the
+// terminal's width, so a key past it is never seen.
 //
 // Each route is then driven as written, so the keys the hints name are the keys that work.
-func TestUsagePane_PickerHintsNameTheWayBack(t *testing.T) {
+func TestUsagePane_PickerHintsNameU(t *testing.T) {
 	latency := &model{agentScope: "bob-shell/2.0.5"}
 	latency.usage.metric = metricLatency
 	latency.usage.snap = costChartSnapshot(nil)
@@ -101,7 +103,12 @@ func TestUsagePane_PickerHintsNameTheWayBack(t *testing.T) {
 	mixedHint := strings.Join(renderUsageChart(costChartSnapshot([]string{"Bobcoins", "USD"}), metricCost, "", 60, 12), "\n")
 	for name, hint := range map[string]string{"latency": latencyHint, "mixed units": mixedHint} {
 		if !strings.Contains(hint, "[A]") || !strings.Contains(hint, "[u]") {
-			t.Errorf("%s hint does not name [A] and the way back, [u]:\n%s", name, hint)
+			t.Errorf("%s hint does not name [A] and [u]:\n%s", name, hint)
+		}
+		for _, line := range strings.Split(hint, "\n") {
+			if strings.Contains(line, "[") && lipgloss.Width(line) > 80 {
+				t.Errorf("%s hint line is %d columns, past 80:\n%s", name, lipgloss.Width(line), line)
+			}
 		}
 	}
 	if !strings.Contains(latencyHint, "All agents") {
