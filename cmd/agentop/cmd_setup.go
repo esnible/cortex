@@ -367,7 +367,15 @@ func printSetupEnding(env *setupEnv, ui *checklist.UI, took time.Duration) {
 	} else {
 		ui.Plain("cortex " + env.newVersion() + " ready.")
 	}
-	if !env.freshInstall {
+	// A fresh install always names the command to type. An upgrade or a repair names it
+	// too when this shell cannot run it yet, which is what binOnPath says: the PATH edit
+	// reaches new terminals only, so a run that stopped at the logo left nothing runnable
+	// on screen, and the freshest identifier-shaped word there was "rosso", the brand in
+	// the title, which is no command. freshInstall alone was the wrong question — it is
+	// about what was in binDir before, not about what this shell can resolve, and the two
+	// part company on exactly that upgrade. Someone whose shell already has binDir on
+	// PATH is told nothing new by the block, so they still skip it. rossoctl/cortex#1285.
+	if !env.freshInstall && env.binOnPath {
 		return
 	}
 	cmd, comment := agentop, "watch your agent traffic live"

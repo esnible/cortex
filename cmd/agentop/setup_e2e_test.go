@@ -506,8 +506,10 @@ func TestSetupDrawsNoHeaderUnderTheInstallersBar(t *testing.T) {
 }
 
 // Every run that worked ends on the logo on a terminal, then the version and how long
-// the changes took; a fresh install's next command and undo line follow. A run with
-// nothing to change says what it found under the logo instead.
+// the changes took; the next command and the undo line follow whenever this shell cannot
+// run agentop yet, an upgrade as much as a fresh install, since the PATH edit here reaches
+// new terminals only. A run with nothing to change says what it found under the logo
+// instead. rossoctl/cortex#1285.
 func TestSetupEndsOnTheLogoOnATerminal(t *testing.T) {
 	readyIn := func(v string) *regexp.Regexp {
 		return regexp.MustCompile(regexp.QuoteMeta(logoBottom+"    "+v+" ready in ") + `\d+\.\ds\n`)
@@ -528,13 +530,37 @@ func TestSetupEndsOnTheLogoOnATerminal(t *testing.T) {
 
 	writeExe(t, filepath.Join(sc.stage, "agentop"), "#!/bin/sh\necho agentop v9.9.10\n")
 	code, out = sc.run(t, "--from", sc.stage, "--yes")
-	if s := onScreen(out); code != 0 || !hasLogo(s) || !readyIn("v9.9.10").MatchString(s) || strings.Contains(s, "Open a new terminal") {
+	if s := onScreen(out); code != 0 || !hasLogo(s) || !readyIn("v9.9.10").MatchString(s) ||
+		!strings.Contains(s, "s\n\n  Open a new terminal, then:\n") || !strings.HasSuffix(s, "  Undo any time: agentop uninstall\n") {
 		t.Errorf("upgrade, exit %d:\n%s", code, s)
 	}
 }
 
+// An upgrade whose binDir this shell already has on PATH keeps the shorter ending: the
+// user can type agentop where they stand, so naming it again is noise. The other half of
+// #1285 — the fix turns the block on for a shell that cannot run agentop yet, not for
+// every upgrade — and nothing pinned this before.
+func TestSetupUpgradeNamesNoCommandWhenBinDirIsAlreadyOnPATH(t *testing.T) {
+	sc := newSetupScene(t, ok200)
+	animated(t)
+	binDir := filepath.Join(sc.home, ".local", "bin")
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if code, out := sc.run(t, "--from", sc.stage, "--yes"); code != 0 {
+		t.Fatalf("install, exit %d:\n%s", code, onScreen(out))
+	}
+	writeExe(t, filepath.Join(sc.stage, "agentop"), "#!/bin/sh\necho agentop v9.9.10\n")
+	code, out := sc.run(t, "--from", sc.stage, "--yes")
+	s := onScreen(out)
+	if code != 0 || !hasLogo(s) || !strings.Contains(s, logoBottom+"    v9.9.10 ready in ") ||
+		strings.Contains(s, "Open a new terminal") {
+		t.Errorf("upgrade with %s on PATH, exit %d:\n%s", binDir, code, s)
+	}
+}
+
 // A repair, the same release run again with something to put right, ends on the logo
-// too, though no version changed: here the config is gone, and setup writes it again.
+// too, though no version changed: here the config is gone, and setup writes it again. The
+// next command follows it for the same reason an upgrade's does, #1285: this shell cannot
+// run agentop yet.
 func TestSetupRepairEndsOnTheLogo(t *testing.T) {
 	sc := newSetupScene(t, ok200)
 	animated(t)
@@ -547,7 +573,8 @@ func TestSetupRepairEndsOnTheLogo(t *testing.T) {
 	code, out := sc.run(t, "--from", sc.stage, "--yes")
 	s := onScreen(out)
 	if code != 0 || !strings.Contains(s, "\n  ✓ config ") || !hasLogo(s) ||
-		!strings.Contains(s, logoBottom+"    v9.9.9 ready in ") || strings.Contains(s, "Open a new terminal") {
+		!strings.Contains(s, logoBottom+"    v9.9.9 ready in ") ||
+		!strings.Contains(s, "s\n\n  Open a new terminal, then:\n") {
 		t.Errorf("repair, exit %d:\n%s", code, s)
 	}
 }
