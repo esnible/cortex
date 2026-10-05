@@ -675,6 +675,13 @@ agentop is for, and the other three are surfaces you visit and leave.
   on a given session. The column does not say which source it used. Numerics are
   right-aligned so the digits line up between rows.
 
+  A **`pending:` bucket**, where an agent's calls that name no session collect
+  until one does, is listed after the real sessions. Its row shows the agent
+  under `SESSION` rather than the truncated id, and, when nothing else names it,
+  `calls outside any session · pid <n>` under `TITLE`. The pid is the process the
+  calls came from. Headers keep the full id, which is still what the API and `/`
+  match on.
+
   `CTX(1M)` is a gauge, not a figure: how full the **conversation's**
   context was on its latest turn, against a fixed one-million-token window. The
   brackets are the scale, drawn on every row, so a nearly-empty session reads
