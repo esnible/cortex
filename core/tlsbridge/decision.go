@@ -316,10 +316,11 @@ func (s *SkipSet) fail(host string, escalate bool) {
 	// an expired entry. Restarting there kept a pinned host at the base forever. A
 	// window elapsing is no evidence the problem is gone; a completed handshake is, and
 	// Succeed clears the count when one happens.
-	n := 1
+	n, windowN := 1, 1
 	if e, ok := s.m[host]; ok {
 		if escalate {
 			n = e.failures + 1
+			windowN = n
 		} else {
 			// Hold the count where it is: a transient failure must not lengthen the
 			// window, but it must not shorten one a real rejection already earned
@@ -328,13 +329,16 @@ func (s *SkipSet) fail(host string, escalate bool) {
 			if n < 1 {
 				n = 1
 			}
+			if e.expiry.After(now) {
+				windowN = n
+			}
 		}
 	}
 	// .Round(0) strips the monotonic reading so the expiry is a pure wall-clock
 	// time. Contains compares it against time.Now() via the wall clock, so an
 	// entry expires after its window of real time even across a suspend (where the
 	// monotonic clock freezes and would otherwise keep the host skipped longer).
-	s.m[host] = skipEntry{expiry: now.Add(s.backoffFor(n)).Round(0), failures: n}
+	s.m[host] = skipEntry{expiry: now.Add(s.backoffFor(windowN)).Round(0), failures: n}
 }
 
 // Succeed records that a client completed the forged handshake for this host, which

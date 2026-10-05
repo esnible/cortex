@@ -339,13 +339,30 @@ func TestSkipSet_PinnedHostEscalatesAcrossWindows(t *testing.T) {
 		t.Errorf("window after 6 rejections, each after the last window expired = %v, "+
 			"want the %v ceiling; an expired entry must not restart the backoff", got, s.ttl)
 	}
+}
 
-	// A hang-up on the next forge must not knock the pinned host back to the base either.
-	expireWindow(t, s, "h")
+// TestSkipSet_TransientAfterExpiryGetsTheBaseAndKeepsTheCount: a hang-up, a cipher mismatch
+// or our own minting failure says nothing about trust. On a host whose window has run out it
+// must not re-arm the earned window for every client, but it must not wipe out the count
+// either, or the next rejection would start a pinned host over from the base.
+func TestSkipSet_TransientAfterExpiryGetsTheBaseAndKeepsTheCount(t *testing.T) {
+	s := NewSkipSet()
+	for i := 0; i < 6; i++ {
+		s.Fail("h")
+		expireWindow(t, s, "h")
+	}
+
 	s.FailTransient("h")
+	if got := window(t, s, "h"); got > s.base {
+		t.Errorf("window after a transient failure on an expired, escalated entry = %v, want at "+
+			"most the %v base; it re-armed the earned window for every client", got, s.base)
+	}
+
+	expireWindow(t, s, "h")
+	s.Fail("h")
 	if got := window(t, s, "h"); got < s.ttl-time.Second {
-		t.Errorf("window after a transient failure on the expired entry = %v, want the earned "+
-			"%v; a transient failure must not reset the count", got, s.ttl)
+		t.Errorf("window after the next rejection = %v, want the %v ceiling; the transient "+
+			"failure reset the count", got, s.ttl)
 	}
 }
 
