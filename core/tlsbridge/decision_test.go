@@ -302,8 +302,8 @@ func TestSkipSet_SucceedResetsBackoff(t *testing.T) {
 	}
 }
 
-// expireWindow ends host's skip window the way the clock would, leaving its count alone.
-func expireWindow(t *testing.T, s *SkipSet, host string) {
+// setWindow sets host's remaining skip window to d, leaving its count alone.
+func setWindow(t *testing.T, s *SkipSet, host string, d time.Duration) {
 	t.Helper()
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -311,8 +311,14 @@ func expireWindow(t *testing.T, s *SkipSet, host string) {
 	if !ok {
 		t.Fatalf("no entry for %q", host)
 	}
-	e.expiry = time.Now().Add(-time.Millisecond)
+	e.expiry = time.Now().Add(d)
 	s.m[host] = e
+}
+
+// expireWindow ends host's skip window the way the clock would, leaving its count alone.
+func expireWindow(t *testing.T, s *SkipSet, host string) {
+	t.Helper()
+	setWindow(t, s, host, -time.Millisecond)
 }
 
 // TestSkipSet_PinnedHostEscalatesAcrossWindows drives the set the way the proxy does. Both
@@ -363,6 +369,30 @@ func TestSkipSet_TransientAfterExpiryGetsTheBaseAndKeepsTheCount(t *testing.T) {
 	if got := window(t, s, "h"); got < s.ttl-time.Second {
 		t.Errorf("window after the next rejection = %v, want the %v ceiling; the transient "+
 			"failure reset the count", got, s.ttl)
+	}
+}
+
+// TestSkipSet_TransientOnALiveWindow: a transient failure on a live entry keeps the later of
+// the window already set and one base from now, whatever the count. Two pooled connections
+// that both passed Contains before either failed reach this. If the first hang-up left a base
+// window on an escalated count, the second must not stretch it to that count's window.
+func TestSkipSet_TransientOnALiveWindow(t *testing.T) {
+	s := NewSkipSet()
+	for i := 0; i < 6; i++ {
+		s.Fail("h")
+		expireWindow(t, s, "h")
+	}
+	s.FailTransient("h") // a base window on a count of 6
+	s.FailTransient("h") // the second pooled connection
+	if got := window(t, s, "h"); got > s.base {
+		t.Errorf("second transient failure inside a base window = %v, want at most the %v base; "+
+			"it stretched the window to the count's", got, s.base)
+	}
+
+	setWindow(t, s, "h", time.Minute) // an earned window, partly elapsed
+	s.FailTransient("h")
+	if got := window(t, s, "h"); got > time.Minute || got < time.Minute-time.Second {
+		t.Errorf("transient failure on a live window with 1m left = %v, want it left at about 1m", got)
 	}
 }
 
