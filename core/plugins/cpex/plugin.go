@@ -14,8 +14,7 @@
 //	      hooks:
 //	        on_request:  [cmf.tool_pre_invoke]
 //	        on_response: [cmf.tool_post_invoke]
-//	      apl: { ... operator's APL block ... }
-//	      pipelines: { ... operator's CPEX pipelines block ... }
+//	      config_file: /etc/cpex/cpex.yaml
 //
 // Hooks fire in declaration order; the chain short-circuits on the
 // first sub-plugin that returns deny. Empty hook lists are valid (the
@@ -133,8 +132,8 @@ func (p *CPEX) ConfigSchema() []pipeline.FieldSchema {
 }
 
 // Configure decodes the plugin's config subtree, builds the Manager,
-// re-serializes the operator's apl/pipelines blocks into YAML, and
-// hands the result to LoadConfig. Initialize is deferred to Init so
+// resolves the CPEX YAML from `config` or `config_file`, and hands it
+// to LoadConfig verbatim. Initialize is deferred to Init so
 // JWKS-fetching / audit-sink-connecting policies don't slow
 // pipeline.Build.
 //
