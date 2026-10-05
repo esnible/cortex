@@ -33,7 +33,7 @@ func setupFake(fake *FakeManager) *CPEX {
 // --- Configure ---
 
 func TestConfigure_EmptyConfigSucceeds(t *testing.T) {
-	// A cpex plugin with no hooks/apl/pipelines is a valid no-op
+	// A cpex plugin with no hooks/config/config_file is a valid no-op
 	// install — operator can ship a config update later.
 	fake := &FakeManager{}
 	p := setupFake(fake)
@@ -41,7 +41,7 @@ func TestConfigure_EmptyConfigSucceeds(t *testing.T) {
 		t.Fatalf("Configure(empty): %v", err)
 	}
 	if fake.LoadedYAML != "" {
-		t.Fatalf("LoadedYAML = %q, want empty (no apl/pipelines blocks)", fake.LoadedYAML)
+		t.Fatalf("LoadedYAML = %q, want empty", fake.LoadedYAML)
 	}
 }
 

@@ -14,8 +14,7 @@
 //	      hooks:
 //	        on_request:  [cmf.tool_pre_invoke]
 //	        on_response: [cmf.tool_post_invoke]
-//	      apl: { ... operator's APL block ... }
-//	      pipelines: { ... operator's CPEX pipelines block ... }
+//	      config_file: /etc/cpex/cpex.yaml
 //
 // Hooks fire in declaration order; the chain short-circuits on the
 // first sub-plugin that returns deny. Empty hook lists are valid (the
