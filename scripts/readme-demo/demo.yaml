@@ -14,9 +14,10 @@
 # If those strings change, change them here too — the demo claims to be cortex.
 #
 # Plain mode, because a shell act only adds rows. On a real terminal the download line
-# is a progress bar that is erased before setup starts, each ✓ line also shows how long
-# its step took, and the wordmark replaces "cortex v0.9.3 ready.". None of that can be
-# drawn here without inventing timings.
+# is a title and a progress bar, which stay on screen in place of setup's header and its
+# "✓ downloaded" row; each ✓ line also shows how long its step took; and the CORTEX logo
+# and "v0.9.3 ready in Ns" replace "cortex v0.9.3 ready.". None of that can be drawn
+# here without inventing timings.
 
 total: 50s
 grid:
