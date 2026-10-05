@@ -265,12 +265,12 @@ func (m *model) rebuildSessionsTable() {
 	contextW := sessionsColumnWidth(want, contextColumnTitle)
 	rows := make([]table.Row, 0, len(m.sessions))
 	ids := make([]string, 0, len(m.sessions))
-	for _, s := range m.sessions {
+	for _, s := range pendingLast(m.sessions) {
 		if !m.sessionListed(s, scope) {
 			continue
 		}
 		row := table.Row{
-			trunc(s.ID, idW),
+			sessionIDCell(s.ID, idW),
 		}
 		if showTitle {
 			// s.Title straight off the summary, where sessionLabel reaches the same value by
@@ -281,7 +281,7 @@ func (m *model) rebuildSessionsTable() {
 			row = append(row, m.sessionTitleCell(s.ID, s.Title, titleW))
 		}
 		if agentW > 0 {
-			row = append(row, trunc(sanitizeLabel(s.Agent), agentW))
+			row = append(row, sessionAgentCell(s, agentW))
 		}
 		row = append(row,
 			relTime(now, s.UpdatedAt),
@@ -322,7 +322,7 @@ func (m *model) rebuildSessionsTable() {
 		}
 		cached := m.events[id]
 		row := table.Row{
-			trunc(id, idW),
+			sessionIDCell(id, idW),
 		}
 		if showTitle {
 			// These rows exist precisely because the server no longer lists the session, so
@@ -332,7 +332,7 @@ func (m *model) rebuildSessionsTable() {
 			row = append(row, m.sessionTitleCell(id, noServedTitle, titleW))
 		}
 		if agentW > 0 {
-			row = append(row, emptyCell)
+			row = append(row, sessionAgentCell(session.SessionSummary{ID: id}, agentW))
 		}
 		row = append(row,
 			// "cached" sits in UPDATED now, where an em dash used to, because ACTIVE is gone
@@ -882,6 +882,12 @@ func (m *model) sessionTitleFor(id, served string) string {
 	// and the ORDER that check documents is preserved, not dropped: sanitising happened above, and the
 	// trim happens here, which is the same sanitise-then-trim titleIsBlank performs internally.
 	if blankSanitized(clean) {
+		// A pending bucket nothing names still says what it is. Last, so a title either source
+		// gives it wins; and here, not in sessionTitle, which the re-harvest backoff reads as
+		// "named". The pid is the client's to shape, so it is sanitised like any title.
+		if _, pid, ok := pendingBucket(id); ok {
+			return capTitleRunes(sanitizeLabel(pendingTitle(pid)))
+		}
 		return ""
 	}
 	return capTitleRunes(clean)
