@@ -210,9 +210,10 @@ const (
 	// Starting short and doubling separates the two situations without needing to tell
 	// the clients apart:
 	//
-	//   mixed clients   a success CLEARS the entry, so the counter never climbs and
-	//                   windows stay near the base — the healthy client is visible
-	//                   again seconds after a stale one trips it.
+	//   mixed clients   a success CLEARS the entry, so the counter climbs only while
+	//                   the stale client is the first to connect after each window,
+	//                   and windows stay near the base — the healthy client is
+	//                   visible again seconds after a stale one trips it.
 	//   pinned host     nothing ever succeeds, so it escalates to skipTTL and settles
 	//                   at today's behaviour. That is the case the skip was built for
 	//                   and it must not regress: a fixed short window would break such
@@ -227,8 +228,10 @@ const (
 )
 
 // SkipSet is the runtime auto-skip set (hosts whose minted leaf the client
-// rejected). Concurrent-safe; augments the static skip list. Entries expire
-// after skipTTL and the set is bounded to skipMax (oldest-expiry eviction).
+// rejected). Concurrent-safe; augments the static skip list. A window lasts at
+// most skipTTL, but its entry, and with it the rejection count, stays until a
+// success clears it or the set fills to skipMax (expired entries go first, then
+// the oldest expiry).
 type SkipSet struct {
 	mu sync.RWMutex
 	// base is the first window and ttl the ceiling it doubles up to. base is a field
@@ -308,12 +311,17 @@ func (s *SkipSet) fail(host string, escalate bool) {
 			delete(s.m, oldestK)
 		}
 	}
-	// An expired entry starts over rather than continuing to escalate: the window
-	// having elapsed with no further rejection is evidence the problem may be gone.
+	// An expired entry keeps its count. Both callers check Contains before forging, so
+	// a skipped host can't reject anything and every rejection after the first lands on
+	// an expired entry. Restarting there kept a pinned host at the base forever. A
+	// window elapsing is no evidence the problem is gone; a completed handshake is, and
+	// Succeed clears the count when one happens.
 	n := 1
-	if e, ok := s.m[host]; ok && e.expiry.After(now) {
+	expiry := now.Add(s.backoffFor(1))
+	if e, ok := s.m[host]; ok {
 		if escalate {
 			n = e.failures + 1
+			expiry = now.Add(s.backoffFor(n))
 		} else {
 			// Hold the count where it is: a transient failure must not lengthen the
 			// window, but it must not shorten one a real rejection already earned
@@ -322,13 +330,16 @@ func (s *SkipSet) fail(host string, escalate bool) {
 			if n < 1 {
 				n = 1
 			}
+			if e.expiry.After(expiry) {
+				expiry = e.expiry
+			}
 		}
 	}
 	// .Round(0) strips the monotonic reading so the expiry is a pure wall-clock
 	// time. Contains compares it against time.Now() via the wall clock, so an
 	// entry expires after its window of real time even across a suspend (where the
 	// monotonic clock freezes and would otherwise keep the host skipped longer).
-	s.m[host] = skipEntry{expiry: now.Add(s.backoffFor(n)).Round(0), failures: n}
+	s.m[host] = skipEntry{expiry: expiry.Round(0), failures: n}
 }
 
 // Succeed records that a client completed the forged handshake for this host, which

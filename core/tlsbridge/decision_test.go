@@ -259,6 +259,10 @@ func TestSkipSet_SucceedClears(t *testing.T) {
 // TestSkipSet_BackoffEscalates: consecutive rejections lengthen the window, so a host
 // where NOTHING ever succeeds settles at the cap — today's behaviour, which is the
 // case the skip was built for and must not regress.
+//
+// Back-to-back on a live entry is a parallel burst, not a pinned client over time: the
+// proxy never forges for a host while it is skipped. TestSkipSet_PinnedHostEscalatesAcrossWindows
+// covers the pinned client.
 func TestSkipSet_BackoffEscalates(t *testing.T) {
 	s := NewSkipSet()
 	var prev time.Duration
@@ -298,43 +302,97 @@ func TestSkipSet_SucceedResetsBackoff(t *testing.T) {
 	}
 }
 
-// TestSkipSet_ExpiredEntryRestartsBackoff: a window that elapsed with no further
-// failure is evidence the problem may be gone, so the next failure starts over rather
-// than continuing to climb.
+// setWindow sets host's remaining skip window to d, leaving its count alone.
+func setWindow(t *testing.T, s *SkipSet, host string, d time.Duration) {
+	t.Helper()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e, ok := s.m[host]
+	if !ok {
+		t.Fatalf("no entry for %q", host)
+	}
+	e.expiry = time.Now().Add(d)
+	s.m[host] = e
+}
+
+// expireWindow ends host's skip window the way the clock would, leaving its count alone.
+func expireWindow(t *testing.T, s *SkipSet, host string) {
+	t.Helper()
+	setWindow(t, s, host, -time.Millisecond)
+}
+
+// TestSkipSet_PinnedHostEscalatesAcrossWindows drives the set the way the proxy does. Both
+// bridging paths (the CONNECT handler and the transparent listener) check Contains before
+// forging, so a skipped host is tunnelled and can't reject anything. Every rejection after
+// the first therefore lands on an EXPIRED entry, and the window still has to grow.
 //
-// base is tightened as well as ttl, which the earlier version of this test did not do:
-// with base fixed at 30s every window capped to the tiny ttl regardless of the failure
-// count, so it exercised cap-and-reset and proved nothing about restarting a backoff its
-// name claimed to cover. Driving both lets it escalate for real and then reset.
-func TestSkipSet_ExpiredEntryRestartsBackoff(t *testing.T) {
+// It used to restart at the base instead, on the theory that a window elapsing with no
+// further rejection meant the problem might be gone. Under that gate a window always
+// elapses that way, so a pinned client failed its handshake every 30s forever — the
+// outcome the backoff's own comment rules out.
+func TestSkipSet_PinnedHostEscalatesAcrossWindows(t *testing.T) {
 	s := NewSkipSet()
-	s.base = 10 * time.Millisecond
-	s.ttl = 200 * time.Millisecond
+	for i := 1; i <= 6; i++ {
+		if s.Contains("h") {
+			t.Fatalf("rejection %d: host is still skipped, so the proxy would not have forged", i)
+		}
+		s.Fail("h")
+		if i < 6 {
+			expireWindow(t, s, "h")
+		}
+	}
+	if got := window(t, s, "h"); got < s.ttl-time.Second {
+		t.Errorf("window after 6 rejections, each after the last window expired = %v, "+
+			"want the %v ceiling; an expired entry must not restart the backoff", got, s.ttl)
+	}
+}
 
-	s.Fail("h")
-	s.Fail("h")
-	s.Fail("h")
-	s.mu.RLock()
-	climbed := s.m["h"].failures
-	s.mu.RUnlock()
-	if climbed != 3 {
-		t.Fatalf("failures = %d after 3 consecutive rejections, want 3 (no real escalation "+
-			"happened, so the reset below would prove nothing)", climbed)
-	}
-	if w := window(t, s, "h"); w <= s.base {
-		t.Errorf("window %v did not grow beyond the base %v", w, s.base)
+// TestSkipSet_TransientAfterExpiryGetsTheBaseAndKeepsTheCount: a hang-up, a cipher mismatch
+// or our own minting failure says nothing about trust. On a host whose window has run out it
+// must not re-arm the earned window for every client, but it must not wipe out the count
+// either, or the next rejection would start a pinned host over from the base.
+func TestSkipSet_TransientAfterExpiryGetsTheBaseAndKeepsTheCount(t *testing.T) {
+	s := NewSkipSet()
+	for i := 0; i < 6; i++ {
+		s.Fail("h")
+		expireWindow(t, s, "h")
 	}
 
-	time.Sleep(120 * time.Millisecond) // longer than the 3rd window (40ms), shorter than ttl
-	if s.Contains("h") {
-		t.Fatal("entry should have expired")
+	s.FailTransient("h")
+	if got := window(t, s, "h"); got > s.base {
+		t.Errorf("window after a transient failure on an expired, escalated entry = %v, want at "+
+			"most the %v base; it re-armed the earned window for every client", got, s.base)
 	}
+
+	expireWindow(t, s, "h")
 	s.Fail("h")
-	s.mu.RLock()
-	n := s.m["h"].failures
-	s.mu.RUnlock()
-	if n != 1 {
-		t.Errorf("failures after an expired window = %d, want 1 (a fresh start)", n)
+	if got := window(t, s, "h"); got < s.ttl-time.Second {
+		t.Errorf("window after the next rejection = %v, want the %v ceiling; the transient "+
+			"failure reset the count", got, s.ttl)
+	}
+}
+
+// TestSkipSet_TransientOnALiveWindow: a transient failure on a live entry keeps the later of
+// the window already set and one base from now, whatever the count. Two pooled connections
+// that both passed Contains before either failed reach this. If the first hang-up left a base
+// window on an escalated count, the second must not stretch it to that count's window.
+func TestSkipSet_TransientOnALiveWindow(t *testing.T) {
+	s := NewSkipSet()
+	for i := 0; i < 6; i++ {
+		s.Fail("h")
+		expireWindow(t, s, "h")
+	}
+	s.FailTransient("h") // a base window on a count of 6
+	s.FailTransient("h") // the second pooled connection
+	if got := window(t, s, "h"); got > s.base {
+		t.Errorf("second transient failure inside a base window = %v, want at most the %v base; "+
+			"it stretched the window to the count's", got, s.base)
+	}
+
+	setWindow(t, s, "h", time.Minute) // an earned window, partly elapsed
+	s.FailTransient("h")
+	if got := window(t, s, "h"); got > time.Minute || got < time.Minute-time.Second {
+		t.Errorf("transient failure on a live window with 1m left = %v, want it left at about 1m", got)
 	}
 }
 
