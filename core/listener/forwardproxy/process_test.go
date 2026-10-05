@@ -518,6 +518,78 @@ func TestSelfTraffic_AnAgentPollingItsOwnServiceIsForwardedButNotRecorded(t *tes
 	}
 }
 
+// OpenCode's service is the TUI's own child. That needs no session history, so the polling
+// is not recorded from the first request — after a proxy restart an idle window's service
+// has named nothing, and every poll used to land in the TUI's pending bucket.
+func TestSelfTraffic_AnAgentsOwnChildServiceIsNotRecordedBeforeItNamesASession(t *testing.T) {
+	procs := newFakeProcs(fproc(510, 60, opencodeExe), fproc(520, 510, opencodeExe))
+	store := session.New(0, 0, 0)
+	defer store.Close()
+	proxyURL, backendURL, hits := newProcessProxy(t, store, procs, func(s *Server) {
+		s.SessionIDHeaders = append(s.SessionIDHeaders, "X-Opencode-Session-Id")
+	})
+	procs.listens(t, backendURL, 520)
+	tui := procs.clientFor(proxyURL, 510)
+
+	sendAs(t, tui, backendURL+"/api/info", "opencode/latest/2.0.21/cli", "", "")
+	sendAs(t, tui, backendURL+"/api/session", "opencode/latest/2.0.21/cli", "", "")
+
+	if got := hits.Load(); got != 2 {
+		t.Errorf("the backend received %d requests, want both forwarded", got)
+	}
+	if n := countPath(store, "/api/info") + countPath(store, "/api/session"); n != 0 {
+		t.Errorf("%d rows recorded for the TUI polling its own child service, want 0", n)
+	}
+}
+
+// A child running another program is a server the agent started — an MCP server, a dev
+// server — and its traffic is the agent's work, so it stays recorded.
+func TestSelfTraffic_AnAgentsChildRunningAnotherExecutableIsRecorded(t *testing.T) {
+	procs := newFakeProcs(fproc(510, 60, opencodeExe), fproc(520, 510, "/usr/bin/node"))
+	store := session.New(0, 0, 0)
+	defer store.Close()
+	proxyURL, backendURL, _ := newProcessProxy(t, store, procs, func(s *Server) {
+		s.SessionIDHeaders = append(s.SessionIDHeaders, "X-Opencode-Session-Id")
+	})
+	procs.listens(t, backendURL, 520)
+	sendAs(t, procs.clientFor(proxyURL, 510), backendURL+"/mcp", "opencode/latest/2.0.21/cli", "", "")
+	if n := countPath(store, "/mcp"); n != 1 {
+		t.Errorf("the agent's call to a node child: %d rows, want 1", n)
+	}
+}
+
+// The child rule is for a coding agent and its own service. A test suite the agent runs
+// starting a server of its own interpreter and calling it is the agent's work: python and
+// python, parent and child, still recorded.
+func TestSelfTraffic_AProgramOfNoAgentCallingItsOwnChildIsRecorded(t *testing.T) {
+	procs := newFakeProcs(fproc(510, 60, "/usr/bin/python3"), fproc(520, 510, "/usr/bin/python3"))
+	store := session.New(0, 0, 0)
+	defer store.Close()
+	proxyURL, backendURL, _ := newProcessProxy(t, store, procs, nil)
+	procs.listens(t, backendURL, 520)
+	sendAs(t, procs.clientFor(proxyURL, 510), backendURL+"/health", "python-requests/2.32.3", "", "")
+	if n := countPath(store, "/health"); n != 1 {
+		t.Errorf("a test suite calling the server it started: %d rows, want 1", n)
+	}
+}
+
+// A child cannot start before its parent. A listener whose parent pid is the client's but
+// which predates it was another process's child, under a pid since reused.
+func TestSelfTraffic_AListenerOlderThanTheClientIsNotItsChild(t *testing.T) {
+	procs := newFakeProcs(fproc(510, 60, opencodeExe),
+		peerproc.Proc{PID: 520, PPID: 510, Start: time.Unix(400, 0), Exe: opencodeExe})
+	store := session.New(0, 0, 0)
+	defer store.Close()
+	proxyURL, backendURL, _ := newProcessProxy(t, store, procs, func(s *Server) {
+		s.SessionIDHeaders = append(s.SessionIDHeaders, "X-Opencode-Session-Id")
+	})
+	procs.listens(t, backendURL, 520)
+	sendAs(t, procs.clientFor(proxyURL, 510), backendURL+"/api/info", "opencode/latest/2.0.21/cli", "", "")
+	if n := countPath(store, "/api/info"); n != 1 {
+		t.Errorf("a listener older than the client: %d rows, want 1", n)
+	}
+}
+
 // Bob runs under node, and so does the local MCP server it calls. Same executable — but the
 // server never names a session, so it is no agent's and its traffic stays visible.
 func TestSelfTraffic_ANodeAgentsCallsToALocalNodeServerAreRecorded(t *testing.T) {
