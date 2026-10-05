@@ -133,8 +133,8 @@ func (p *CPEX) ConfigSchema() []pipeline.FieldSchema {
 }
 
 // Configure decodes the plugin's config subtree, builds the Manager,
-// re-serializes the operator's apl/pipelines blocks into YAML, and
-// hands the result to LoadConfig. Initialize is deferred to Init so
+// resolves the CPEX YAML from `config` or `config_file`, and hands it
+// to LoadConfig verbatim. Initialize is deferred to Init so
 // JWKS-fetching / audit-sink-connecting policies don't slow
 // pipeline.Build.
 //
