@@ -29,7 +29,6 @@ func TestPlainLines(t *testing.T) {
 	u.Advise("PATH", "not on PATH", `export PATH="/h/.local/bin:$PATH"`)
 	u.Fail("started", "never answered", "see ~/.cortex/proxy.log")
 	u.Note("rolled back", "the changes above are undone")
-	u.Wordmark("ready in 4.6s")
 	u.Next("Open a new terminal, then:", "agentop", "watch your agent traffic live")
 	u.Close()
 	want := strings.Join([]string{
@@ -44,9 +43,6 @@ func TestPlainLines(t *testing.T) {
 		"  ✗ started      never answered",
 		"      see ~/.cortex/proxy.log",
 		"    rolled back  the changes above are undone",
-		"",
-		"    ▄▀▀ ▄▀▄ █▀▄ ▀█▀ █▀▀ ▀▄▀",
-		"    ▀▄▄ ▀▄▀ █▀▄  █  ██▄ ▄▀▄   ready in 4.6s",
 		"",
 		"  Open a new terminal, then:",
 		"",
@@ -128,7 +124,7 @@ func TestAnimatedRunningLineResolvesAndRestoresTheCursor(t *testing.T) {
 			t.Errorf("animated output lacks %q: %q", want, out)
 		}
 	}
-	if !regexp.MustCompile(`healthy  \d+\.\ds\n`).MatchString(ansi.Strip(out)) {
+	if !regexp.MustCompile(`healthy +\d+\.\ds\n`).MatchString(ansi.Strip(out)) {
 		t.Errorf("animated Done carries no timing: %q", out)
 	}
 }
@@ -179,7 +175,7 @@ func TestColourFollowsTheWriterNotTheDefaultRenderer(t *testing.T) {
 	var b bytes.Buffer
 	u := New(&b, false)
 	u.Done("installed", "x", 0)
-	u.Wordmark("ready")
+	u.Logo("ready")
 	if strings.Contains(b.String(), "\x1b") {
 		t.Errorf("colour came from the default renderer, not from w: %q", b.String())
 	}
@@ -260,6 +256,118 @@ func TestRunningAdviseEndsAsUIAdviseDraws(t *testing.T) {
 	for _, w := range []string{"\x1b[?25l", "\r\x1b[K" + want, "\x1b[?25h"} {
 		if !strings.Contains(out, w) {
 			t.Errorf("animated output lacks %q: %q", w, out)
+		}
+	}
+}
+
+// The logo is the figlet "ANSI Shadow" CORTEX, row for row, each row indented 2
+// spaces, then a blank line and what goes under it, indented 4.
+func TestLogoIsTheANSIShadowCortex(t *testing.T) {
+	noForcedColour(t)
+	var b bytes.Buffer
+	u := New(&b, false)
+	u.Logo("v1.2.3 ready in 5.4s")
+	want := strings.Join([]string{
+		"   ██████╗ ██████╗ ██████╗ ████████╗███████╗██╗  ██╗",
+		"  ██╔════╝██╔═══██╗██╔══██╗╚══██╔══╝██╔════╝╚██╗██╔╝",
+		"  ██║     ██║   ██║██████╔╝   ██║   █████╗   ╚███╔╝",
+		"  ██║     ██║   ██║██╔══██╗   ██║   ██╔══╝   ██╔██╗",
+		"  ╚██████╗╚██████╔╝██║  ██║   ██║   ███████╗██╔╝ ██╗",
+		"   ╚═════╝ ╚═════╝ ╚═╝  ╚═╝   ╚═╝   ╚══════╝╚═╝  ╚═╝",
+		"",
+		"    v1.2.3 ready in 5.4s",
+		"",
+	}, "\n")
+	if b.String() != want {
+		t.Errorf("logo differs\n got:\n%s\nwant:\n%s", b.String(), want)
+	}
+}
+
+// Each row of the logo is in the accent where the profile allows colour; the line
+// under it is not.
+func TestLogoIsInTheAccent(t *testing.T) {
+	var b bytes.Buffer
+	r := lipgloss.NewRenderer(&b)
+	r.SetColorProfile(termenv.ANSI256)
+	u := newUI(&b, false, r)
+	u.Logo("ready")
+	lines := strings.Split(b.String(), "\n")
+	if len(lines) != len(logo)+3 || !strings.Contains(lines[0], "\x1b[") {
+		t.Fatalf("want %d lines, the first coloured under ANSI256: %q", len(logo)+3, b.String())
+	}
+	accent := r.NewStyle().Foreground(colorAccent)
+	for i, row := range logo {
+		if want := "  " + accent.Render(row); lines[i] != want {
+			t.Errorf("row %d is not in the accent:\n got %q\nwant %q", i, lines[i], want)
+		}
+	}
+	if lines[len(logo)+1] != "    ready" {
+		t.Errorf("the line under the logo = %q, want it uncoloured", lines[len(logo)+1])
+	}
+}
+
+// On a terminal a finished row's time ends at column 78, measured as the terminal
+// shows it: ✓ and → take a column each, and colour takes none.
+func TestATimingEndsAtColumn78(t *testing.T) {
+	for _, profile := range []termenv.Profile{termenv.Ascii, termenv.ANSI256} {
+		var b bytes.Buffer
+		r := lipgloss.NewRenderer(&b)
+		r.SetColorProfile(profile)
+		u := newUI(&b, true, r)
+		u.Done("installed", "agentop, cortex → ~/.local/bin", 3*time.Second)
+		const left = "  ✓ installed    agentop, cortex → ~/.local/bin" // 47 columns
+		want := left + strings.Repeat(" ", 78-47-4) + "3.0s\n"
+		if got := ansi.Strip(b.String()); got != want {
+			t.Errorf("profile %v: got %q, want %q", profile, got, want)
+		}
+	}
+}
+
+// A row too long for its time to end at column 78 keeps it 2 spaces after the detail.
+func TestATimingPastColumn78KeepsTwoSpaces(t *testing.T) {
+	noForcedColour(t)
+	var b bytes.Buffer
+	u := New(&b, true)
+	detail := strings.Repeat("x", 70)
+	u.Done("installed", detail, 3*time.Second)
+	if got, want := b.String(), "  ✓ installed    "+detail+"  3.0s\n"; got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+}
+
+// On a terminal the header's version ends at column 78 too, or stays 3 spaces after
+// a title too long for that. Off one it is 3 spaces after the title, as it always was.
+func TestTheHeaderRightAlignsOnATerminal(t *testing.T) {
+	noForcedColour(t)
+	long := strings.Repeat("v", 60)
+	for _, c := range []struct {
+		animate     bool
+		right, want string
+	}{
+		{true, "dev · darwin/arm64", "  rosso cortex · setup" + strings.Repeat(" ", 78-22-18) + "dev · darwin/arm64\n"},
+		{true, long, "  rosso cortex · setup   " + long + "\n"},
+		{false, "dev · darwin/arm64", "  rosso cortex · setup   dev · darwin/arm64\n"},
+	} {
+		var b bytes.Buffer
+		New(&b, c.animate).Header("rosso cortex · setup", c.right)
+		if b.String() != c.want {
+			t.Errorf("animate=%v: got %q, want %q", c.animate, b.String(), c.want)
+		}
+	}
+}
+
+// On a terminal narrower than 79 columns the time ends at its last column but one,
+// so the row does not wrap; a width nobody knows is 78.
+func TestTheEdgeFollowsANarrowTerminal(t *testing.T) {
+	noForcedColour(t)
+	saved := terminalWidth
+	t.Cleanup(func() { terminalWidth = saved })
+	for _, c := range []struct{ cols, edge int }{{0, 78}, {79, 78}, {200, 78}, {78, 77}, {60, 59}} {
+		terminalWidth = func(io.Writer) int { return c.cols }
+		var b bytes.Buffer
+		New(&b, true).Done("installed", "x", time.Second)
+		if got := lipgloss.Width(strings.TrimSuffix(b.String(), "\n")); got != c.edge {
+			t.Errorf("%d columns: the row is %d wide, want %d: %q", c.cols, got, c.edge, b.String())
 		}
 	}
 }

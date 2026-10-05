@@ -988,7 +988,9 @@ func TestUninstallRowsRunUnderASpinnerOnATerminal(t *testing.T) {
 	}}}, nil)
 	ui.Close()
 	out := w.String()
-	for _, want := range []string{"\x1b[?25l", " stopped      \r", "\r\x1b[K  ✓ stopped      background Cortex stopped  0.", "\x1b[?25h"} {
+	// The row's time ends at column 78: 42 columns of row, then the 4 of "0.Ns".
+	row := "\r\x1b[K  ✓ stopped      background Cortex stopped" + strings.Repeat(" ", 78-42-4) + "0."
+	for _, want := range []string{"\x1b[?25l", " stopped      \r", row, "\x1b[?25h"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("animated output lacks %q: %q", want, out)
 		}

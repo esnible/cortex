@@ -69,6 +69,15 @@ var setupConfirm = func(w io.Writer) bool {
 	return setupConfirmFrom(tty, w)
 }
 
+// setupAnimate reports whether the screen animates on w: on a terminal. A var for
+// the reason uninstallAnimate gives.
+var setupAnimate = isTerminal
+
+// installerDrewEnv is how install.sh says it drew its title and its download bar on
+// the terminal, which stand in for setup's header and its ✓ downloaded row. An
+// environment variable, because the handoff flags are frozen.
+const installerDrewEnv = "CORTEX_INSTALLER_DREW"
+
 // setupSignals is the channel Ctrl-C and SIGTERM arrive on, and the func that
 // stops them arriving. A var so tests can send one without signalling themselves.
 // Only those two: a SIGHUP, from a terminal closed mid-run, still kills setup.
@@ -185,14 +194,21 @@ func runSetup(args []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stderr, "agentop: %v\n", err)
 		return 1
 	}
-	ui := checklist.New(stdout, isTerminal(stdout))
+	ui := checklist.New(stdout, setupAnimate(stdout))
 	defer ui.Close()
-	started := time.Now()
 
-	printSetupHeader(env, ui)
-	if opts.handoffBytes > 0 {
-		ui.Done("downloaded", downloadSize(opts.handoffBytes)+" · sha256 verified",
-			time.Duration(opts.handoffSeconds)*time.Second)
+	// install.sh's title and bar are on screen only when it says so, on a terminal: a
+	// log gets setup's own lines, which say the same. The handoff flags must be there
+	// too, so a value left in the environment cannot hide the header of a setup run by
+	// hand.
+	if ui.Animated() && opts.fromInstaller() && os.Getenv(installerDrewEnv) == "1" {
+		env.readVersions() // what the header would have asked; the ending names the version
+	} else {
+		printSetupHeader(env, ui)
+		if opts.handoffBytes > 0 {
+			ui.Done("downloaded", downloadSize(opts.handoffBytes)+" · sha256 verified",
+				time.Duration(opts.handoffSeconds)*time.Second)
+		}
 	}
 	ui.Blank()
 
@@ -233,7 +249,12 @@ func runSetup(args []string, stdout, stderr io.Writer) int {
 		case env.priorService: // the service plan's health check answered
 			state = "installed and healthy"
 		}
-		ui.Plain(fmt.Sprintf("cortex %s is %s.", env.newVersion(), state))
+		text := fmt.Sprintf("cortex %s is %s.", env.newVersion(), state)
+		if ui.Animated() && !opts.installOnly {
+			ui.Logo(text) // under the blank line after the header, or after the advice
+		} else {
+			ui.Plain(text)
+		}
 		return 0
 	}
 	if !opts.yes {
@@ -265,6 +286,9 @@ func runSetup(args []string, stdout, stderr io.Writer) int {
 		ui.Blank()
 	}
 
+	// ready in is the time the changes took, from here: not the time spent reading
+	// the list of them at the prompt.
+	started := time.Now()
 	if !applySteps(env, ui, planned, sigs) {
 		return 1
 	}
@@ -335,20 +359,16 @@ func printSetupEnding(env *setupEnv, ui *checklist.UI, took time.Duration) {
 		ui.Plain("Installed. Start Cortex with:  " + agentop + " setup")
 		return
 	}
-	ready := "cortex " + env.newVersion() + " ready."
+	// On a terminal a run that applied ends on the logo, a fresh install, an upgrade or
+	// a repair alike, as one with nothing to change does in runSetup.
+	ui.Blank()
 	if ui.Animated() {
-		ready = "cortex " + env.newVersion() + " ready in " + checklist.FormatDuration(took)
+		ui.Logo(env.newVersion() + " ready in " + checklist.FormatDuration(took))
+	} else {
+		ui.Plain("cortex " + env.newVersion() + " ready.")
 	}
 	if !env.freshInstall {
-		ui.Blank()
-		ui.Plain(ready)
 		return
-	}
-	if ui.Animated() {
-		ui.Wordmark("ready in " + checklist.FormatDuration(took))
-	} else {
-		ui.Blank()
-		ui.Plain(ready)
 	}
 	cmd, comment := agentop, "watch your agent traffic live"
 	if !env.opts.claudeCode {

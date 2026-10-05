@@ -11,12 +11,15 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/x/ansi"
 	"github.com/rossoctl/cortex/cmd/agentop/checklist"
 )
 
@@ -423,4 +426,192 @@ func TestSetupASignalBeforeApplyChangesNothing(t *testing.T) {
 			t.Errorf("Not changed. is not on a line of its own after the prompt:\n%s", out)
 		}
 	})
+}
+
+// animated makes setup draw as it does on a terminal, into the test's buffer.
+func animated(t *testing.T) {
+	t.Helper()
+	saved := setupAnimate
+	setupAnimate = func(io.Writer) bool { return true }
+	t.Cleanup(func() { setupAnimate = saved })
+}
+
+// onScreen is what a terminal shows of out: no escapes, and each line as its last
+// carriage return left it, so a spinner's frames are gone and the row after them stays.
+func onScreen(out string) string {
+	lines := strings.Split(ansi.Strip(out), "\n")
+	for i, l := range lines {
+		lines[i] = l[strings.LastIndex(l, "\r")+1:]
+	}
+	return strings.Join(lines, "\n")
+}
+
+// The logo's first row under a blank line, and its last row over one, as the
+// ending prints them. checklist's tests hold every row.
+const (
+	logoTop    = "\n\n   ██████╗ ██████╗ ██████╗ ████████╗███████╗██╗  ██╗\n"
+	logoBottom = "\n   ╚═════╝ ╚═════╝ ╚═╝  ╚═╝   ╚═╝   ╚══════╝╚═╝  ╚═╝\n\n"
+)
+
+func hasLogo(screen string) bool {
+	return strings.Contains(screen, logoTop) && strings.Contains(screen, logoBottom)
+}
+
+// install.sh's title and bar stand in for setup's header and its ✓ downloaded row
+// when it says it drew them, on a terminal, and with its handoff flags. Anywhere
+// else setup draws both itself, and a log gets the plain lines it always did.
+func TestSetupDrawsNoHeaderUnderTheInstallersBar(t *testing.T) {
+	handoff := []string{"--yes", "--handoff-bytes=2048", "--handoff-seconds=2"}
+	for _, c := range []struct {
+		name       string
+		animate    bool
+		drew       string
+		args       []string
+		header     string // the header's start, or "" for none
+		downloaded bool
+	}{
+		{"drawn, on a terminal", true, "1", handoff, "", false},
+		{"not drawn, on a terminal", true, "", handoff, "  rosso cortex · installer ", true},
+		{"drawn, but a log", false, "1", handoff, "  rosso cortex · installer   v9.9.9 · ", true},
+		{"set, but setup run by hand", true, "1", []string{"--yes"}, "  rosso cortex · setup ", false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			sc := newSetupScene(t, ok200)
+			if c.animate {
+				animated(t)
+			}
+			t.Setenv(installerDrewEnv, c.drew)
+			code, out := sc.run(t, append([]string{"--from", sc.stage}, c.args...)...)
+			screen := onScreen(out)
+			if code != 0 || !strings.Contains(screen, "  ✓ installed ") {
+				t.Fatalf("exit %d:\n%s", code, screen)
+			}
+			if c.header == "" {
+				if !strings.HasPrefix(screen, "\n  ✓ installed ") || strings.Contains(screen, "rosso cortex") {
+					t.Errorf("want nothing above the first row but a blank line:\n%s", screen)
+				}
+			} else if !strings.HasPrefix(screen, c.header) {
+				t.Errorf("want the header %q first:\n%s", c.header, screen)
+			}
+			// Plain mode's row exactly as it always was; a terminal's carries the time.
+			row := "  ✓ downloaded   2.0 kB · sha256 verified"
+			if !c.animate {
+				row += "\n"
+			}
+			if got := strings.Contains(screen, row); got != c.downloaded {
+				t.Errorf("✓ downloaded shown=%v, want %v:\n%s", got, c.downloaded, screen)
+			}
+		})
+	}
+}
+
+// Every run that worked ends on the logo on a terminal, then the version and how long
+// the changes took; a fresh install's next command and undo line follow. A run with
+// nothing to change says what it found under the logo instead.
+func TestSetupEndsOnTheLogoOnATerminal(t *testing.T) {
+	readyIn := func(v string) *regexp.Regexp {
+		return regexp.MustCompile(regexp.QuoteMeta(logoBottom+"    "+v+" ready in ") + `\d+\.\ds\n`)
+	}
+	sc := newSetupScene(t, ok200)
+	animated(t)
+	code, out := sc.run(t, "--from", sc.stage, "--yes")
+	s := onScreen(out)
+	if code != 0 || !hasLogo(s) || !readyIn("v9.9.9").MatchString(s) ||
+		!strings.Contains(s, "s\n\n  Open a new terminal, then:\n") || !strings.HasSuffix(s, "  Undo any time: agentop uninstall\n") {
+		t.Errorf("fresh install, exit %d:\n%s", code, s)
+	}
+
+	code, out = sc.run(t, "--from", sc.stage, "--yes")
+	if s := onScreen(out); code != 0 || !hasLogo(s) || !strings.HasSuffix(s, logoBottom+"    cortex v9.9.9 is installed and healthy.\n") {
+		t.Errorf("nothing to change, exit %d:\n%s", code, s)
+	}
+
+	writeExe(t, filepath.Join(sc.stage, "agentop"), "#!/bin/sh\necho agentop v9.9.10\n")
+	code, out = sc.run(t, "--from", sc.stage, "--yes")
+	if s := onScreen(out); code != 0 || !hasLogo(s) || !readyIn("v9.9.10").MatchString(s) || strings.Contains(s, "Open a new terminal") {
+		t.Errorf("upgrade, exit %d:\n%s", code, s)
+	}
+}
+
+// A repair, the same release run again with something to put right, ends on the logo
+// too, though no version changed: here the config is gone, and setup writes it again.
+func TestSetupRepairEndsOnTheLogo(t *testing.T) {
+	sc := newSetupScene(t, ok200)
+	animated(t)
+	if code, out := sc.run(t, "--from", sc.stage, "--yes"); code != 0 {
+		t.Fatalf("install, exit %d:\n%s", code, onScreen(out))
+	}
+	if err := os.Remove(filepath.Join(sc.home, ".cortex", "config.yaml")); err != nil {
+		t.Fatal(err)
+	}
+	code, out := sc.run(t, "--from", sc.stage, "--yes")
+	s := onScreen(out)
+	if code != 0 || !strings.Contains(s, "\n  ✓ config ") || !hasLogo(s) ||
+		!strings.Contains(s, logoBottom+"    v9.9.9 ready in ") || strings.Contains(s, "Open a new terminal") {
+		t.Errorf("repair, exit %d:\n%s", code, s)
+	}
+}
+
+// The logo is for a run that worked: not a failure, a decline, or an install of the
+// binaries only, even one with nothing to change; and never off a terminal.
+func TestSetupDrawsNoLogoUnlessARunWorked(t *testing.T) {
+	for _, c := range []struct {
+		name    string
+		animate bool
+		prepare func(*testing.T, setupScene) []string
+		code    int
+	}{
+		{"failure", true, func(t *testing.T, sc setupScene) []string {
+			failAt(t, "started")
+			return []string{"--from", sc.stage, "--yes"}
+		}, 1},
+		{"declined", true, func(t *testing.T, sc setupScene) []string {
+			stubTerminal(t, true, "n\n")
+			return []string{"--from", sc.stage}
+		}, exitDeclined},
+		{"install only", true, func(t *testing.T, sc setupScene) []string {
+			return []string{"--from", sc.stage, "--yes", "--install-only"}
+		}, 0},
+		{"install only, nothing to change", true, func(t *testing.T, sc setupScene) []string {
+			if code, out := sc.run(t, "--from", sc.stage, "--yes", "--install-only"); code != 0 {
+				t.Fatalf("first run: %d\n%s", code, out)
+			}
+			return []string{"--from", sc.stage, "--yes", "--install-only"}
+		}, 0},
+		{"off a terminal", false, func(t *testing.T, sc setupScene) []string {
+			return []string{"--from", sc.stage, "--yes"}
+		}, 0},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			sc := newSetupScene(t, ok200)
+			if c.animate {
+				animated(t)
+			}
+			args := c.prepare(t, sc)
+			code, out := sc.run(t, args...)
+			if s := onScreen(out); code != c.code || strings.Contains(s, "██") {
+				t.Errorf("exit %d, want %d and no logo:\n%s", code, c.code, s)
+			}
+		})
+	}
+}
+
+// ready in counts the time the changes took, from the answer at the prompt: not the
+// time spent reading the list of them before it. The apply takes under a second here,
+// race detector included, so a ready in past the prompt's 2.5s can only be counting it.
+func TestSetupReadyInLeavesOutThePrompt(t *testing.T) {
+	const atThePrompt = 2500 * time.Millisecond
+	sc := newSetupScene(t, ok200)
+	animated(t)
+	saved := setupConfirm
+	setupConfirm = func(io.Writer) bool { time.Sleep(atThePrompt); return true }
+	t.Cleanup(func() { setupConfirm = saved })
+	code, out := sc.run(t, "--from", sc.stage)
+	m := regexp.MustCompile(`\n    v9\.9\.9 ready in (\d+\.\d)s\n`).FindStringSubmatch(onScreen(out))
+	if code != 0 || m == nil {
+		t.Fatalf("exit %d, no ready in:\n%s", code, onScreen(out))
+	}
+	if took, _ := strconv.ParseFloat(m[1], 64); took >= atThePrompt.Seconds() {
+		t.Errorf("ready in %ss counts the %v at the prompt", m[1], atThePrompt)
+	}
 }
