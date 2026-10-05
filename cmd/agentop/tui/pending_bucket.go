@@ -51,18 +51,3 @@ func sessionAgentCell(s session.SessionSummary, w int) string {
 	}
 	return trunc(sanitizeLabel(agent), w)
 }
-
-// pendingLast is sessions with every pending bucket moved after the real sessions, each group in
-// the order it had. A chatty bucket is the most recently updated row much of the time, and it is
-// no session anyone opened. A copy: m.sessions keeps the server's order.
-func pendingLast(sessions []session.SessionSummary) []session.SessionSummary {
-	out := make([]session.SessionSummary, 0, len(sessions))
-	for _, pending := range []bool{false, true} {
-		for _, s := range sessions {
-			if _, _, ok := pendingBucket(s.ID); ok == pending {
-				out = append(out, s)
-			}
-		}
-	}
-	return out
-}

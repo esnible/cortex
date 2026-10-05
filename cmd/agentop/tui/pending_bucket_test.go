@@ -74,6 +74,45 @@ func TestPendingBucket_RowsListAfterRealSessions(t *testing.T) {
 	}
 }
 
+// Buckets list after the real sessions whichever source each row comes from: the server's
+// list, or agentop's cache of a session the server has forgotten, as every session is right
+// after a proxy restart.
+func TestPendingBucket_RowsListAfterRealSessionsFromEitherSource(t *testing.T) {
+	const opencodeSession = "ses_f00ff1689ffeGD4X9nXaHggqh1" // sorts after "pending:"
+	for _, tc := range []struct {
+		name   string
+		ids    []string
+		cached []string // dropped from the server's list; agentop still holds their events
+		want   []string
+	}{
+		{"restart: the bucket is listed, the real sessions are cached",
+			[]string{uuidOpened, uuidOther, pendingOpencode}, []string{uuidOpened, uuidOther},
+			[]string{uuidOther, uuidOpened, pendingOpencode}},
+		{"both cached, the real id sorting after the bucket's",
+			[]string{opencodeSession, pendingOpencode}, []string{opencodeSession, pendingOpencode},
+			[]string{opencodeSession, pendingOpencode}},
+		{"the bucket cached, the real session listed",
+			[]string{uuidOpened, pendingOpencode}, []string{pendingOpencode},
+			[]string{uuidOpened, pendingOpencode}},
+		{"a listed bucket and a cached one, after a listed and a cached session",
+			[]string{"pending:bob", uuidOpened, pendingOpencode, opencodeSession}, []string{pendingOpencode, opencodeSession},
+			[]string{uuidOpened, opencodeSession, "pending:bob", pendingOpencode}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m := uuidPicker(t, 160, tc.ids...)
+			m.sessions = slices.DeleteFunc(m.sessions, func(s session.SessionSummary) bool { return slices.Contains(tc.cached, s.ID) })
+			m.sessionsTbl, m.sessionRowIDs = newSessionsTable(), nil // nothing selected yet, as when agentop attaches after the restart
+			m.rebuildSessionsTable()
+			if !slices.Equal(m.sessionRowIDs, tc.want) {
+				t.Errorf("rows = %v, want %v", m.sessionRowIDs, tc.want)
+			}
+			if got := m.selectedSessionID(); got != tc.want[0] {
+				t.Errorf("cursor on %q, want the first real session %q", got, tc.want[0])
+			}
+		})
+	}
+}
+
 // With the AGENT column showing, a pending bucket's cell names the agent from its id: the
 // server leaves Agent blank for one, which attributes the bucket to no session's agent.
 func TestPendingBucket_AgentCellNamesTheAgent(t *testing.T) {
