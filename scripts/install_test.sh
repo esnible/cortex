@@ -908,14 +908,16 @@ check "ps -o comm= is invoked only where a name, not a path, is wanted" "1" \
 # --- the download's progress bar: what it draws, without a terminal ---
 #
 # The bar is drawn only when stderr is a terminal, so what it draws is checked here one
-# function at a time, as text: size_text (setup's units), progress_line (the arithmetic),
-# bar_cells (how much bar fits), and bar_draw and bar_end (the escapes around the line).
-# The whole-script runs below cover the rest, off a terminal and on a pseudo-terminal.
+# function at a time, as text: size_text (setup's units), progress_line, bar_text and
+# done_line (the arithmetic and the lines), bar_cells and title_line (what fits), and
+# bar_draw, bar_end and bar_verified (the escapes around the line). The whole-script
+# runs below cover the rest, off a terminal and on a pseudo-terminal.
 #
 # with_bar CODE runs CODE with those functions defined, and shows ESC as E and CR as R.
 with_bar() {
 	{
-		for _wb_f in size_text progress_line bar_cells bar_draw bar_end; do
+		for _wb_f in size_text progress_line bar_text done_line bar_cells title_line \
+			bar_draw bar_end bar_verified; do
 			sed -n "/^${_wb_f}()/,/^}/p" "${INSTALL_SH}"
 		done
 		printf '%s\n' "$1"
@@ -928,55 +930,82 @@ check "size_text: kB, to the nearest tenth (not truncated)" "1.1 kB" "$(with_bar
 check "size_text: kB up to 999949" "999.9 kB" "$(with_bar 'size_text 999949')"
 check "size_text: MB from 999950, so never 1000.0 kB" "1.0 MB" "$(with_bar 'size_text 999950')"
 check "size_text: MB, to the nearest tenth (not truncated)" "27.4 MB" "$(with_bar 'size_text 27360000')"
-check "progress_line: 0%" "[----------]   0%  0 B / 2.0 MB" "$(with_bar 'progress_line 0 2000000 10')"
-check "progress_line: 50%" "[#####-----]  50%  1.0 MB / 2.0 MB" "$(with_bar 'progress_line 1000000 2000000 10')"
-check "progress_line: 100%" "[##########] 100%  2.0 MB / 2.0 MB" "$(with_bar 'progress_line 2000000 2000000 10')"
-check "progress_line: one byte short is 99%, not 100%" "[#########-]  99%  2.0 MB / 2.0 MB" \
+check "progress_line: 0%" "──────────    0%  0 B / 2.0 MB" "$(with_bar 'progress_line 0 2000000 10')"
+check "progress_line: 50%" "━━━━━─────   50%  1.0 MB / 2.0 MB" "$(with_bar 'progress_line 1000000 2000000 10')"
+check "progress_line: 100%" "━━━━━━━━━━  100%  2.0 MB / 2.0 MB" "$(with_bar 'progress_line 2000000 2000000 10')"
+check "progress_line: one byte short is 99%, not 100%" "━━━━━━━━━─   99%  2.0 MB / 2.0 MB" \
 	"$(with_bar 'progress_line 1999999 2000000 10')"
 check "progress_line: total unknown shows the bytes so far, no percentage" "1.5 MB" \
 	"$(with_bar 'progress_line 1500000 "" 10')"
-check "progress_line: done past total caps at 100%" "[##########] 100%  3.0 MB / 2.0 MB" \
+check "progress_line: done past total caps at 100%" "━━━━━━━━━━  100%  3.0 MB / 2.0 MB" \
 	"$(with_bar 'progress_line 3000000 2000000 10')"
 check "progress_line: total 0 is unknown, not a division by zero" "1.5 kB" \
 	"$(with_bar 'progress_line 1500 0 10')"
 check "progress_line: width 0 is the figures without a bar" " 50%  1.0 MB / 2.0 MB" \
 	"$(with_bar 'progress_line 1000000 2000000 0')"
-check "bar_cells: a wide terminal gets the 30-cell maximum" "30" "$(with_bar 'bar_cells 200 19')"
-check "bar_cells: a narrower one gets what fits beside the prefix and figures" "12" \
-	"$(with_bar 'bar_cells 60 19')"
-check "bar_cells: under 10 cells is no bar, figures only" "0" "$(with_bar 'bar_cells 50 19')"
+# The accent, shown as < and >, wraps the full cells only, and nothing when none are.
+check "bar_text: the accent wraps the full cells" "<━━━━━>─────  " \
+	"$(with_bar 'bar_sgr="<" bar_sgr0=">"; bar_text 5 10; echo')"
+check "  and is left out with no full cell to colour" "──────────  " \
+	"$(with_bar 'bar_sgr="<" bar_sgr0=">"; bar_text 0 10; echo')"
+check "done_line: the full bar, the size, the check and the time" "━━━━━━━━━━  100%  15.4 MB · sha256 ✓  2.0s" \
+	"$(with_bar 'done_line 15400000 2 10')"
+check "done_line: no time for a download under a second, as setup shows none" \
+	"━━━━━━━━━━  100%  15.4 MB · sha256 ✓" "$(with_bar 'done_line 15400000 0 10')"
+check "done_line: width 0 is the figures without a bar" "100%  1.0 kB · sha256 ✓  3.0s" \
+	"$(with_bar 'done_line 1000 3 0')"
+check "bar_cells: a wide terminal gets the 40-cell maximum" "40" "$(with_bar 'bar_cells 200 2')"
+check "bar_cells: a narrower one gets what fits beside the prefix and the last line's figures" "22" \
+	"$(with_bar 'bar_cells 60 2')"
+check "bar_cells: under 10 cells is no bar, figures only" "0" "$(with_bar 'bar_cells 47 2')"
 check "bar_cells: no room for the figures fails, so nothing wraps" "fails" \
-	"$(with_bar 'bar_cells 40 19 || echo fails')"
-check "bar_draw: hides the cursor once, redraws the line in place, bar_end erases it and shows the cursor" \
-	"E[?25lRDownloading v1 [#####-----]  50%  1.0 MB / 2.0 MBE[KRDownloading v1 [##########] 100%  2.0 MB / 2.0 MBE[KRE[KE[?25h" \
-	"$(with_bar 'bar_prefix="Downloading v1 " bar_total=2000000 bar_w=10 bar_shown=""
+	"$(with_bar 'bar_cells 35 2 || echo fails')"
+check "title_line: the release and platform end at column 78" \
+	"  rosso cortex · installer$(printf '%31s' '')v9.9.9 · darwin/arm64" \
+	"$(with_bar 'title_line 100 v9.9.9 darwin arm64')"
+check "title_line: or at the last column but one, on a terminal narrower than 79" \
+	"  rosso cortex · installer$(printf '%12s' '')v9.9.9 · darwin/arm64" \
+	"$(with_bar 'title_line 60 v9.9.9 darwin arm64')"
+check "title_line: 3 spaces apart at the least" \
+	"  rosso cortex · installer   v9.9.9 · darwin/arm64" "$(with_bar 'title_line 51 v9.9.9 darwin arm64')"
+check "title_line: and fails with no room for them" "fails" \
+	"$(with_bar 'title_line 50 v9.9.9 darwin arm64 || echo fails')"
+check "bar_draw: hides the cursor once, redraws the line in place; bar_end ends the line, the bar left on it, and shows the cursor" \
+	"E[?25lR  ━━━━━─────   50%  1.0 MB / 2.0 MBE[KR  ━━━━━━━━━━  100%  2.0 MB / 2.0 MBE[K
+E[?25h" \
+	"$(with_bar 'bar_prefix="  " bar_total=2000000 bar_w=10 bar_shown=""
 bar_draw 1000000; bar_draw 2000000; bar_end; bar_end')"
 check "bar_end: with no bar drawn, prints nothing" "" "$(with_bar 'bar_shown=""; bar_end')"
+check "bar_verified: redraws the 100% frame as the last line, and ends it" \
+	"E[?25lR  ━━━━━━━━━━  100%  2.0 MB / 2.0 MBE[KR  ━━━━━━━━━━  100%  2.0 MB · sha256 ✓  4.0sE[K
+E[?25h" \
+	"$(with_bar 'bar_prefix="  " bar_total=2000000 bar_w=10 bar_shown=""
+bar_draw 2000000; bar_verified 2000000 4; bar_end')"
+check "bar_verified: with no bar drawn, prints nothing" "" "$(with_bar 'bar_shown=""; bar_verified 1 1')"
 
-# content_length URL asks with `curl -sIL` and reads the redirect chain's last response.
-# The fixtures are what a HEAD through a proxy really returns from GitHub: the proxy's
-# CONNECT reply, the 302 to the asset host with a length of 0, then the asset.
-with_content_length() { # header-fixture [curl-exit]
+# head_length FILE reads a HEAD's saved response, the redirect chain's last answer. The
+# fixtures are what a HEAD through a proxy really returns from GitHub: the proxy's
+# CONNECT reply, the 302 to the asset host with a length of 0, then the asset. That the
+# HEAD is asked with curl -sIL is checked on a terminal below, where install.sh asks it.
+with_head_length() { # response-fixture
 	{
-		printf 'curl() { printf "%%s\\n" "$*" >"%s"; cat "%s"; return %s; }\n' \
-			"${TMP}/cl.args" "$1" "${2:-0}"
-		sed -n '/^content_length()/,/^}/p' "${INSTALL_SH}"
-		printf 'content_length https://example.invalid/a.tar.gz\n'
-	} >"${TMP}/cl.sh"
-	sh "${TMP}/cl.sh" 2>/dev/null
+		sed -n '/^head_length()/,/^}/p' "${INSTALL_SH}"
+		printf 'head_length "%s"\n' "$1"
+	} >"${TMP}/hl.sh"
+	sh "${TMP}/hl.sh" 2>/dev/null
 }
 printf 'HTTP/1.1 200 Connection Established\r\n\r\nHTTP/2 302 \r\nlocation: https://release-assets.example/a\r\ncontent-length: 0\r\n\r\nHTTP/1.1 200 Connection Established\r\n\r\nHTTP/2 200 \r\ncontent-length: 3774359\r\n\r\n' \
-	>"${TMP}/cl-ok"
-check "content_length: the last response's length, past the redirect" "3774359" \
-	"$(with_content_length "${TMP}/cl-ok")"
-check "  asked with curl -sIL" "1" "$(tr ' ' '\n' <"${TMP}/cl.args" | grep -cx -- '-sIL' || true)"
-printf 'HTTP/2 302 \r\ncontent-length: 0\r\n\r\nHTTP/2 200 \r\ntransfer-encoding: chunked\r\n\r\n' >"${TMP}/cl-none"
-check "content_length: a last response with no length is unknown, not the 302's 0" "" \
-	"$(with_content_length "${TMP}/cl-none")"
-printf 'HTTP/2 302 \r\ncontent-length: 0\r\n\r\nHTTP/2 404 \r\ncontent-length: 9\r\n\r\n' >"${TMP}/cl-404"
-check "content_length: a 404's length is not the archive's" "" "$(with_content_length "${TMP}/cl-404")"
-: >"${TMP}/cl-empty"
-check "content_length: a curl that fails is unknown" "" "$(with_content_length "${TMP}/cl-empty" 6)"
+	>"${TMP}/hl-ok"
+check "head_length: the last response's length, past the redirect" "3774359" \
+	"$(with_head_length "${TMP}/hl-ok")"
+printf 'HTTP/2 302 \r\ncontent-length: 0\r\n\r\nHTTP/2 200 \r\ntransfer-encoding: chunked\r\n\r\n' >"${TMP}/hl-none"
+check "head_length: a last response with no length is unknown, not the 302's 0" "" \
+	"$(with_head_length "${TMP}/hl-none")"
+printf 'HTTP/2 302 \r\ncontent-length: 0\r\n\r\nHTTP/2 404 \r\ncontent-length: 9\r\n\r\n' >"${TMP}/hl-404"
+check "head_length: a 404's length is not the archive's" "" "$(with_head_length "${TMP}/hl-404")"
+: >"${TMP}/hl-empty"
+check "head_length: a curl that failed, and saved nothing, is unknown" "" "$(with_head_length "${TMP}/hl-empty")"
+check "head_length: so is a file that is not there" "" "$(with_head_length "${TMP}/hl-absent")"
 
 # --- the thin installer: stage the release, probe it, hand off to agentop setup ---
 #
@@ -1001,8 +1030,8 @@ case "$(uname -m)" in x86_64 | amd64) T_ARCH=amd64 ;; *) T_ARCH=arm64 ;; esac
 #   noexec      cannot be run (exit 126) unless it runs from under ~/.cortex/tmp, as
 #               from a TMPDIR mounted noexec
 #   noexec-all  cannot be run anywhere
-# Any other call is the handoff. It records its argv, what was staged beside it, and
-# what its stdin holds, to T_LOG.
+# Any other call is the handoff. It records its argv, what was staged beside it, what
+# its stdin holds, and CORTEX_INSTALLER_DREW (<unset> when it is), to T_LOG.
 cat >"${TMP}/fake-agentop" <<'EOF'
 #!/bin/sh
 if [ "${1:-}" = --version ]; then echo "agentop v9.9.9"; exit 0; fi
@@ -1024,6 +1053,7 @@ fi
 [ ! -t 1 ] || printf 'setup:start\n' # on a terminal, where setup's output begins
 { printf 'argv'; for a in "$@"; do printf ' [%s]' "$a"; done; printf '\n'; } >>"${T_LOG}"
 printf 'staged %s\n' "$(ls "${0%/*}" | tr '\n' ' ')" >>"${T_LOG}"
+printf 'drew [%s]\n' "${CORTEX_INSTALLER_DREW-<unset>}" >>"${T_LOG}"
 # Read only when it cannot block: a terminal is a fine stdin, the piped script is not.
 if [ -t 0 ]; then echo 'stdin tty' >>"${T_LOG}"; else printf 'stdin [%s]\n' "$(cat)" >>"${T_LOG}"; fi
 EOF
@@ -1033,6 +1063,16 @@ chmod +x "${TMP}/fake-agentop" "${TMP}/fake-cortex"
 # curl serves ${T_REL}/<the URL's last segment>, and fails as `curl -f` does on a 404
 # when there is no such file. Every URL it is asked for goes to T_URLS, a HEAD (-I) as
 # "HEAD <url>", answered with a GitHub-shaped redirect chain and the file's size.
+#
+# Every HEAD logs its arguments to T_MEET's log as "head-args <args>". T_HEAD changes
+# how a HEAD behaves:
+#   wait  answer only once the terminal (T_OUT) shows a bar's frame, waiting up to 3s,
+#         and log to T_MEET whether it saw one: "head framed" or "head blank"
+#   none  answer 404, so the size is unknown
+#   hang  write its pid to T_MEET/<name>.head, then take 6s to answer, logging "head
+#         finished" if it gets that far, or "head killed" when a TERM stops it first.
+#         It ignores HUP, so a HEAD left running outlives the pty's hangup at the end
+#         of the run, and t_heads can see it
 #
 # T_CURL changes how an archive (*.tar.gz) download behaves, recording in T_MEET:
 #   meet  mark that it started, then wait up to 3s for the other archive's mark, and
@@ -1056,7 +1096,33 @@ _n="${_u##*/}"
 _f="${T_REL}/${_n}"
 if [ -n "${_head}" ]; then
 	printf 'HEAD %s\n' "${_u}" >>"${T_URLS}"
-	if [ -f "${_f}" ]; then
+	printf 'head-args %s\n' "$*" >>"${T_MEET}/log"
+	if [ "${T_HEAD:-}" = hang ]; then
+		# HUP ignored, here and in the sleep: script(1) hangs its pty up when the run
+		# ends, and that HUP would kill a HEAD install.sh left running, hiding the leak.
+		# A terminal that stays open sends none, so the HEAD would run on.
+		trap '' HUP
+		"${T_REAL_SLEEP}" 6 &
+		_sp=$!
+		trap 'kill "${_sp}" 2>/dev/null; printf "head killed\n" >>"${T_MEET}/log"; exit 143' TERM
+		printf '%s\n' "$$" >"${T_MEET}/${_n}.head"
+		wait "${_sp}"
+		printf 'head finished\n' >>"${T_MEET}/log"
+	fi
+	if [ "${T_HEAD:-}" = wait ]; then
+		_seen=blank
+		_i=0
+		while [ "${_i}" -lt 30 ]; do
+			if tr '\033\r' 'ER' <"${T_OUT}" | grep -q 'E\[?25lR  '; then
+				_seen=framed
+				break
+			fi
+			"${T_REAL_SLEEP}" 0.1
+			_i=$((_i + 1))
+		done
+		printf 'head %s\n' "${_seen}" >>"${T_MEET}/log"
+	fi
+	if [ -f "${_f}" ] && [ "${T_HEAD:-}" != none ]; then
 		printf 'HTTP/2 302 \r\ncontent-length: 0\r\n\r\nHTTP/2 200 \r\ncontent-length: %s\r\n\r\n' \
 			"$(wc -c <"${_f}" | tr -d ' ')"
 	else
@@ -1086,7 +1152,10 @@ case "${T_CURL:-}:${_n}" in
 		printf 'finished %s\n' "${_n}" >>"${T_MEET}/log"
 		;;
 esac
-[ -f "${_f}" ] || exit 22
+if [ ! -f "${_f}" ]; then
+	printf 'curl: (22) The requested URL returned error: 404\n' >&2 # as -S has it say
+	exit 22
+fi
 if [ -n "${_o}" ]; then cat "${_f}" >"${_o}"; else cat "${_f}"; fi
 EOF
 chmod +x "${TMP}/tbin/curl"
@@ -1156,23 +1225,29 @@ make_release() {
 # (the fake agentop's record), urls (curl's), meet (curl's marks, for T_CURL), sleeps
 # (the stub sleep's calls), and out and err (install.sh's).
 #
-# Five globals change a run, and each is reset after it:
-#   T_CURL   the stub curl's mode, above
+# Seven globals change a run, and each is reset after it:
+#   T_CURL   the stub curl's mode for an archive, above
+#   T_HEAD   the stub curl's mode for a HEAD, above
 #   T_SLEEP  put the stub sleep on PATH: frac (it takes fractions), or nofrac
 #   T_BG     run install.sh in the background, and set T_PID instead of T_ST
 #   T_PTY    run it on a pseudo-terminal, 100 columns wide, with TERM=xterm: yes; int,
 #            to type a ^C once both archive downloads have marked their start and the
-#            bar is on screen; hup, to close the terminal at that point instead; dumb,
-#            with TERM=dumb; or narrow, 40 columns wide. out is then the terminal's bytes,
-#            stdout and stderr together, and pty.pid install.sh's pid.
+#            bar is on screen (and, with T_HEAD=hang, both HEADs have marked theirs);
+#            hup, to close the terminal at that point instead; dumb,
+#            with TERM=dumb; narrow, 40 columns wide; or mid, 60. out is then the
+#            terminal's bytes, stdout and stderr together, and pty.pid install.sh's pid.
 #   T_PIPE   run it as `curl … | sh -s --` does: the script on stdin, so $0 is "sh" and
 #            the bootstrap may re-exec, from the sandbox, so no file named sh passes for $0
+#   T_ENV    NAME=VALUE words for install.sh's environment. NO_COLOR and
+#            CORTEX_INSTALLER_DREW are otherwise unset, so this shell's cannot decide a run.
 T_N=0
 T_CURL=""
+T_HEAD=""
 T_SLEEP=""
 T_BG=""
 T_PTY=""
 T_PIPE=""
+T_ENV=""
 # t_pty SCRIPT runs `sh SCRIPT` on a pseudo-terminal, with util-linux's script (CI's)
 # or the BSD one (macOS's). With neither, the run fails, and so do its checks.
 # t_pty_bg is the same in the background, with script's own pid in T_SPID.
@@ -1214,18 +1289,22 @@ run_install() {
 		bare) _ri_skip=1 ;;
 	esac
 	if [ -n "${T_PIPE}" ]; then set -- -s -- "$@"; else set -- "${INSTALL_SH}" "$@"; fi
+	# shellcheck disable=SC2086 # T_ENV is NAME=VALUE words, split on purpose
 	set -- env -u AUTHBRIDGE_SCRIPT_REF -u AUTHBRIDGE_INSTALL_ONLY -u AUTHBRIDGE_VERSION -u AUTHBRIDGE_REF \
+		-u NO_COLOR -u CORTEX_INSTALLER_DREW \
 		HOME="${T_RUN}/home" TMPDIR="${T_RUN}/tmp" PATH="${_ri_path}" \
 		AUTHBRIDGE_SKIP_DOWNLOAD="${_ri_skip}" \
 		T_REL="${T_REL:-}" T_URLS="${T_RUN}/urls" T_LOG="${T_RUN}/log" T_PROBE="${_ri_probe}" \
-		T_CURL="${T_CURL}" T_MEET="${T_RUN}/meet" T_REAL_SLEEP="${T_REAL_SLEEP}" \
+		T_CURL="${T_CURL}" T_HEAD="${T_HEAD}" T_OUT="${T_RUN}/out" T_MEET="${T_RUN}/meet" \
+		T_REAL_SLEEP="${T_REAL_SLEEP}" \
 		T_SLEEPS="${T_RUN}/sleeps" T_SLEEP_NOFRAC="$([ "${T_SLEEP}" != nofrac ] || echo 1)" \
-		sh "$@"
+		${T_ENV} sh "$@"
 	T_ST=0
 	if [ -n "${T_PTY}" ]; then
 		# A pty starts with no size, so give it one before install.sh asks.
 		_ri_cols=100
 		[ "${T_PTY}" != narrow ] || _ri_cols=40
+		[ "${T_PTY}" != mid ] || _ri_cols=60
 		_ri_term=xterm
 		[ "${T_PTY}" != dumb ] || _ri_term=dumb
 		{
@@ -1248,7 +1327,13 @@ run_install() {
 			t_until gone t_gone
 		elif [ "${T_PTY}" = int ]; then
 			: >"${T_RUN}/out"
-			{ t_until 2 t_marks; t_until yes t_drawn; printf '\003'; "${T_REAL_SLEEP}" 1; } \
+			{
+				t_until 2 t_marks
+				t_until yes t_drawn
+				[ "${T_HEAD}" != hang ] || t_until 2 t_hmarks
+				printf '\003'
+				"${T_REAL_SLEEP}" 1
+			} \
 				| t_pty "${T_RUN}/pty.sh" >"${T_RUN}/out" 2>&1 || T_ST=$?
 		else
 			t_pty "${T_RUN}/pty.sh" </dev/null >"${T_RUN}/out" 2>&1 || T_ST=$?
@@ -1262,13 +1347,15 @@ run_install() {
 		"$@" <"${TMP}/piped-script" >"${T_RUN}/out" 2>"${T_RUN}/err" || T_ST=$?
 	fi
 	T_CURL=""
+	T_HEAD=""
 	T_SLEEP=""
 	T_BG=""
 	T_PTY=""
 	T_PIPE=""
+	T_ENV=""
 }
 # t_drawn says yes once the terminal has been sent a bar: the cursor hidden, then a line.
-t_drawn() { if tr '\033\r' 'ER' <"${T_RUN}/out" | grep -q 'E\[?25lRDownloading'; then echo yes; fi; }
+t_drawn() { if tr '\033\r' 'ER' <"${T_RUN}/out" | grep -q 'E\[?25lR  '; then echo yes; fi; }
 # t_gone says gone once the pty run's install.sh has exited, and alive until then. A
 # zombie has exited: in a container whose pid 1 is no init, an orphan is never reaped,
 # and kill -0 still finds it.
@@ -1332,6 +1419,26 @@ t_marks() { # how many archive downloads have marked their start
 	set -- "${T_RUN}/meet"/*.tar.gz
 	if [ -e "$1" ]; then echo "$#"; else echo 0; fi
 }
+t_hmarks() { # how many T_HEAD=hang HEADs have marked their start
+	set -- "${T_RUN}/meet"/*.head
+	if [ -e "$1" ]; then echo "$#"; else echo 0; fi
+}
+# t_heads says, for the T_HEAD=hang HEADs: how many marked their start, how many are
+# still running (a zombie has ended, as t_gone counts one), and how many ran their 6s
+# out. "2 0 0" is both stopped, and neither waited for.
+t_heads() {
+	_th_alive=0
+	for _th_f in "${T_RUN}/meet"/*.head; do
+		[ -e "${_th_f}" ] || continue
+		_th_pid=$(cat "${_th_f}")
+		kill -0 "${_th_pid}" 2>/dev/null || continue
+		case "$(ps -o stat= -p "${_th_pid}" 2>/dev/null | tr -d ' ')" in
+			Z*) ;;
+			*) _th_alive=$((_th_alive + 1)) ;;
+		esac
+	done
+	echo "$(t_hmarks) ${_th_alive} $(cat "${T_RUN}/meet/log" 2>/dev/null | grep -c '^head finished$' || true)"
+}
 t_tmp_left() { ls -A "${T_RUN}/tmp" | wc -l | tr -d ' '; } # what is left in TMPDIR
 T_NOFLAGS="[setup] [--from] [<stage>] [--handoff-bytes=<N>] [--handoff-seconds=<S>]"
 
@@ -1368,6 +1475,13 @@ check "handoff: --handoff-bytes is the size of the two archives" "${T_BYTES}" \
 	"$(t_log argv | sed -n 's/.*\[--handoff-bytes=\([0-9]*\)\].*/\1/p')"
 check "handoff: setup's stdin is the terminal or /dev/null, never the piped script" "ok" \
 	"$(t_stdin)"
+check "handoff: off a terminal nothing was drawn, so CORTEX_INSTALLER_DREW is unset" "[<unset>]" \
+	"$(t_log drew)"
+# A value left in the environment is cleared, not passed on: setup would hide its header.
+T_ENV="CORTEX_INSTALLER_DREW=1"
+run_install ok release --ref=v9.9.9
+check "  and a CORTEX_INSTALLER_DREW=1 already set is unset, not passed on" "0 [<unset>]" \
+	"${T_ST} $(t_log drew)"
 
 # Each flag install.sh shares with setup is passed on, in one fixed order; --local,
 # setup's default, is not.
@@ -1463,33 +1577,129 @@ check "  with both downloads stopped before it exits" "2 2 0" \
 check "  leaving no stage, and never handing off" "0 0 0" \
 	"$(t_tmp_left) $(t_nlog probe) $(t_nlog argv)"
 
-# --- on a terminal: the bar, and what is left of it when the download ends ---
-# out is the terminal's bytes with ESC as E and CR as R. The archives take 1s, so the
-# bar is drawn at least once; "setup:start" is the fake setup's first output.
+# --- on a terminal: the title, the bar, and what stays of them when the download ends ---
+# out is the terminal's bytes with ESC as E and CR as R; a pty ends each line with CR LF.
+# The archives take 1s, so the bar is drawn at least once; "setup:start" is the fake
+# setup's first output.
 t_tty() { tr '\033\r' 'ER' <"${T_RUN}/out"; }
 t_ntty() { t_tty | grep -o -- "$1" | wc -l | tr -d ' '; } # how often a string is on screen
+t_flat() { t_tty | tr '\n' 'N'; }                          # the same, LF shown as N
+# t_frames is each frame the bar drew, one a line, without its colour, the CR and two
+# spaces before it, or the erase-to-end after it.
+t_frames() { t_tty | sed 's/E\[[0-9;]*m//g' | grep -o 'R  [^R]*E\[K' | sed 's/^R  //; s/E\[K$//'; }
+t_frame() { t_frames | sed -n "$1"; } # the frames sed -n picks with $1: 1p, $p, …
+# t_title is the title's line, and t_width a line's width in characters, for one with
+# 2 ·, which are 2 bytes each. t_titled says yes when the title has the release and
+# platform at its end, 3 spaces or more from the rest, and shows it if not. (A
+# function, not an inline `case`, for the reason t_under gives.)
+t_title() { t_tty | grep -o '  rosso cortex · installer.*' | sed -n '1s/R$//p'; }
+t_width() { echo $(($(printf '%s' "$1" | wc -c) - 2)); }
+t_titled() {
+	case "$(t_title)" in
+		"  rosso cortex · installer   "*" v9.9.9 · ${T_OS}/${T_ARCH}") echo yes ;;
+		*) t_title ;;
+	esac
+}
+t_rep() { _tr_i=0; while [ "${_tr_i}" -lt "$2" ]; do printf '%s' "$1"; _tr_i=$((_tr_i + 1)); done; }
+T_FULL=$(t_rep ━ 40) # the full bar, on the 100-column pty
+T_SIZE=$(with_bar "size_text ${T_BYTES}")
 T_CURL=slow
 T_PTY=yes
 run_install ok release --ref=v9.9.9
 check "terminal: the bar is drawn, with the archives' sizes asked for by HEAD" "0 2 1" \
 	"${T_ST} $(grep -c '^HEAD .*\.tar\.gz$' "${T_RUN}/urls" || true) $(t_ntty 'E\[?25l')"
+check "  each asked with curl -sIL, which follows the redirects, giving up after 10s" "2" \
+	"$(grep -c "^head-args -sIL --max-time 10 https://github.com/rossoctl/cortex/releases/download/v9.9.9/[a-z]*_v9.9.9_${T_OS}_${T_ARCH}\.tar\.gz\$" "${T_RUN}/meet/log" || true)"
 check "  and the percentage is of their sizes together" "yes" \
-	"$(if t_tty | grep -qF -- "/ $(with_bar "size_text ${T_BYTES}")E[K"; then echo yes; else t_tty; fi)"
+	"$(if t_tty | grep -qF -- "/ ${T_SIZE}E[K"; then echo yes; else t_tty; fi)"
 check "  instead of the plain line" "0" "$(t_ntty "for ${T_OS}/${T_ARCH}\.\.\.")"
-# What follows the erase can include a warning of the steps between (no python3 for the
-# dump helper, say), but nothing of the bar, and setup comes after it.
-t_after_erase() { # does what follows the erase hold $1? yes or no
-	if t_tty | tr '\n' 'N' | sed -n 's/.*RE\[KE\[?25h//p' | grep -q -- "$1"; then echo yes; else echo no; fi
+check "terminal: a title, with the release and platform ending at column 78" "78 yes" \
+	"$(t_width "$(t_title)") $(t_titled)"
+check "  on the line above the bar's first frame" "1" \
+	"$(t_flat | grep -c "v9.9.9 · ${T_OS}/${T_ARCH}RNE\[?25lR  " || true)"
+check "  which is drawn at once, before a byte has landed" "0 B" "$(t_frame 1p)"
+check "  in the accent, a 256-colour red" "yes" \
+	"$(if [ "$(t_ntty 'E\[38;5;167m━')" -gt 0 ]; then echo yes; else t_tty; fi)"
+_n=$(t_frames | wc -l | tr -d ' ')
+check "terminal: the download ends on its 100% frame" "${T_FULL}  100%  ${T_SIZE} / ${T_SIZE}" \
+	"$(t_frame "$((_n - 1))p")"
+check "  then draws that line once more, with sha256 ✓ and how long it took" "yes" \
+	"$(if t_frame '$p' | grep -qxE "${T_FULL}  100%  ${T_SIZE} · sha256 ✓(  [0-9]+\.0s)?"; then echo yes; else t_frames; fi)"
+check "  and never erases the bar: no CR then erase-to-end" "0" "$(t_ntty 'RE\[K')"
+# What follows the bar's line can include a warning of the steps between (no python3
+# for the dump helper, say), but nothing of the bar, and setup comes after it.
+t_after_bar() { # does what follows the end of the bar's line hold $1? yes or no
+	if t_flat | sed -n 's/.*sha256 ✓[^N]*E\[KRNE\[?25h//p' | grep -q -- "$1"; then echo yes; else echo no; fi
 }
-check "  erased, with the cursor shown again, before setup starts" "1 yes no no" \
-	"$(t_ntty 'E\[?25h') $(t_after_erase setup:start) $(t_after_erase Downloading) $(t_after_erase 'E\[')"
+check "  ending that line, then showing the cursor once, before setup starts" "1 yes no no" \
+	"$(t_ntty 'E\[?25h') $(t_after_bar setup:start) $(t_after_bar 'rosso cortex') $(t_after_bar 'E\[')"
+check "  and tells setup it drew them: CORTEX_INSTALLER_DREW=1" "[1]" "$(t_log drew)"
+# NO_COLOR keeps the bar, without the accent.
+T_CURL=slow
+T_PTY=yes
+T_ENV="NO_COLOR=1"
+run_install ok release --ref=v9.9.9
+check "terminal, NO_COLOR: the same bar, no colour" "0 0 yes" \
+	"${T_ST} $(t_ntty 'E\[[0-9;]*m') $(if t_frame '$p' | grep -q "^${T_FULL}  100%"; then echo yes; else t_frames; fi)"
+# The first frame comes before the size requests answer: each HEAD waits until the
+# terminal shows one, for up to 3s, and says whether it did. Asked first and drawn
+# after, they would wait out the 3s each, and see none.
+T_CURL=slow
+T_HEAD=wait
+T_PTY=yes
+run_install ok release --ref=v9.9.9
+check "terminal: the bar is on screen while the size requests are still out" "0 2" \
+	"${T_ST} $(grep -c '^head framed$' "${T_RUN}/meet/log" || true)"
+# Sizes the server will not give leave the bar counting bytes, but the download still
+# ends on a full bar at 100%, of what landed.
+T_CURL=slow
+T_HEAD=none
+T_PTY=yes
+run_install ok release --ref=v9.9.9
+check "terminal, sizes unknown: bytes only until the end, which is still 100%, full" "0 2 yes" \
+	"${T_ST} $(t_frames | grep -c '%' || true) $(if t_frame '$p' | grep -q "^${T_FULL}  100%  ${T_SIZE} · sha256 ✓"; then echo yes; else t_frames; fi)"
+# A HEAD that hangs past the download is stopped when the download ends, not waited for:
+# the handoff follows the archives, whatever the HEADs are doing, and none is left
+# running past it. Left alone, each would take its 6s, and then finish.
+T_CURL=slow
+T_HEAD=hang
+T_PTY=yes
+run_install ok release --ref=v9.9.9
+check "terminal, HEADs that hang: handed off with both stopped, not waited for" "0 1 2 0 0" \
+	"${T_ST} $(t_nlog argv) $(t_heads)"
+# 60 columns: the title ends at the last column but one, and the bar fits beside the
+# last line's figures.
+T_CURL=slow
+T_PTY=mid
+run_install ok release --ref=v9.9.9
+check "terminal, 60 columns: the title ends at column 59, the bar is 22 cells" "0 59 22" \
+	"${T_ST} $(t_width "$(t_title)") $(t_frame '$p' | grep -o '━' | wc -l | tr -d ' ')"
 make_release v9.9.9
 rm -f "${T_REL}/cortex_v9.9.9_${T_OS}_${T_ARCH}.tar.gz"
 T_CURL=slow
 T_PTY=yes
 run_install ok release --ref=v9.9.9
-check "terminal: a failed download erases the bar and shows the cursor before the error" "1 1 1" \
-	"${T_ST} $(t_ntty "RE\[KE\[?25herror: download failed: cortex_v9.9.9_${T_OS}_${T_ARCH}.tar.gz") $(t_ntty 'E\[?25h')"
+# curl's own error waits until the bar's line has ended, rather than printing into it.
+check "terminal: a failed download ends the bar's line, the bar left on it, then shows the cursor, curl's error and its own" "1 1 1 0" \
+	"${T_ST} $(t_flat | grep -c "E\[KRNE\[?25hcurl: (22) The requested URL returned error: 404RNerror: download failed: cortex_v9.9.9_${T_OS}_${T_ARCH}.tar.gz" || true) $(t_ntty 'E\[?25h') $(t_ntty 'RE\[K')"
+# The same die with both HEADs still out: neither outlives install.sh.
+T_CURL=slow
+T_HEAD=hang
+T_PTY=yes
+run_install ok release --ref=v9.9.9
+check "terminal: a die with the HEADs still out leaves neither running" "1 2 0 0" "${T_ST} $(t_heads)"
+# Past the download the bar's line is still open, on its 100% frame, until the checksums
+# verify: a die there ends it first, and so does a mismatch, before shasum's lines.
+make_release v9.9.9 one
+T_PTY=yes
+run_install ok release --ref=v9.9.9
+check "terminal: a missing checksum dies on a line of its own, below the bar's 100% frame" "1 1 0" \
+	"${T_ST} $(t_flat | grep -c "  100%  [^N]*E\[KRNE\[?25herror: checksums.txt has no usable entry for cortex_" || true) $(t_ntty 'RE\[K')"
+make_release v9.9.9 bad
+T_PTY=yes
+run_install ok release --ref=v9.9.9
+check "terminal: a checksum that does not match shows shasum's lines below the bar's, then dies" "1 1" \
+	"${T_ST} $(t_flat | grep -c "  100%  [^N]*E\[KRNE\[?25h[^N]*: FAILED" || true)"
 # A real ^C: typed into the terminal, so the kernel sends SIGINT to everything in the
 # foreground, as it does for a person. The curls ignore it, so the trap has to stop them.
 #
@@ -1503,18 +1713,21 @@ if [ -n "$(sh -c 'kill -INT $$; echo ignored' 2>/dev/null || :)" ]; then
 else
 	make_release v9.9.9
 	T_CURL=hold
+	T_HEAD=hang
 	T_PTY=int
 	run_install ok release --ref=v9.9.9
 	t_until 2 t_meet killed
 	check "terminal: ^C mid-download exits 130" "130" "${T_ST}"
-	check "  erasing the bar and showing the cursor" "1 1" \
-		"$(t_ntty 'E\[?25l') $(t_tty | grep -c 'RE\[KE\[?25h$' || true)"
+	check "  stopping both HEADs too, which ignore a ^C as the downloads do" "2 0 0" "$(t_heads)"
+	# The terminal echoes the ^C where the cursor is, at the end of the bar's line.
+	check "  ending the bar's line, the bar left on it, and showing the cursor last" "1 E[?25h 0" \
+		"$(t_ntty 'E\[?25l') $(t_tty | tail -n 1) $(t_ntty 'RE\[K')"
 	check "  stopping both downloads, leaving no stage, never handing off" "2 0 0 0" \
 		"$(t_meet killed) $(t_tmp_left) $(t_nlog probe) $(t_nlog argv)"
 fi
 # The terminal closed mid-download, with the bar on screen. The HUP runs the EXIT trap,
-# and the bar's erase then fails, as there is no terminal left to write to: under set -e
-# that ended the trap before it removed the stage. Cleanup must not depend on the erase.
+# and ending the bar's line then fails, as there is no terminal left to write to: under
+# set -e that ended the trap before it removed the stage. Cleanup must not depend on it.
 make_release v9.9.9
 T_CURL=hold
 T_PTY=hup
@@ -1523,8 +1736,9 @@ check "terminal closed mid-download: the bar was drawn, and install.sh has exite
 	"$(t_drawn) $(if [ -s "${T_RUN}/pty.pid" ]; then t_gone; else echo 'no pid'; fi)"
 check "  leaving no stage, and never handing off" "0 0 0" \
 	"$(t_tmp_left) $(t_nlog probe) $(t_nlog argv)"
-# Terminals the bar cannot use get the plain line, and no HEADs: TERM=dumb cannot erase,
-# and a line wider than the terminal would wrap, so each redraw would add a line.
+# Terminals the bar cannot use get the plain line, and no HEADs: TERM=dumb cannot redraw
+# a line, and 40 columns cannot hold the title, which would wrap. Setup is not told
+# anything was drawn, so it draws its own header.
 make_release v9.9.9
 for _tp in dumb narrow; do
 	T_CURL=slow
@@ -1532,6 +1746,7 @@ for _tp in dumb narrow; do
 	run_install ok release --ref=v9.9.9
 	check "terminal, ${_tp}: the plain line instead of the bar" "0 1 0 0" \
 		"${T_ST} $(t_ntty "Downloading v9.9.9 for ${T_OS}/${T_ARCH}\.\.\.") $(t_ntty 'E\[') $(grep -c '^HEAD ' "${T_RUN}/urls" || true)"
+	check "  and CORTEX_INSTALLER_DREW unset" "[<unset>]" "$(t_log drew)"
 done
 
 # --- the checksum rule: exactly two verified entries, or nothing runs ---
@@ -1604,9 +1819,11 @@ check "old agentop, channel build: the guard names the agentop it ran" "1 yes" \
 check "  and offers no --ref one-liner for the channel" "no" "$(t_in "--ref=${CHANNEL_TAG}" err)"
 
 # --- AUTHBRIDGE_SKIP_DOWNLOAD=1: repair what is installed, offline ---
+T_ENV="CORTEX_INSTALLER_DREW=1"
 run_install ok repair
 check "repair: probes the installed agentop" "${T_RUN}/home/.local/bin/agentop" "$(t_log probe)"
 check "  and execs its setup, with no --from and no counts" "[setup]" "$(t_argv)"
+check "  and, having drawn nothing, unsets a CORTEX_INSTALLER_DREW already set" "[<unset>]" "$(t_log drew)"
 check "  touching no network" "" "$(cat "${T_RUN}/urls")"
 run_install ok repair --claude-code --yes --no-service --install-only --no-modify-path
 check "repair: the flags are passed on" \

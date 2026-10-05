@@ -12,10 +12,11 @@
 #
 # This script keeps only what has to happen before there is an agentop to run: the
 # bootstrap below, the download, the checksums, and the extract. It prints little of
-# its own: the download's progress (a bar it erases, on a terminal; one plain line
-# otherwise), errors, and a few warnings and notices from those steps, such as a
-# dump helper it could not fetch or a TMPDIR that would not run programs. The rest
-# comes from setup. Traffic is decrypted and parsed for viewing; nothing is rewritten.
+# its own: the download's progress (on a terminal a title and a bar, which stay on
+# screen; one plain line otherwise), errors, and a few warnings and notices from those
+# steps, such as a dump helper it could not fetch or a TMPDIR that would not run
+# programs. The rest comes from setup. Traffic is decrypted and parsed for viewing;
+# nothing is rewritten.
 #
 # Options (pass through the pipe with `sh -s --`, e.g.
 #   curl -fsSL ...install.sh | sh -s -- --install-only):
@@ -86,8 +87,10 @@ case "$(uname -s)" in
 esac
 
 info() { printf '%s\n' "$*"; }
-warn() { printf 'warning: %s\n' "$*" >&2; }
-die()  { printf 'error: %s\n' "$*" >&2; exit 1; }
+# A warning or an error ends the download bar's line first when one is open, so the
+# message starts on a line of its own. bar_shown is set only once bar_end is defined.
+warn() { [ -z "${bar_shown:-}" ] || bar_end; printf 'warning: %s\n' "$*" >&2; }
+die()  { [ -z "${bar_shown:-}" ] || bar_end; printf 'error: %s\n' "$*" >&2; exit 1; }
 
 # There is deliberately NO sandbox-detection probe here. We never try to GUESS whether
 # a sandbox will block launchd/systemd or /tmp — a passive probe cannot tell (a
@@ -830,16 +833,22 @@ stage_session_dump() {
 
 # --- the download's progress bar ---
 #
-# On a terminal the download is one line on stderr, redrawn in place and erased when
-# the download ends, so none of it stays on screen: setup's first line says what was
-# downloaded. Off a terminal (a log, CI, a pipe) a redrawn line would be noise, so the
-# download prints one plain line instead. So it does on a terminal the bar cannot use:
-# TERM=dumb, which cannot erase, or one too narrow for the bar's figures.
+# On a terminal the download draws two lines on stderr: a title naming the release
+# and the platform, then a bar redrawn in place. Neither is erased. The bar ends on its
+# 100% frame, and once the checksums verify its line is drawn a last time, with
+# "· sha256 ✓" and how long the download took, and ended. The two lines stand in for
+# setup's header and its "✓ downloaded" row, and hand_off tells setup so.
+#
+# Off a terminal (a log, CI, a pipe) a redrawn line would be noise, so the download
+# prints one plain line instead. So it does on a terminal the bar cannot use:
+# TERM=dumb, which cannot redraw a line, or one too narrow for the title or for the
+# bar's figures.
 #
 # The sizes are in setup's units (downloadSize in cmd/agentop/cmd_setup.go), so the
-# bar's last figure and setup's "✓ downloaded" line agree. ASCII, and no colour: setup's
-# accent is one shade for a light terminal and another for a dark one, and a shell
-# cannot tell which it is drawing on.
+# figures agree with setup's. The bar's full cells are in the accent unless NO_COLOR
+# is set to anything but empty, which is how setup reads it too. The accent here is one
+# 256-colour red: setup's is one shade for a light terminal and another for a dark one,
+# and a shell cannot tell which it is drawing on.
 
 # size_text N prints N bytes as setup does: B under 1000, kB under 999950 (so never
 # "1000.0 kB"), MB from there, to the nearest tenth. Integers only, as sh has no others.
@@ -859,8 +868,8 @@ size_text() {
 # WIDTH cells, the percentage, and both sizes. With TOTAL unknown (empty, or 0) there is
 # nothing to take a percentage of, so it prints the bytes so far alone. DONE past TOTAL,
 # a server that sized the file wrong, shows as 100% rather than a bar that overflows.
-# WIDTH 0 is the figures without a bar. Pure: no terminal and no escapes, so the suite
-# checks it as text.
+# WIDTH 0 is the figures without a bar. Pure: no terminal, and no escapes but the
+# accent's when bar_sgr holds one, so the suite checks it as text.
 progress_line() {
 	case "$2" in
 		'' | 0)
@@ -870,32 +879,66 @@ progress_line() {
 	esac
 	_pl_done=$1
 	[ "${_pl_done}" -le "$2" ] || _pl_done=$2
-	_pl_bar=""
-	if [ "$3" -gt 0 ]; then
-		_pl_fill=$((_pl_done * $3 / $2))
-		_pl_i=0
-		while [ "${_pl_i}" -lt "$3" ]; do
-			if [ "${_pl_i}" -lt "${_pl_fill}" ]; then _pl_bar="${_pl_bar}#"; else _pl_bar="${_pl_bar}-"; fi
-			_pl_i=$((_pl_i + 1))
-		done
-		_pl_bar="[${_pl_bar}] "
-	fi
-	printf '%s%3d%%  %s / %s\n' "${_pl_bar}" "$((_pl_done * 100 / $2))" "$(size_text "$1")" "$(size_text "$2")"
+	printf '%s%3d%%  %s / %s\n' "$(bar_text "$((_pl_done * $3 / $2))" "$3")" \
+		"$((_pl_done * 100 / $2))" "$(size_text "$1")" "$(size_text "$2")"
+}
+
+# bar_text FULL WIDTH prints a bar of WIDTH cells, the first FULL of them full, and the
+# two spaces before its figures; nothing for WIDTH 0. A full cell is ━, in the accent
+# when bar_sgr holds one, and the rest are ─, so the two differ without colour too.
+bar_text() {
+	[ "$2" -gt 0 ] || return 0
+	_bx_on=""
+	_bx_off=""
+	_bx_i=0
+	while [ "${_bx_i}" -lt "$2" ]; do
+		if [ "${_bx_i}" -lt "$1" ]; then _bx_on="${_bx_on}━"; else _bx_off="${_bx_off}─"; fi
+		_bx_i=$((_bx_i + 1))
+	done
+	[ -z "${_bx_on}" ] || [ -z "${bar_sgr:-}" ] || _bx_on="${bar_sgr}${_bx_on}${bar_sgr0:-}"
+	printf '%s%s  ' "${_bx_on}" "${_bx_off}"
+}
+
+# done_line BYTES SECS WIDTH prints the bar's last line, for a download of BYTES that
+# took SECS whole seconds and whose checksums verified: the bar full, the size, the
+# check, and the time as setup shows one. Setup shows no time of 0, and nor does this.
+# The same figures as setup's "✓ downloaded" row, which this line stands in for.
+done_line() {
+	_dn_t=""
+	[ "$2" -le 0 ] || _dn_t="  $2.0s"
+	printf '%s100%%  %s · sha256 ✓%s\n' "$(bar_text "$3" "$3")" "$(size_text "$1")" "${_dn_t}"
 }
 
 # bar_cells COLS PREFIX_LEN prints how many bar cells fit on a COLS-wide terminal after
-# a PREFIX_LEN-character prefix: up to 30, or 0 when fewer than 10 fit. It fails when
+# a PREFIX_LEN-character prefix: up to 40, or 0 when fewer than 10 fit. It fails when
 # even the figures do not fit, because a line wider than the terminal wraps, and a
 # wrapped line cannot be redrawn in place: every redraw would leave a line behind. The
-# figures take at most 25 characters ("100%  999.9 MB / 999.9 MB"), the bar 3 more than
-# its cells, and the last column stays empty, since writing it can wrap the line.
+# figures take at most 33 characters, on the last line ("100%  999.9 MB · sha256 ✓
+# 999.0s"), the bar 2 more than its cells, and the last column stays empty, since
+# writing it can wrap the line.
 bar_cells() {
-	_bc=$(($1 - 1 - $2 - 25))
+	_bc=$(($1 - 1 - $2 - 33))
 	[ "${_bc}" -ge 0 ] || return 1
-	_bc=$((_bc - 3))
-	[ "${_bc}" -le 30 ] || _bc=30
+	_bc=$((_bc - 2))
+	[ "${_bc}" -le 40 ] || _bc=40
 	[ "${_bc}" -ge 10 ] || _bc=0
 	printf '%s\n' "${_bc}"
+}
+
+# title_line COLS VERSION OS ARCH prints the line above the bar: what this is, and
+# VERSION · OS/ARCH right-aligned to column 78, or to the last but one of a narrower
+# terminal, so it does not wrap. It fails when the two halves do not fit 3 spaces apart.
+# Widths are in characters, not bytes: each half holds one ·, 2 bytes wide in UTF-8 and
+# 1 character, and the rest is ASCII, so each half is counted from its ASCII parts
+# rather than measured.
+title_line() {
+	_tl_edge=78
+	[ "$1" -ge 79 ] || _tl_edge=$(($1 - 1))
+	# 26 is "  rosso cortex · installer"; 3 + 1 are the " · " and the "/".
+	_tl_gap=$((_tl_edge - 26 - ${#2} - 3 - ${#3} - 1 - ${#4}))
+	[ "${_tl_gap}" -ge 3 ] || return 1
+	# shellcheck disable=SC2059 # the width is a number worked out here
+	printf "  rosso cortex · installer%${_tl_gap}s%s\n" '' "$2 · $3/$4"
 }
 
 # term_cols prints the width of the terminal on stderr: stty's, else COLUMNS, else 80.
@@ -920,24 +963,35 @@ bar_draw() {
 	printf '\r%s%s\033[K' "${bar_prefix}" "$(progress_line "$1" "${bar_total}" "${bar_w}")" >&2
 }
 
-# bar_end erases the bar's line and shows the cursor again, if a bar was drawn. The
-# download calls it the moment it ends, and the EXIT trap calls it too, so neither the
-# handoff, a die, an INT nor a TERM leaves the cursor hidden or half a bar on screen.
-# (A KILL does: nothing can catch it.) The write fails when the terminal has closed,
-# and is no error then: there is nothing left to erase.
+# bar_end ends the bar's line, leaving the bar on it, and shows the cursor again, if a
+# bar was drawn and its line is still open. bar_verified calls it once the checksums
+# verify; before that, warn, die and the downloads' errors call it, so what they print
+# starts on a line of its own; and the EXIT trap calls it, so neither a die, an INT, a
+# TERM nor a HUP leaves the cursor hidden. (A KILL does: nothing can catch it.) The
+# write fails when the terminal has closed, and is no error then: there is nothing
+# left to end.
 bar_end() {
 	[ -n "${bar_shown:-}" ] || return 0
 	bar_shown=""
-	printf '\r\033[K\033[?25h' >&2 || :
+	printf '\n\033[?25h' >&2 || :
 }
 
-# content_length URL prints the size the server gives for URL: the Content-Length of the
-# last response in its redirect chain, or nothing if that response is not a 2xx or has
-# none. Reset at each response, so a final response without one is unknown rather
-# than the 302's 0. Only the bar uses it, so a HEAD that fails costs the percentage,
-# never the install; --max-time caps how long a HEAD that hangs can hold the script up.
-content_length() {
-	curl -sIL --max-time 10 "$1" 2>/dev/null | tr -d '\r' | awk '
+# bar_verified BYTES SECS draws the bar's line a last time, as done_line has it, over
+# the 100% frame, and ends it.
+bar_verified() {
+	[ -n "${bar_shown:-}" ] || return 0
+	printf '\r%s%s\033[K' "${bar_prefix}" "$(done_line "$1" "$2" "${bar_w}")" >&2
+	bar_end
+}
+
+# head_length FILE prints the size a HEAD's response, saved in FILE, gives: the
+# Content-Length of the last response in its redirect chain, or nothing if that
+# response is not a 2xx or has none. Reset at each response, so a final response
+# without one is unknown rather than the 302's 0. Only the bar uses it, so a HEAD that
+# fails costs the percentage, never the install. A file, not a pipe from curl: the
+# HEAD runs in the background as curl itself, so that killing its pid stops it.
+head_length() {
+	tr -d '\r' 2>/dev/null <"$1" | awk '
 		/^HTTP\// { st = $2; n = "" }
 		tolower($1) == "content-length:" { n = $2 }
 		END { if (st ~ /^2/ && n ~ /^[0-9]+$/) print n }'
@@ -948,10 +1002,10 @@ file_bytes() {
 	if [ -f "$1" ]; then wc -c <"$1" | tr -d '[:space:]'; else echo 0; fi
 }
 
-# stop_downloads stops any download still running, and waits for it to end: the EXIT
-# trap's first step, so a die, an INT, a TERM or a HUP never leaves a curl writing into
-# a stage being deleted. A script's background jobs ignore INT, so a Ctrl-C does not
-# stop them by itself.
+# stop_downloads stops any download still running, and the bar's size requests, and
+# waits for them to end: the EXIT trap's first step, so a die, an INT, a TERM or a HUP
+# never leaves a curl writing into a stage being deleted. A script's background jobs
+# ignore INT, so a Ctrl-C does not stop them by itself.
 stop_downloads() {
 	# shellcheck disable=SC2086 # the pids, split into words on purpose
 	[ -z "${dl_pids:-}" ] || kill ${dl_pids} 2>/dev/null || :
@@ -992,6 +1046,17 @@ hand_off() {
 	[ "${MODE}" != "install-only" ] || set -- "$@" --install-only
 	[ -z "${NO_MODIFY_PATH}" ] || set -- "$@" --no-modify-path
 	[ -z "${_ho_stage}" ] || set -- "$@" "--handoff-bytes=${bytes}" "--handoff-seconds=${secs}"
+	# CORTEX_INSTALLER_DREW=1 tells setup that the title and the bar are on screen, so it
+	# draws neither its header nor its "✓ downloaded" row. An environment variable, not
+	# a flag: the flags are frozen, and an agentop from before it ignores it. Unset when
+	# the plain line was printed instead, so a value left in the environment cannot hide
+	# setup's header.
+	if [ -n "${bar_on:-}" ]; then
+		CORTEX_INSTALLER_DREW=1
+		export CORTEX_INSTALLER_DREW
+	else
+		unset CORTEX_INSTALLER_DREW
+	fi
 	trap - EXIT
 	# Tried in a subshell: a redirection that fails on `exec` ends the shell it is in.
 	if (exec </dev/tty) 2>/dev/null; then
@@ -1049,9 +1114,10 @@ version=$(resolve_version "${VERSION_REF}") \
 tmp=$(mktemp -d "${TMPDIR%/}/cortex-stage.XXXXXX")
 dl_pids=""
 bar_shown=""
-# The stage goes before the bar is erased. Erasing writes to the terminal, which is gone
-# when the HUP came from closing it, and under set -e a failed write would end the trap
-# there. The trap is the last thing the script runs, so a live terminal sees no change.
+# The stage goes before the bar's line is ended. Ending it writes to the terminal, which
+# is gone when the HUP came from closing it, and under set -e a failed write would end
+# the trap there. The trap is the last thing the script runs, so a live terminal sees no
+# change.
 trap 'stop_downloads; rm -rf "$tmp" || :; bar_end' EXIT
 # exit runs the EXIT trap, so an INT (Ctrl-C), a TERM or a HUP cleans up as a die does.
 # Without these, dash dies of the signal and runs no EXIT trap at all, which leaves the
@@ -1068,33 +1134,62 @@ proxy_tgz="cortex_${version}_${os}_${arch}.tar.gz"
 # and setup gets it as --from. The clock starts here for --handoff-seconds.
 started=$(date +%s 2>/dev/null) || started=""
 
-# A bar when stderr is a terminal that can redraw a line and is wide enough for one;
-# the plain line otherwise.
+# A bar when stderr is a terminal that can redraw a line and is wide enough for the
+# title and the bar; the plain line otherwise.
 bar_on=""
-bar_prefix="Downloading ${version} "
+bar_prefix="  "
 bar_total=""
 bar_w=0
-if [ -t 2 ] && [ "${TERM:-}" != "dumb" ] && bar_w=$(bar_cells "$(term_cols)" "${#bar_prefix}"); then
-	bar_on=1
+bar_sgr=""
+bar_sgr0=""
+if [ -t 2 ] && [ "${TERM:-}" != "dumb" ]; then
+	bar_cols=$(term_cols)
+	if bar_w=$(bar_cells "${bar_cols}" "${#bar_prefix}") \
+		&& bar_title=$(title_line "${bar_cols}" "${version}" "${os}" "${arch}"); then
+		bar_on=1
+	fi
+fi
+if [ -n "${bar_on}" ]; then
+	if [ -z "${NO_COLOR:-}" ]; then
+		bar_sgr=$(printf '\033[38;5;167m')
+		bar_sgr0=$(printf '\033[0m')
+	fi
+	printf '%s\n' "${bar_title}" >&2
+	# The first frame at once, bytes only, before anything is asked for: the line is
+	# never blank while the downloads and the size requests get going.
+	bar_draw 0
+	# curl's own errors wait in a file until the bar's line has ended, so that one
+	# printed mid-download does not land inside the bar. Off a terminal fd 4 is stderr.
+	exec 4>"${tmp}/curl.err"
 else
 	info "Downloading ${version} for ${os}/${arch}..."
+	exec 4>&2
 fi
 
 # Both archives at once, each in the background; `wait` gives each one's exit status.
-curl -fsSL "${base}/${agentop_tgz}" -o "${tmp}/${agentop_tgz}" &
+curl -fsSL "${base}/${agentop_tgz}" -o "${tmp}/${agentop_tgz}" 2>&4 &
 pid_a=$!
 dl_pids="${pid_a}"
-curl -fsSL "${base}/${proxy_tgz}" -o "${tmp}/${proxy_tgz}" &
+curl -fsSL "${base}/${proxy_tgz}" -o "${tmp}/${proxy_tgz}" 2>&4 &
 pid_c=$!
 dl_pids="${pid_a} ${pid_c}"
 
-# The sizes, for the percentage. Asked while the archives download, so the asking
-# overlaps the download rather than adding to it, unless a HEAD outlasts it (each gives
-# up after 10s). Either size unknown leaves the total unknown, and the bar counts bytes.
+# The sizes, for the percentage: asked in the background while the archives download,
+# so the bar moves from the first poll on instead of waiting for them, and read once
+# both have answered. Either size unknown leaves the total unknown, and the bar counts
+# bytes. Each HEAD follows the redirect chain (-L) and gives up after 10s. One still out
+# when the download ends is stopped then, as the size is known by that point, and the
+# EXIT trap stops one still out on a die or a signal.
+#
+# Each is a bare curl, not a function or a pipeline: backgrounded, those run in a
+# subshell, so $! names the subshell, and killing it leaves the curl under it running.
+bar_sized=""
 if [ -n "${bar_on}" ]; then
-	size_a=$(content_length "${base}/${agentop_tgz}")
-	size_c=$(content_length "${base}/${proxy_tgz}")
-	[ -z "${size_a}" ] || [ -z "${size_c}" ] || bar_total=$((size_a + size_c))
+	curl -sIL --max-time 10 "${base}/${agentop_tgz}" >"${tmp}/head_a" 2>/dev/null &
+	pid_sa=$!
+	curl -sIL --max-time 10 "${base}/${proxy_tgz}" >"${tmp}/head_c" 2>/dev/null &
+	pid_sc=$!
+	dl_pids="${dl_pids} ${pid_sa} ${pid_sc}"
 fi
 
 # Poll until both have ended: every 0.2s, or every 1s from the first time sleep turns
@@ -1102,6 +1197,13 @@ fi
 poll_s=0.2
 while kill -0 "${pid_a}" 2>/dev/null || kill -0 "${pid_c}" 2>/dev/null; do
 	if [ -n "${bar_on}" ]; then
+		if [ -z "${bar_sized}" ] && ! kill -0 "${pid_sa}" 2>/dev/null && ! kill -0 "${pid_sc}" 2>/dev/null; then
+			bar_sized=1
+			dl_pids="${pid_a} ${pid_c}"
+			size_a=$(head_length "${tmp}/head_a")
+			size_c=$(head_length "${tmp}/head_c")
+			[ -z "${size_a}" ] || [ -z "${size_c}" ] || bar_total=$((size_a + size_c))
+		fi
 		got_a=$(file_bytes "${tmp}/${agentop_tgz}")
 		got_c=$(file_bytes "${tmp}/${proxy_tgz}")
 		bar_draw "$((got_a + got_c))"
@@ -1115,13 +1217,31 @@ st_a=0
 wait "${pid_a}" || st_a=$?
 st_c=0
 wait "${pid_c}" || st_c=$?
+if [ -n "${bar_on}" ] && [ -z "${bar_sized}" ]; then
+	kill "${pid_sa}" "${pid_sc}" 2>/dev/null || :
+	wait "${pid_sa}" 2>/dev/null || :
+	wait "${pid_sc}" 2>/dev/null || :
+fi
 dl_pids=""
-# Erased now, not just before the handoff: every step from here can print a warning or
-# an error, and a line printed after a bar still on screen would start halfway along it.
-bar_end
-[ "${st_a}" = "0" ] || die "download failed: ${agentop_tgz}"
-[ "${st_c}" = "0" ] || die "download failed: ${proxy_tgz}"
-curl -fsSL "${base}/checksums.txt" -o "${tmp}/checksums.txt" || die "download failed: checksums.txt"
+rm -f "${tmp}/head_a" "${tmp}/head_c"
+# curl_errors ends the bar's line and prints what curl said while the bar was on it.
+# Never fails, so the die after it always says which download failed.
+curl_errors() {
+	bar_end
+	[ -z "${bar_on}" ] || cat "${tmp}/curl.err" >&2 2>/dev/null || :
+}
+[ "${st_a}" = "0" ] || { curl_errors; die "download failed: ${agentop_tgz}"; }
+[ "${st_c}" = "0" ] || { curl_errors; die "download failed: ${proxy_tgz}"; }
+# The download's 100% frame, of what landed, whatever the HEADs said. It stays on
+# screen, and is drawn once more when the checksums verify.
+if [ -n "${bar_on}" ]; then
+	bar_total=$(($(file_bytes "${tmp}/${agentop_tgz}") + $(file_bytes "${tmp}/${proxy_tgz}")))
+	bar_draw "${bar_total}"
+fi
+curl -fsSL "${base}/checksums.txt" -o "${tmp}/checksums.txt" 2>&4 \
+	|| { curl_errors; die "download failed: checksums.txt"; }
+exec 4>&-
+rm -f "${tmp}/curl.err"
 
 # One grep per archive, not an alternation. An alternation SUCCEEDS on a single
 # match, so a checksums.txt missing one entry — a truncated or partly-generated
@@ -1162,7 +1282,11 @@ lines=$(wc -l < "${tmp}/checksums.filtered" | tr -d '[:space:]')
 # corrupt download or a tampered release would surface as a bare "checksum verification
 # failed" naming neither archive. That is the one step whose whole job is not to fail
 # open; it should not also fail silently.
-if ! ( cd "$tmp" && sha_check checksums.filtered >"${tmp}/sha.out" 2>&1 ); then
+#
+# bar_shown is cleared in the subshell, whose stderr is sha.out: a die there ends no
+# bar's line. The bar's line is ended here instead, before sha.out is shown.
+if ! ( bar_shown="" && cd "$tmp" && sha_check checksums.filtered >"${tmp}/sha.out" 2>&1 ); then
+	bar_end
 	cat "${tmp}/sha.out" >&2
 	die "checksum verification failed — do NOT use these binaries"
 fi
@@ -1178,6 +1302,8 @@ case "${started}:${finished}" in
 	*) secs=$((finished - started)) ;;
 esac
 [ "${secs}" -ge 0 ] || secs=0
+# The same counts on the bar's last line, which stands in for that row on a terminal.
+bar_verified "${bytes}" "${secs}"
 
 # --- extract into the stage ---
 tar -xzf "${tmp}/${agentop_tgz}" -C "$tmp"

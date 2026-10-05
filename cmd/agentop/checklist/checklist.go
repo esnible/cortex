@@ -1,22 +1,29 @@
 // Package checklist draws agentop setup's screen: a header, the consent list, one
 // line per step that resolves to ✓, ·, ! or ✗, and the ending. On a terminal the
-// running step animates and finished steps show how long they took; anywhere else
-// the same text prints once per finished step with no colour, no carriage returns
-// and no timings, which is what logs and tests see. Every text argument is one
-// line: the screen indents by prefixing, so a second line would lose the indent.
+// running step animates and finished steps show how long they took, right-aligned;
+// anywhere else the same text prints once per finished step with no colour, no
+// carriage returns and no timings, which is what logs and tests see. Every text
+// argument is one line: the screen indents by prefixing, so a second line would lose
+// the indent.
 package checklist
 
 import (
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/term"
 )
 
 const labelWidth = 12
+
+// rightEdge is the column right-aligned text ends at on a terminal: a timing, and the
+// header's version. install.sh right-aligns its title to the same column.
+const rightEdge = 78
 
 // One accent, rosso red, for the brand and for motion only. The status colours
 // match the TUI's palette (tui/styles.go), which this package cannot import.
@@ -30,9 +37,14 @@ var (
 
 var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
-var wordmark = [2]string{
-	"▄▀▀ ▄▀▄ █▀▄ ▀█▀ █▀▀ ▀▄▀",
-	"▀▄▄ ▀▄▀ █▀▄  █  ██▄ ▄▀▄",
+// logo is the figlet "ANSI Shadow" CORTEX: 6 rows, 50 columns, trailing spaces trimmed.
+var logo = [6]string{
+	" ██████╗ ██████╗ ██████╗ ████████╗███████╗██╗  ██╗",
+	"██╔════╝██╔═══██╗██╔══██╗╚══██╔══╝██╔════╝╚██╗██╔╝",
+	"██║     ██║   ██║██████╔╝   ██║   █████╗   ╚███╔╝",
+	"██║     ██║   ██║██╔══██╗   ██║   ██╔══╝   ██╔██╗",
+	"╚██████╗╚██████╔╝██║  ██║   ██║   ███████╗██╔╝ ██╗",
+	" ╚═════╝ ╚═════╝ ╚═╝  ╚═╝   ╚═╝   ╚══════╝╚═╝  ╚═╝",
 }
 
 // Item is one row of the consent screen.
@@ -43,6 +55,7 @@ type UI struct {
 	w       io.Writer
 	animate bool
 	now     func() time.Time
+	edge    int // the column right-aligned text ends at
 
 	accent, ok, warn, bad, faint lipgloss.Style
 
@@ -51,14 +64,42 @@ type UI struct {
 	running      *Running
 }
 
+// terminalWidth is how many columns w is wide, or 0 when it is not a terminal or will
+// not say. A var so tests can give a writer a width.
+var terminalWidth = func(w io.Writer) int {
+	f, ok := w.(*os.File)
+	if !ok {
+		return 0
+	}
+	cols, _, err := term.GetSize(f.Fd())
+	if err != nil {
+		return 0
+	}
+	return cols
+}
+
 // New binds the styles to w, so colour follows w: none when w is not a terminal
 // or NO_COLOR is set. animate turns on the spinner, timings and cursor handling,
 // and should be true only when w is a terminal.
-func New(w io.Writer, animate bool) *UI { return newUI(w, animate, lipgloss.NewRenderer(w)) }
+func New(w io.Writer, animate bool) *UI {
+	u := newUI(w, animate, lipgloss.NewRenderer(w))
+	u.edge = edgeFor(terminalWidth(w))
+	return u
+}
+
+// edgeFor is the column right-aligned text ends at on a terminal cols wide: rightEdge,
+// or the last column but one of a narrower terminal, as install.sh's title has it, so
+// that a padded line does not wrap. cols 0 is a width nobody knows.
+func edgeFor(cols int) int {
+	if cols > 1 && cols-1 < rightEdge {
+		return cols - 1
+	}
+	return rightEdge
+}
 
 func newUI(w io.Writer, animate bool, r *lipgloss.Renderer) *UI {
 	return &UI{
-		w: w, animate: animate, now: time.Now,
+		w: w, animate: animate, now: time.Now, edge: rightEdge,
 		accent: r.NewStyle().Foreground(colorAccent),
 		ok:     r.NewStyle().Foreground(colorOK),
 		warn:   r.NewStyle().Foreground(colorWarn),
@@ -91,20 +132,38 @@ func (u *UI) mark(style lipgloss.Style, glyph, label, detail string) string {
 	return "  " + style.Render(glyph) + " " + pad(label, labelWidth) + " " + detail
 }
 
+// took is how long a step took, as a finished row shows it: on a terminal only.
 func (u *UI) took(d time.Duration) string {
 	if !u.animate || d <= 0 {
 		return ""
 	}
-	return "  " + u.faint.Render(FormatDuration(d))
+	return u.faint.Render(FormatDuration(d))
+}
+
+// alignRight puts right after left so that right ends at the edge, or gap spaces after
+// left when left is too long for that. Widths are what the terminal shows, so colour
+// and a multi-byte glyph each count as what they take on screen.
+func (u *UI) alignRight(left, right string, gap int) string {
+	return left + strings.Repeat(" ", max(gap, u.edge-lipgloss.Width(left)-lipgloss.Width(right))) + right
 }
 
 // FormatDuration is the one way a duration is shown: tenths of a second.
 func FormatDuration(d time.Duration) string { return fmt.Sprintf("%.1fs", d.Seconds()) }
 
-func (u *UI) Header(title, right string) { u.println("  " + title + "   " + u.faint.Render(right)) }
-func (u *UI) Blank()                     { u.println("") }
-func (u *UI) Plain(text string)          { u.println("  " + text) }
-func (u *UI) Faint(text string)          { u.println("  " + u.faint.Render(text)) }
+// Header is the screen's first line: the title, and right, faint, 3 spaces after it;
+// on a terminal, right-aligned to the edge, with those 3 spaces at the least.
+func (u *UI) Header(title, right string) {
+	left, meta := "  "+title, u.faint.Render(right)
+	if !u.animate {
+		u.println(left + "   " + meta)
+		return
+	}
+	u.println(u.alignRight(left, meta, 3))
+}
+
+func (u *UI) Blank()            { u.println("") }
+func (u *UI) Plain(text string) { u.println("  " + text) }
+func (u *UI) Faint(text string) { u.println("  " + u.faint.Render(text)) }
 
 // Consent lists what setup will change, one aligned row per change.
 func (u *UI) Consent(items []Item) {
@@ -119,8 +178,14 @@ func (u *UI) Consent(items []Item) {
 	}
 }
 
+// Done marks a step that finished. On a terminal the time it took ends at the edge,
+// or 2 spaces after a detail too long for that.
 func (u *UI) Done(label, detail string, took time.Duration) {
-	u.println(u.mark(u.ok, "✓", label, detail) + u.took(took))
+	line := u.mark(u.ok, "✓", label, detail)
+	if t := u.took(took); t != "" {
+		line = u.alignRight(line, t, 2)
+	}
+	u.println(line)
 }
 
 func (u *UI) Already(label, detail string) {
@@ -155,10 +220,14 @@ func (u *UI) Note(label, text string) {
 	u.println("    " + u.faint.Render(pad(label, labelWidth)) + " " + text)
 }
 
-func (u *UI) Wordmark(right string) {
+// Logo ends a run that worked: the logo in the accent, a blank line, then below,
+// indented under it. The blank line above it is the caller's.
+func (u *UI) Logo(below string) {
+	for _, row := range logo {
+		u.println("  " + u.accent.Render(row))
+	}
 	u.println("")
-	u.println("    " + u.accent.Render(wordmark[0]))
-	u.println("    " + u.accent.Render(wordmark[1]) + "   " + u.faint.Render(right))
+	u.println("    " + below)
 }
 
 // Next ends the screen on the one command to type.
