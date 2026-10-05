@@ -48,7 +48,8 @@ type listenerSeen struct {
 
 // listenerTTL is how long a connection trusts a cached listener answer. Short, because a
 // service can restart; whether the listener is an agent's is re-asked on every request,
-// since a service becomes one only when it first names a session.
+// since a service that is not the client's child becomes one only when it first names a
+// session.
 const listenerTTL = 30 * time.Second
 
 // ConnContext is the forward proxy's http.Server ConnContext. It gives each client
@@ -118,12 +119,11 @@ func (s *Server) lookupChain(r *http.Request) []session.Proc {
 }
 
 // selfTraffic reports whether r is an agent talking to its own service on this host: a
-// plain-HTTP request to a loopback listener held by an agent's own process — one that has
-// named a session through its own header, which an MCP or model server never does —
-// running the same executable as the client. OpenCode's TUI polling its background service
-// is the case it exists for: about 1.3 requests a second of the agent's own UI, sent
-// nowhere. Comparing executables alone would hide a node-based agent's calls to any local
-// node server, which is why the listener must be an agent's.
+// plain-HTTP request to a loopback listener held by an agent's own process (see
+// agentsOwnService) running the same executable as the client. OpenCode's TUI polling its
+// background service is the case it exists for: about 1.3 requests a second of the agent's
+// own UI, sent nowhere. Comparing executables alone would hide a node-based agent's calls to
+// any local node server, which is why the listener must be an agent's.
 func (s *Server) selfTraffic(r *http.Request, chain []session.Proc) bool {
 	if len(chain) == 0 || chain[0].Exe == "" {
 		return false
@@ -142,7 +142,7 @@ func (s *Server) selfTraffic(r *http.Request, chain []session.Proc) bool {
 		if !ok {
 			continue
 		}
-		if l.Exe != chain[0].Exe || !s.Sessions.IsAgentProcess(session.Proc{PID: l.PID, Start: l.Start.UnixNano()}) {
+		if l.Exe != chain[0].Exe || !s.agentsOwnService(r, chain[0], l) {
 			return false
 		}
 		svc, pid, found = dest, l.PID, true
@@ -151,6 +151,24 @@ func (s *Server) selfTraffic(r *http.Request, chain []session.Proc) bool {
 		s.noteSelfTraffic(chain[0].Exe, svc, pid)
 	}
 	return found
+}
+
+// agentsOwnService reports whether l, a listener running the client's executable, is an
+// agent's own process: one that has named a session through its own header, which an MCP or
+// model server never does, or the direct child of a client that says it is a coding agent.
+//
+// The child half needs no history, and that is what it is for. Claims live in memory, so
+// after a proxy restart a service that has not been asked to do anything yet has named
+// nothing — and an idle OpenCode window's polling was recorded, a few rows a second, into
+// its TUI's pending bucket until the next prompt. OpenCode starts its service as the TUI's
+// child. The agent's User-Agent is required because a test suite starting a server of its
+// own interpreter is the same shape, and that is the agent's work; a child cannot start
+// before its parent, so a listener that does is another process's, under a reused pid.
+func (s *Server) agentsOwnService(r *http.Request, client session.Proc, l peerproc.Proc) bool {
+	if l.PPID == client.PID && l.Start.UnixNano() >= client.Start && affinityClient(r.Header) != "" {
+		return true
+	}
+	return s.Sessions.IsAgentProcess(session.Proc{PID: l.PID, Start: l.Start.UnixNano()})
 }
 
 // listenerBehind is which process listens at dest, asked of the kernel at most once per

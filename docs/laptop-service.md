@@ -119,9 +119,11 @@ Some limitations worth knowing:
   no agent (your own terminal's `curl`) lands in `default` while any agent has named a
   session in the last five minutes, and otherwise in the most recently active session. An
   agent talking to its own service on this machine — OpenCode's TUI and its background
-  service — is forwarded without being recorded once that service has named a session;
-  until then it is recorded, and the first time it is skipped Cortex logs which program
-  and service. It is `session.process_attribution`: `auto` (the default) means on for this
+  service — is forwarded without being recorded when the service runs the agent's own
+  executable and is either the agent's direct child or has named a session. OpenCode
+  starts its service as the TUI's child, so its polling stays out of the timeline from
+  the first request, including after a proxy restart. The first time it is skipped
+  Cortex logs which program and service. It is `session.process_attribution`: `auto` (the default) means on for this
   loopback-only install and off in a cluster; `on` and `off` force it. Where the lookup is
   unavailable it logs one warning at startup and client affinity applies. Not
   hot-reloadable.
