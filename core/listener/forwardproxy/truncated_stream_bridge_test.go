@@ -25,8 +25,14 @@ import (
 // Modeled on TestTransparentBridge (same net.Pipe + manual h1 client split,
 // which that test's comment explains).
 func TestForwardProxy_TruncatedStream_BridgedReachesClientAsError(t *testing.T) {
-	// TLS origin: one flushed SSE event, then a TCP reset.
-	origin := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	// TLS origin: one flushed SSE event, then a TCP reset. The bridge's
+	// upstream-verify HEAD goes to this handler too — answer it normally, or
+	// the hijack+RST poisons the pooled conn the GET reuses and the proxy
+	// answers a clean 502 instead of the truncation under test.
+	origin := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodHead {
+			return
+		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		_, _ = io.WriteString(w, "data: {\"n\":1}\n\n")
@@ -114,6 +120,9 @@ func TestForwardProxy_TruncatedStream_BridgedReachesClientAsError(t *testing.T) 
 		t.Fatalf("read response over bridged TLS conn: %v", err)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("bridged response status = %d, want 200 — a non-200 body ends cleanly, so the truncation path never ran", resp.StatusCode)
+	}
 	_, readErr := io.ReadAll(resp.Body)
 	if werr := <-writeErr; werr != nil {
 		t.Fatalf("write request over bridged TLS conn: %v", werr)
