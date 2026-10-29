@@ -49,3 +49,26 @@ func TestJSON_RedactsNonStringAndPluralSecrets(t *testing.T) {
 		})
 	}
 }
+
+// Token-COUNT fields end in "tokens", the plural of a sensitive stem, but a
+// count is not a secret — and plugin config carrying them (session-budget's
+// ceilings, context-guru's completion cap) is served redacted on /v1/pipeline
+// and /config. The plural arm skips "token" for exactly this reason.
+func TestJSON_TokenCountFieldsSurvive(t *testing.T) {
+	in := json.RawMessage(`{"plugins":[{"name":"session-budget","config":{"max_tokens":100000,"max_input_tokens":50000,"total_tokens":7}}]}`)
+	out := JSON(in)
+	var m map[string]any
+	if err := json.Unmarshal(out, &m); err != nil {
+		t.Fatal(err)
+	}
+	cfg := m["plugins"].([]any)[0].(map[string]any)["config"].(map[string]any)
+	for k, want := range map[string]float64{
+		"max_tokens":       100000,
+		"max_input_tokens": 50000,
+		"total_tokens":     7,
+	} {
+		if got, ok := cfg[k].(float64); !ok || got != want {
+			t.Errorf("%s = %v, want %d (token counts must survive redaction)", k, cfg[k], int(want))
+		}
+	}
+}

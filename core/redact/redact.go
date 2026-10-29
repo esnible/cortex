@@ -70,9 +70,12 @@ func redactSlice(s []any) {
 func isSensitiveKey(key string) bool {
 	lower := strings.ToLower(key)
 	for _, s := range sensitiveKeys {
-		// Match the plural too ("credentials", "api_keys", "tokens"): a
-		// suffix check on the singular never fires for it.
-		if strings.HasSuffix(lower, s) || strings.HasSuffix(lower, s+"s") {
+		// Match the plural too ("credentials", "api_keys"): a suffix check
+		// on the singular never fires for it. "token" is the exception — its
+		// plural matches every token-COUNT field (max_tokens, input_tokens,
+		// …) in plugin config, which is served redacted on /v1/pipeline and
+		// /config, and a count is not a secret.
+		if strings.HasSuffix(lower, s) || (s != "token" && strings.HasSuffix(lower, s+"s")) {
 			return true
 		}
 	}
