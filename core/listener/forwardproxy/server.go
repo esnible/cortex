@@ -267,7 +267,10 @@ func NewServer(outbound *pipeline.Holder, sessions *session.Store, mtls *MTLSOpt
 	transport := &http.Transport{
 		// Sane Go defaults for everything except DialContext, which we
 		// customize when mTLS is on.
-		MaxIdleConns:          100,
+		MaxIdleConns: 100,
+		// Go's default is 2, which churns connections when more than two
+		// callers share an h1-only upstream (LiteLLM, Keycloak).
+		MaxIdleConnsPerHost:   100,
 		IdleConnTimeout:       90 * time.Second,
 		TLSHandshakeTimeout:   10 * time.Second,
 		ExpectContinueTimeout: 1 * time.Second,
