@@ -47,19 +47,41 @@ func (h *Holder) Store(p *Pipeline) { h.p.Store(p) }
 // one-liner so listeners can keep their Pipeline-era call sites
 // unchanged when they migrate their field type from *Pipeline to
 // *Holder. One atomic Load per call.
+//
+// Run also pins the loaded pipeline on pctx: every later phase on the
+// same request (RunResponse, RunResponseFrame, RunFinish, Resend)
+// dispatches against THAT pipeline, not whatever the Holder holds by
+// then. A reload can Store a new pipeline while the request is open,
+// and pctx.dispatched indexes the pipeline that ran OnRequest — without
+// the pin, a shorter new chain panics in RunFinish and an equal-length
+// one runs hooks on plugins that never saw the request.
 func (h *Holder) Run(ctx context.Context, pctx *Context) Action {
-	return h.p.Load().Run(ctx, pctx)
+	p := h.p.Load()
+	pctx.pinned = p
+	return p.Run(ctx, pctx)
+}
+
+// forPctx returns the pipeline a pctx-carrying phase should run on: the
+// one pinned by Run when the request started, else the current one (a
+// phase that runs without a preceding Run on this pctx — e.g. a
+// response nobody dispatched a request for — has nothing to stay loyal
+// to).
+func (h *Holder) forPctx(pctx *Context) *Pipeline {
+	if pctx.pinned != nil {
+		return pctx.pinned
+	}
+	return h.p.Load()
 }
 
 // RunResponse is equivalent to h.Load().RunResponse(ctx, pctx). See Run.
 func (h *Holder) RunResponse(ctx context.Context, pctx *Context) Action {
-	return h.p.Load().RunResponse(ctx, pctx)
+	return h.forPctx(pctx).RunResponse(ctx, pctx)
 }
 
 // RunResponseFrame is equivalent to h.Load().RunResponseFrame(ctx, pctx, frame, last).
 // See Pipeline.RunResponseFrame.
 func (h *Holder) RunResponseFrame(ctx context.Context, pctx *Context, frame []byte, last bool) Action {
-	return h.p.Load().RunResponseFrame(ctx, pctx, frame, last)
+	return h.forPctx(pctx).RunResponseFrame(ctx, pctx, frame, last)
 }
 
 // HasStreamingResponders is equivalent to h.Load().HasStreamingResponders().
@@ -73,7 +95,7 @@ func (h *Holder) HasResenders() bool { return h.p.Load().HasResenders() }
 
 // Resend is equivalent to h.Load().Resend(ctx, pctx, status, body). See Resender.
 func (h *Holder) Resend(ctx context.Context, pctx *Context, status int, body []byte) bool {
-	return h.p.Load().Resend(ctx, pctx, status, body)
+	return h.forPctx(pctx).Resend(ctx, pctx, status, body)
 }
 
 // RunFinish is equivalent to h.Load().RunFinish(ctx, pctx, outcome).
@@ -82,7 +104,7 @@ func (h *Holder) Resend(ctx context.Context, pctx *Context, status int, body []b
 // the contract (LIFO over dispatched plugins, fresh ctx with timeout,
 // pctx.Outcome() populated, silent phase).
 func (h *Holder) RunFinish(ctx context.Context, pctx *Context, outcome Outcome) {
-	h.p.Load().RunFinish(ctx, pctx, outcome)
+	h.forPctx(pctx).RunFinish(ctx, pctx, outcome)
 }
 
 // NeedsBody is equivalent to h.Load().NeedsBody(). Hot path on listeners

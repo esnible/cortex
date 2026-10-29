@@ -1021,9 +1021,12 @@ func TestDispatch_OnResponseUsesResponseHooks(t *testing.T) {
 	}
 }
 
-func TestDispatch_NotReadyIsNoOp(t *testing.T) {
-	// p.Init never called → p.ready == false → dispatch returns Continue
-	// without touching the manager.
+func TestDispatch_NotReadyDeniesClosed(t *testing.T) {
+	// p.Init never called → p.ready == false. With the default
+	// fail_open=false the request is DENIED: Shutdown also clears ready,
+	// and the reloader stops the old pipeline 30s after a swap, so a
+	// stream answering later used to run its response hooks as a silent
+	// no-op — skipping redaction and deny (#1561).
 	fake := &FakeManager{
 		KnownHooks: []string{HookToolPreInvoke},
 		Hooks: map[string]Result{
@@ -1033,8 +1036,24 @@ func TestDispatch_NotReadyIsNoOp(t *testing.T) {
 	p := setupFake(fake)
 	mustConfigure(t, p, cfgOneRequestHook)
 	a := p.OnRequest(context.Background(), &pipeline.Context{})
+	if a.Type != pipeline.Reject {
+		t.Fatalf("Type = %d, want Reject when not ready and fail_open=false", a.Type)
+	}
+	if a.Violation == nil || a.Violation.Status != http.StatusBadGateway {
+		t.Fatalf("Violation = %+v, want 502 cpex.not_ready", a.Violation)
+	}
+	if len(fake.Invokes) != 0 {
+		t.Fatalf("Invoke called %d times, want 0 when not ready", len(fake.Invokes))
+	}
+}
+
+func TestDispatch_NotReadyFailsOpenWhenConfigured(t *testing.T) {
+	fake := &FakeManager{KnownHooks: []string{HookToolPreInvoke}}
+	p := setupFake(fake)
+	mustConfigure(t, p, `{"hooks":{"on_request":["cmf.tool_pre_invoke"]},"fail_open":true}`)
+	a := p.OnRequest(context.Background(), &pipeline.Context{})
 	if a.Type != pipeline.Continue {
-		t.Fatalf("Type = %d, want Continue when not ready", a.Type)
+		t.Fatalf("Type = %d, want Continue when not ready and fail_open=true", a.Type)
 	}
 	if len(fake.Invokes) != 0 {
 		t.Fatalf("Invoke called %d times, want 0 when not ready", len(fake.Invokes))

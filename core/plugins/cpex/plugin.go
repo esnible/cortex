@@ -365,8 +365,31 @@ func (p *CPEX) OnResponse(ctx context.Context, pctx *pipeline.Context) pipeline.
 //   - FailOpen=true  → Observe + Continue, error logged.
 //   - FailOpen=false → DenyAndRecord with code "cpex.error".
 func (p *CPEX) runHooks(ctx context.Context, pctx *pipeline.Context, hooks []string) pipeline.Action {
-	if p.manager == nil || !p.ready.Load() {
+	if p.manager == nil {
+		// Never configured — Pipeline.Build should have refused this
+		// config already; a defensive no-op.
 		return pipeline.Action{Type: pipeline.Continue}
+	}
+	if !p.ready.Load() {
+		// Not ready is reachable, not hypothetical: Shutdown clears
+		// ready, and the reloader stops the old pipeline 30s after a
+		// swap — a stream that started before the swap and answers
+		// later runs here with the manager torn down. Continuing
+		// silently skipped redaction and deny for the rest of that
+		// stream, so follow the same fail_open policy as every other
+		// CPEX failure instead of inventing an unconditional allow.
+		if p.cfg.FailOpen {
+			slog.Warn("cpex: not ready (init incomplete or shutdown); allowing per fail_open=true")
+			pctx.Observe("cpex not ready (fail_open)")
+			return pipeline.Action{Type: pipeline.Continue}
+		}
+		slog.Error("cpex: not ready (init incomplete or shutdown); denying per fail_open=false")
+		return denyWithStatus(pctx, http.StatusBadGateway,
+			"cpex not ready",
+			"cpex.not_ready",
+			"cpex policy engine unavailable",
+			nil,
+		)
 	}
 	if len(hooks) == 0 {
 		return pipeline.Action{Type: pipeline.Continue}
