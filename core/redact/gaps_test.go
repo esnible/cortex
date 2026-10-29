@@ -4,6 +4,9 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/rossoctl/cortex/core/config"
+	"github.com/rossoctl/cortex/core/cost/pricing"
 )
 
 // The cases from #1564: real secret-bearing shapes that JSON used to pass
@@ -70,5 +73,57 @@ func TestJSON_TokenCountFieldsSurvive(t *testing.T) {
 		if got, ok := cfg[k].(float64); !ok || got != want {
 			t.Errorf("%s = %v, want %d (token counts must survive redaction)", k, cfg[k], int(want))
 		}
+	}
+}
+
+// Per-token rate fields end in "token", the singular stem, but a rate is not
+// a secret — and /config serves the typed config redacted, which agentop exec
+// decodes back into config.Config where the rates are float64. A "[REDACTED]"
+// string there fails the decode, so the per_token suffix is exempt the way the
+// tokens plural is.
+func TestJSON_PerTokenRatesSurvive(t *testing.T) {
+	in := json.RawMessage(`{"pricing":{"endpoints":[{"models":{"gpt-x":{"input_cost_per_token":0.000005,"cache_read_cost_per_token":0.0000005,"cache_write_cost_per_token":0.00000625,"output_cost_per_token":0.000015}}}]}}`)
+	out := JSON(in)
+	var m map[string]any
+	if err := json.Unmarshal(out, &m); err != nil {
+		t.Fatal(err)
+	}
+	model := m["pricing"].(map[string]any)["endpoints"].([]any)[0].(map[string]any)["models"].(map[string]any)["gpt-x"].(map[string]any)
+	for k, want := range map[string]float64{
+		"input_cost_per_token":       0.000005,
+		"cache_read_cost_per_token":  0.0000005,
+		"cache_write_cost_per_token": 0.00000625,
+		"output_cost_per_token":      0.000015,
+	} {
+		if got, ok := model[k].(float64); !ok || got != want {
+			t.Errorf("%s = %v, want %v (per-token rates must survive redaction)", k, model[k], want)
+		}
+	}
+}
+
+// agentop's runningConfig (cmd/agentop/local_endpoint.go) fetches /config and
+// unmarshals the redacted body into the typed config.Config. This pins that
+// contract: whatever a populated config marshals to must survive a
+// Marshal → redact.JSON → Unmarshal round trip.
+func TestJSON_ExecRoundTripThroughTypedConfig(t *testing.T) {
+	cfg := &config.Config{
+		Pricing: &pricing.Config{
+			Endpoints: []pricing.EndpointConfig{{
+				Models: map[string]pricing.ModelConfig{
+					"gpt-x": {TierRates: pricing.TierRates{
+						InputCostPerToken:  0.000005,
+						OutputCostPerToken: 0.000015,
+					}},
+				},
+			}},
+		},
+	}
+	raw, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var back config.Config
+	if uerr := json.Unmarshal(JSON(raw), &back); uerr != nil {
+		t.Fatalf("redacted /config body no longer decodes into config.Config (agentop exec would break): %v", uerr)
 	}
 }

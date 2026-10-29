@@ -71,10 +71,15 @@ func isSensitiveKey(key string) bool {
 	lower := strings.ToLower(key)
 	for _, s := range sensitiveKeys {
 		// Match the plural too ("credentials", "api_keys"): a suffix check
-		// on the singular never fires for it. "token" is the exception — its
-		// plural matches every token-COUNT field (max_tokens, input_tokens,
-		// …) in plugin config, which is served redacted on /v1/pipeline and
-		// /config, and a count is not a secret.
+		// on the singular never fires for it. "token" is doubly exceptional:
+		// its plural matches every token-COUNT field (max_tokens,
+		// input_tokens, …) in plugin config, which is served redacted on
+		// /v1/pipeline and /config, and a count is not a secret; and
+		// *_per_token is a pricing rate (config.Config's TierRates), so it
+		// must survive for agentop exec's typed decode of /config.
+		if s == "token" && strings.HasSuffix(lower, "per_token") {
+			continue
+		}
 		if strings.HasSuffix(lower, s) || (s != "token" && strings.HasSuffix(lower, s+"s")) {
 			return true
 		}
