@@ -401,3 +401,77 @@ func TestCallStructured_TransportErrorIsNotUncertain(t *testing.T) {
 		t.Errorf("HTTP-error must not wrap ErrUncertain (would route to 403); err=%v", err)
 	}
 }
+
+// A redirect must not carry the reentrancy sentinel to another origin: the
+// sentinel is the per-process secret that switches guardrails off, and Go's
+// redirect follower strips its built-in sensitive headers (Authorization,
+// cookies) cross-origin but keeps custom headers like the sentinel. A
+// same-origin redirect keeps it — the reentrancy guard must survive a
+// redirect within the configured endpoint.
+func TestCall_RedirectAndSentinel(t *testing.T) {
+	encode := func(w http.ResponseWriter) {
+		_ = json.NewEncoder(w).Encode(llmclient.ChatResponse{
+			Choices: []llmclient.ChatChoice{{Message: llmclient.ChatMessage{Content: "ok"}}},
+		})
+	}
+
+	t.Run("cross-origin redirect strips the sentinel", func(t *testing.T) {
+		var targetSawSentinel string
+		target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			targetSawSentinel = r.Header.Get("X-Plugin-Sentinel")
+			encode(w)
+		}))
+		defer target.Close()
+
+		var firstLegSawSentinel string
+		origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			firstLegSawSentinel = r.Header.Get("X-Plugin-Sentinel")
+			http.Redirect(w, r, target.URL+"/deep", http.StatusFound)
+		}))
+		defer origin.Close()
+
+		c := llmclient.New(llmclient.Options{
+			Endpoint:           origin.URL,
+			Model:              "m",
+			SentinelHeaderName: "X-Plugin-Sentinel",
+			SentinelValue:      "test-sentinel",
+			Timeout:            time.Second,
+		})
+		if _, err := c.Call(context.Background(), "s", "u"); err != nil {
+			t.Fatalf("Call: %v", err)
+		}
+		if firstLegSawSentinel != "test-sentinel" {
+			t.Errorf("first leg sentinel = %q, want test-sentinel", firstLegSawSentinel)
+		}
+		if targetSawSentinel != "" {
+			t.Errorf("redirected leg carried the sentinel %q to another origin", targetSawSentinel)
+		}
+	})
+
+	t.Run("same-origin redirect keeps the sentinel", func(t *testing.T) {
+		var secondLegSawSentinel string
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/first" {
+				http.Redirect(w, r, "/second", http.StatusFound)
+				return
+			}
+			secondLegSawSentinel = r.Header.Get("X-Plugin-Sentinel")
+			encode(w)
+		}))
+		defer srv.Close()
+
+		c := llmclient.New(llmclient.Options{
+			Endpoint:           srv.URL + "/first",
+			Model:              "m",
+			SentinelHeaderName: "X-Plugin-Sentinel",
+			SentinelValue:      "test-sentinel",
+			Timeout:            time.Second,
+		})
+		if _, err := c.Call(context.Background(), "s", "u"); err != nil {
+			t.Fatalf("Call: %v", err)
+		}
+		if secondLegSawSentinel != "test-sentinel" {
+			t.Errorf("same-origin redirected leg lost the sentinel (got %q); the reentrancy guard must survive it", secondLegSawSentinel)
+		}
+	})
+}

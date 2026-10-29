@@ -90,3 +90,28 @@ func TestHTTPReflector_TransportErrorIsUnavailable(t *testing.T) {
 		t.Fatalf("expected ErrReflectorUnavailable, got %v", err)
 	}
 }
+
+// A redirect must not carry the reentrancy sentinel to another origin: it is
+// the per-process secret that switches SPARC off, and the reflector's own
+// http.Client (not llmclient's) carries it.
+func TestHTTPReflector_RedirectStripsSentinelCrossOrigin(t *testing.T) {
+	var targetSawSentinel string
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		targetSawSentinel = r.Header.Get(sentinelHeader)
+		w.Write([]byte(`{"decision":"allow","reason":"r"}`))
+	}))
+	defer target.Close()
+
+	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL+"/reflect", http.StatusFound)
+	}))
+	defer origin.Close()
+
+	rfl := newHTTPReflector(origin.URL, "", time.Second, "test-sentinel")
+	if _, err := rfl.Reflect(context.Background(), ReflectInput{ToolCalls: []map[string]any{{}}}); err != nil {
+		t.Fatalf("Reflect: %v", err)
+	}
+	if targetSawSentinel != "" {
+		t.Errorf("redirected leg carried the sentinel %q to another origin", targetSawSentinel)
+	}
+}

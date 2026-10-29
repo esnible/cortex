@@ -72,6 +72,26 @@ func NewSentinelValue() string {
 	return hex.EncodeToString(b[:])
 }
 
+// SentinelRedirectPolicy returns an http.Client CheckRedirect that strips
+// the named sentinel header whenever a redirect's host differs from the
+// original request's — the sentinel is a per-process secret that switches
+// guardrails off, and Go's redirect follower keeps custom headers (it strips
+// only Authorization). Same-origin redirects keep it; the reentrancy guard
+// must survive a redirect within the configured endpoint. llmclient's
+// default client installs this; a caller building its own http.Client
+// around a sentinel header (SPARC's reflector) must install it too.
+func SentinelRedirectPolicy(headerName string) func(req *http.Request, via []*http.Request) error {
+	return func(req *http.Request, via []*http.Request) error {
+		if len(via) >= 10 {
+			return fmt.Errorf("stopped after 10 redirects")
+		}
+		if req.URL.Host != via[0].URL.Host {
+			req.Header.Del(headerName)
+		}
+		return nil
+	}
+}
+
 // errorBodyLimit caps how much of an upstream non-2xx body we
 // surface in the error message. Misbehaving upstreams shouldn't
 // be able to OOM the sidecar via giant 5xx pages.
@@ -126,10 +146,13 @@ type Options struct {
 	SentinelValue string
 
 	// HTTPClient overrides the default http.Client. When nil,
-	// llmclient constructs `&http.Client{Timeout: Timeout}`. Use
-	// this to plumb in a transport with custom dialer / TLS /
-	// observability — but keep in mind that http.Client.Timeout
-	// is still authoritative if set.
+	// llmclient constructs a client with Timeout and a
+	// sentinel-stripping redirect policy (SentinelRedirectPolicy).
+	// A custom client replaces that policy: a caller whose client
+	// carries the sentinel must install SentinelRedirectPolicy itself,
+	// or a cross-origin redirect leaks the guardrail secret.
+	// Keep in mind that http.Client.Timeout is still authoritative
+	// if set.
 	HTTPClient *http.Client
 }
 
@@ -214,7 +237,10 @@ func New(opts Options) *Client {
 		if timeout <= 0 {
 			timeout = DefaultTimeout
 		}
-		httpClient = &http.Client{Timeout: timeout}
+		httpClient = &http.Client{
+			Timeout:       timeout,
+			CheckRedirect: SentinelRedirectPolicy(opts.SentinelHeaderName),
+		}
 	}
 	return &Client{
 		endpoint:           strings.TrimRight(opts.Endpoint, "/"),

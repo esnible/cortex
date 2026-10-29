@@ -9,6 +9,8 @@ import (
 	"io"
 	"net/http"
 	"time"
+
+	"github.com/rossoctl/cortex/core/llmclient"
 )
 
 // Reflector evaluates whether a proposed tool call is grounded in the
@@ -71,9 +73,9 @@ const sentinelHeader = "X-SPARC-Reflect"
 
 // httpReflector POSTs a reflection request to {endpoint}/reflect.
 //
-// The call is made with a standalone http.Client that does NOT route back
-// through the authbridge listener, structurally preventing reentrancy. The
-// sentinel header is belt-and-suspenders.
+// The call uses its own http.Client; it routes back through the authbridge
+// listener only when the sidecar's environment carries proxy vars, which is
+// why the sentinel header exists as the reentrancy breaker.
 type httpReflector struct {
 	url      string
 	bearer   string
@@ -87,8 +89,14 @@ func newHTTPReflector(endpoint, bearer string, timeout time.Duration, sentinel s
 		url:      endpoint + "/reflect",
 		bearer:   bearer,
 		sentinel: sentinel,
-		client:   &http.Client{Timeout: timeout},
-		timeout:  timeout,
+		client: &http.Client{
+			Timeout: timeout,
+			// Same rule as llmclient's default client: a cross-origin
+			// redirect must not carry the sentinel off the configured
+			// endpoint.
+			CheckRedirect: llmclient.SentinelRedirectPolicy(sentinelHeader),
+		},
+		timeout: timeout,
 	}
 }
 
