@@ -28,7 +28,7 @@ func TestHTTPReflector_DecodesVerdict(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	r := newHTTPReflector(srv.URL, "", time.Second)
+	r := newHTTPReflector(srv.URL, "", time.Second, "test-sentinel")
 	v, err := r.Reflect(context.Background(), ReflectInput{
 		ToolCalls: []map[string]any{{"function": map[string]any{"name": "get_transaction"}}},
 		SessionID: "s1",
@@ -39,8 +39,8 @@ func TestHTTPReflector_DecodesVerdict(t *testing.T) {
 	if gotPath != "/reflect" {
 		t.Errorf("path = %q, want /reflect", gotPath)
 	}
-	if gotSentinel != "1" {
-		t.Errorf("sentinel header = %q, want 1", gotSentinel)
+	if gotSentinel != "test-sentinel" {
+		t.Errorf("sentinel header = %q, want test-sentinel", gotSentinel)
 	}
 	if gotBody.SessionID != "s1" {
 		t.Errorf("forwarded session_id = %q, want s1", gotBody.SessionID)
@@ -62,7 +62,7 @@ func TestHTTPReflector_Non2xxIsUnavailable(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	r := newHTTPReflector(srv.URL, "", time.Second)
+	r := newHTTPReflector(srv.URL, "", time.Second, "test-sentinel")
 	_, err := r.Reflect(context.Background(), ReflectInput{ToolCalls: []map[string]any{{}}})
 	if !errors.Is(err, ErrReflectorUnavailable) {
 		t.Fatalf("expected ErrReflectorUnavailable, got %v", err)
@@ -75,7 +75,7 @@ func TestHTTPReflector_EmptyDecisionIsUnavailable(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	r := newHTTPReflector(srv.URL, "", time.Second)
+	r := newHTTPReflector(srv.URL, "", time.Second, "test-sentinel")
 	_, err := r.Reflect(context.Background(), ReflectInput{ToolCalls: []map[string]any{{}}})
 	if !errors.Is(err, ErrReflectorUnavailable) {
 		t.Fatalf("expected ErrReflectorUnavailable for empty decision, got %v", err)
@@ -84,7 +84,7 @@ func TestHTTPReflector_EmptyDecisionIsUnavailable(t *testing.T) {
 
 func TestHTTPReflector_TransportErrorIsUnavailable(t *testing.T) {
 	// Point at a closed port to force a dial failure.
-	r := newHTTPReflector("http://127.0.0.1:1", "", 200*time.Millisecond)
+	r := newHTTPReflector("http://127.0.0.1:1", "", 200*time.Millisecond, "s")
 	_, err := r.Reflect(context.Background(), ReflectInput{ToolCalls: []map[string]any{{}}})
 	if !errors.Is(err, ErrReflectorUnavailable) {
 		t.Fatalf("expected ErrReflectorUnavailable, got %v", err)

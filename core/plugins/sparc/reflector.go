@@ -75,18 +75,20 @@ const sentinelHeader = "X-SPARC-Reflect"
 // through the authbridge listener, structurally preventing reentrancy. The
 // sentinel header is belt-and-suspenders.
 type httpReflector struct {
-	url     string
-	bearer  string
-	client  *http.Client
-	timeout time.Duration
+	url      string
+	bearer   string
+	sentinel string
+	client   *http.Client
+	timeout  time.Duration
 }
 
-func newHTTPReflector(endpoint, bearer string, timeout time.Duration) *httpReflector {
+func newHTTPReflector(endpoint, bearer string, timeout time.Duration, sentinel string) *httpReflector {
 	return &httpReflector{
-		url:     endpoint + "/reflect",
-		bearer:  bearer,
-		client:  &http.Client{Timeout: timeout},
-		timeout: timeout,
+		url:      endpoint + "/reflect",
+		bearer:   bearer,
+		sentinel: sentinel,
+		client:   &http.Client{Timeout: timeout},
+		timeout:  timeout,
 	}
 }
 
@@ -101,7 +103,7 @@ func (r *httpReflector) Reflect(ctx context.Context, in ReflectInput) (ReflectVe
 		return ReflectVerdict{}, fmt.Errorf("%w: %v", ErrReflectorUnavailable, err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set(sentinelHeader, "1")
+	req.Header.Set(sentinelHeader, r.sentinel)
 	if r.bearer != "" {
 		req.Header.Set("Authorization", "Bearer "+r.bearer)
 	}

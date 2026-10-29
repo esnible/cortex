@@ -196,6 +196,18 @@ func (s *Server) Process(stream extprocv3.ExternalProcessor_ProcessServer) error
 			headers := r.RequestHeaders.Headers
 			direction := getHeader(headers, "x-authbridge-direction")
 
+			// The Envoy inbound listener APPENDS x-authbridge-direction (Lua
+			// headers():add), so a client that already sent one leaves two
+			// entries — theirs first, which getHeader returns, letting a forged
+			// "outbound" skip the inbound chain (jwt-validation) entirely. A
+			// request Envoy marked carries exactly one entry; more than that
+			// is a forgery, and there is no chain it can be safely routed to.
+			if countHeader(headers, "x-authbridge-direction") > 1 {
+				slog.Warn("ext_proc: rejecting request with duplicate x-authbridge-direction entries")
+				resp = immediateResponse(http.StatusBadRequest, "duplicate x-authbridge-direction header")
+				break
+			}
+
 			p := s.OutboundPipeline
 			if direction == "inbound" {
 				p = s.InboundPipeline
@@ -1099,9 +1111,9 @@ func withHeaderMutation(resp *extprocv3.ProcessingResponse, pctx *pipeline.Conte
 // there it names the service being called (pipeline.SessionEvent.Host).
 // The inbound handlers deliberately leave pctx.Host empty: the inbound
 // authority is caller-controlled and pctx.Host feeds enforcement decisions
-// (ibac's host-bypass skip, opa's policy input, per-host JWT audiences),
-// so a spoofed Host header must not reach them. See cpex's outbound-only
-// host-bypass guard for the same rule stated plugin-side.
+// (ibac's host-bypass skip, opa's policy input), so a spoofed Host header
+// must not reach them. See cpex's outbound-only host-bypass guard for the
+// same rule stated plugin-side.
 func authorityOf(headers *corev3.HeaderMap) string {
 	if a := getHeader(headers, ":authority"); a != "" {
 		return a
@@ -1331,6 +1343,19 @@ func getHeader(headers *corev3.HeaderMap, key string) string {
 		}
 	}
 	return ""
+}
+
+func countHeader(headers *corev3.HeaderMap, key string) int {
+	if headers == nil {
+		return 0
+	}
+	n := 0
+	for _, h := range headers.Headers {
+		if strings.EqualFold(h.Key, key) {
+			n++
+		}
+	}
+	return n
 }
 
 // dispatchBufferedFrames feeds the response body to StreamingResponder plugins via

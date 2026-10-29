@@ -42,6 +42,8 @@ package llmclient
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -53,6 +55,18 @@ import (
 
 // DefaultTimeout is applied when Options.Timeout is zero.
 const DefaultTimeout = 5 * time.Second
+
+// NewSentinelValue returns a fresh unguessable sentinel value for
+// SentinelHeaderName/SentinelValue. A per-process random value keeps the
+// reentrancy breaker working while making it unforgeable by callers, who
+// can otherwise set any header they like.
+func NewSentinelValue() string {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		panic("llmclient: crypto/rand unavailable: " + err.Error())
+	}
+	return hex.EncodeToString(b[:])
+}
 
 // errorBodyLimit caps how much of an upstream non-2xx body we
 // surface in the error message. Misbehaving upstreams shouldn't
@@ -93,11 +107,19 @@ type Options struct {
 	Timeout time.Duration
 
 	// SentinelHeaderName, if non-empty, is set on every outgoing
-	// request with value "1". Plugins use this as a reentrancy
+	// request with the sentinel value. Plugins use this as a reentrancy
 	// breaker: their OnRequest checks for the header at the top
 	// and short-circuits, so the LLM call doesn't loop back into
 	// the plugin's own pipeline.
 	SentinelHeaderName string
+
+	// SentinelValue is the value set for SentinelHeaderName. Callers
+	// MUST set it to an unguessable per-process secret (see
+	// NewSentinelValue): a constant value lets any client that can set
+	// headers switch the plugin off. Empty falls back to "1" for
+	// compatibility with pre-secret callers, which carry that same
+	// exposure.
+	SentinelValue string
 
 	// HTTPClient overrides the default http.Client. When nil,
 	// llmclient constructs `&http.Client{Timeout: Timeout}`. Use
@@ -174,6 +196,7 @@ type Client struct {
 	model              string
 	bearer             string
 	sentinelHeaderName string
+	sentinelValue      string
 	http               *http.Client
 }
 
@@ -194,6 +217,7 @@ func New(opts Options) *Client {
 		model:              opts.Model,
 		bearer:             opts.Bearer,
 		sentinelHeaderName: opts.SentinelHeaderName,
+		sentinelValue:      opts.SentinelValue,
 		http:               httpClient,
 	}
 }
@@ -276,7 +300,11 @@ func (c *Client) CallRaw(ctx context.Context, req *ChatRequest) (*ChatResponse, 
 		httpReq.Header.Set("Authorization", "Bearer "+c.bearer)
 	}
 	if c.sentinelHeaderName != "" {
-		httpReq.Header.Set(c.sentinelHeaderName, "1")
+		v := c.sentinelValue
+		if v == "" {
+			v = "1"
+		}
+		httpReq.Header.Set(c.sentinelHeaderName, v)
 	}
 
 	httpResp, err := c.http.Do(httpReq)

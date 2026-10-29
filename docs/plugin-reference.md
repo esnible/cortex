@@ -80,9 +80,8 @@ still omit `audience`, `audience_file`, and `allowed_audiences` entirely
 
 **Session / log migration:** jwt-validation deny-path `Details` used a
 single key `expected_audience` (string). It now emits
-`expected_audiences` (comma-joined list of configured inbound audiences)
-and `expected_audience_host` (per-host derived audience, may
-be empty). Update saved queries and dashboards that filtered on the old
+`expected_audiences` (comma-joined list of configured inbound audiences).
+Update saved queries and dashboards that filtered on the old
 key.
 
 ### `jwt-validation`: `placeholder_mode` / `placeholder_ttl` (optional, off by default)
@@ -606,8 +605,7 @@ already know these; agentop filters match substring on both key and
 value):
 
 - Auth gates (jwt-validation): `expected_issuer`, `expected_audiences`
-  (comma-joined configured inbound audiences), `expected_audience_host`
-  (per-host derived audience, may be empty), `token_subject`,
+  (comma-joined configured inbound audiences), `token_subject`,
   `token_audience`, `token_scopes`.
 - Outbound routers (token-exchange): `route_matched` (`"true"`/`"false"`),
   `route_host`, `target_audience`, `requested_scopes`, `cache_hit`.
