@@ -103,8 +103,8 @@ func TestJSON_PerTokenRatesSurvive(t *testing.T) {
 
 // agentop's runningConfig (cmd/agentop/local_endpoint.go) fetches /config and
 // unmarshals the redacted body into the typed config.Config. This pins that
-// contract: whatever a populated config marshals to must survive a
-// Marshal → redact.JSON → Unmarshal round trip.
+// contract for the non-string fields that carry sensitive stems today — the
+// per-token rates — via a Marshal → redact.JSON → Unmarshal round trip.
 func TestJSON_ExecRoundTripThroughTypedConfig(t *testing.T) {
 	cfg := &config.Config{
 		Pricing: &pricing.Config{
