@@ -1264,7 +1264,11 @@ func (a *Aggregator) evictColdestLocked() {
 }
 
 // countsAsError reports whether e is a failed exchange for Counts.Errors: a status of
-// 400 or more, or a denial.
+// 400 or more, a denial, or an explicit error on the row. The last matters for the one
+// row that keeps a success status on purpose: a streamed response the upstream broke
+// mid-body has no 502 to synthesize — the status is already on the wire — so its row
+// keeps the sent 200 with the failure in Error (#1543). Keying on status alone counted
+// those as healthy, which is what #1543's rows exist to stop.
 //
 // Except a proxy-declined WebSocket upgrade (pipeline.ErrorKindUpgradeDeclined). Its
 // 426 is Cortex telling Codex to use HTTPS, which it then does, once per session: by
@@ -1281,7 +1285,7 @@ func countsAsError(e *pipeline.SessionEvent) bool {
 		e.Error.Kind == pipeline.ErrorKindDestinationPrivate) {
 		return false
 	}
-	return e.StatusCode >= 400 || e.Phase == pipeline.SessionDenied
+	return e.Error != nil || e.StatusCode >= 400 || e.Phase == pipeline.SessionDenied
 }
 
 // foldInto accumulates one event into one ring.
