@@ -922,8 +922,28 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 		f.Flush()
 		dst = flushWriter{w: w, f: f}
 	}
+	var streamFail *pipeline.EventError
 	if _, err := io.Copy(dst, resp.Body); err != nil {
-		slog.Debug("response copy error", "host", r.Host, "error", err)
+		var abort bool
+		streamFail, abort = classifyBrokenStream(r, resp, err)
+		if abort {
+			// Record before the panic: the recording below this block is
+			// unreachable on the panic path, and skip_hosts keeps its
+			// promise of no row — the client still gets its connection
+			// reset, which is not recording (#1543).
+			if !skipped {
+				s.recordOutboundResponseEvent(pctx, resp.StatusCode, streamFail)
+			}
+			// Push what is already relayed — headers and any body bytes
+			// still sitting in net/http's buffer — before the reset: the
+			// SSE arms flush per chunk, but this arm writes through a plain
+			// buffered writer, and ErrAbortHandler discards whatever it
+			// holds (#1543).
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+			panic(http.ErrAbortHandler)
+		}
 	}
 	// Recorded after the copy, not before it: the arm that reaches this io.Copy
 	// unbuffered is still receiving its body while the copy runs, and a row filed
@@ -934,7 +954,7 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 	// ResponseBytes is complete for the same reason. Skipped responses stay
 	// unrecorded, as skip_hosts promises.
 	if !skipped {
-		s.recordOutboundResponseEvent(pctx, resp.StatusCode, nil)
+		s.recordOutboundResponseEvent(pctx, resp.StatusCode, streamFail)
 	}
 }
 
@@ -1921,6 +1941,31 @@ func (s *Server) bufferResponseBody(w http.ResponseWriter, r *http.Request, resp
 	return nil, false
 }
 
+// classifyBrokenStream classifies a mid-body upstream read error on a relay
+// path (#1543). fail is what the response row should carry — client_canceled
+// when the client hung up first, the transport kind otherwise, with the
+// upstream's status as error.code exactly as the buffered path records it.
+//
+// abort says the client's connection must be reset — the caller panics with
+// http.ErrAbortHandler — instead of letting the handler return normally: a
+// normal return makes net/http write the terminating chunk (h1) or
+// END_STREAM (h2), handing the client a COMPLETE response off a stream the
+// upstream cut off. ErrAbortHandler is the standard library's own abort
+// signal: deferred finalization still runs, and net/http does not log it as
+// a panic. abort is false only when the client hung up first — there is
+// nobody left to abort for.
+func classifyBrokenStream(r *http.Request, resp *http.Response, err error) (fail *pipeline.EventError, abort bool) {
+	_, fail = pipeline.ExchangeFailure(r.Context(), err)
+	fail.Code = strconv.Itoa(resp.StatusCode)
+	if r.Context().Err() != nil {
+		slog.Debug("forward-proxy: streaming response ended by client hangup", "host", r.Host, "error", err)
+		return fail, false
+	}
+	slog.Warn("forward-proxy: streaming response read error — aborting the client connection",
+		"host", r.Host, "kind", fail.Kind, "error", fail.Message)
+	return fail, true
+}
+
 // isEventStream reports whether a Content-Type header value names the
 // SSE media type. Content-Type may carry parameters (charset=, boundary=,
 // etc.) so we match on the bare type/subtype prefix and tolerate any
@@ -1982,12 +2027,17 @@ func (s *Server) handleStreamingResponse(w http.ResponseWriter, r *http.Request,
 		return
 	}
 
+	// Set by the read-error arm below; the deferred recorder puts it on the
+	// response row so a stream the upstream broke mid-body stops showing as
+	// a clean 200 in agentop (#1543).
+	var streamFail *pipeline.EventError
+
 	// Defer the final last=true dispatch + session-event recording so
 	// every exit path (normal EOF, upstream read error, downstream
-	// client-write error) finalizes aggregating plugins and records
-	// the response event. Without this, a client disconnect mid-stream
-	// leaves inference/a2a stuck in an unfinalized state and emits no
-	// SessionResponse row to agentop.
+	// client-write error, the ErrAbortHandler panic below) finalizes
+	// aggregating plugins and records the response event. Without this, a
+	// client disconnect mid-stream leaves inference/a2a stuck in an
+	// unfinalized state and emits no SessionResponse row to agentop.
 	defer func() {
 		// Use a detached, BOUNDED context for finalization: the client may have
 		// cancelled the request context after reading the full stream, but
@@ -2007,7 +2057,7 @@ func (s *Server) handleStreamingResponse(w http.ResponseWriter, r *http.Request,
 			slog.Warn("forward-proxy: streaming response rejected on finalization (headers already sent)",
 				"host", r.Host, "violation", finalAction.Violation)
 		}
-		s.recordOutboundResponseEvent(pctx, resp.StatusCode, nil)
+		s.recordOutboundResponseEvent(pctx, resp.StatusCode, streamFail)
 	}()
 
 	// Forward headers and the streaming status code BEFORE the first
@@ -2029,15 +2079,21 @@ func (s *Server) handleStreamingResponse(w http.ResponseWriter, r *http.Request,
 			break
 		}
 		if err != nil {
-			// Read error or oversized single frame. The client has
-			// already received some frames; the cleanest signal is to
-			// close the connection and log. We can't promote this to
-			// 502 — headers are sent.
+			// Read error or oversized single frame. We can't promote this to
+			// 502 — headers are sent — so the client's only honest signal is a
+			// broken connection: returning normally would write the terminating
+			// chunk and hand it a COMPLETE stream off a cut-off one (#1543).
+			// The deferred finalize + recorder above still run, both on the
+			// panic path and the plain break.
 			// bytesRead, not the bytesWritten this used to keep in a local: the
 			// local was declared after the recording defer and never reached the
 			// session event, so the figure is now taken off the counting wrapper
 			// around resp.Body — which is bytes received, not frames relayed.
-			slog.Warn("forward-proxy: streaming response read error", "host", r.Host, "error", err, "bytesRead", pctx.ResponseBytes)
+			var abort bool
+			streamFail, abort = classifyBrokenStream(r, resp, err)
+			if abort {
+				panic(http.ErrAbortHandler)
+			}
 			break
 		}
 
@@ -2109,9 +2165,19 @@ func (s *Server) streamPassthrough(w http.ResponseWriter, r *http.Request, resp 
 		return
 	}
 
+	// Set by the read-error arm below; the deferred recorder puts it on the
+	// response row so a stream the upstream broke mid-body stops showing as a
+	// clean 200 in agentop (#1543).
+	var streamFail *pipeline.EventError
+
 	// Record the response event on every exit path (normal EOF, upstream read
-	// error, downstream write error) so a SessionResponse row still lands.
-	defer s.recordOutboundResponseEvent(pctx, resp.StatusCode, nil)
+	// error, downstream write error, the ErrAbortHandler panic below) so a
+	// SessionResponse row still lands. A closure, not a bare defer call:
+	// defer evaluates its arguments up front, so streamFail must be read at
+	// exit time, not at entry.
+	defer func() {
+		s.recordOutboundResponseEvent(pctx, resp.StatusCode, streamFail)
+	}()
 
 	// Forward headers + status before the first byte. Drop Content-Length since
 	// we relay an open-ended chunked stream.
@@ -2140,7 +2206,14 @@ func (s *Server) streamPassthrough(w http.ResponseWriter, r *http.Request, resp 
 		}
 		if readErr != nil {
 			if readErr != io.EOF {
-				slog.Warn("forward-proxy: streaming response read error", "host", r.Host, "error", readErr)
+				// Returning normally would write the terminating chunk and
+				// hand the client a COMPLETE stream off a cut-off one (#1543);
+				// the deferred recorder above still runs on the panic path.
+				var abort bool
+				streamFail, abort = classifyBrokenStream(r, resp, readErr)
+				if abort {
+					panic(http.ErrAbortHandler)
+				}
 			}
 			return
 		}

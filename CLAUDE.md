@@ -584,7 +584,15 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
   `error.message` the cause, naming the address but never the request URL, whose query
   string can carry an API key. Before that was recorded the row did not exist at all,
   so a failed request was indistinguishable from one still in flight and raised no
-  error rate (#1045). **`error.kind: "proxy_error"` is the one that is ours:** a
+  error rate (#1045). **A streamed response whose body breaks off mid-read has no 502
+  to synthesize — the status is already on the wire** — so the row keeps the sent
+  status with the upstream error on it, and the client's connection is aborted
+  (h1 reset / h2 RST_STREAM) rather than cleanly ended: returning normally wrote the
+  terminating chunk and handed the agent a COMPLETE 200 off a cut-off stream (#1543).
+  The reverse proxy always aborted; the forward proxy's three relay arms (SSE relay,
+  SSE passthrough, unbuffered copy) now do too, and the row carries
+  `error.kind: upstream_error` with the sent status as `error.code`. A skipped
+  (`skip_hosts`) stream aborts the same way and still records nothing. **`error.kind: "proxy_error"` is the one that is ours:** a
   response over the listener's `maxBodySize` (1MB inbound, 10MB outbound). **A 421
   with `error.kind: "misdirected_request"` is a bridged request whose `Host` names
   another host or port than its tunnel's CONNECT target:** the forward proxy refuses it
