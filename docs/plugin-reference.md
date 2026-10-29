@@ -1339,7 +1339,7 @@ What `llmclient` gives you:
 - An OpenAI-compatible chat-completions client (`Client.Call`, `Client.CallRaw`).
 - Generic JSON-from-prose extraction (`ExtractJSON[T]`, `CallStructured[T]`) that handles models which wrap JSON in code fences or prose.
 - A two-bucket error model that maps cleanly to `403` (LLM responded but unparseable — wraps `ErrUncertain`) vs `503` (LLM unreachable — does not wrap `ErrUncertain`).
-- A reentrancy sentinel (`Options.SentinelHeaderName`) for breaking loops when the LLM call would otherwise pass back through the plugin's own pipeline.
+- A reentrancy sentinel (`Options.SentinelHeaderName` + `Options.SentinelValue` from `NewSentinelValue`) for breaking loops when the LLM call would otherwise pass back through the plugin's own pipeline. Compare against the exact value — outbound headers are the agent's own request, so a caller who can set headers must not be able to switch the plugin off.
 
 Plugins keep ownership of:
 

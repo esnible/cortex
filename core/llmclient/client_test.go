@@ -69,6 +69,7 @@ func TestCall_RequestShape(t *testing.T) {
 		Model:              "test-model",
 		Bearer:             "secret-token",
 		SentinelHeaderName: "X-Plugin-Sentinel",
+		SentinelValue:      "test-sentinel",
 		Timeout:            time.Second,
 	})
 	if _, err := c.Call(context.Background(), "system text", "user text"); err != nil {
@@ -84,8 +85,8 @@ func TestCall_RequestShape(t *testing.T) {
 	if gotAuth != "Bearer secret-token" {
 		t.Errorf("Authorization = %q, want 'Bearer secret-token'", gotAuth)
 	}
-	if gotSent != "1" {
-		t.Errorf("X-Plugin-Sentinel = %q, want 1 (reentrancy sentinel must be set)", gotSent)
+	if gotSent != "test-sentinel" {
+		t.Errorf("X-Plugin-Sentinel = %q, want test-sentinel (reentrancy sentinel must be set)", gotSent)
 	}
 	if gotReq.Model != "test-model" {
 		t.Errorf("model = %q, want test-model", gotReq.Model)
@@ -97,28 +98,45 @@ func TestCall_RequestShape(t *testing.T) {
 	}
 }
 
-// No SentinelHeaderName configured → the helper does not set any
-// reentrancy header (header value is empty string).
+// No SentinelHeaderName configured, or a name without a
+// SentinelValue → the helper does not set any reentrancy header.
+// A name without a value must not fall back to a constant: that is
+// the forgeable-header shape (callers can set it and switch the
+// plugin off).
 func TestCall_NoSentinelHeaderWhenUnset(t *testing.T) {
-	var anySentinelSet bool
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Probe a couple of header names that look like reentrancy
-		// markers; none should be present.
-		if r.Header.Get("X-IBAC-Judge") != "" || r.Header.Get("X-LLMClient-Reentrancy") != "" {
-			anySentinelSet = true
-		}
-		_ = json.NewEncoder(w).Encode(llmclient.ChatResponse{
-			Choices: []llmclient.ChatChoice{{Message: llmclient.ChatMessage{Content: "ok"}}},
-		})
-	}))
-	defer srv.Close()
+	for _, tc := range []struct {
+		name  string
+		opts  llmclient.Options
+		label string
+	}{
+		{"no name", llmclient.Options{}, "SentinelHeaderName is empty"},
+		{"name without value", llmclient.Options{SentinelHeaderName: "X-IBAC-Judge"}, "SentinelValue is empty"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var anySentinelSet bool
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				// Probe a couple of header names that look like reentrancy
+				// markers; none should be present.
+				if r.Header.Get("X-IBAC-Judge") != "" || r.Header.Get("X-LLMClient-Reentrancy") != "" {
+					anySentinelSet = true
+				}
+				_ = json.NewEncoder(w).Encode(llmclient.ChatResponse{
+					Choices: []llmclient.ChatChoice{{Message: llmclient.ChatMessage{Content: "ok"}}},
+				})
+			}))
+			defer srv.Close()
 
-	c := llmclient.New(llmclient.Options{Endpoint: srv.URL, Model: "m", Timeout: time.Second})
-	if _, err := c.Call(context.Background(), "s", "u"); err != nil {
-		t.Fatalf("Call: %v", err)
-	}
-	if anySentinelSet {
-		t.Errorf("expected no sentinel header when SentinelHeaderName is empty")
+			tc.opts.Endpoint = srv.URL
+			tc.opts.Model = "m"
+			tc.opts.Timeout = time.Second
+			c := llmclient.New(tc.opts)
+			if _, err := c.Call(context.Background(), "s", "u"); err != nil {
+				t.Fatalf("Call: %v", err)
+			}
+			if anySentinelSet {
+				t.Errorf("expected no sentinel header when %s", tc.label)
+			}
+		})
 	}
 }
 

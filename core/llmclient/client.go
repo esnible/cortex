@@ -16,10 +16,14 @@
 // Reentrancy: a plugin's outbound LLM call may itself be intercepted
 // by the same plugin (e.g. IBAC's judge call passing through the
 // IBAC outbound chain). Construct the Client with a
-// SentinelHeaderName, then check that header at the top of OnRequest
-// and short-circuit. Combined with the recommendation that LLM calls
-// bypass the local listener entirely (a standalone http.Client),
-// this gives defense-in-depth against loops.
+// SentinelHeaderName plus an unguessable SentinelValue
+// (NewSentinelValue), then compare that header against the exact
+// value at the top of OnRequest and short-circuit on equality only —
+// outbound headers are the agent's own request, so a caller who can
+// set headers must not be able to switch the plugin off. Combined
+// with the recommendation that LLM calls bypass the local listener
+// entirely (a standalone http.Client), this gives defense-in-depth
+// against loops.
 //
 // Error model:
 //
@@ -116,9 +120,9 @@ type Options struct {
 	// SentinelValue is the value set for SentinelHeaderName. Callers
 	// MUST set it to an unguessable per-process secret (see
 	// NewSentinelValue): a constant value lets any client that can set
-	// headers switch the plugin off. Empty falls back to "1" for
-	// compatibility with pre-secret callers, which carry that same
-	// exposure.
+	// headers switch the plugin off. The header is only set when both
+	// SentinelHeaderName and SentinelValue are non-empty — a name
+	// without a value emits nothing, not a guessable constant.
 	SentinelValue string
 
 	// HTTPClient overrides the default http.Client. When nil,
@@ -299,12 +303,8 @@ func (c *Client) CallRaw(ctx context.Context, req *ChatRequest) (*ChatResponse, 
 	if c.bearer != "" {
 		httpReq.Header.Set("Authorization", "Bearer "+c.bearer)
 	}
-	if c.sentinelHeaderName != "" {
-		v := c.sentinelValue
-		if v == "" {
-			v = "1"
-		}
-		httpReq.Header.Set(c.sentinelHeaderName, v)
+	if c.sentinelHeaderName != "" && c.sentinelValue != "" {
+		httpReq.Header.Set(c.sentinelHeaderName, c.sentinelValue)
 	}
 
 	httpResp, err := c.http.Do(httpReq)
