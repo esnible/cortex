@@ -128,6 +128,37 @@ func TestStreamRetentionTimelineStopsAfterEsc(t *testing.T) {
 	}
 }
 
+// The Enter drill-down is an exit from the timeline too: openEventsAtSeq moves
+// the pane to Events while the session stays watched through selectedSess, so
+// timeline.session must be cleared there as Esc clears it — otherwise, once the
+// user opens another session, the timeline's old session keeps streaming into
+// m.events for the rest of the run.
+func TestStreamRetentionTimelineStopsAfterDrillDown(t *testing.T) {
+	m := newRetentionModel(t, "other", 0)
+	m.pane = paneTimeline
+	m.timeline.session = "tl-sess"
+	m.openEventsAtSeq("tl-sess", 8)
+	if m.pane != paneEvents || m.selectedSess != "tl-sess" {
+		t.Fatalf("drill-down left pane=%v selectedSess=%q, want events pane on tl-sess", m.pane, m.selectedSess)
+	}
+	// Drilled in, the session is still watched — through selectedSess now.
+	m.handleStreamEvent(apiclient.StreamEvent{Event: &pipeline.SessionEvent{
+		At: time.Now(), SessionID: "tl-sess", Direction: pipeline.Outbound, Phase: pipeline.SessionRequest,
+	}})
+	if len(m.events["tl-sess"]) != 1 {
+		t.Fatalf("drilled-in session holds %d events, want 1 (watched via selectedSess)", len(m.events["tl-sess"]))
+	}
+	// The user opens session C — the state Enter on Sessions leaves.
+	m.selectedSess = "other"
+	m.handleStreamEvent(apiclient.StreamEvent{Event: &pipeline.SessionEvent{
+		At: time.Now(), SessionID: "tl-sess", Direction: pipeline.Outbound, Phase: pipeline.SessionRequest,
+	}})
+	if len(m.events["tl-sess"]) != 1 {
+		t.Errorf("session the timeline held before the drill-down gained %d streamed events after the user moved on",
+			len(m.events["tl-sess"])-1)
+	}
+}
+
 // Dropped events still count in the pipeline pane: model.pluginRuns is folded
 // at stream arrival for EVERY session, so the EVENTS column stays alive with
 // nothing open instead of describing only the watched session.
