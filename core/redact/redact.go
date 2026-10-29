@@ -11,6 +11,9 @@ import (
 
 var sensitiveKeys = []string{
 	"secret", "password", "token", "bearer", "key", "credential",
+	// static-inject's host -> credential map; its values are secrets even
+	// though the key name is not.
+	"mappings",
 }
 
 // JSON redacts values whose keys match sensitive patterns in a
@@ -37,10 +40,12 @@ func JSON(raw json.RawMessage) json.RawMessage {
 func redactMap(m map[string]any) {
 	for k, v := range m {
 		if isSensitiveKey(k) {
-			if _, ok := v.(string); ok {
-				m[k] = "[REDACTED]"
-				continue
-			}
+			// Any value type, not only strings: an array or object under a
+			// sensitive key (api_keys, credentials, mappings) holds secrets
+			// too, and there is no shape worth preserving on a diagnostic
+			// endpoint.
+			m[k] = "[REDACTED]"
+			continue
 		}
 		switch val := v.(type) {
 		case map[string]any:
@@ -65,7 +70,9 @@ func redactSlice(s []any) {
 func isSensitiveKey(key string) bool {
 	lower := strings.ToLower(key)
 	for _, s := range sensitiveKeys {
-		if strings.HasSuffix(lower, s) {
+		// Match the plural too ("credentials", "api_keys", "tokens"): a
+		// suffix check on the singular never fires for it.
+		if strings.HasSuffix(lower, s) || strings.HasSuffix(lower, s+"s") {
 			return true
 		}
 	}
