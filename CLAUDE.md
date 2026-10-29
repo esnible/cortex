@@ -596,7 +596,10 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
   the issue's own log killed 68 of 103 truncated streams, mostly MCP standing GETs)
   and an SSE frame over the frame cap, neither of which is the upstream's fault.
   Such rows count as errors in `/v1/usage` even though their status is a delivered
-  200 — the row's explicit error is what the Errors count reads, not the status. A
+  200 — the row's explicit error is what the Errors count reads, not the status —
+  and the Finisher sees `OutcomeError` like every other failed exchange:
+  `classifyBrokenStream` resets `pctx.StatusCode` to zero while the row keeps
+  the sent status. A
   skipped (`skip_hosts`) stream aborts the same way and still records nothing. **`error.kind: "proxy_error"` is the one that is ours:** a
   response over the listener's `maxBodySize` (1MB inbound, 10MB outbound), and on
   the streamed arms the idle read cutoff and the per-frame cap. **A 421

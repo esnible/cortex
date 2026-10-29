@@ -925,7 +925,7 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 	var streamFail *pipeline.EventError
 	if _, err := io.Copy(dst, resp.Body); err != nil {
 		var abort bool
-		streamFail, abort = classifyBrokenStream(r, resp, err)
+		streamFail, abort = classifyBrokenStream(pctx, r, resp, err)
 		if abort {
 			// Record before the panic: the recording below this block is
 			// unreachable on the panic path, and skip_hosts keeps its
@@ -1960,7 +1960,13 @@ func (s *Server) bufferResponseBody(w http.ResponseWriter, r *http.Request, resp
 // signal: deferred finalization still runs, and net/http does not log it as
 // a panic. abort is false only when the client hung up first — there is
 // nobody left to abort for.
-func classifyBrokenStream(r *http.Request, resp *http.Response, err error) (fail *pipeline.EventError, abort bool) {
+// pctx.StatusCode goes back to zero, as the buffered path does on a failed
+// read: the deferred RunFinish derives the outcome from it after the handler
+// returns, and a 200 there would report OutcomeAllow for an exchange the
+// client saw reset — lineage labelling "ok" a failed one, the exact
+// misreading the buffered path's zero exists to prevent. The row is
+// unaffected: it records resp.StatusCode, the status already on the wire.
+func classifyBrokenStream(pctx *pipeline.Context, r *http.Request, resp *http.Response, err error) (fail *pipeline.EventError, abort bool) {
 	switch {
 	case errors.Is(err, errIdleCut):
 		fail = &pipeline.EventError{Kind: "proxy_error", Message: fmt.Sprintf("stream idle over the proxy's %s read cutoff", streamReadIdleTimeout)}
@@ -1970,6 +1976,7 @@ func classifyBrokenStream(r *http.Request, resp *http.Response, err error) (fail
 		_, fail = pipeline.ExchangeFailure(r.Context(), err)
 	}
 	fail.Code = strconv.Itoa(resp.StatusCode)
+	pctx.StatusCode = 0
 	if r.Context().Err() != nil {
 		slog.Debug("forward-proxy: streaming response ended by client hangup", "host", r.Host, "error", err)
 		return fail, false
@@ -2103,7 +2110,7 @@ func (s *Server) handleStreamingResponse(w http.ResponseWriter, r *http.Request,
 			// session event, so the figure is now taken off the counting wrapper
 			// around resp.Body — which is bytes received, not frames relayed.
 			var abort bool
-			streamFail, abort = classifyBrokenStream(r, resp, err)
+			streamFail, abort = classifyBrokenStream(pctx, r, resp, err)
 			if abort {
 				panic(http.ErrAbortHandler)
 			}
@@ -2223,7 +2230,7 @@ func (s *Server) streamPassthrough(w http.ResponseWriter, r *http.Request, resp 
 				// hand the client a COMPLETE stream off a cut-off one (#1543);
 				// the deferred recorder above still runs on the panic path.
 				var abort bool
-				streamFail, abort = classifyBrokenStream(r, resp, readErr)
+				streamFail, abort = classifyBrokenStream(pctx, r, resp, readErr)
 				if abort {
 					panic(http.ErrAbortHandler)
 				}

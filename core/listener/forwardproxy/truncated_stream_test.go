@@ -152,6 +152,9 @@ func skiphostMustMatch(t *testing.T, rawURL string) *skiphost.Matcher {
 // kind reserved for "the one that is ours", so an operator reading the row
 // looks at the proxy rather than the network; abort stays true either way,
 // because the client's stream is cut and must not read as complete.
+// pctx.StatusCode must go back to zero on every classified cut, so the
+// deferred RunFinish reports OutcomeError rather than an allow off the sent
+// 200 — the same contract the buffered path's zero holds.
 func TestClassifyBrokenStream_ProxySideCuts(t *testing.T) {
 	resp := &http.Response{StatusCode: http.StatusOK}
 	req, err := http.NewRequest(http.MethodGet, "http://up.example/stream", nil)
@@ -169,7 +172,8 @@ func TestClassifyBrokenStream_ProxySideCuts(t *testing.T) {
 		{name: "upstream reset", err: errors.New("read tcp 10.0.0.1:443->10.0.0.2:5000: read: connection reset by peer"), kind: "upstream_error"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			fail, abort := classifyBrokenStream(req, resp, tc.err)
+			pctx := &pipeline.Context{StatusCode: http.StatusOK}
+			fail, abort := classifyBrokenStream(pctx, req, resp, tc.err)
 			if fail.Kind != tc.kind {
 				t.Errorf("kind = %q, want %q", fail.Kind, tc.kind)
 			}
@@ -179,18 +183,25 @@ func TestClassifyBrokenStream_ProxySideCuts(t *testing.T) {
 			if !abort {
 				t.Error("abort = false, want the client connection reset")
 			}
+			if pctx.StatusCode != 0 {
+				t.Errorf("pctx.StatusCode = %d, want 0 so the outcome reports an error, not an allow off the sent 200", pctx.StatusCode)
+			}
 		})
 	}
 
 	// The client hung up first: nobody left to abort for.
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	fail, abort := classifyBrokenStream(req.WithContext(ctx), resp, context.Canceled)
+	pctx := &pipeline.Context{StatusCode: http.StatusOK}
+	fail, abort := classifyBrokenStream(pctx, req.WithContext(ctx), resp, context.Canceled)
 	if abort {
 		t.Error("abort = true on a client hangup")
 	}
 	if fail.Kind != "client_canceled" {
 		t.Errorf("kind = %q, want client_canceled", fail.Kind)
+	}
+	if pctx.StatusCode != 0 {
+		t.Errorf("pctx.StatusCode = %d, want 0 on a client hangup too, matching the buffered path", pctx.StatusCode)
 	}
 }
 
