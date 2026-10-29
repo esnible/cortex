@@ -105,6 +105,7 @@ const (
 	OUTBOUND_CREDENTIALS_GRANT_FAILURE
 	OUTBOUND_NO_TOKEN
 	OUTBOUND_TOKEN_EXCHANGE_FAILED
+	OUTBOUND_NO_AUDIENCE
 )
 
 // OutboundReplaceTokenReason enumerates the reasons for outbound token exchange.
@@ -166,6 +167,8 @@ func (r OutboundDenialReason) String() string {
 		return "no_token"
 	case OUTBOUND_TOKEN_EXCHANGE_FAILED:
 		return "token_exchange_failed"
+	case OUTBOUND_NO_AUDIENCE:
+		return "no_audience"
 	default:
 		return "unknown"
 	}
@@ -414,9 +417,28 @@ func (a *Auth) HandleOutbound(ctx context.Context, authHeader, host string) *Out
 		return a.handleNoToken(ctx, audience, scopes)
 	}
 
+	// An exchange with no audience is refused rather than sent: the IdP
+	// answers it with a token valid for every audience the caller holds
+	// (tokenexchangeaiac's client refuses it for exactly this reason), and
+	// the unrouted-host default-exchange path resolves "" whenever no route
+	// and no deriver names one — forwarding the result would hand that
+	// broad token to whatever host the agent called.
+	if audience == "" {
+		a.IncOutboundDeny(OUTBOUND_NO_AUDIENCE)
+		a.log.Warn("refusing outbound exchange with no audience",
+			"host", host, "scopes", scopes)
+		return &OutboundResult{
+			Action:         ActionDeny,
+			DenyStatus:     http.StatusServiceUnavailable,
+			DenyReason:     "no audience resolved for token exchange",
+			DenyReasonCode: OUTBOUND_NO_AUDIENCE,
+			RouteMatched:   resolved.Matched,
+		}
+	}
+
 	// 5. Cache check
 	if a.cache != nil {
-		if cached, ok := a.cache.Get(subjectToken, audience); ok {
+		if cached, ok := a.cache.Get(subjectToken, audience, scopes, resolved.TokenEndpoint); ok {
 			a.IncOutboundReplaceToken(OUTBOUND_ACTION_CACHE_HIT)
 			a.log.Debug("outbound cache hit", "host", host, "audience", audience)
 			return &OutboundResult{
@@ -469,7 +491,7 @@ func (a *Auth) HandleOutbound(ctx context.Context, authHeader, host string) *Out
 
 	// 7. Cache result
 	if a.cache != nil && resp.ExpiresIn > 0 {
-		a.cache.Set(subjectToken, audience, resp.AccessToken,
+		a.cache.Set(subjectToken, audience, scopes, resolved.TokenEndpoint, resp.AccessToken,
 			time.Duration(resp.ExpiresIn)*time.Second)
 	}
 
@@ -503,6 +525,21 @@ func (a *Auth) handleNoToken(ctx context.Context, audience, scopes string) *Outb
 				DenyStatus:     http.StatusServiceUnavailable,
 				DenyReason:     "exchanger not configured for client credentials",
 				DenyReasonCode: OUTBOUND_CREDS_REQUESTED_NO_EXCHANGER,
+			}
+		}
+		// Same refusal as the exchange path above: a client_credentials
+		// grant with no audience returns a token valid for every audience
+		// the client holds.
+		if audience == "" {
+			a.IncOutboundDeny(OUTBOUND_NO_AUDIENCE)
+			a.log.Warn("refusing client_credentials grant with no audience",
+				"host", "")
+			return &OutboundResult{
+				Action:         ActionDeny,
+				DenyStatus:     http.StatusServiceUnavailable,
+				DenyReason:     "no audience resolved for client credentials grant",
+				DenyReasonCode: OUTBOUND_NO_AUDIENCE,
+				RouteMatched:   false,
 			}
 		}
 		a.log.Debug("no token, falling back to client_credentials",
