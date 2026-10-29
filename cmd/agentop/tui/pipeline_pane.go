@@ -159,7 +159,11 @@ func (m *model) unmetDepsCount() int {
 }
 
 // countEventsPerPlugin counts how many times each plugin actually ran
-// across all cached events, by walking every event's Invocations list.
+// across the events agentop holds, by walking every event's Invocations list.
+// Since #1542 that is the watched session's stream plus snapshots still held
+// — streamed events for sessions nobody opened are counted by no pane (they
+// are dropped on arrival), so these figures describe what is on screen rather
+// than all traffic since attach.
 // This includes auth-gate plugins (jwt-validation, token-exchange, ibac)
 // that don't write extension slots — they all show up in Invocations
 // when they ran, so the pipeline view's per-plugin counts match what

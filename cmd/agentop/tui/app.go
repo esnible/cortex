@@ -1747,13 +1747,17 @@ func (m *model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// recent 1000 on the claim that it "matches the server's default cap" — the
 		// server's was 500, so the two never matched, and neither trims now.
 		//
-		// Which leaves m.events unbounded in BOTH dimensions, and worth stating because
-		// it is a laptop's memory: nothing caps depth now that the per-session 1000 is
-		// gone, and entries are only ever released wholesale — on a pod or endpoint
-		// switch (backToPodsPane resets the whole map) or an explicit operator prune — while
-		// cachedOnlySessionIDs deliberately keeps sessions the server has stopped
-		// listing. agentop holds the same full prompt and completion strings the proxy
-		// does, so resident size tracks the traffic it has watched.
+		// Which leaves the WATCHED session's depth unbounded, and worth stating
+		// because it is a laptop's memory: nothing caps depth now that the
+		// per-session 1000 is gone, and entries are only ever released wholesale —
+		// on a pod or endpoint switch (backToPodsPane resets the whole map), an
+		// explicit operator prune, or opening a different session — while
+		// cachedOnlySessionIDs deliberately keeps opened sessions the server has
+		// stopped listing. The WIDTH is bounded since #1542: streamed events are
+		// retained only for the session being watched (watchingSession), so an
+		// idle agentop stops growing and resident size tracks the session on
+		// screen rather than all traffic. agentop holds the same full prompt and
+		// completion strings the proxy does, for that one session.
 		//
 		// Learned from the echo, not assumed: see model.serverProjects.
 		m.serverProjects = msg.projected
@@ -2255,12 +2259,24 @@ func (m *model) handleStreamEvent(ev apiclient.StreamEvent) {
 	}
 	e := *ev.Event
 	m.eventCt++
-	// Counted above but NOT appended when this session's timeline has been paged off its
-	// tail: a streamed event belongs at the end, and the end is not what is on screen, so
-	// appending would put a live event directly after one from the middle of the session
-	// and present the two as consecutive. The rate counter still moves because the traffic
-	// is real; [t] returns to the tail and picks these up in the refetch.
-	if !m.pagedBack(e.SessionID) {
+	// Counted above but NOT appended for either of two reasons:
+	//
+	// PAGED BACK — this session's timeline has been paged off its tail: a streamed
+	// event belongs at the end, and the end is not what is on screen, so appending
+	// would put a live event directly after one from the middle of the session and
+	// present the two as consecutive. The rate counter still moves because the
+	// traffic is real; [t] returns to the tail and picks these up in the refetch.
+	//
+	// NOT WATCHED (#1542) — the session is neither the one the user opened
+	// (selectedSess — pane-agnostic, so walking events → sessions → events does
+	// not punch a gap in the live tail) nor the timeline's. Retaining every
+	// session's stream was the 18 MB/min idle growth: streamed events are never
+	// interned (a live request event carries the whole conversation, 275–537 KB)
+	// and nothing released them. Everything the off-screen readers need still
+	// happens below — UpdatedAt, the summary stub, sessionsStale — and opening a
+	// session fetches a fresh interned snapshot, so nothing visible is lost but
+	// one round-trip on open.
+	if !m.pagedBack(e.SessionID) && m.watchingSession(e.SessionID) {
 		buf := append(m.events[e.SessionID], e)
 		m.events[e.SessionID] = buf
 	}
@@ -2309,6 +2325,16 @@ stale:
 		// bound it. Left alone because no session anyone has today is near it.
 		m.rebuildEventsTable()
 	}
+}
+
+// watchingSession reports whether agentop is holding this session's events
+// open: the one the user opened (selectedSess, which survives pane switches —
+// only opening another session or erasing clears it) or the timeline's
+// (openTimeline does not set selectedSess). This is the retention predicate
+// for streamed events (#1542): everything else arrives, updates its summary,
+// and is dropped.
+func (m *model) watchingSession(id string) bool {
+	return m.selectedSess == id || m.timeline.session == id
 }
 
 // flushSessionsTable re-sorts the session list by recency and rebuilds its table when a streamed
