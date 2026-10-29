@@ -351,9 +351,11 @@ func (p *CPEX) OnResponse(ctx context.Context, pctx *pipeline.Context) pipeline.
 // CPEX, short-circuit on the first deny.
 //
 // Skip rules (Continue without invoking CPEX):
-//   - manager is nil / ready is false — pipeline misconfigured;
-//     defensive no-op (Pipeline.Build should have already failed).
-//   - len(hooks) == 0 — operator left this phase empty.
+//   - manager is nil — pipeline misconfigured; defensive no-op
+//     (Pipeline.Build should have already failed).
+//   - len(hooks) == 0 — operator left this phase empty. Checked before
+//     the ready gate so a no-hooks plugin stays a no-op even when the
+//     engine is down.
 //   - path or host matches the bypass lists.
 //   - manager.HasHook(hook) is false — operator listed a hook in
 //     config but no sub-plugin is wired for it on the CPEX side.
@@ -368,6 +370,13 @@ func (p *CPEX) runHooks(ctx context.Context, pctx *pipeline.Context, hooks []str
 	if p.manager == nil {
 		// Never configured — Pipeline.Build should have refused this
 		// config already; a defensive no-op.
+		return pipeline.Action{Type: pipeline.Continue}
+	}
+	if len(hooks) == 0 {
+		// Before the ready check: a no-hooks plugin is a valid steady
+		// state (see applyDefaults), in the pipeline for its other
+		// features, so an engine that is down must not deny traffic the
+		// operator configured no hook to judge.
 		return pipeline.Action{Type: pipeline.Continue}
 	}
 	if !p.ready.Load() {
@@ -390,9 +399,6 @@ func (p *CPEX) runHooks(ctx context.Context, pctx *pipeline.Context, hooks []str
 			"cpex policy engine unavailable",
 			nil,
 		)
-	}
-	if len(hooks) == 0 {
-		return pipeline.Action{Type: pipeline.Continue}
 	}
 
 	// strict_hosts wins over both bypass lists: a strict destination's

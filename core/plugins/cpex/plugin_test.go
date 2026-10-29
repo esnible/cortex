@@ -1060,6 +1060,24 @@ func TestDispatch_NotReadyFailsOpenWhenConfigured(t *testing.T) {
 	}
 }
 
+func TestDispatch_NotReadyWithNoHooksIsNoOp(t *testing.T) {
+	// A no-hooks cpex is a valid steady state (config.go's applyDefaults),
+	// in the pipeline for its other features. The engine being down —
+	// Shutdown clears ready during the reload drain window — must not deny
+	// traffic the operator configured no hook to judge, so the empty-hooks
+	// check runs before the ready gate.
+	fake := &FakeManager{KnownHooks: []string{HookToolPreInvoke}}
+	p := setupFake(fake)
+	mustConfigure(t, p, `{}`)
+	a := p.OnRequest(context.Background(), &pipeline.Context{})
+	if a.Type != pipeline.Continue {
+		t.Fatalf("Type = %d, want Continue when not ready and no hooks configured", a.Type)
+	}
+	if len(fake.Invokes) != 0 {
+		t.Fatalf("Invoke called %d times, want 0 when not ready", len(fake.Invokes))
+	}
+}
+
 // --- helpers ---
 
 func mustConfigure(t *testing.T, p *CPEX, raw string) {

@@ -148,10 +148,11 @@ func main() {
 	// config.Validate builds the pricing table and discards it, so an operator's
 	// `pricing:` block validated cleanly and was then never applied.
 	//
-	// Starts EMPTY. buildPipelines below loads the config and swaps the real table in
-	// before anything reads this, so building one here too was duplicate work — and
-	// in this binary it ran before the mode check and Validate, so a wrong-mode
-	// config reported a pricing error instead of the clearer mode error.
+	// Starts EMPTY. The initial build below loads the config and applyPricing
+	// puts its table in before anything reads this, so building one here too was
+	// duplicate work — and in this binary it ran before the mode check and
+	// Validate, so a wrong-mode config reported a pricing error instead of the
+	// clearer mode error.
 	pricingRegistry := pricing.NewRegistry(nil)
 
 	// The table a build prepared but the reloader has not accepted yet.

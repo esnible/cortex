@@ -151,7 +151,7 @@ func (s *Server) Process(stream extprocv3.ExternalProcessor_ProcessServer) error
 				slog.Warn("ext_proc: a plugin rejected during teardown, after the response was delivered",
 					"plugin", pctx.RejectingPlugin(), "code", violationCode(action))
 			}
-			if p.HasStreamingResponders() {
+			if p.ForPctx(pctx).HasStreamingResponders() {
 				// DETACHED FROM THE STREAM'S CONTEXT, which is the difference between this flush
 				// working and only appearing to: ctx is stream.Context(), and the case this block
 				// exists for — a hangup, a filter timeout, a shutdown — is exactly when it is
@@ -672,6 +672,12 @@ func (s *Server) handleResponseHeaders(ctx context.Context, headers *corev3.Head
 	if direction == "inbound" {
 		p = s.InboundPipeline
 	}
+	// The pipeline this response answers for: the one the request's Run
+	// pinned, not whatever a mid-request reload left in the Holder. The
+	// body-mode request to Envoy and the streaming decisions below must
+	// match the pipeline the phases dispatch on, or the pinned plugins
+	// silently miss the body/frames (Holder.ForPctx).
+	pinned := p.ForPctx(pctx)
 
 	// Envoy delivering response headers is this listener's headers-arrival
 	// moment — the same point in the exchange where the proxy listeners set
@@ -685,7 +691,7 @@ func (s *Server) handleResponseHeaders(ctx context.Context, headers *corev3.Head
 	// measured", so leave the timestamp zero on that arm. endOfStream means
 	// no body is coming at all, and p.NeedsBody() means the body phase
 	// records later — in both, headers arrival is a real, reportable figure.
-	if p.NeedsBody() || endOfStream {
+	if pinned.NeedsBody() || endOfStream {
 		pctx.ResponseHeadersAt = time.Now()
 	}
 
@@ -701,7 +707,7 @@ func (s *Server) handleResponseHeaders(ctx context.Context, headers *corev3.Head
 	// The early return itself stays: when a body IS coming, this phase must not run the pipeline,
 	// because the body phase runs the whole buffered dispatch — terminal frame included — and
 	// running both charges twice. requestHasBody makes the same distinction on the request side.
-	if p.NeedsBody() && !endOfStream {
+	if pinned.NeedsBody() && !endOfStream {
 		return &extprocv3.ProcessingResponse{
 			Response: &extprocv3.ProcessingResponse_ResponseHeaders{
 				ResponseHeaders: &extprocv3.HeadersResponse{},
@@ -721,7 +727,7 @@ func (s *Server) handleResponseHeaders(ctx context.Context, headers *corev3.Head
 	// StreamingResponder plugins can finalize (and emit no_response_body
 	// Skip rows for pairing). Mirrors the buffered-body path's single
 	// last=true dispatch.
-	if p.HasStreamingResponders() {
+	if pinned.HasStreamingResponders() {
 		if frameAction := p.RunResponseFrame(ctx, pctx, nil, true); frameAction.Type == pipeline.Reject {
 			return rejectFromAction(frameAction)
 		}
@@ -920,6 +926,10 @@ func (s *Server) handleResponseBody(ctx context.Context, body []byte, pctx *pipe
 	if direction == "inbound" {
 		p = s.InboundPipeline
 	}
+	// The pipeline this response's phases dispatch on is the one the
+	// request's Run pinned; the frame decision below must answer for the
+	// same one (Holder.ForPctx).
+	pinned := p.ForPctx(pctx)
 
 	// ONCE PER RESPONSE, ON THE LAST MESSAGE — not once per ResponseBody message.
 	//
@@ -952,7 +962,7 @@ func (s *Server) handleResponseBody(ctx context.Context, body []byte, pctx *pipe
 	// buffered them at this point), re-parse with sseframe so each
 	// event arrives as its own frame; otherwise dispatch the whole
 	// body as one last=true frame.
-	if p.HasStreamingResponders() {
+	if pinned.HasStreamingResponders() {
 		if frameAction := dispatchBufferedFrames(ctx, p, pctx, endOfStream); frameAction.Type == pipeline.Reject {
 			return rejectFromAction(frameAction)
 		}

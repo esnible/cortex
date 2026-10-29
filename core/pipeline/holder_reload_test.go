@@ -55,3 +55,41 @@ func TestHolder_ReloadMidRequestKeepsPhasesOnOnePipeline(t *testing.T) {
 			a.respCount.Load(), b.respCount.Load(), c.respCount.Load())
 	}
 }
+
+// frameCountPlugin is a holderTestPlugin that also implements
+// StreamingResponder, so a test pipeline can declare one.
+type frameCountPlugin struct {
+	holderTestPlugin
+}
+
+func (f *frameCountPlugin) OnResponseFrame(_ context.Context, _ *Context, _ []byte, _ bool) Action {
+	return Action{Type: Continue}
+}
+
+// TestHolder_CapabilityProbesFollowThePin: listeners decide the response
+// path (streamed vs buffered, body mode) from capability probes AFTER Run,
+// with the response arriving seconds or minutes later on an open stream —
+// exactly the window a reload lands in. The probe must answer for the
+// pipeline the request is pinned to, not the one the Holder now holds, or
+// the listener picks the new pipeline's path while the pinned old plugins
+// still dispatch: a StreamingResponder the reload removed never sees its
+// frames (#1561).
+func TestHolder_CapabilityProbesFollowThePin(t *testing.T) {
+	old := mustPipeline(t, &frameCountPlugin{holderTestPlugin{name: "streamer"}})
+	h := NewHolder(old)
+
+	pctx := &Context{Direction: Outbound}
+	if act := h.Run(context.Background(), pctx); act.Type != Continue {
+		t.Fatalf("Run: %v", act.Type)
+	}
+
+	// Reload swaps in a chain with no StreamingResponder.
+	h.Store(mustPipeline(t, &holderTestPlugin{name: "plain"}))
+
+	if !h.ForPctx(pctx).HasStreamingResponders() {
+		t.Error("ForPctx(pctx).HasStreamingResponders() = false, want true: the probe must answer for the pinned pipeline")
+	}
+	if h.HasStreamingResponders() {
+		t.Error("HasStreamingResponders() = true, want false: the Holder itself serves new requests")
+	}
+}
