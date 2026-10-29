@@ -16,6 +16,7 @@
 package main
 
 import (
+	"runtime/debug"
 	"context"
 	"encoding/json"
 	"errors"
@@ -636,6 +637,24 @@ func main() {
 
 	inboundH := pipeline.NewHolder(inboundPipeline)
 	outboundH := pipeline.NewHolder(outboundPipeline)
+
+	// The Go runtime's soft memory limit, applied once at boot — memory.* is
+	// refused on reload, so this is the only place it can take effect. Defaulted
+	// for a local install only: nothing in cmd/ or core/ bounded the runtime's
+	// appetite, and with GOGC at its default the heap is sized to ~2x live while
+	// session-API reads leave their expansion of the store's sharing as idle RSS
+	// — measured, ~1.4GB live carried 2.9GB of RSS (#1541). The limit is SOFT:
+	// near it the GC trades CPU for memory, and a live heap that genuinely
+	// exceeds it still grows rather than failing anything.
+	if cfg.Memory == nil && localInstall {
+		cfg.Memory = &config.MemoryConfig{LimitMB: 2048}
+	}
+	if limit := cfg.MemoryLimitBytes(); limit > 0 {
+		debug.SetMemoryLimit(limit)
+		slog.Info("cortex: soft memory limit set",
+			"limitMB", cfg.Memory.LimitMB,
+			"note", "soft — the GC works harder near it; a live heap over it still grows")
+	}
 
 	ctx, cancelCtx := context.WithCancel(context.Background())
 	defer cancelCtx()

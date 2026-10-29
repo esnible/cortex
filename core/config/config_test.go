@@ -1126,3 +1126,18 @@ pipeline:
 		t.Error("a config with no session block loads with client affinity off, want on")
 	}
 }
+
+// MemoryLimitBytes: nil block and explicit zero are off; a positive limit
+// converts to bytes. The local-install default is applied by cmd/cortex, not
+// here — the library must stay usable where no default is wanted.
+func TestMemoryLimitBytes(t *testing.T) {
+	if got := (&Config{}).MemoryLimitBytes(); got != 0 {
+		t.Errorf("nil memory block: limit = %d, want 0", got)
+	}
+	if got := (&Config{Memory: &MemoryConfig{}}).MemoryLimitBytes(); got != 0 {
+		t.Errorf("empty memory block: limit = %d, want 0", got)
+	}
+	if got := (&Config{Memory: &MemoryConfig{LimitMB: 2048}}).MemoryLimitBytes(); got != 2048<<20 {
+		t.Errorf("limit 2048MB = %d bytes, want %d", got, 2048<<20)
+	}
+}
