@@ -1941,10 +1941,16 @@ func (s *Server) bufferResponseBody(w http.ResponseWriter, r *http.Request, resp
 	return nil, false
 }
 
-// classifyBrokenStream classifies a mid-body upstream read error on a relay
-// path (#1543). fail is what the response row should carry — client_canceled
+// classifyBrokenStream classifies a mid-body read error on a relay path
+// (#1543). fail is what the response row should carry — client_canceled
 // when the client hung up first, the transport kind otherwise, with the
 // upstream's status as error.code exactly as the buffered path records it.
+// Two of the errors that reach here are the proxy's own cuts, not the
+// upstream's — the idle read cutoff and the per-frame size cap — and both
+// record proxy_error, the kind CLAUDE.md reserves for "the one that is
+// ours", exactly as the buffered path records its own size limit. An
+// operator reading an upstream_error row should be looking at the network,
+// never at streamReadIdleTimeout.
 //
 // abort says the client's connection must be reset — the caller panics with
 // http.ErrAbortHandler — instead of letting the handler return normally: a
@@ -1955,7 +1961,14 @@ func (s *Server) bufferResponseBody(w http.ResponseWriter, r *http.Request, resp
 // a panic. abort is false only when the client hung up first — there is
 // nobody left to abort for.
 func classifyBrokenStream(r *http.Request, resp *http.Response, err error) (fail *pipeline.EventError, abort bool) {
-	_, fail = pipeline.ExchangeFailure(r.Context(), err)
+	switch {
+	case errors.Is(err, errIdleCut):
+		fail = &pipeline.EventError{Kind: "proxy_error", Message: fmt.Sprintf("stream idle over the proxy's %s read cutoff", streamReadIdleTimeout)}
+	case errors.Is(err, sseframe.ErrFrameTooLarge):
+		fail = &pipeline.EventError{Kind: "proxy_error", Message: fmt.Sprintf("single SSE frame over the %d-byte frame cap", maxBodySize)}
+	default:
+		_, fail = pipeline.ExchangeFailure(r.Context(), err)
+	}
 	fail.Code = strconv.Itoa(resp.StatusCode)
 	if r.Context().Err() != nil {
 		slog.Debug("forward-proxy: streaming response ended by client hangup", "host", r.Host, "error", err)
@@ -2679,21 +2692,42 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 // data either way. The wider hazard — closing the body concurrently
 // with an active Read — is the documented unblock mechanism the
 // stdlib http transport relies on for forced disconnects.
+//
+// When the timer — not the upstream — is what closed the body, Read
+// surfaces errIdleCut instead of the bare closed-body error, so
+// classifyBrokenStream can record the cut as proxy_error rather than
+// blaming a healthy upstream (#1543: on the issue's own log, 68 of
+// 103 truncations were this cutoff killing MCP's standing GET).
 type idleReadCloser struct {
 	rc        io.ReadCloser
 	timeout   time.Duration
 	closeOnce sync.Once
+	cutFired  atomic.Bool
 }
+
+// errIdleCut is the read error idleReadCloser returns when its timer closed
+// the body. Matched with errors.Is; see classifyBrokenStream.
+var errIdleCut = errors.New("stream cut by the proxy's idle read cutoff")
 
 func idleReader(rc io.ReadCloser, timeout time.Duration) io.ReadCloser {
 	return &idleReadCloser{rc: rc, timeout: timeout}
 }
 
 func (i *idleReadCloser) Read(p []byte) (int, error) {
-	timer := time.AfterFunc(i.timeout, i.closeIdempotent)
+	timer := time.AfterFunc(i.timeout, i.cut)
 	n, err := i.rc.Read(p)
 	timer.Stop()
+	if err != nil && i.cutFired.Load() {
+		return n, errIdleCut
+	}
 	return n, err
+}
+
+// cut is the timer's callback: mark that THIS close was the cutoff's, so a
+// concurrent or next Read reports the cut rather than an upstream break.
+func (i *idleReadCloser) cut() {
+	i.cutFired.Store(true)
+	i.closeIdempotent()
 }
 
 func (i *idleReadCloser) Close() error {

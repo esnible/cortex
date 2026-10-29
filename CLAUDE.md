@@ -590,10 +590,16 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
   (h1 reset / h2 RST_STREAM) rather than cleanly ended: returning normally wrote the
   terminating chunk and handed the agent a COMPLETE 200 off a cut-off stream (#1543).
   The reverse proxy always aborted; the forward proxy's three relay arms (SSE relay,
-  SSE passthrough, unbuffered copy) now do too, and the row carries
-  `error.kind: upstream_error` with the sent status as `error.code`. A skipped
-  (`skip_hosts`) stream aborts the same way and still records nothing. **`error.kind: "proxy_error"` is the one that is ours:** a
-  response over the listener's `maxBodySize` (1MB inbound, 10MB outbound). **A 421
+  SSE passthrough, unbuffered copy) now do too, and the row carries the failure with
+  the sent status as `error.code` — `upstream_error` for the upstream's break,
+  `proxy_error` for the proxy's own cuts: the 5-minute idle read cutoff (which on
+  the issue's own log killed 68 of 103 truncated streams, mostly MCP standing GETs)
+  and an SSE frame over the frame cap, neither of which is the upstream's fault.
+  Such rows count as errors in `/v1/usage` even though their status is a delivered
+  200 — the row's explicit error is what the Errors count reads, not the status. A
+  skipped (`skip_hosts`) stream aborts the same way and still records nothing. **`error.kind: "proxy_error"` is the one that is ours:** a
+  response over the listener's `maxBodySize` (1MB inbound, 10MB outbound), and on
+  the streamed arms the idle read cutoff and the per-frame cap. **A 421
   with `error.kind: "misdirected_request"` is a bridged request whose `Host` names
   another host or port than its tunnel's CONNECT target:** the forward proxy refuses it
   before the pipeline runs and forwards nothing, and both rows name the CONNECT target

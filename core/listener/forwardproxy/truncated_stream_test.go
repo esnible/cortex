@@ -1,12 +1,16 @@
 package forwardproxy
 
 import (
+	"context"
+	"errors"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
+	"github.com/rossoctl/cortex/core/listener/internal/sseframe"
 	"github.com/rossoctl/cortex/core/listener/skiphost"
 	"github.com/rossoctl/cortex/core/pipeline"
 )
@@ -140,4 +144,76 @@ func skiphostMustMatch(t *testing.T, rawURL string) *skiphost.Matcher {
 		t.Fatalf("skiphost.New: %v", err)
 	}
 	return m
+}
+
+// TestClassifyBrokenStream_ProxySideCuts: two of the read errors a relay arm
+// sees are the proxy's own cuts, not the upstream's — the idle read cutoff
+// and an SSE frame over the frame cap. Both must record proxy_error, the
+// kind reserved for "the one that is ours", so an operator reading the row
+// looks at the proxy rather than the network; abort stays true either way,
+// because the client's stream is cut and must not read as complete.
+func TestClassifyBrokenStream_ProxySideCuts(t *testing.T) {
+	resp := &http.Response{StatusCode: http.StatusOK}
+	req, err := http.NewRequest(http.MethodGet, "http://up.example/stream", nil)
+	if err != nil {
+		t.Fatalf("new request: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		err  error
+		kind string
+	}{
+		{name: "idle cutoff", err: errIdleCut, kind: "proxy_error"},
+		{name: "oversized frame", err: sseframe.ErrFrameTooLarge, kind: "proxy_error"},
+		{name: "upstream reset", err: errors.New("read tcp 10.0.0.1:443->10.0.0.2:5000: read: connection reset by peer"), kind: "upstream_error"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fail, abort := classifyBrokenStream(req, resp, tc.err)
+			if fail.Kind != tc.kind {
+				t.Errorf("kind = %q, want %q", fail.Kind, tc.kind)
+			}
+			if fail.Code != "200" {
+				t.Errorf("error.code = %q, want the sent 200", fail.Code)
+			}
+			if !abort {
+				t.Error("abort = false, want the client connection reset")
+			}
+		})
+	}
+
+	// The client hung up first: nobody left to abort for.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	fail, abort := classifyBrokenStream(req.WithContext(ctx), resp, context.Canceled)
+	if abort {
+		t.Error("abort = true on a client hangup")
+	}
+	if fail.Kind != "client_canceled" {
+		t.Errorf("kind = %q, want client_canceled", fail.Kind)
+	}
+}
+
+// TestIdleReader_CutSurfacesSentinel: when the idle timer — not the upstream —
+// closes the body, the read error must be errIdleCut, the sentinel
+// classifyBrokenStream keys on to record proxy_error. A read that succeeds
+// before the timer must come back untouched.
+func TestIdleReader_CutSurfacesSentinel(t *testing.T) {
+	pr, pw := net.Pipe()
+	defer func() { _ = pw.Close() }()
+	defer func() { _ = pr.Close() }()
+
+	// Healthy read: data arrives, the timer never fires, no sentinel.
+	go func() { _, _ = pw.Write([]byte("data")) }()
+	healthy := idleReader(pr, time.Minute)
+	n, err := healthy.Read(make([]byte, 4))
+	if err != nil || n != 4 {
+		t.Fatalf("healthy read = %d, %v; want 4, nil", n, err)
+	}
+
+	// Idle cut: nothing arrives, the timer closes the body.
+	idle := idleReader(pr, 20*time.Millisecond)
+	if _, err := idle.Read(make([]byte, 4)); !errors.Is(err, errIdleCut) {
+		t.Errorf("read error after the idle cutoff = %v, want errIdleCut", err)
+	}
 }
