@@ -562,9 +562,21 @@ type model struct {
 	// an operator watching the pane.
 	untitledCounted map[string]bool
 	eventCt         uint64 // monotonic counter
-	lastTick        time.Time
-	lastCt          uint64
-	rate            float64
+	// pluginRuns is the pipeline pane's EVENTS column and the plugin-detail
+	// pane's Activity line: how many times each plugin ran, counted once at
+	// stream arrival for EVERY session — watched or not — since #1542 stopped
+	// un-watched events being retained. Counting at arrival rather than walking
+	// m.events is what keeps the pane alive with nothing open, and it cannot
+	// double-count the way a walk-plus-counter would (a snapshot of an
+	// un-watched session re-delivers events the counter already saw). The cost:
+	// a snapshot's history contributes nothing, so the figures describe live
+	// traffic since attach, not "events in cached sessions". A ledger, not
+	// content: kept across a clear (like the cost ledger), reset only by
+	// backToPodsPane, beside eventCt — a different pod is a different pipeline.
+	pluginRuns map[string]int
+	lastTick   time.Time
+	lastCt     uint64
+	rate       float64
 
 	// Connection status.
 	connState connStateInfo
@@ -1053,6 +1065,9 @@ func (m *model) backToPodsPane() {
 	// flight against the old pod is dropped rather than applied.
 	m.spend.invalidate()
 	m.eventCt = 0
+	// Same reason as eventCt: the new pod's pipeline must not inherit the old
+	// pod's plugin-run counts.
+	m.pluginRuns = nil
 	m.lastCt = 0
 	m.rate = 0
 	m.pipeline = nil
@@ -2259,6 +2274,20 @@ func (m *model) handleStreamEvent(ev apiclient.StreamEvent) {
 	}
 	e := *ev.Event
 	m.eventCt++
+	// The pipeline pane's per-plugin counts, folded here for every arrival —
+	// watched or not, appended or dropped — so the pane stays alive with nothing
+	// open. See model.pluginRuns for why this is not a walk of m.events.
+	if e.Invocations != nil {
+		if m.pluginRuns == nil {
+			m.pluginRuns = map[string]int{}
+		}
+		for _, inv := range e.Invocations.Inbound {
+			m.pluginRuns[inv.Plugin]++
+		}
+		for _, inv := range e.Invocations.Outbound {
+			m.pluginRuns[inv.Plugin]++
+		}
+	}
 	// Counted above but NOT appended for either of two reasons:
 	//
 	// PAGED BACK — this session's timeline has been paged off its tail: a streamed
@@ -2273,9 +2302,9 @@ func (m *model) handleStreamEvent(ev apiclient.StreamEvent) {
 	// session's stream was the 18 MB/min idle growth: streamed events are never
 	// interned (a live request event carries the whole conversation, 275–537 KB)
 	// and nothing released them. Everything the off-screen readers need still
-	// happens below — UpdatedAt, the summary stub, sessionsStale — and opening a
-	// session fetches a fresh interned snapshot, so nothing visible is lost but
-	// one round-trip on open.
+	// happens below — UpdatedAt, the summary stub, sessionsStale, the plugin
+	// counts above — and opening a session fetches a fresh interned snapshot,
+	// so nothing visible is lost but one round-trip on open.
 	if !m.pagedBack(e.SessionID) && m.watchingSession(e.SessionID) {
 		buf := append(m.events[e.SessionID], e)
 		m.events[e.SessionID] = buf
@@ -2330,9 +2359,10 @@ stale:
 // watchingSession reports whether agentop is holding this session's events
 // open: the one the user opened (selectedSess, which survives pane switches —
 // only opening another session or erasing clears it) or the timeline's
-// (openTimeline does not set selectedSess). This is the retention predicate
-// for streamed events (#1542): everything else arrives, updates its summary,
-// and is dropped.
+// (openTimeline does not set selectedSess; leaving the timeline pane clears
+// it, so a session glanced at once does not keep its stream for the rest of
+// the run). This is the retention predicate for streamed events (#1542):
+// everything else arrives, updates its summary, and is dropped.
 func (m *model) watchingSession(id string) bool {
 	return m.selectedSess == id || m.timeline.session == id
 }

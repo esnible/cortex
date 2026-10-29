@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/bubbletea"
+
 	"github.com/rossoctl/cortex/cmd/agentop/apiclient"
 	"github.com/rossoctl/cortex/core/pipeline"
 )
@@ -44,7 +46,13 @@ func TestStreamRetentionOffScreen(t *testing.T) {
 			}})
 		}
 	}
-	retained := hp() - base
+	// SIGNED, because HeapAlloc can go DOWN between the two reads — the base
+	// includes garbage from earlier tests and five GCs can return it, which a
+	// uint64 subtraction wraps to ~2^64 (the first CI run of this test failed
+	// printing "18446744073709.5 MB retained"). A negative delta passes: "heap
+	// shrank" is not retention, and the deterministic assertion below is the
+	// real guard.
+	retained := int64(hp()) - int64(base)
 	distinct := uint64(3 * 50 * 4110)
 	t.Logf("heap +%.1f MB retained; distinct content %.1f MB", float64(retained)/1e6, float64(distinct)/1e6)
 	// Before the fix this held 18.9 MB — 31x the distinct content. After it,
@@ -57,7 +65,6 @@ func TestStreamRetentionOffScreen(t *testing.T) {
 		t.Errorf("off-screen streamed events retained %.1f MB; only the watched session may retain events (bug signature was 18.9 MB)",
 			float64(retained)/1e6)
 	}
-	_ = distinct
 	for _, id := range []string{"bg-0", "bg-1", "bg-2"} {
 		if len(m.events[id]) != 0 {
 			t.Errorf("session %s (never opened) holds %d streamed events", id, len(m.events[id]))
@@ -98,5 +105,43 @@ func TestStreamRetentionTimelineSessionStillAppends(t *testing.T) {
 	}
 	if len(m.events["tl-sess"]) != 5 {
 		t.Errorf("timeline session holds %d events, want 5", len(m.events["tl-sess"]))
+	}
+}
+
+// Leaving the timeline pane stops the watch: timeline.session is a #1542
+// retention key, so Esc clears it — otherwise a session glanced at once in the
+// timeline kept streaming its events for the rest of the run.
+func TestStreamRetentionTimelineStopsAfterEsc(t *testing.T) {
+	m := newRetentionModel(t, "other", 0)
+	m.pane = paneTimeline
+	m.timeline.session = "tl-sess"
+	m.timeline.returnPane = paneSessions // openTimeline always records one; the zero value is paneNamespaces
+	m.handleKey(tea.KeyMsg{Type: tea.KeyEsc})
+	if m.pane != paneSessions || m.timeline.session != "" {
+		t.Fatalf("esc left pane=%v timeline.session=%q, want sessions pane and no session", m.pane, m.timeline.session)
+	}
+	m.handleStreamEvent(apiclient.StreamEvent{Event: &pipeline.SessionEvent{
+		At: time.Now(), SessionID: "tl-sess", Direction: pipeline.Outbound, Phase: pipeline.SessionRequest,
+	}})
+	if len(m.events["tl-sess"]) != 0 {
+		t.Errorf("session left with the timeline still holds %d streamed events", len(m.events["tl-sess"]))
+	}
+}
+
+// Dropped events still count in the pipeline pane: model.pluginRuns is folded
+// at stream arrival for EVERY session, so the EVENTS column stays alive with
+// nothing open instead of describing only the watched session.
+func TestPluginRunsCountUnwatchedStream(t *testing.T) {
+	m := newRetentionModel(t, "on-screen", 0)
+	m.pane = paneSessions
+	m.handleStreamEvent(apiclient.StreamEvent{Event: &pipeline.SessionEvent{
+		At: time.Now(), SessionID: "bg", Direction: pipeline.Outbound, Phase: pipeline.SessionRequest,
+		Invocations: &pipeline.Invocations{Outbound: []pipeline.Invocation{{Plugin: "token-exchange"}, {Plugin: "token-exchange"}}},
+	}})
+	if got := m.pluginRuns["token-exchange"]; got != 2 {
+		t.Errorf("pluginRuns[token-exchange] = %d, want 2 (counted at arrival, not retention)", got)
+	}
+	if len(m.events["bg"]) != 0 {
+		t.Errorf("un-watched session retained %d events", len(m.events["bg"]))
 	}
 }

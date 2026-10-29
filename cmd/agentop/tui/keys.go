@@ -546,6 +546,13 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 				m.pane = paneSessions
 			}
 			m.timeline.tickGen++
+			// The timeline's session is a #1542 retention key (watchingSession),
+			// so it must not outlive the pane: left set, it would keep streaming
+			// that session's events for the rest of the run. Cleared here rather
+			// than pane-checked in the predicate, because the drill-down paths
+			// (openEventsAtSeq) move the pane away while the session stays
+			// watched through selectedSess.
+			m.timeline.session = ""
 		case paneUsage:
 			// Return to whichever pane opened it, from usageState's own field —
 			// model.previousPane is shared with the catalog overlay and gets
