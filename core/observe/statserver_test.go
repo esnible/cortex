@@ -202,9 +202,9 @@ func serveMuxOpts(cfg *config.Config, stats *auth.Stats, opts ...Option) http.Ha
 	return s.server.Handler
 }
 
-// WithPprof mounts Go's net/http/pprof handlers. A heap profile is a dump of
-// process memory — request bodies and tokens included — so it must be possible
-// to build the server without them, which is the default.
+// WithPprof mounts Go's net/http/pprof handlers. The profiles expose the
+// process's internals, so it must be possible to build the server without
+// them, which is the default.
 func TestStatServerPprofOffByDefault(t *testing.T) {
 	handler := serveMux(newTestConfig(), auth.NewStats())
 	req := httptest.NewRequest(http.MethodGet, "/debug/pprof/heap", nil)
@@ -213,8 +213,12 @@ func TestStatServerPprofOffByDefault(t *testing.T) {
 	handler.ServeHTTP(w, req)
 
 	resp := w.Result()
+	body, _ := io.ReadAll(resp.Body)
 	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
 		t.Errorf("GET /debug/pprof/heap without WithPprof served %q, want the HTML index", ct)
+	}
+	if strings.Contains(string(body), "/debug/pprof/") {
+		t.Error("index page links /debug/pprof/ without WithPprof")
 	}
 }
 
@@ -231,8 +235,9 @@ func TestStatServerPprofServesProfiles(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("GET /debug/pprof/heap status = %d, want 200", resp.StatusCode)
 	}
-	if len(body) == 0 {
-		t.Error("GET /debug/pprof/heap returned an empty profile")
+	// A gzip stream is what pprof serves; the HTML index or an error page is not.
+	if len(body) < 2 || body[0] != 0x1f || body[1] != 0x8b {
+		t.Error("GET /debug/pprof/heap did not return a gzip profile stream")
 	}
 }
 
@@ -263,5 +268,22 @@ func TestStatServerPprofRefusesReboundHost(t *testing.T) {
 		if w.Result().StatusCode != http.StatusOK {
 			t.Errorf("GET /debug/pprof/heap with Host %q = %d, want 200", host, w.Result().StatusCode)
 		}
+	}
+}
+
+// The Host check alone does not stop a browser: a simple no-cors GET from a
+// page carries a loopback Host and no preflight. Browsers always send Origin,
+// so its presence is the refusal — the erase guards' third check.
+func TestStatServerPprofRefusesBrowserOrigin(t *testing.T) {
+	handler := serveMuxOpts(newTestConfig(), auth.NewStats(), WithPprof(true))
+	req := httptest.NewRequest(http.MethodGet, "/debug/pprof/heap", nil)
+	req.Host = "127.0.0.1:47802"
+	req.Header.Set("Origin", "https://evil.example")
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	if w.Result().StatusCode != http.StatusForbidden {
+		t.Errorf("GET /debug/pprof/heap with Origin = %d, want 403", w.Result().StatusCode)
 	}
 }

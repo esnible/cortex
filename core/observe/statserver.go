@@ -68,10 +68,17 @@ func WithTLSBridgeUnread(h http.Handler) Option {
 }
 
 // WithPprof mounts Go's net/http/pprof handlers under /debug/pprof/. Off unless
-// asked for: a heap profile is a dump of process memory — request bodies and
-// tokens included — so the host enables it only where the stats port is
-// loopback-only (cmd/cortex reads listener.bind_loopback_only, the same gate
-// as the session API's clear).
+// asked for: the profiles expose the process's internals — allocation stack
+// traces, argv (cmdline), and a caller's ability to start CPU profiling and
+// tracing — so the host enables it only where the stats port is loopback-only
+// (cmd/cortex reads listener.bind_loopback_only, the same gate as the session
+// API's clear). The handlers also refuse a non-loopback Host and any request
+// carrying Origin, the erase guards' browser defenses.
+//
+// Side effect of the import: net/http/pprof's init registers /debug/pprof/* on
+// http.DefaultServeMux in every binary linking this package. Nothing in this
+// tree serves that mux — an http.Server built with a nil Handler would, and
+// would expose these ungated, so none may be.
 func WithPprof(enabled bool) Option {
 	return func(o *statServerOpts) { o.pprof = enabled }
 }
@@ -104,6 +111,10 @@ func NewStatServer(addr string, configProvider ConfigProvider, statsProvider Sta
 			return func(w http.ResponseWriter, r *http.Request) {
 				if !loopbackHost(r.Host) {
 					http.Error(w, "pprof is served only for a loopback Host", http.StatusForbidden)
+					return
+				}
+				if r.Header.Get("Origin") != "" {
+					http.Error(w, "pprof is refused from a browser: the request carries an Origin header", http.StatusForbidden)
 					return
 				}
 				h(w, r)

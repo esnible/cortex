@@ -1143,8 +1143,9 @@ func main() {
 	if bridge != nil {
 		statOpts = append(statOpts, observe.WithTLSBridgeUnread(bridge.UnreadHandler()))
 	}
-	// A heap profile dumps process memory — prompts and tokens included — so it
-	// rides the same loopback-only gate as the session API's clear.
+	// pprof exposes the process's internals (allocation stack traces, argv,
+	// caller-started CPU/trace profiling), so it rides the same loopback-only
+	// gate as the session API's clear.
 	statOpts = append(statOpts, observe.WithPprof(cfg.Listener.BindLoopbackOnly))
 	statSrv := bootstrap.ServeStatServer(rld.ConfigProvider(), statsProvider, rld.Handler(), pricingRegistry.Handler(),
 		listeners.take("stats"), statOpts...)
