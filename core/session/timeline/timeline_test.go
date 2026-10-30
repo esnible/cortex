@@ -851,3 +851,59 @@ func TestLostTurnIsNotASuccess(t *testing.T) {
 		t.Errorf("sp = %+v, want it ended at the first failure (300s)", x)
 	}
 }
+
+// bobTurn records a chat-completions call from a known non-Claude client: no Subagent, no
+// AgentRole, attributed only by Client.
+func (r *rec) bobTurn(model string, start, dur float64, msgs []pipeline.InferenceMessage, results []pipeline.InferenceToolResult, calls ...pipeline.InferenceToolCall) {
+	id := r.id()
+	client := &pipeline.EventClient{Name: "bob"}
+	r.add(pipeline.SessionEvent{At: at(start), Phase: pipeline.SessionRequest, RequestID: id, Host: "api.us-east.bob.ibm.com", Client: client,
+		Inference: &pipeline.InferenceExtension{Model: model, Messages: msgs, ToolResults: results}})
+	r.add(pipeline.SessionEvent{At: at(start + dur), Phase: pipeline.SessionResponse, RequestID: id, Host: "api.us-east.bob.ibm.com", Client: client,
+		StatusCode: 200, Duration: time.Duration(dur * float64(time.Second)),
+		Inference: &pipeline.InferenceExtension{Model: model, FinishReason: "stop", ToolCalls: calls}})
+}
+
+// A known client that sends no Claude markers still gets turns, all on the single main row —
+// including its tool-less side calls, which are real model spend, labeled by model.
+func TestKnownNonClaudeClientGetsTurnsOnMainRow(t *testing.T) {
+	var r rec
+	r.bobTurn("premium-ide", 0, 10, []pipeline.InferenceMessage{user("hi")}, nil)
+	r.bobTurn("security", 12, 2, []pipeline.InferenceMessage{user("check")}, nil) // side call: no tools
+	tl := Build("s", r.events, at(30))
+	if len(tl.Turns) != 2 {
+		t.Fatalf("Turns = %d, want 2 (side calls of a non-Claude client are turns)", len(tl.Turns))
+	}
+	for _, tu := range tl.Turns {
+		if tu.Agent != MainAgent {
+			t.Fatalf("turn agent = %q, want %q", tu.Agent, MainAgent)
+		}
+	}
+	if tl.Turns[0].Model != "premium-ide" || tl.Turns[1].Model != "security" {
+		t.Fatalf("models = %q, %q; want premium-ide, security", tl.Turns[0].Model, tl.Turns[1].Model)
+	}
+	if len(tl.Agents) != 1 || tl.Agents[0].ID != MainAgent {
+		t.Fatalf("Agents = %+v, want one main row", tl.Agents)
+	}
+}
+
+// Unknown and pre-capture clients get no turns: the timeline must not claim agency where
+// there is none, and a nil Client must not panic.
+func TestUnknownClientGetsNoTurns(t *testing.T) {
+	var r rec
+	id := r.id()
+	r.add(pipeline.SessionEvent{At: at(0), Phase: pipeline.SessionRequest, RequestID: id, Host: "llm.example",
+		Client: &pipeline.EventClient{Name: ""},
+		Inference: &pipeline.InferenceExtension{Model: "m", Messages: []pipeline.InferenceMessage{user("hi")}, Tools: tools}})
+	r.add(pipeline.SessionEvent{At: at(5), Phase: pipeline.SessionResponse, RequestID: id, Host: "llm.example", StatusCode: 200})
+	if tl := Build("s", r.events, at(10)); len(tl.Turns) != 0 {
+		t.Fatalf("Turns = %d, want 0 for an unknown client", len(tl.Turns))
+	}
+	var r2 rec
+	id2 := r2.id()
+	r2.add(pipeline.SessionEvent{At: at(0), Phase: pipeline.SessionRequest, RequestID: id2, Host: "llm.example",
+		Inference: &pipeline.InferenceExtension{Model: "m", Messages: []pipeline.InferenceMessage{user("hi")}, Tools: tools}})
+	if tl := Build("s2", r2.events, at(10)); len(tl.Turns) != 0 {
+		t.Fatalf("Turns = %d, want 0 for a nil Client", len(tl.Turns))
+	}
+}

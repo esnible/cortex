@@ -167,7 +167,7 @@ func buildAgents(t *Timeline, events []pipeline.SessionEvent) {
 		}
 		st.prev = msgs
 
-		turn := Turn{Agent: c.agent, Start: c.req.At, Resent: resent, Seq: c.req.Seq}
+		turn := Turn{Agent: c.agent, Start: c.req.At, Resent: resent, Seq: c.req.Seq, Model: inf.Model}
 		if c.resp == nil {
 			t.Turns = append(t.Turns, turn)
 			continue
@@ -356,8 +356,10 @@ func pairCalls(events []pipeline.SessionEvent) []call {
 	return calls
 }
 
-// agentOf names the agent that sent a request. Only Claude Code's requests are attributed:
-// AgentRole is set by its cc_is_subagent marker, and Subagent by its agent id header.
+// agentOf names the agent that sent a request. Claude Code's requests carry their own
+// markers: AgentRole from its cc_is_subagent header, Subagent from its agent id header.
+// Every other known client gets the single main row — nothing on the wire says which of
+// its calls belong together beyond that.
 func agentOf(e *pipeline.SessionEvent) (string, bool) {
 	switch {
 	case e.Subagent != "":
@@ -366,11 +368,19 @@ func agentOf(e *pipeline.SessionEvent) (string, bool) {
 		return UnseparatedAgent, true
 	case e.Inference.AgentRole == pipeline.AgentRoleMain:
 		return MainAgent, true
+	case e.Client != nil && pipeline.IsKnownAgent(e.Client.Name):
+		return MainAgent, true
 	}
 	return "", false
 }
 
+// isSideCall is Claude Code only: its literals match Claude's progress and recap prompts, and
+// its no-tools rule holds because Claude always sends a manifest on real turns. Another
+// client's tool-less calls (Bob's security classifier) are real turns with real cost.
 func isSideCall(inf *pipeline.InferenceExtension) bool {
+	if inf.AgentRole == "" {
+		return false
+	}
 	if len(inf.Tools) == 0 && inf.ToolCount == 0 {
 		return true
 	}
