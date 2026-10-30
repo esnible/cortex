@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"context"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -250,4 +251,34 @@ func TestSetRequestModel_RefusedOutsideOnRequest(t *testing.T) {
 		}
 		assertNothingChanged(t, pctx, body, "claude-opus-5-5")
 	})
+}
+
+// TestRequestModelDoesNotPinTheBody is the memory regression for the way
+// requestModel reads the name: gjson parses a copy of the whole body, and its
+// Result.String() is a substring of that copy, so a stored model name pinned
+// the entire body — one full request copy per inference request, invisible to
+// the interner, measured at 95MB on a live proxy. The name must come back
+// standalone.
+func TestRequestModelDoesNotPinTheBody(t *testing.T) {
+	const padMiB = 4
+	pad := strings.Repeat("x", padMiB<<20)
+	var names []string
+	for range 10 {
+		name, err := requestModel([]byte(`{"model":"claude-opus-5-5","pad":"` + pad + `"}`))
+		if err != nil {
+			t.Fatalf("requestModel: %v", err)
+		}
+		names = append(names, name)
+	}
+	runtime.GC()
+	var ms runtime.MemStats
+	runtime.ReadMemStats(&ms)
+	// 10 bodies x 4MiB = 40MiB pinned under the bug; live heap must stay well
+	// under that even with noise from the rest of the package's tests.
+	if got := ms.HeapAlloc; got > 20<<20 {
+		t.Errorf("heap = %dMiB after keeping 10 model names from %dMiB bodies; the names pin the parsed copies", got>>20, padMiB)
+	}
+	if names[0] != "claude-opus-5-5" {
+		t.Errorf("name = %q", names[0])
+	}
 }

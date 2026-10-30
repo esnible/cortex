@@ -136,5 +136,8 @@ func requestModel(body []byte) (string, error) {
 	case model.String() == "":
 		return "", errors.New(`pipeline: the request body's "model" is empty, so it names no model to change`)
 	}
-	return model.String(), nil
+	// Cloned off gjson's parse copy of the body: Result.String() is a substring
+	// of that copy, and a stored name (RequestedModel, invocation details) would
+	// pin the whole body.
+	return strings.Clone(model.String()), nil
 }
