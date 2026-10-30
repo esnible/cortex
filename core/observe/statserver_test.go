@@ -6,8 +6,10 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/rossoctl/cortex/core/auth"
 	"github.com/rossoctl/cortex/core/config"
@@ -238,6 +240,33 @@ func TestStatServerPprofServesProfiles(t *testing.T) {
 	// A gzip stream is what pprof serves; the HTML index or an error page is not.
 	if len(body) < 2 || body[0] != 0x1f || body[1] != 0x8b {
 		t.Error("GET /debug/pprof/heap did not return a gzip profile stream")
+	}
+}
+
+// /debug/pprof/block and /mutex answer 200 but stay empty forever unless the
+// runtime is told to record contention — the handlers exist either way. WithPprof
+// turns the recorders on with the handlers, so the endpoints can show something.
+func TestStatServerPprofEnablesContentionProfiles(t *testing.T) {
+	handler := serveMuxOpts(newTestConfig(), auth.NewStats(), WithPprof(true))
+
+	// Mutex has a getter; block does not, so block is proven by recording one
+	// event: a channel receive that waits is a block, and at rate 0 it would
+	// never reach the profile.
+	ch := make(chan struct{})
+	go func() { time.Sleep(100 * time.Millisecond); close(ch) }()
+	<-ch
+
+	req := httptest.NewRequest(http.MethodGet, "/debug/pprof/block?debug=1", nil)
+	req.Host = "localhost:47802" // a loopback Host, as a local client sends
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+	// The blocked receive's stack names this test; an empty profile carries only
+	// the header lines.
+	if !strings.Contains(w.Body.String(), "TestStatServerPprofEnablesContentionProfiles") {
+		t.Error("a 100ms blocked receive is absent from /debug/pprof/block: the recorder is off")
+	}
+	if prev := runtime.SetMutexProfileFraction(1); prev == 0 {
+		t.Error("WithPprof left mutex profiling off: /debug/pprof/mutex would stay empty")
 	}
 }
 

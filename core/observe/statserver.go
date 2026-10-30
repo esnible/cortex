@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"runtime"
 	"strings"
 	"time"
 
@@ -108,6 +109,13 @@ func NewStatServer(addr string, configProvider ConfigProvider, statsProvider Sta
 		mux.Handle("/tls-bridge/unread", o.tlsBridgeUnread)
 	}
 	if o.pprof {
+		// /debug/pprof/block and /mutex stay empty without these: the handlers
+		// exist, but the runtime records nothing unless asked. Both cost only
+		// when the event they measure happens — a blocked goroutine or a contended
+		// mutex — so they ride the same gate as the handlers rather than running
+		// on deployments where pprof is off.
+		runtime.SetBlockProfileRate(1)
+		runtime.SetMutexProfileFraction(1)
 		httpx.RegisterPprof(mux)
 	}
 
