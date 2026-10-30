@@ -221,6 +221,7 @@ func TestStatServerPprofOffByDefault(t *testing.T) {
 func TestStatServerPprofServesProfiles(t *testing.T) {
 	handler := serveMuxOpts(newTestConfig(), auth.NewStats(), WithPprof(true))
 	req := httptest.NewRequest(http.MethodGet, "/debug/pprof/heap", nil)
+	req.Host = "localhost:47802" // a loopback Host, as a local client sends
 	w := httptest.NewRecorder()
 
 	handler.ServeHTTP(w, req)
@@ -232,5 +233,35 @@ func TestStatServerPprofServesProfiles(t *testing.T) {
 	}
 	if len(body) == 0 {
 		t.Error("GET /debug/pprof/heap returned an empty profile")
+	}
+}
+
+// A page can rebind a DNS name to 127.0.0.1 and have a browser read a loopback
+// port, so the profiles refuse any Host that is not exactly loopback — the same
+// defense as the session API's erase guards.
+func TestStatServerPprofRefusesReboundHost(t *testing.T) {
+	handler := serveMuxOpts(newTestConfig(), auth.NewStats(), WithPprof(true))
+	for _, host := range []string{"evil.example:47802", "127.0.0.1.evil.example", "[::1].evil.example"} {
+		req := httptest.NewRequest(http.MethodGet, "/debug/pprof/heap", nil)
+		req.Host = host
+		w := httptest.NewRecorder()
+
+		handler.ServeHTTP(w, req)
+
+		if w.Result().StatusCode != http.StatusForbidden {
+			t.Errorf("GET /debug/pprof/heap with Host %q = %d, want 403", host, w.Result().StatusCode)
+		}
+	}
+	// The loopback names themselves still pass.
+	for _, host := range []string{"localhost:47802", "127.0.0.1:47802", "[::1]:47802"} {
+		req := httptest.NewRequest(http.MethodGet, "/debug/pprof/heap", nil)
+		req.Host = host
+		w := httptest.NewRecorder()
+
+		handler.ServeHTTP(w, req)
+
+		if w.Result().StatusCode != http.StatusOK {
+			t.Errorf("GET /debug/pprof/heap with Host %q = %d, want 200", host, w.Result().StatusCode)
+		}
 	}
 }

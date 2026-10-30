@@ -100,11 +100,20 @@ func NewStatServer(addr string, configProvider ConfigProvider, statsProvider Sta
 		mux.Handle("/tls-bridge/unread", o.tlsBridgeUnread)
 	}
 	if o.pprof {
-		mux.HandleFunc("/debug/pprof/", pprof.Index)
-		mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
-		mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
-		mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
-		mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+		pprofGuard := func(h http.HandlerFunc) http.HandlerFunc {
+			return func(w http.ResponseWriter, r *http.Request) {
+				if !loopbackHost(r.Host) {
+					http.Error(w, "pprof is served only for a loopback Host", http.StatusForbidden)
+					return
+				}
+				h(w, r)
+			}
+		}
+		mux.HandleFunc("/debug/pprof/", pprofGuard(pprof.Index))
+		mux.HandleFunc("/debug/pprof/cmdline", pprofGuard(pprof.Cmdline))
+		mux.HandleFunc("/debug/pprof/profile", pprofGuard(pprof.Profile))
+		mux.HandleFunc("/debug/pprof/symbol", pprofGuard(pprof.Symbol))
+		mux.HandleFunc("/debug/pprof/trace", pprofGuard(pprof.Trace))
 	}
 
 	indexPage := statServerIndex
@@ -194,3 +203,21 @@ const statServerIndex = `<!DOCTYPE html>
     </ul>
   </body>
 </html>`
+
+// loopbackHost reports whether hostport names exactly localhost, 127.0.0.1 or
+// ::1, with or without a port. A twin of sessionapi's unexported loopbackHost
+// (the erase guards): copied rather than shared because observe must not import
+// the session API. A short allowlist, not 127.0.0.0/8 or a localhost suffix —
+// the point is to refuse a name an attacker controls.
+func loopbackHost(hostport string) bool {
+	host := hostport
+	if h, _, err := net.SplitHostPort(hostport); err == nil {
+		host = h
+	}
+	host = strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")
+	switch strings.ToLower(host) {
+	case "localhost", "127.0.0.1", "::1":
+		return true
+	}
+	return false
+}
