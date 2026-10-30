@@ -1042,6 +1042,13 @@ func main() {
 	// The transparent (enforce-redirect) listener rides with the forward proxy;
 	// declared here so shutdown can close it whether or not the forward role ran.
 	var transparentLn *net.TCPListener
+	// The MOCA SBX VM control channel (env-only, #1477): nil unless
+	// MOCA_EGRESS_CONTROL_SOCK is set. Like transparentLn, closed on shutdown.
+	var vmCtrl vmControlServer
+	ctrlCfg, ctrlErr := resolveControlConfig(os.Getenv)
+	if ctrlErr != nil {
+		fatalf("vm control: %v", ctrlErr)
+	}
 	if roles[config.RoleForward] {
 		fpSrv, ferr := forwardproxy.NewServer(outboundH, sessions, fpMTLS, forwardproxy.WithEgressGuard(egress))
 		if ferr != nil {
@@ -1118,6 +1125,21 @@ func main() {
 				slog.Info("process attribution on: header-less requests are filed by the process that sent them")
 			}
 		}
+		// The VM control channel serves each handed-over listener through this
+		// same forward proxy — one pipeline, one session store, identity from
+		// the connection — so it starts only where the forward role does.
+		//
+		// BEFORE the listeners below start serving. startVMControl assigns
+		// fpSrv.TrustedSessionID and fpSrv.AdoptBridgedRequest, which nothing
+		// locks; ServeHTTPServer hands its already-bound listener to a serving
+		// goroutine at once, so registering first would leave a window where a
+		// request reads those fields while this writes them — a data race, and
+		// one whose losing side resolves a VM's session from the guest's own
+		// headers. Both hooks are set before any request can reach them.
+		if ctrlCfg.Socket != "" {
+			vmCtrl = startVMControl(ctrlCfg, fpSrv)
+		}
+
 		httpServers = append(httpServers, bootstrap.ServeHTTPServer("forward-proxy", fpSrv.Handler(),
 			listeners.take("forward-proxy"), bootstrap.WithConnContext(fpSrv.ConnContext)))
 
@@ -1130,6 +1152,9 @@ func main() {
 		if !localInstall && cfg.Listener.TransparentProxyAddr != "" {
 			transparentLn = startTransparentProxy(fpSrv, listeners.takeTCP("transparent-proxy"))
 		}
+	}
+	if ctrlCfg.Socket != "" && vmCtrl == nil {
+		fatalf("vm control: %s is set but the forward proxy role is not enabled", envControlSock)
 	}
 
 	_ = mtlsMetrics // TODO Phase 2: surface metrics through /stats
@@ -1220,6 +1245,12 @@ func main() {
 		if transparentLn != nil {
 			_ = transparentLn.Close()
 		}
+		// Before the pipelines stop: closing unregisters every VM, closing its
+		// connections and emitting their aborted audit lines, and the requests
+		// it wakes still need a running pipeline to finish against.
+		if vmCtrl != nil {
+			_ = vmCtrl.Close()
+		}
 		statSrv.Shutdown(shutdownCtx)
 		healthSrv.Shutdown(shutdownCtx)
 		if sessionAPISrv != nil {
@@ -1233,6 +1264,9 @@ func main() {
 		}
 		if transparentLn != nil {
 			_ = transparentLn.Close()
+		}
+		if vmCtrl != nil {
+			_ = vmCtrl.Close()
 		}
 		_ = statSrv.Close()
 		_ = healthSrv.Close()
