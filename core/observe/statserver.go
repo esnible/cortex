@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/http/pprof"
+	"strings"
 	"time"
 
 	"github.com/rossoctl/cortex/core/auth"
@@ -38,6 +40,7 @@ type statServerOpts struct {
 	reloadStatus    http.Handler
 	pricingTable    http.Handler
 	tlsBridgeUnread http.Handler
+	pprof           bool
 }
 
 // WithReloadStatus registers a /reload/status handler (typically the
@@ -64,6 +67,22 @@ func WithTLSBridgeUnread(h http.Handler) Option {
 	return func(o *statServerOpts) { o.tlsBridgeUnread = h }
 }
 
+// WithPprof mounts Go's net/http/pprof handlers under /debug/pprof/. Off unless
+// asked for: the profiles expose the process's internals — allocation stack
+// traces, argv (cmdline), and a caller's ability to start CPU profiling and
+// tracing — so the host enables it only where the stats port is loopback-only
+// (cmd/cortex reads listener.bind_loopback_only, the same gate as the session
+// API's clear). The handlers also refuse a non-loopback Host and any request
+// carrying Origin, the erase guards' browser defenses.
+//
+// Side effect of the import: net/http/pprof's init registers /debug/pprof/* on
+// http.DefaultServeMux in every binary linking this package. Nothing in this
+// tree serves that mux — an http.Server built with a nil Handler would, and
+// would expose these ungated, so none may be.
+func WithPprof(enabled bool) Option {
+	return func(o *statServerOpts) { o.pprof = enabled }
+}
+
 // NewStatServer builds the stat HTTP server. configProvider is
 // invoked per /config request and statsProvider per /stats request,
 // so both reflect current state rather than a snapshot captured at
@@ -87,22 +106,37 @@ func NewStatServer(addr string, configProvider ConfigProvider, statsProvider Sta
 	if o.tlsBridgeUnread != nil {
 		mux.Handle("/tls-bridge/unread", o.tlsBridgeUnread)
 	}
+	if o.pprof {
+		pprofGuard := func(h http.HandlerFunc) http.HandlerFunc {
+			return func(w http.ResponseWriter, r *http.Request) {
+				if !loopbackHost(r.Host) {
+					http.Error(w, "pprof is served only for a loopback Host", http.StatusForbidden)
+					return
+				}
+				if r.Header.Get("Origin") != "" {
+					http.Error(w, "pprof is refused from a browser: the request carries an Origin header", http.StatusForbidden)
+					return
+				}
+				h(w, r)
+			}
+		}
+		mux.HandleFunc("/debug/pprof/", pprofGuard(pprof.Index))
+		mux.HandleFunc("/debug/pprof/cmdline", pprofGuard(pprof.Cmdline))
+		mux.HandleFunc("/debug/pprof/profile", pprofGuard(pprof.Profile))
+		mux.HandleFunc("/debug/pprof/symbol", pprofGuard(pprof.Symbol))
+		mux.HandleFunc("/debug/pprof/trace", pprofGuard(pprof.Trace))
+	}
 
+	indexPage := statServerIndex
+	if o.pprof {
+		indexPage = strings.Replace(statServerIndex, "{{pprof}}",
+			`<li><a href="/debug/pprof/">Go pprof profiles</a></li>`, 1)
+	} else {
+		indexPage = strings.Replace(statServerIndex, "{{pprof}}", "", 1)
+	}
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprint(w, `
-<!DOCTYPE html>
-<html>
-  <body>
-    <ul>
-    <li><a href="/config">Rossoctl AuthBridge configuration</a></li>
-    <li><a href="/stats">Rossoctl AuthBridge statistics</a></li>
-    <li><a href="/reload/status">Config reload status</a></li>
-    <li><a href="/pricing/table">Pricing table</a> (add <code>?host=&lt;gateway&gt;</code> for the rates that endpoint is actually charged)</li>
-    <li><a href="/tls-bridge/unread">Programs the TLS bridge is not reading</a></li>
-    </ul>
-  </body>
-</html>`)
+		fmt.Fprint(w, indexPage)
 	})
 
 	return &StatServer{
@@ -164,4 +198,37 @@ func (s *StatServer) Shutdown(ctx context.Context) error {
 // dropped. For a stop that frees the port immediately; Shutdown is the draining one.
 func (s *StatServer) Close() error {
 	return s.server.Close()
+}
+
+// statServerIndex is the / body, with {{pprof}} a slot WithPprof fills.
+const statServerIndex = `<!DOCTYPE html>
+<html>
+  <body>
+    <ul>
+    <li><a href="/config">Rossoctl AuthBridge configuration</a></li>
+    <li><a href="/stats">Rossoctl AuthBridge statistics</a></li>
+    <li><a href="/reload/status">Config reload status</a></li>
+    <li><a href="/pricing/table">Pricing table</a> (add <code>?host=&lt;gateway&gt;</code> for the rates that endpoint is actually charged)</li>
+    <li><a href="/tls-bridge/unread">Programs the TLS bridge is not reading</a></li>
+    {{pprof}}
+    </ul>
+  </body>
+</html>`
+
+// loopbackHost reports whether hostport names exactly localhost, 127.0.0.1 or
+// ::1, with or without a port. A twin of sessionapi's unexported loopbackHost
+// (the erase guards): copied rather than shared because observe must not import
+// the session API. A short allowlist, not 127.0.0.0/8 or a localhost suffix —
+// the point is to refuse a name an attacker controls.
+func loopbackHost(hostport string) bool {
+	host := hostport
+	if h, _, err := net.SplitHostPort(hostport); err == nil {
+		host = h
+	}
+	host = strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")
+	switch strings.ToLower(host) {
+	case "localhost", "127.0.0.1", "::1":
+		return true
+	}
+	return false
 }
