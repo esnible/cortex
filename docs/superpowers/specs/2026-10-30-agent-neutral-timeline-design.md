@@ -59,6 +59,11 @@ inference. Under generic attribution that would eat Bob's `security` and
 Code traffic — `Inference.AgentRole != ""` is the signal, since only Claude
 Code sets it — so non-Claude side calls render as turns, labeled by model.
 
+Amended in review: only the no-tools rule took the gate. The prompt literals
+run for every client, so pre-marker Claude Code traffic (no `AgentRole`)
+still drops its recaps — they are Claude's own prompt text, which no other
+client sends.
+
 ### 3. `Turn.Model`
 
 Add `Model string` (omitempty) to the `Turn` span, populated from the paired
