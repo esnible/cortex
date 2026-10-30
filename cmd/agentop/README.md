@@ -39,6 +39,14 @@ concluded the TUI was all agentop did — `agentop service` least visible of
 all, and that is what you need when Cortex is not running. Run
 `agentop --help` for the full list.
 
+To profile the viewer itself, set `AGENTOP_PPROF_ADDR` to a loopback address
+before starting it — `AGENTOP_PPROF_ADDR=127.0.0.1:47603 agentop observe` —
+and read the result with
+`go tool pprof http://127.0.0.1:47603/debug/pprof/heap`. Off unless set: the
+profiles expose the process's internals, and the viewer's heap holds the
+session content it is displaying. Requests carrying a browser `Origin`, or a
+`Host` other than `localhost` / `127.0.0.1` / `::1`, are refused.
+
 You'll see a Namespaces pane listing each namespace that contains an
 AuthBridge agent. Enter drills into the Pods pane for that namespace;
 Enter on a pod starts a `kubectl port-forward` automatically and drops
