@@ -423,6 +423,50 @@ func TestBuildEventRows_CollapsesBridgedConnectRedirected(t *testing.T) {
 	}
 }
 
+// TestBuildEventRows_CollapsesBridgedConnectDenied locks the fold when the
+// tunnel's first decrypted row is a DENIAL, not a request: the proxy defers a
+// bridged open and records it with whichever row comes first, and a pipeline
+// plugin's Reject — recorded before any request row — can be that first row.
+// Each subtest covers one match arm: unredirected denial (Host) and redirected
+// denial (RequestedHost).
+func TestBuildEventRows_CollapsesBridgedConnectDenied(t *testing.T) {
+	for name, inner := range map[string]pipeline.SessionEvent{
+		"unredirected": {
+			Direction:  pipeline.Outbound,
+			Phase:      pipeline.SessionDenied,
+			Host:       "ete-litellm.example.com",
+			StatusCode: 403,
+		},
+		"redirected": {
+			Direction:     pipeline.Outbound,
+			Phase:         pipeline.SessionDenied,
+			Host:          "litellm.cb.example.com",
+			RequestedHost: "ete-litellm.example.com:443",
+			StatusCode:    403,
+		},
+	} {
+		events := []pipeline.SessionEvent{
+			{
+				Direction: pipeline.Outbound,
+				Phase:     pipeline.SessionRequest,
+				Host:      "ete-litellm.example.com:443",
+				Tunnel:    true,
+			},
+			inner,
+		}
+		rows := buildEventRows(events)
+		if len(rows) != 1 {
+			t.Fatalf("%s: denied bridged call produced %d rows, want 1 (the denial carrying the tunnel)", name, len(rows))
+		}
+		if rows[0].tunnel == nil {
+			t.Fatalf("%s: denial row should carry the folded CONNECT tunnel", name)
+		}
+		if rows[0].event.Phase != pipeline.SessionDenied {
+			t.Errorf("%s: folded row phase = %q, want the denial kept", name, rows[0].event.Phase)
+		}
+	}
+}
+
 // TestBuildEventRows_PassthroughTunnelStandsAlone covers every shape in which a
 // non-bridged CONNECT tunnel-open must remain its own row rather than fold:
 // a lone trailing CONNECT, two back-to-back CONNECTs to the SAME host
