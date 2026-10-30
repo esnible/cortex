@@ -13,7 +13,7 @@ import (
 
 	"github.com/rossoctl/cortex/core/auth"
 	"github.com/rossoctl/cortex/core/config"
-	"github.com/rossoctl/cortex/core/listener/httpx"
+	"github.com/rossoctl/cortex/core/listener/httpx/pprofx"
 	"github.com/rossoctl/cortex/core/redact"
 )
 
@@ -74,11 +74,11 @@ func WithTLSBridgeUnread(h http.Handler) Option {
 // tracing — so the host enables it only where the stats port is loopback-only
 // (cmd/cortex reads listener.bind_loopback_only, the same gate as the session
 // API's clear). The handlers also refuse a non-loopback Host and any request
-// carrying Origin, the erase guards' browser defenses — httpx.RegisterPprof's,
+// carrying Origin, the erase guards' browser defenses — pprofx.RegisterPprof's,
 // the one guarded pprof surface shared with the agentop viewer.
 //
 // Side effect of the import: net/http/pprof's init registers /debug/pprof/* on
-// http.DefaultServeMux in every binary linking httpx. Nothing in this tree
+// http.DefaultServeMux in every binary linking pprofx. Nothing in this tree
 // serves that mux — an http.Server built with a nil Handler would, and would
 // expose these ungated, so none may be.
 func WithPprof(enabled bool) Option {
@@ -116,7 +116,7 @@ func NewStatServer(addr string, configProvider ConfigProvider, statsProvider Sta
 		// on deployments where pprof is off.
 		runtime.SetBlockProfileRate(1)
 		runtime.SetMutexProfileFraction(1)
-		httpx.RegisterPprof(mux)
+		pprofx.RegisterPprof(mux)
 	}
 
 	indexPage := statServerIndex

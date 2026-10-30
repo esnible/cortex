@@ -1,13 +1,14 @@
 package main
 
 import (
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 )
 
-// The guard table and the heap-profile shape are httpx.RegisterPprof's, pinned
+// The guard table and the heap-profile shape are pprofx.RegisterPprof's, pinned
 // in its own package. This pins the viewer's wiring of it: pprofMux must mount
 // the guarded surface, not an empty mux — a loopback Host is answered with a
 // real profile and a rebound one with the guard's 403.
@@ -40,6 +41,26 @@ func TestPprofMuxMountsTheGuardedSurface(t *testing.T) {
 func TestStartPprofRefusesANonLoopbackBind(t *testing.T) {
 	if _, _, err := startPprof("0.0.0.0:0"); err == nil || !strings.Contains(err.Error(), "loopback") {
 		t.Errorf("startPprof on 0.0.0.0:0 = %v, want a refusal naming loopback", err)
+	}
+}
+
+// The other half of "checked on the bound address, not the string": a name
+// that is not a loopback literal still binds, because the check runs on what
+// the listener landed on. Asserted on the parsed address rather than a 127.
+// prefix — localhost:0 may bind [::1] on a v6-first stack, which is loopback
+// too. A check on the input string (say HasPrefix "127.0.0.1") fails red here.
+func TestStartPprofAcceptsANameThatResolvesToLoopback(t *testing.T) {
+	bound, stop, err := startPprof("localhost:0")
+	if err != nil {
+		t.Fatalf("startPprof on localhost:0: %v", err)
+	}
+	defer stop()
+	host, port, err := net.SplitHostPort(bound)
+	if err != nil || port == "0" {
+		t.Fatalf("bound address = %q, want a loopback host with the :0 resolved", bound)
+	}
+	if ip := net.ParseIP(host); ip == nil || !ip.IsLoopback() {
+		t.Errorf("bound host %q is not a loopback address", host)
 	}
 }
 

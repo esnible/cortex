@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"os"
 
-	"github.com/rossoctl/cortex/core/listener/httpx"
+	"github.com/rossoctl/cortex/core/listener/httpx/pprofx"
 )
 
 // pprofAddrEnv names the env var that serves Go's pprof endpoints from the
@@ -44,13 +44,13 @@ func startPprof(addr string) (bound string, shutdown func(), err error) {
 	return ln.Addr().String(), func() { _ = srv.Close() }, nil
 }
 
-// pprofMux is the viewer's /debug/pprof surface: httpx.RegisterPprof's guarded
+// pprofMux is the viewer's /debug/pprof surface: pprofx.RegisterPprof's guarded
 // handlers, which refuse any non-loopback Host and any request carrying
 // Origin — the browser defenses shared with the proxy's stats server (#1603)
 // and the session API's erase guards.
 func pprofMux() *http.ServeMux {
 	mux := http.NewServeMux()
-	httpx.RegisterPprof(mux)
+	pprofx.RegisterPprof(mux)
 	return mux
 }
 
