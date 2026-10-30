@@ -828,6 +828,13 @@ also keeps them as a list, which `agentop doctor` prints and the stats listener 
 curl -s http://127.0.0.1:47602/tls-bridge/unread
 ```
 
+The stats port also serves Go's pprof profiles under `/debug/pprof/` —
+`curl -s http://127.0.0.1:47602/debug/pprof/heap | go tool pprof -top -inuse_space cortex -`
+answers "what is the proxy holding in memory", which `ps` RSS cannot (freed pages the
+kernel has not reclaimed still count as resident on macOS). A heap profile is a dump of
+process memory — prompts and tokens included — so it is served only when
+`listener.bind_loopback_only` is true, the local install's default.
+
 `programs` has one entry per program Cortex is not reading: `program` and `agent` (the
 executables), `reason`, `connections` (how many of the program's connections Cortex has
 passed through unread since Cortex started), `failures` and `stopped` (on `program-refused`),

@@ -196,3 +196,41 @@ func TestStatServer_TLSBridgeUnread(t *testing.T) {
 		t.Error("a server built without the option served the report")
 	}
 }
+
+func serveMuxOpts(cfg *config.Config, stats *auth.Stats, opts ...Option) http.Handler {
+	s := NewStatServer(":0", func() *config.Config { return cfg }, func() *auth.Stats { return stats }, opts...)
+	return s.server.Handler
+}
+
+// WithPprof mounts Go's net/http/pprof handlers. A heap profile is a dump of
+// process memory — request bodies and tokens included — so it must be possible
+// to build the server without them, which is the default.
+func TestStatServerPprofOffByDefault(t *testing.T) {
+	handler := serveMux(newTestConfig(), auth.NewStats())
+	req := httptest.NewRequest(http.MethodGet, "/debug/pprof/heap", nil)
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	resp := w.Result()
+	if ct := resp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
+		t.Errorf("GET /debug/pprof/heap without WithPprof served %q, want the HTML index", ct)
+	}
+}
+
+func TestStatServerPprofServesProfiles(t *testing.T) {
+	handler := serveMuxOpts(newTestConfig(), auth.NewStats(), WithPprof(true))
+	req := httptest.NewRequest(http.MethodGet, "/debug/pprof/heap", nil)
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	resp := w.Result()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /debug/pprof/heap status = %d, want 200", resp.StatusCode)
+	}
+	if len(body) == 0 {
+		t.Error("GET /debug/pprof/heap returned an empty profile")
+	}
+}

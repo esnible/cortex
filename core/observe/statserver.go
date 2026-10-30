@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/http/pprof"
+	"strings"
 	"time"
 
 	"github.com/rossoctl/cortex/core/auth"
@@ -38,6 +40,7 @@ type statServerOpts struct {
 	reloadStatus    http.Handler
 	pricingTable    http.Handler
 	tlsBridgeUnread http.Handler
+	pprof           bool
 }
 
 // WithReloadStatus registers a /reload/status handler (typically the
@@ -64,6 +67,15 @@ func WithTLSBridgeUnread(h http.Handler) Option {
 	return func(o *statServerOpts) { o.tlsBridgeUnread = h }
 }
 
+// WithPprof mounts Go's net/http/pprof handlers under /debug/pprof/. Off unless
+// asked for: a heap profile is a dump of process memory — request bodies and
+// tokens included — so the host enables it only where the stats port is
+// loopback-only (cmd/cortex reads listener.bind_loopback_only, the same gate
+// as the session API's clear).
+func WithPprof(enabled bool) Option {
+	return func(o *statServerOpts) { o.pprof = enabled }
+}
+
 // NewStatServer builds the stat HTTP server. configProvider is
 // invoked per /config request and statsProvider per /stats request,
 // so both reflect current state rather than a snapshot captured at
@@ -87,22 +99,24 @@ func NewStatServer(addr string, configProvider ConfigProvider, statsProvider Sta
 	if o.tlsBridgeUnread != nil {
 		mux.Handle("/tls-bridge/unread", o.tlsBridgeUnread)
 	}
+	if o.pprof {
+		mux.HandleFunc("/debug/pprof/", pprof.Index)
+		mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+		mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+		mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+		mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+	}
 
+	indexPage := statServerIndex
+	if o.pprof {
+		indexPage = strings.Replace(statServerIndex, "{{pprof}}",
+			`<li><a href="/debug/pprof/">Go pprof profiles</a></li>`, 1)
+	} else {
+		indexPage = strings.Replace(statServerIndex, "{{pprof}}", "", 1)
+	}
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		fmt.Fprint(w, `
-<!DOCTYPE html>
-<html>
-  <body>
-    <ul>
-    <li><a href="/config">Rossoctl AuthBridge configuration</a></li>
-    <li><a href="/stats">Rossoctl AuthBridge statistics</a></li>
-    <li><a href="/reload/status">Config reload status</a></li>
-    <li><a href="/pricing/table">Pricing table</a> (add <code>?host=&lt;gateway&gt;</code> for the rates that endpoint is actually charged)</li>
-    <li><a href="/tls-bridge/unread">Programs the TLS bridge is not reading</a></li>
-    </ul>
-  </body>
-</html>`)
+		fmt.Fprint(w, indexPage)
 	})
 
 	return &StatServer{
@@ -165,3 +179,18 @@ func (s *StatServer) Shutdown(ctx context.Context) error {
 func (s *StatServer) Close() error {
 	return s.server.Close()
 }
+
+// statServerIndex is the / body, with {{pprof}} a slot WithPprof fills.
+const statServerIndex = `<!DOCTYPE html>
+<html>
+  <body>
+    <ul>
+    <li><a href="/config">Rossoctl AuthBridge configuration</a></li>
+    <li><a href="/stats">Rossoctl AuthBridge statistics</a></li>
+    <li><a href="/reload/status">Config reload status</a></li>
+    <li><a href="/pricing/table">Pricing table</a> (add <code>?host=&lt;gateway&gt;</code> for the rates that endpoint is actually charged)</li>
+    <li><a href="/tls-bridge/unread">Programs the TLS bridge is not reading</a></li>
+    {{pprof}}
+    </ul>
+  </body>
+</html>`
