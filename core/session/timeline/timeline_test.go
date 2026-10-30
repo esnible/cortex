@@ -907,3 +907,28 @@ func TestUnknownClientGetsNoTurns(t *testing.T) {
 		t.Fatalf("Turns = %d, want 0 for a nil Client", len(tl.Turns))
 	}
 }
+
+// A Bob-shaped session end to end: the tool call closes on the tool_call_id result, and the
+// Claude-Code marker machinery (returns, jobs) stays empty because Bob sends none of it.
+func TestBobSessionToolsCloseAndReturnsStayEmpty(t *testing.T) {
+	var r rec
+	r.bobTurn("premium-ide", 0, 10, []pipeline.InferenceMessage{user("list files")},
+		nil, pipeline.InferenceToolCall{ID: "call_1", Name: "read_dir", Arguments: `{"path":"/tmp"}`})
+	// The next request carries the tool result by tool_call_id (the parser's parse shape).
+	r.bobTurn("premium-ide", 12, 8, []pipeline.InferenceMessage{user("list files")},
+		[]pipeline.InferenceToolResult{result("call_1", "file_a\nfile_b")})
+	tl := Build("s", r.events, at(30))
+	tool := findTool(t, tl, "call_1")
+	if tool.Name != "read_dir" {
+		t.Fatalf("tool name = %q", tool.Name)
+	}
+	if tool.End == nil || tool.Lost {
+		t.Fatalf("tool = %+v, want closed by the tool_call_id result", tool)
+	}
+	if want := at(12); !tool.End.Equal(want) {
+		t.Fatalf("tool end = %v, want the result-bearing request at %v", tool.End, want)
+	}
+	if len(tl.Returns) != 0 || len(tl.Jobs) != 0 {
+		t.Fatalf("Returns = %+v, Jobs = %+v; both are Claude Code markers Bob never sends", tl.Returns, tl.Jobs)
+	}
+}
