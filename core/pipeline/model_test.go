@@ -282,3 +282,27 @@ func TestRequestModelDoesNotPinTheBody(t *testing.T) {
 		t.Errorf("name = %q", names[0])
 	}
 }
+
+// TestRequestModelDoesNotCopyTheBody is the allocation regression for the same
+// scan: ParseBytes is Parse(string(body)), so reading the top-level keys used to
+// copy the whole body once per routed request — ~1GB/hour of churn on a live
+// proxy, third behind tool-prune's copies. The scan now runs over an alias of
+// the body, so one call on a 4MiB body must allocate well under the body's size.
+func TestRequestModelDoesNotCopyTheBody(t *testing.T) {
+	pad := strings.Repeat("x", 4<<20)
+	body := []byte(`{"model":"claude-opus-5-5","pad":"` + pad + `"}`)
+	if _, err := requestModel(body); err != nil { // warm: page in gjson's code
+		t.Fatalf("requestModel: %v", err)
+	}
+	runtime.GC()
+	var before runtime.MemStats
+	runtime.ReadMemStats(&before)
+	if _, err := requestModel(body); err != nil {
+		t.Fatalf("requestModel: %v", err)
+	}
+	var after runtime.MemStats
+	runtime.ReadMemStats(&after)
+	if got := after.TotalAlloc - before.TotalAlloc; got > 64<<10 {
+		t.Errorf("requestModel on a %dMiB body allocated %dKiB; the scan copies the body", len(body)>>20, got>>10)
+	}
+}
