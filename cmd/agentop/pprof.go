@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"net/http/pprof"
 	"os"
-	"strings"
+
+	"github.com/rossoctl/cortex/core/listener/httpx/pprofx"
 )
 
 // pprofAddrEnv names the env var that serves Go's pprof endpoints from the
@@ -17,65 +17,41 @@ import (
 // `go tool pprof http://127.0.0.1:47603/debug/pprof/heap`.
 const pprofAddrEnv = "AGENTOP_PPROF_ADDR"
 
-// startPprof serves the profile mux on addr. The returned shutdown closes the
+// startPprof serves the profile mux on addr and returns the address it landed
+// on, with a :0 port resolved to the real one. The returned shutdown closes the
 // listener; process exit closes it too, so a caller that forgets the shutdown
 // loses nothing but a port.
-func startPprof(addr string) (shutdown func(), err error) {
+//
+// Loopback only, checked on the bound address rather than the string: the Host
+// and Origin guards stop browsers, not a curl that sets Host: localhost, so a
+// bind on every interface (":47603", "0.0.0.0:47603") would hand the heap to
+// anyone on the network. #1603 gates its pprof the same way, on the stats
+// port's bind_loopback_only.
+func startPprof(addr string) (bound string, shutdown func(), err error) {
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
-		return nil, err
+		return "", nil, err
+	}
+	if tcp, ok := ln.Addr().(*net.TCPAddr); !ok || !tcp.IP.IsLoopback() {
+		ln.Close()
+		return "", nil, fmt.Errorf("%s did not land on a loopback address; pprof is served on loopback only", addr)
 	}
 	// Handler is set, never nil: net/http/pprof's init also registers
 	// /debug/pprof/* on http.DefaultServeMux, which a nil Handler would serve
 	// ungated.
 	srv := &http.Server{Handler: pprofMux()}
 	go func() { _ = srv.Serve(ln) }()
-	return func() { _ = srv.Close() }, nil
+	return ln.Addr().String(), func() { _ = srv.Close() }, nil
 }
 
-// pprofMux is the guarded /debug/pprof surface: the handlers refuse any
-// non-loopback Host and any request carrying Origin — the browser defenses of
-// the proxy's stats server (#1603) and the session API's erase guards, copied
-// rather than shared because this is a different binary.
+// pprofMux is the viewer's /debug/pprof surface: pprofx.RegisterPprof's guarded
+// handlers, which refuse any non-loopback Host and any request carrying
+// Origin — the browser defenses shared with the proxy's stats server (#1603)
+// and the session API's erase guards.
 func pprofMux() *http.ServeMux {
-	guard := func(h http.HandlerFunc) http.HandlerFunc {
-		return func(w http.ResponseWriter, r *http.Request) {
-			if !loopbackHost(r.Host) {
-				http.Error(w, "pprof is served only for a loopback Host", http.StatusForbidden)
-				return
-			}
-			if r.Header.Get("Origin") != "" {
-				http.Error(w, "pprof is refused from a browser: the request carries an Origin header", http.StatusForbidden)
-				return
-			}
-			h(w, r)
-		}
-	}
 	mux := http.NewServeMux()
-	mux.HandleFunc("/debug/pprof/", guard(pprof.Index))
-	mux.HandleFunc("/debug/pprof/cmdline", guard(pprof.Cmdline))
-	mux.HandleFunc("/debug/pprof/profile", guard(pprof.Profile))
-	mux.HandleFunc("/debug/pprof/symbol", guard(pprof.Symbol))
-	mux.HandleFunc("/debug/pprof/trace", guard(pprof.Trace))
+	pprofx.RegisterPprof(mux)
 	return mux
-}
-
-// loopbackHost reports whether hostport names exactly localhost, 127.0.0.1 or
-// ::1, with or without a port. A twin of core/observe's unexported loopbackHost
-// (itself a twin of sessionapi's): copied rather than shared because the
-// binaries do not export it to each other. A short allowlist, not 127.0.0.0/8
-// or a localhost suffix — the point is to refuse a name an attacker controls.
-func loopbackHost(hostport string) bool {
-	host := hostport
-	if h, _, err := net.SplitHostPort(hostport); err == nil {
-		host = h
-	}
-	host = strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")
-	switch strings.ToLower(host) {
-	case "localhost", "127.0.0.1", "::1":
-		return true
-	}
-	return false
 }
 
 // maybeServePprof starts the pprof listener when pprofAddrEnv is set, printing
@@ -89,11 +65,11 @@ func maybeServePprof() (shutdown func()) {
 	if addr == "" {
 		return nil
 	}
-	stop, err := startPprof(addr)
+	bound, stop, err := startPprof(addr)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "agentop: not serving pprof on %s: %v\n", addr, err)
 		return nil
 	}
-	fmt.Fprintf(os.Stderr, "agentop: serving pprof on http://%s/debug/pprof/\n", addr)
+	fmt.Fprintf(os.Stderr, "agentop: serving pprof on http://%s/debug/pprof/\n", bound)
 	return stop
 }

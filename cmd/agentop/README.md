@@ -45,7 +45,9 @@ and read the result with
 `go tool pprof http://127.0.0.1:47603/debug/pprof/heap`. Off unless set: the
 profiles expose the process's internals, and the viewer's heap holds the
 session content it is displaying. Requests carrying a browser `Origin`, or a
-`Host` other than `localhost` / `127.0.0.1` / `::1`, are refused.
+`Host` other than `localhost` / `127.0.0.1` / `::1`, are refused — and so is a
+bind that does not land on loopback (`:47603`, `0.0.0.0:47603`), since those
+guards stop browsers, not a curl that names a loopback `Host`.
 
 You'll see a Namespaces pane listing each namespace that contains an
 AuthBridge agent. Enter drills into the Pods pane for that namespace;
