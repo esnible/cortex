@@ -1123,6 +1123,18 @@ agentop is for, and the other four are surfaces you visit and leave.
   the same as a body of zero bytes: a body no plugin asked to buffer is relayed
   unmeasured and reads exactly as a body-less GET does.
 
+  A session with subagent traffic groups each subagent's rows under a
+  collapsible header at the subagent's first row: `▸─ <label> · N rows · tokens
+  · cost`, where the label is the subagent's description from Claude Code's own
+  records when the harvest can name it and the raw agent id otherwise. Blocks
+  are collapsed by default — the point is that an agent's fan-out stops drowning
+  the conversation — and `Enter` on the header opens it, showing its rows in
+  time order with a `│` gutter in the DIR column; `Enter` again closes it. The
+  main conversation's rows stay top-level between them, so the interleaving
+  stays honest. Blocks exist only while the table is chronological: a sort ranks
+  rows, and grouping would contradict the ranking. A search opens every block,
+  so a match inside a collapsed one is findable.
+
   Live-updates while in view — if the cursor is on the last row, it
   auto-follows new events.
 
@@ -1447,7 +1459,7 @@ Layered on top of all of them:
 | `Enter` | pods | port-forward + connect |
 | `Esc` | pods | back to namespaces |
 | `r` | namespaces, pods | reload agent list from cluster |
-| `Enter` / `→` / `l` | sessions, events | drill into selection |
+| `Enter` / `→` / `l` | sessions, events | drill into selection; on a subagent block's header row in the events pane, collapse/expand the block instead |
 | `Esc` / `←` / `h` | detail, events | back out |
 | `Esc` | sessions | back to the agents picker when the list was reached by picking an agent there; otherwise (picker mode) tear down port-forward and back to pods. Sessions and the agents picker above it are the only panes that tear down — every key-opened surface returns to its caller instead |
 | `/` | any pane, and the key help | search what the pane shows, as in a text editor: every row stays, the matched characters are highlighted, and the cursor (or, in a text view, the view) jumps to the first match at or after where you pressed `/`, wrapping past the end, as you type. Case-insensitive substring of the text the pane displays: a table's columns that are turned on, at full width (a value cut to `…` matches in full, and so does a column the terminal had no room for); a message's or plugin's detail line by line, before it is wrapped; the key help's and the usage chart's lines as drawn. `deny` finds denied events because ACTION shows it. `Enter` keeps the place; `Esc` puts the place and the previous search back; `Enter` on an empty box clears the search. Each pane keeps its own search; the events pane's and a message's detail's last while you stay with one session (the detail's carries from message to message), and none is saved |
