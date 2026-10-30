@@ -16,6 +16,11 @@ expose a port directly, and never put one behind an ingress:
 - The forward proxy (`:47600`) carries your agent's decrypted traffic and its
   credentials.
 
+One assumption carries over from the laptop: loopback is *yours*. On a shared
+host every local account reaches both ports without the tunnel, so this model
+assumes a machine you are the only user of — or one whose every account you
+trust, the same caveat as a shared OpenShift project below.
+
 A tunnel — `ssh -L`, `kubectl port-forward`, SSH over Tailscale — gives you both
 encryption and "only me" without Cortex growing an auth subsystem. It also keeps the
 session API's browser guards passing: a tunnelled request arrives with a loopback
@@ -46,7 +51,7 @@ As a systemd user service (verified on Ubuntu 24.04, aarch64):
 Description=Cortex
 
 [Service]
-ExecStart=%h/cortex --local
+ExecStart=%h/.local/bin/cortex --local
 Restart=on-failure
 
 [Install]
@@ -58,8 +63,11 @@ systemctl --user enable --now cortex.service
 loginctl enable-linger "$USER"   # keep it running after you log out
 ```
 
-`agentop service` can manage the same unit if you install agentop on the server. In a
-container, run the binary with `HOME` pointed at a volume.
+Or skip the hand-written unit: `agentop service install` (with agentop installed on
+the server) writes and supervises an equivalent one, with quoted absolute paths and
+restart backoff. It writes to the same `~/.config/systemd/user/cortex.service`, so
+running it replaces a hand-written unit. In a container, run the binary with `HOME`
+pointed at a volume.
 
 ## Connecting agentop
 
