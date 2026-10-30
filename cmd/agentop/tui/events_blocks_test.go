@@ -1,0 +1,341 @@
+package tui
+
+import (
+	"encoding/json"
+	"strings"
+	"testing"
+
+	"github.com/rossoctl/cortex/core/observe/claude"
+	"github.com/rossoctl/cortex/core/pipeline"
+)
+
+// dirColumn is the DIR column's definition, for the gutter test. eventColumns is
+// the single definition; this picks the one entry out rather than indexing by
+// position, which a reordered list would silently move.
+func dirColumn() eventColumn {
+	for _, c := range eventColumns {
+		if c.id == colDir {
+			return c
+		}
+	}
+	panic("no DIR column")
+}
+
+// blockEvents is a session with two subagents running beside the main conversation,
+// interleaved as live traffic is. Each subagent carries a priced response so the
+// header's rollup has figures to sum.
+func blockEvents() []pipeline.SessionEvent {
+	sub := func(id string, phase pipeline.SessionPhase, tokens int) pipeline.SessionEvent {
+		return pipeline.SessionEvent{
+			Direction: pipeline.Outbound, Phase: phase, Host: "ete", RequestID: id,
+			Subagent:  id,
+			Inference: &pipeline.InferenceExtension{OutputTokens: tokens},
+			Plugins: map[string]json.RawMessage{
+				"cost": json.RawMessage(`{"output_usd":0.1}`),
+			},
+		}
+	}
+	return []pipeline.SessionEvent{
+		{Direction: pipeline.Outbound, Phase: pipeline.SessionRequest, Host: "ete", RequestID: "m1"},
+		sub("a1", pipeline.SessionRequest, 0),
+		sub("a1", pipeline.SessionResponse, 900),
+		{Direction: pipeline.Outbound, Phase: pipeline.SessionRequest, Host: "ete", RequestID: "m2"},
+		sub("a2", pipeline.SessionRequest, 0),
+		sub("a2", pipeline.SessionResponse, 40),
+	}
+}
+
+func newBlockModel(t *testing.T, events []pipeline.SessionEvent) *model {
+	t.Helper()
+	m := &model{selectedSess: "s", events: map[string][]pipeline.SessionEvent{"s": events}}
+	m.eventsTbl = newEventsTable()
+	m.rebuildEventsTable()
+	return m
+}
+
+// The default view: each subagent's rows are hidden behind a collapsed header
+// anchored at its first row, and the main conversation's rows stay top-level and
+// in time order between them.
+func TestBlocks_CollapsedByDefaultWithHeaderAtTheAnchor(t *testing.T) {
+	m := newBlockModel(t, blockEvents())
+
+	if m.subagentBlocks == nil || len(m.subagentBlocks) != 2 {
+		t.Fatalf("blocks = %v, want 2", m.subagentBlocks)
+	}
+	// Rendered: m1, header(a1), m2, header(a2) — every member row hidden.
+	if got := len(m.eventsTbl.Rows()); got != 4 {
+		t.Fatalf("rendered rows = %d, want 4 (2 main + 2 headers)", got)
+	}
+	// visibleRows stays parallel to the rendered rows; headers hold empty rows.
+	if len(m.visibleRows) != 4 {
+		t.Fatalf("visibleRows = %d, want 4", len(m.visibleRows))
+	}
+	if m.visibleRows[0].event.RequestID != "m1" || m.visibleRows[2].event.RequestID != "m2" {
+		t.Errorf("main rows moved: %s, %s", m.visibleRows[0].event.RequestID, m.visibleRows[2].event.RequestID)
+	}
+	// headerRows names the two header positions.
+	if b := m.headerRows[1]; b == nil || b.id != "a1" {
+		t.Errorf("header at 1 = %v, want a1", m.headerRows[1])
+	}
+	if b := m.headerRows[3]; b == nil || b.id != "a2" {
+		t.Errorf("header at 3 = %v, want a2", m.headerRows[3])
+	}
+	// The header carries the rollup: a1's response holds 900 tokens at $0.10.
+	h := m.eventsTbl.Rows()[1][0]
+	if !strings.Contains(h, "▸─") || !strings.Contains(h, "2 rows") || !strings.Contains(h, "900 tok") || !strings.Contains(h, "$0.10") {
+		t.Errorf("a1 header = %q", h)
+	}
+}
+
+// Enter on a header opens the block: member rows appear in time order, indented
+// via the DIR gutter, and the header's glyph turns over. Enter again closes it.
+func TestBlocks_EnterToggles(t *testing.T) {
+	m := newBlockModel(t, blockEvents())
+
+	m.eventsTbl.SetCursor(1)
+	if !m.toggleSubagentBlock() {
+		t.Fatal("Enter on the header row did not toggle")
+	}
+	if got := len(m.eventsTbl.Rows()); got != 6 {
+		t.Fatalf("open block: rendered rows = %d, want 6", got)
+	}
+	// The member rows sit inside the block, between the header and m2. Row 0 is
+	// m1, row 1 the header (its visibleRows entry is empty — no event of its own).
+	if rid := m.visibleRows[0].event.RequestID; rid != "m1" {
+		t.Fatalf("row 0 = %s, want m1", rid)
+	}
+	if m.visibleRows[1].event != nil {
+		t.Errorf("header row holds an event: %+v", m.visibleRows[1].event)
+	}
+	for _, i := range []int{2, 3} {
+		if m.visibleRows[i].event.Subagent != "a1" {
+			t.Errorf("row %d not a1's: %+v", i, m.visibleRows[i].event)
+		}
+	}
+	if h := m.eventsTbl.Rows()[1][0]; !strings.Contains(h, "▾─") {
+		t.Errorf("open header = %q, want ▾", h)
+	}
+	// a2 stays collapsed through a1's rebuild.
+	if got := len(m.eventsTbl.Rows()); got != 6 {
+		t.Fatalf("a2 should still be collapsed: %d rows", got)
+	}
+
+	m.eventsTbl.SetCursor(1)
+	m.toggleSubagentBlock()
+	if got := len(m.eventsTbl.Rows()); got != 4 {
+		t.Fatalf("re-collapsed: rendered rows = %d, want 4", got)
+	}
+}
+
+// Enter on a message row is still the detail drill-down; only headers toggle.
+func TestBlocks_EnterOnAMessageOpensDetail(t *testing.T) {
+	m := newBlockModel(t, blockEvents())
+	m.eventsTbl.SetCursor(0)
+	if m.toggleSubagentBlock() {
+		t.Fatal("Enter on a message row toggled a block")
+	}
+}
+
+// A live search opens every block, so a match inside a collapsed block is
+// findable — and the search rows stay parallel to the rendered rows.
+func TestBlocks_SearchExpandsCollapsedBlocks(t *testing.T) {
+	m := newBlockModel(t, blockEvents())
+	m.search = map[paneID]string{paneEvents: "ete"}
+	m.rebuildEventsTable()
+
+	if got := len(m.eventsTbl.Rows()); got != 8 {
+		t.Fatalf("searching: rendered rows = %d, want 8 (all rows + 2 headers)", got)
+	}
+	if len(m.eventsTbl.Matches()) == 0 {
+		t.Error("search matched nothing")
+	}
+}
+
+// The header's search value is the header TEXT, not the label alone: the rollup is
+// on screen, so a figure search ("$0.10", the costly subagent's cost) must match
+// the header that displays it — the README's search contract is the text the pane
+// shows. Before the search cell carried the same string as the row, the label was
+// the only searchable part.
+func TestBlocks_SearchMatchesTheHeaderRollup(t *testing.T) {
+	m := newBlockModel(t, blockEvents())
+	m.search = map[paneID]string{paneEvents: "$0.10"}
+	m.rebuildEventsTable()
+
+	// a1's header sits at rendered row 1 (m1, header, a1's exchange, m2, header).
+	for _, hit := range m.eventsTbl.Matches() {
+		if hit == 1 {
+			return
+		}
+	}
+	t.Errorf("searching the rollup figure: matches = %v, want the header at 1 among them", m.eventsTbl.Matches())
+}
+
+// A sort ranks the rows, so no blocks: every row renders flat, no header, no
+// gutter — grouping would contradict the ranking the operator asked for.
+func TestBlocks_SortDisablesGrouping(t *testing.T) {
+	m := newBlockModel(t, blockEvents())
+	m.sortCol = colDuration
+	m.rebuildEventsTable()
+
+	if m.subagentBlocks != nil {
+		t.Fatal("blocks active under a sort")
+	}
+	if got := len(m.eventsTbl.Rows()); got != 6 {
+		t.Fatalf("sorted: rendered rows = %d, want 6 flat", got)
+	}
+}
+
+// The DIR cell carries the block's gutter while blocks are active, and the bare
+// direction once they are not — under a sort, or for a main row.
+func TestBlocks_DirGutterMarksMemberRows(t *testing.T) {
+	events := blockEvents()
+	m := &model{selectedSess: "s", events: map[string][]pipeline.SessionEvent{"s": events}}
+	m.eventsTbl = newEventsTable()
+	m.rebuildEventsTable()
+
+	cc := cellContext{m: m, row: eventRow{event: &events[1]}}
+	if got := dirColumn().cell(cc); got != "│out" {
+		t.Errorf("member row DIR = %q, want │out", got)
+	}
+	cc = cellContext{m: m, row: eventRow{event: &events[0]}}
+	if got := dirColumn().cell(cc); got != "out" {
+		t.Errorf("main row DIR = %q, want out", got)
+	}
+
+	// Under a sort the same row renders bare: m.subagentBlocks is nil.
+	m.sortCol = colDuration
+	m.rebuildEventsTable()
+	cc = cellContext{m: m, row: eventRow{event: &events[1]}}
+	if got := dirColumn().cell(cc); got != "out" {
+		t.Errorf("sorted member row DIR = %q, want out", got)
+	}
+}
+
+// The label prefers the harvested description, then the agent type, then falls
+// back to the raw id — which is what a teammate or a stale harvest renders.
+func TestBlocks_LabelSources(t *testing.T) {
+	m := newBlockModel(t, blockEvents())
+	if got := m.subagentLabel("a1"); got != "a1" {
+		t.Errorf("no harvest: label = %q, want the id", got)
+	}
+	m.sessionsData = map[string]SessionMetadata{"s": {Subagents: map[string]claude.SubagentInfo{
+		"a1": {AgentType: "general-purpose", Description: "PR review (execution-first)"},
+		"a2": {AgentType: "Explore"},
+	}}}
+	if got := m.subagentLabel("a1"); got != "PR review (execution-first)" {
+		t.Errorf("label = %q, want the description", got)
+	}
+	if got := m.subagentLabel("a2"); got != "Explore" {
+		t.Errorf("label = %q, want the agent type", got)
+	}
+}
+
+// A session whose rows name no subagent rebuilds exactly as before: no blocks,
+// no headers, the same rendered row count.
+func TestBlocks_NoSubagentsNoBlocks(t *testing.T) {
+	events := []pipeline.SessionEvent{
+		{Direction: pipeline.Outbound, Phase: pipeline.SessionRequest, Host: "a", RequestID: "m1"},
+		{Direction: pipeline.Outbound, Phase: pipeline.SessionResponse, Host: "a", RequestID: "m1"},
+	}
+	m := newBlockModel(t, events)
+	if m.subagentBlocks != nil || m.headerRows != nil {
+		t.Fatal("blocks built for a session with no subagent rows")
+	}
+	if got := len(m.eventsTbl.Rows()); got != 2 {
+		t.Fatalf("rendered rows = %d, want 2", got)
+	}
+}
+
+// Opening another session drops the previous one's collapse state: subagent ids
+// belong to the session that spawned them, and a same-named id in another
+// session is a different agent.
+func TestBlocks_CollapseStateIsPerSession(t *testing.T) {
+	m := newBlockModel(t, blockEvents())
+	m.eventsTbl.SetCursor(1)
+	m.toggleSubagentBlock() // a1 open
+
+	other := blockEvents()
+	m.events["t"] = other
+	m.selectedSess = "t"
+	m.rebuildEventsTable()
+	if m.subagentOpen != nil {
+		t.Fatalf("collapse state survived a session change: %v", m.subagentOpen)
+	}
+	if got := len(m.eventsTbl.Rows()); got != 4 {
+		t.Fatalf("new session: rendered rows = %d, want 4 (collapsed again)", got)
+	}
+}
+
+// The block's population is the rows the pane would show: hideInactive hides a
+// subagent's whole exchange, and a block with no surviving rows leaves no header
+// behind — a header naming nothing is worse than no header, because it claims a
+// subagent the filter just said produced nothing visible.
+func TestBlocks_RollupFollowsTheInactiveFilter(t *testing.T) {
+	active := func(id, sub string, phase pipeline.SessionPhase) pipeline.SessionEvent {
+		return pipeline.SessionEvent{
+			Direction: pipeline.Outbound, Phase: phase, Host: "ete", RequestID: id, Subagent: sub,
+			Invocations: &pipeline.Invocations{Outbound: []pipeline.Invocation{
+				{Plugin: "inference-parser", Action: pipeline.ActionObserve},
+			}},
+		}
+	}
+	inactive := func(id, sub string, phase pipeline.SessionPhase) pipeline.SessionEvent {
+		return pipeline.SessionEvent{
+			Direction: pipeline.Outbound, Phase: phase, Host: "ete", RequestID: id, Subagent: sub,
+		}
+	}
+	events := []pipeline.SessionEvent{
+		active("m1", "", pipeline.SessionRequest),
+		active("a1", "a1", pipeline.SessionRequest),
+		// a1's response is inactive but kept: its partner is shown (an exchange
+		// hides whole or not at all).
+		inactive("a1", "a1", pipeline.SessionResponse),
+		active("m2", "", pipeline.SessionRequest),
+		// a2's whole exchange is inactive: no block, no header.
+		inactive("a2", "a2", pipeline.SessionRequest),
+		inactive("a2", "a2", pipeline.SessionResponse),
+	}
+	m := &model{selectedSess: "s", events: map[string][]pipeline.SessionEvent{"s": events}, hideInactive: true}
+	m.eventsTbl = newEventsTable()
+	m.rebuildEventsTable()
+
+	if _, ok := m.subagentBlocks["a2"]; ok {
+		t.Fatal("a2 has a block despite every row being hidden")
+	}
+	// Rendered: m1, header(a1), m2 — collapsed by default, so the kept exchange
+	// sits behind the header rather than on screen. No a2 header anywhere.
+	if got := len(m.eventsTbl.Rows()); got != 3 {
+		t.Fatalf("rendered rows = %d, want 3", got)
+	}
+	for i, b := range m.headerRows {
+		if b.id == "a2" {
+			t.Errorf("header for a2 at row %d", i)
+		}
+	}
+	// a1's header counts the rows expanding it would show: the kept exchange, 2.
+	if h := m.eventsTbl.Rows()[1][0]; !strings.Contains(h, "2 rows") {
+		t.Errorf("a1 header = %q, want the kept exchange counted", h)
+	}
+}
+
+// The Timeline's Enter names subagent rows as readily as the conversation's, and
+// a subagent's row inside a collapsed block is not on screen — the reveal must
+// open the block rather than wait forever for a row that cannot appear.
+func TestBlocks_RevealOpensACollapsedBlock(t *testing.T) {
+	events := blockEvents()
+	// Give the target a seq; the fixture leaves them zero.
+	events[1].Seq = 11
+	m := newBlockModel(t, events)
+	m.revealSeq, m.revealSess = 11, "s"
+
+	if !m.revealPendingSeq() {
+		t.Fatal("reveal did not land")
+	}
+	if !m.subagentOpen["a1"] {
+		t.Error("a1's block was not opened")
+	}
+	cur := m.eventsTbl.Cursor()
+	if m.visibleRows[cur].event == nil || m.visibleRows[cur].event.Seq != 11 {
+		t.Errorf("cursor on %v, want the event with seq 11", m.visibleRows[cur].event)
+	}
+}
