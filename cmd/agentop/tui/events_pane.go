@@ -233,14 +233,15 @@ func (m *model) rebuildEventsTable() {
 		if b := m.subagentBlocks[cc.row.event.Subagent]; b != nil {
 			if !b.anchored {
 				b.anchored = true
-				rows = append(rows, b.headerRow(m.subagentLabel(b.id), m.blockOpen(b.id, q != "")))
+				text := b.headerText(m.subagentLabel(b.id), m.blockOpen(b.id, q != ""))
+				rows = append(rows, table.Row{text})
 				m.visibleRows = append(m.visibleRows, eventRow{})
 				if m.headerRows == nil {
 					m.headerRows = make(map[int]*subagentBlock)
 				}
 				m.headerRows[len(rows)-1] = b
 				if q != "" {
-					full = append(full, table.SearchRow{Cells: []string{m.subagentLabel(b.id)}})
+					full = append(full, table.SearchRow{Cells: []string{text}})
 				}
 			}
 			if !m.blockOpen(b.id, q != "") {

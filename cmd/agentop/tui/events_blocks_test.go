@@ -151,6 +151,25 @@ func TestBlocks_SearchExpandsCollapsedBlocks(t *testing.T) {
 	}
 }
 
+// The header's search value is the header TEXT, not the label alone: the rollup is
+// on screen, so a figure search ("$0.10", the costly subagent's cost) must match
+// the header that displays it — the README's search contract is the text the pane
+// shows. Before the search cell carried the same string as the row, the label was
+// the only searchable part.
+func TestBlocks_SearchMatchesTheHeaderRollup(t *testing.T) {
+	m := newBlockModel(t, blockEvents())
+	m.search = map[paneID]string{paneEvents: "$0.10"}
+	m.rebuildEventsTable()
+
+	// a1's header sits at rendered row 1 (m1, header, a1's exchange, m2, header).
+	for _, hit := range m.eventsTbl.Matches() {
+		if hit == 1 {
+			return
+		}
+	}
+	t.Errorf("searching the rollup figure: matches = %v, want the header at 1 among them", m.eventsTbl.Matches())
+}
+
 // A sort ranks the rows, so no blocks: every row renders flat, no header, no
 // gutter — grouping would contradict the ranking the operator asked for.
 func TestBlocks_SortDisablesGrouping(t *testing.T) {

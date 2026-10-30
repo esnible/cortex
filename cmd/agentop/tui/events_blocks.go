@@ -2,8 +2,6 @@ package tui
 
 import (
 	"fmt"
-
-	"github.com/rossoctl/cortex/cmd/agentop/tui/table"
 )
 
 // subagentBlock is one subagent's share of the events pane (#1047): the rows its
@@ -33,16 +31,18 @@ type subagentBlock struct {
 	anchored bool
 }
 
-// headerRow is the block's collapsible line: the rollup the issue asked for —
-// how many rows, how many tokens, what cost — behind the label. One cell, which
-// the table renders as a section row spanning every column.
-func (b *subagentBlock) headerRow(label string, open bool) table.Row {
+// headerText is the block's collapsible line: the rollup the issue asked for —
+// how many rows, how many tokens, what cost — behind the label. The caller wraps
+// it in a one-cell table.Row (rendered as a section row spanning every column)
+// and hands the SAME string to the search, so what the header displays is what
+// the search matches — the label alone would hide the rollup figures from it.
+func (b *subagentBlock) headerText(label string, open bool) string {
 	glyph := "▸"
 	if open {
 		glyph = "▾"
 	}
-	return table.Row{fmt.Sprintf("%s─ %s · %d rows · %s tok · %s",
-		glyph, label, len(b.rows), humanizeCount(int64(b.tokens)), formatUSDTotal(b.cost))}
+	return fmt.Sprintf("%s─ %s · %d rows · %s tok · %s",
+		glyph, label, len(b.rows), humanizeCount(int64(b.tokens)), formatUSDTotal(b.cost))
 }
 
 // subagentLabel names a block. The wire carries only the 16-hex id, so a label a
