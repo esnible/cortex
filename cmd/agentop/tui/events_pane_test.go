@@ -377,6 +377,52 @@ func TestBuildEventRows_CollapsesBridgedConnect(t *testing.T) {
 	}
 }
 
+// TestBuildEventRows_CollapsesBridgedConnectRedirected locks the fold under a
+// plugin redirect: the CONNECT named the host the client asked for, the inner
+// request went elsewhere, and RequestedHost carries the client's host. Without
+// the RequestedHost match arm the open stood as its own blank-method row and
+// the timeline read as if traffic still went to the original server.
+func TestBuildEventRows_CollapsesBridgedConnectRedirected(t *testing.T) {
+	events := []pipeline.SessionEvent{
+		// CONNECT tunnel-open to the client's configured inference server.
+		{
+			Direction: pipeline.Outbound,
+			Phase:     pipeline.SessionRequest,
+			Host:      "ete-litellm.example.com:443",
+			Tunnel:    true,
+		},
+		// Inner request the inference-router redirected to another server:
+		// Host is the dial target, RequestedHost the host the client named.
+		{
+			Direction:     pipeline.Outbound,
+			Phase:         pipeline.SessionRequest,
+			Host:          "litellm.cb.example.com",
+			RequestedHost: "ete-litellm.example.com:443",
+			Inference:     &pipeline.InferenceExtension{Model: "glm-4.6"},
+		},
+		{
+			Direction:  pipeline.Outbound,
+			Phase:      pipeline.SessionResponse,
+			Host:       "litellm.cb.example.com",
+			Inference:  &pipeline.InferenceExtension{Model: "glm-4.6", TotalTokens: 500},
+			StatusCode: 200,
+		},
+	}
+	rows := buildEventRows(events)
+	if len(rows) != 2 {
+		t.Fatalf("redirected bridged call produced %d rows, want 2 (collapsed req + resp)", len(rows))
+	}
+	if rows[0].event.Host != "litellm.cb.example.com" {
+		t.Errorf("collapsed row host = %q, want the redirected host", rows[0].event.Host)
+	}
+	if rows[0].tunnel == nil {
+		t.Fatalf("row 0 should carry the folded CONNECT tunnel")
+	}
+	if rows[0].tunnel.Host != "ete-litellm.example.com:443" {
+		t.Errorf("folded tunnel host = %q, want the client's original server", rows[0].tunnel.Host)
+	}
+}
+
 // TestBuildEventRows_PassthroughTunnelStandsAlone covers every shape in which a
 // non-bridged CONNECT tunnel-open must remain its own row rather than fold:
 // a lone trailing CONNECT, two back-to-back CONNECTs to the SAME host
