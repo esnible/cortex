@@ -481,6 +481,24 @@ by a fingerprint of the block — never the reasoning itself. It holds no prompt
 does not clear it. The proxy saves changes within two seconds and on stop, and sets aside a file it
 cannot read as `plugin-state.json.corrupt` and starts empty.
 
+## The `memory:` configuration
+
+The Go runtime sizes its heap to roughly twice the live heap by default, and
+reading sessions leaves the memory the encoder expanded from the store's
+sharing as idle RSS — together those carried a live heap of ~1.4GB as 2.9GB of
+resident memory. `memory.limit_mb` applies the Go runtime's soft memory limit
+at startup; a local install defaults it to **2048**.
+
+| Field | Default (local) | Meaning |
+|---|---|---|
+| `limit_mb` | 2048 | Soft limit in MB. Zero disables it. |
+
+The limit is **soft**: near it the garbage collector runs more often (a little
+CPU for the memory), and if the sessions genuinely need more than the limit the
+process keeps allocating and growing exactly as it would without one — nothing
+fails, nothing crashes. Setting it too low costs speed, not availability. Set
+it explicitly to change the default; `agentop service restart` applies it.
+
 ## The `tls_bridge:` configuration
 
 The TLS bridge terminates agent egress so the outbound plugin pipeline sees
