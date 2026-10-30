@@ -281,8 +281,29 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
   "upgrade_declined"` is the forward proxy's own answer to a WebSocket upgrade on
   OpenAI's Responses API (`chatgpt.com` or `api.openai.com`): nothing is forwarded,
   and a client such as Codex reads it as "use HTTPS" and retries at once over
-  HTTPS. It is not counted as an error in `/v1/usage`. A **403** with
-  `error.kind: "destination_private"` is the egress guard's refusal
+  HTTPS. It is not counted as an error in `/v1/usage`. Every other WebSocket
+  upgrade is forwarded (#1488): the 101 the origin answers with is spliced onto
+  the client's connection, the frames after it are relayed uninspected, and the
+  session records the request row plus a **101 response row** paired to it by
+  `requestId`, carrying `bytesUp` and `bytesDown` for the whole WebSocket
+  session — the one response row besides a tunnel close that carries both —
+  with `durationMs` covering the session and `ttfbMs` the handshake. Because
+  that `durationMs` is a session lifetime rather than a request latency, the
+  101 row is **excluded from `/v1/usage`** exactly as a tunnel row is: folding
+  it would drag the latency mean toward WebSocket lifetimes (one 10-minute
+  session moved a host's mean from 500ms to 6.4s in testing), its frames are
+  opaque so there is no model, token or cost to attribute, and counting it
+  would add one Request whose latency is its whole lifetime. On the timeline
+  the lifetime is the point, so the field stays. **That exclusion is outbound
+  only.** The reverse proxy also records a 101, but at *handshake* time
+  (`ReverseProxy` hands off the connection instead of copying a body, so a
+  deferred record would never fire), so its `durationMs` is the handshake
+  latency — an ordinary request figure. An inbound WebSocket handshake is
+  therefore still counted as a Request. A relay that ended in an
+  error carries `error.kind: "proxy_error"` on the 101 row, so a session that
+  broke mid-stream is distinguishable from one that closed cleanly; an
+  ordinary close is not marked. A **403**
+  with `error.kind: "destination_private"` is the egress guard's refusal
   (`listener.egress_guard`): the destination resolved into loopback,
   link-local, private or this host's own address space and no permit covered
   it. Also the proxy's own answer rather than the upstream's, and also not
@@ -310,8 +331,9 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
 - `bytesUp`, `bytesDown` — **body** bytes, one direction per row: a request row
   carries `bytesUp`, the body as forwarded (so a rewrite is reflected); a
   response row carries `bytesDown`, the body as it came back from the
-  destination. Headers are not counted. A tunnel close is the one row carrying
-  both. **Zero means the listener counted nothing, not that the body was
+  destination. Headers are not counted. A tunnel close and a forwarded
+  WebSocket's 101 response row are the rows carrying both. **Zero means the
+  listener counted nothing, not that the body was
   empty** — every listener buffers bodies only when a plugin asks, so an
   unbuffered request reports zero. A response relayed straight through is
   counted, not zero: both proxies record the row after they finish relaying

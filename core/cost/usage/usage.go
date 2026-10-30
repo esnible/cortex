@@ -16,6 +16,7 @@ package usage
 import (
 	"math"
 	"net"
+	"net/http"
 	"sort"
 	"strconv"
 	"strings"
@@ -1056,7 +1057,37 @@ func (a *Aggregator) Record(sessionID string, e *pipeline.SessionEvent) {
 	// were opaque, so there is no model, token or cost to attribute. Counting it would
 	// also quietly change what Requests means for every reader of /v1/usage. A bridged
 	// tunnel's decrypted requests are ordinary events and are counted as usual.
-	if e.Tunnel {
+	//
+	// A FORWARDED WEBSOCKET'S 101 ROW IS THE SAME SHAPE, and is excluded for the
+	// same three reasons (#1488, #1549 review). It is recorded after both splice
+	// directions end, so its Duration is the WebSocket SESSION's lifetime, not a
+	// request latency: measured, one 10-minute WS session against a host with a
+	// hundred 500ms requests moved that host's latency mean from 500ms to 6.4s
+	// (TestRecord_WebSocket101IsNotARequestLatency). Its bytes are opaque frames
+	// with no model, token or cost to attribute. And counting it would make
+	// Requests mean something new, inconsistently: the upgrade GET's own request
+	// row is already not counted (Invocations nil), so one WebSocket would add
+	// exactly one Request whose latency is its whole lifetime.
+	//
+	// Keyed on the status rather than a new event field because 101 IS the
+	// condition on the forward proxy — it records that status for no other
+	// reason, and a 101 that reached a client always means a spliced upgrade
+	// (the relay refuses any other switched protocol before the hijack). The row
+	// keeps its durationMs on the session timeline, where the WebSocket's
+	// lifetime is the feature; only the aggregation misread it.
+	//
+	// SCOPED TO OUTBOUND, because the status alone does not identify the
+	// condition across listeners. The reverse proxy records a 101 too
+	// (ModifyResponse's StatusSwitchingProtocols arm, Direction: Inbound) and
+	// records it AT HANDSHAKE TIME — ReverseProxy never copies an upgraded body,
+	// so a deferred record would never fire — which makes that row's Duration
+	// the handshake latency, not a session lifetime. It is an ordinary request
+	// with an ordinary latency, and excluding it would change what Requests
+	// means on every inbound listener: the same silent redefinition this comment
+	// warns about, in the other direction. Pinned both ways by
+	// TestRecord_WebSocket101IsNotARequestLatency and
+	// TestRecord_InboundWebSocket101IsStillARequest (#1549 review).
+	if e.Tunnel || (e.Direction == pipeline.Outbound && e.StatusCode == http.StatusSwitchingProtocols) {
 		return
 	}
 

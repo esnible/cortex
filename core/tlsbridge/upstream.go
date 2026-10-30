@@ -33,6 +33,13 @@ func WithDialContext(dial func(ctx context.Context, network, addr string) (net.C
 // re-origination does NOT verify the origin cert — for internal/self-signed
 // upstreams (e.g. a private LiteLLM endpoint). Prefer extraRootsPEM
 // (upstream_ca_bundle) over insecure whenever the origin CA is available.
+//
+// WebSocket upgrades need no client of their own, tempting as one pinned to
+// HTTP/1.1 looks: net/http already pins a request carrying "Connection:
+// upgrade" and "Upgrade: websocket" to HTTP/1.1 (Request.requiresHTTP1) — the
+// exact pair forwardproxy's stripForUpstream normalizes a forwarded upgrade to
+// — so this client carries one as HTTP/1.1 even against an origin it would
+// otherwise negotiate h2 with.
 func NewUpstreamClient(extraRootsPEM []byte, insecure bool, opts ...UpstreamOption) (*http.Client, error) {
 	var o upstreamOptions
 	for _, opt := range opts {

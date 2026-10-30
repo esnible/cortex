@@ -618,11 +618,42 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
   disagree about the status on purpose. **A 426 with `error.kind:
   "upgrade_declined"` is not one of these:** it is the forward proxy refusing a
   WebSocket on OpenAI's Responses API (a path ending `/responses` on `chatgpt.com` or
-  `api.openai.com`; other hosts keep the strip), because the origin
-  would only answer the stripped GET with a 405, which Codex retries for ~6s, while a
-  426 sends it straight to HTTPS. Nothing is forwarded, the Finisher sees an allow with
+  `api.openai.com`) — a deliberate steer, since a 426 sends Codex straight to HTTPS
+  where its traffic stays parseable, while a forwarded WebSocket's frames are opaque
+  to every plugin. Nothing is forwarded, the Finisher sees an allow with
   status 426, and `/v1/usage` does not count it as an error. On by default;
-  `listener.decline_responses_websockets: false` forwards the upgrade instead.
+  `listener.decline_responses_websockets: false` forwards the upgrade for real
+  instead. **Every other WebSocket is forwarded** (#1488): the upgrade crosses the
+  proxy (normalized to `Connection: Upgrade` / `Upgrade: websocket`, which net/http
+  pins to HTTP/1.1 even on the bridge's h2-negotiating client), the origin's 101 is
+  hijacked and spliced, and the session records the request row plus a paired 101
+  response row carrying both directions' byte counts — the frames themselves are
+  never inspected or buffered. **An upgrade is both headers, on both sides**, and
+  since the proxy WRITES the normalized pair a loose predicate forges one rather
+  than missing one: a request needs `Connection: upgrade` as well as `Upgrade:
+  websocket` (RFC 9110 §7.8, and `Request.requiresHTTP1`'s own test) or it is
+  stripped and takes the ordinary path, and a 101 that switches to some other
+  protocol than the one requested is refused 502 before the hijack instead of
+  spliced. Either check missing turns a plain request into an opaque pipe no
+  plugin inspects. **The forward proxy's 101 row is kept out of `/v1/usage` for the
+  same reasons a tunnel row is** — it is recorded after both splice directions end,
+  so its
+  `durationMs` is the WebSocket SESSION's lifetime, and folding it as a request
+  latency moved one host's mean from 500ms to 6.4s in testing; its bytes are opaque
+  frames with no model, token or cost to attribute; and counting it would add one
+  Request whose latency is its whole lifetime. The `durationMs` stays on the
+  session timeline, where the lifetime is the feature — only the aggregation
+  misread it. **The exclusion is scoped to outbound, and a 101 is not excluded
+  everywhere.** The reverse proxy records one too, but *at handshake time* —
+  `ReverseProxy` never copies an upgraded body, so a deferred record would never
+  fire — which makes that row's `durationMs` the handshake latency rather than a
+  session lifetime. An inbound 101 is therefore an ordinary request and still
+  counts as one; excluding it on the status alone would change what `Requests`
+  means on every inbound listener. **A relay that broke mid-session carries `error.kind:
+  "proxy_error"`** on that row, so a WebSocket that died is distinguishable from
+  one that closed cleanly; an ordinary close (`net.ErrClosed`, from the direction
+  that lost the close race) is deliberately not marked, or every healthy session
+  would read as broken.
   **A 403 with `error.kind: "destination_private"` is the egress guard's
   answer, not the upstream's** (`listener.egress_guard`, off by default): the
   destination resolved into loopback, link-local, private or this host's own
@@ -675,7 +706,7 @@ Every event on `/v1/sessions/{id}` and `/v1/events` carries:
   `timing:` line.
 - `requestedHost` — present only when a plugin redirected the request (`pctx.Redirect`): the host the client asked for. `host` is where the request actually went, and usage, the cost ledger and pricing all follow `host`. agentop's detail pane shows both on a `redirected:` line.
 - `inference.requestedModel` — present only when a plugin changed the model (`pctx.SetRequestModel`): the model the client asked for. `inference.model` is the model the request was sent for, which settlement prices; agentop's detail pane shows both on a `model:` line.
-- `bytesUp`, `bytesDown` — **body** bytes, one direction per row: a request row carries `bytesUp`, the body **as forwarded** (so a `tool-prune`-style rewrite is reflected, since the count is taken after the pipeline ran), and a response row carries `bytesDown`, the body **as it came back from the destination** — not as delivered, because extproc records the row before it emits a response mutator's replacement. Headers are not counted. A tunnel close is the one row carrying both. **Zero means the listener counted nothing, not that the body was empty**, and there is no third value for "unknown": every listener buffers bodies only when a plugin asks, so an unbuffered request reports zero. A response relayed straight through is counted, not zero — both proxies record the row after the copy (#1251's fix), so the bytes they relayed through their own process are on it. The one arm that still reports ↓0 is extproc with a body-free pipeline: it asked Envoy for body mode NONE, so the bytes it never saw are bytes it asked not to see — `core/listener/parity`'s `TestDivergence_InboundResponseBodyCountWhenNoPluginReadsIt` pins that disagreement with its reason. agentop renders a zero side blank rather than as `0B`, and that is why its BYTES column can be trusted as a size when it shows one. Everywhere else the three listeners count the same thing for the same response, which took some doing: extproc sums the chunks Envoy hands it, while the proxies count off the upstream body at one choke point each, so every arm — buffered, block-by-block SSE, or chunk copy — reports the same figure. `core/listener/internal/bodycount` and `core/listener/parity`'s bytes fixtures hold that line.
+- `bytesUp`, `bytesDown` — **body** bytes, one direction per row: a request row carries `bytesUp`, the body **as forwarded** (so a `tool-prune`-style rewrite is reflected, since the count is taken after the pipeline ran), and a response row carries `bytesDown`, the body **as it came back from the destination** — not as delivered, because extproc records the row before it emits a response mutator's replacement. Headers are not counted. A tunnel close and a forwarded WebSocket's 101 response row are the rows carrying both. **Zero means the listener counted nothing, not that the body was empty**, and there is no third value for "unknown": every listener buffers bodies only when a plugin asks, so an unbuffered request reports zero. A response relayed straight through is counted, not zero — both proxies record the row after the copy (#1251's fix), so the bytes they relayed through their own process are on it. The one arm that still reports ↓0 is extproc with a body-free pipeline: it asked Envoy for body mode NONE, so the bytes it never saw are bytes it asked not to see — `core/listener/parity`'s `TestDivergence_InboundResponseBodyCountWhenNoPluginReadsIt` pins that disagreement with its reason. agentop renders a zero side blank rather than as `0B`, and that is why its BYTES column can be trusted as a size when it shows one. Everywhere else the three listeners count the same thing for the same response, which took some doing: extproc sums the chunks Envoy hands it, while the proxies count off the upstream body at one choke point each, so every arm — buffered, block-by-block SSE, or chunk copy — reports the same figure. `core/listener/internal/bodycount` and `core/listener/parity`'s bytes fixtures hold that line.
 - `tunnel`, `tunnelReason` — an opaque CONNECT (or transparent-redirect) tunnel records two rows sharing a `requestId`: the open (`phase: "request"`, `tunnelReason` saying why the bytes stayed opaque) and, when the tunnel ends, the close (`phase: "response"`). The close carries the CONNECT's own `statusCode` — 200, or 502 with the dial error in `error` when the destination could not be reached and no TLS bridge could take the connection (`tunnelReason: "dial-failed"`; where the bridge is enabled for the port the CONNECT is answered 200 first, because a redirect can still apply, and a bridge that then declines closes with that 200 and the dial error) — plus `durationMs` for how long the tunnel stayed open and, in `bytesUp`/`bytesDown`, the bytes it carried each way (up = client to destination; opaque bytes have no body/header split, so these are everything that crossed). It is not the destination's status: that travels inside the client's end-to-end TLS. A bridged tunnel's open is recorded with its first decrypted request — in that request's session, directly before it, stamped with its time — and records no close, because the request carries its own response; a bridged tunnel that recorded no request gets its open and a close when it ends. Tunnel rows are kept out of `/v1/usage`: a tunnel's lifetime is not a request latency. `tunnelReason: "dest-private"` with a 403 close and `error.kind: "destination_private"` is the egress guard refusing the destination before any dial — never confused with `dial-failed`, which attempted.
 - `dialAddr` — the address the egress guard checked and the proxy dialed, `"ip:port"`, on a tunnel's open row when `listener.egress_guard` is on. With `host` it is the audit trail against DNS rebinding: under the guard the proxy resolves once, checks that answer, and dials exactly it, so the two fields together say "asked for the name, reached this address". Absent when the guard is off and on rows that dialed nothing.
 - `httpMethod`, `httpPath` — the HTTP verb and path, so a request no parser recognized is still identifiable rather than showing only a host. Distinct from the `method` inside `a2a` / `mcp`, which is a protocol method name. On an opaque tunnel `httpMethod` is `CONNECT` and `httpPath` is absent — opaque bytes carry no request line. The path is query-stripped and percent-decoded, so query-borne credentials never reach the timeline, but a secret in a path *segment* (a bot token, a webhook path) does survive on this unauthenticated surface — worth knowing before exporting events off-box.

@@ -856,7 +856,7 @@ func TestReverseProxy_ResponseEventDurationIncludesUnbufferedBody(t *testing.T) 
 	// after the client has read the body and returned — wait for it rather
 	// than racing the recording (see recording_test.go for the flake this
 	// shape produced in CI).
-	waitForResponseEvent(t, store)
+	waitForResponseEvent(t, store, session.DefaultSessionID)
 
 	v := store.View(session.DefaultSessionID)
 	if v == nil || len(v.Events) != 2 {
