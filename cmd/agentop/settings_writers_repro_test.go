@@ -18,7 +18,9 @@ import (
 //
 // The fix is writeFileAtomic (CreateTemp + fsync + rename): a kill mid-write
 // leaves the PREVIOUS record intact, so step 2 cannot produce this state.
-// This test pins the loop so the fix's test can pin its absence.
+// This test documents the failure mode as a sequence — it tears the record by
+// hand, so it passes on main too and is NOT the regression guard; that is
+// TestWriteState_FailedWriteKeepsThePreviousRecord below.
 func TestWriteState_TornWriteBlocksEveryLaterEnable(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "claude-code-state.json")
@@ -52,6 +54,52 @@ func TestWriteState_TornWriteBlocksEveryLaterEnable(t *testing.T) {
 	err = writeState(path, st)
 	if err == nil || !strings.Contains(err.Error(), "refusing to overwrite") {
 		t.Fatalf("writeState after a torn write: %v, want the refusal that blocks every later enable", err)
+	}
+}
+
+// TestWriteState_FailedWriteKeepsThePreviousRecord is the regression guard for
+// writeFileAtomic in writeState: a write that cannot complete must leave the
+// previous record fully readable. writeState used os.WriteFile, which opens
+// with O_TRUNC — a kill in that window could destroy the only copy of the
+// Prior. The failure is simulated with a directory the new code cannot create
+// its temp file in; the old code still "succeeded" there, because truncating
+// an EXISTING file needs no directory write permission.
+func TestWriteState_FailedWriteKeepsThePreviousRecord(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("directory permissions do not bind root")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "claude-code-state.json")
+	prior := "https://before.example"
+	base := managedState{
+		Settings: "/settings.json",
+		Prior:    map[string]*string{"ANTHROPIC_BASE_URL": &prior},
+		Written:  map[string]string{"ANTHROPIC_BASE_URL": "http://127.0.0.1:47600"},
+	}
+	if err := writeState(path, base); err != nil {
+		t.Fatalf("first writeState: %v", err)
+	}
+
+	// A re-enable with a changed Written must write; make that write fail.
+	next := base
+	next.Written = map[string]string{"ANTHROPIC_BASE_URL": "http://127.0.0.1:47700"}
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeState(path, next); err == nil {
+		_ = os.Chmod(dir, 0o700)
+		t.Fatal("writeState succeeded with the directory unwritable — it truncated the record in place")
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := readState(path)
+	if err != nil {
+		t.Fatalf("the previous record did not survive the failed write: %v", err)
+	}
+	if got.Written["ANTHROPIC_BASE_URL"] != "http://127.0.0.1:47600" {
+		t.Errorf("record after a failed write is %v, want the original one", got.Written)
 	}
 }
 
@@ -96,46 +144,57 @@ func TestWriteSettings_SymlinkReplaced(t *testing.T) {
 	}
 }
 
-// TestWriteFileAtomic_PlantedTmpSymlink: a fixed "path+.tmp" name was an
-// open redirect — os.WriteFile follows a symlink planted at that name, so
-// anything able to create files in the directory could steer the write
-// (userconfig.go guards its own copy against exactly this). CreateTemp names
-// the temp file uniquely, so the plant sits untouched and the write lands
-// where it was aimed.
-func TestWriteFileAtomic_PlantedTmpSymlink(t *testing.T) {
-	dir := t.TempDir()
-	real := filepath.Join(dir, "settings.json")
-	if err := os.WriteFile(real, []byte("{}\n"), 0o600); err != nil {
-		t.Fatal(err)
+// TestWriters_IgnoreAPlantedTmpSymlink pins the #1565 tmp-name fix at the
+// writers that had it: writeSettings, bobWriteKeys and codexEnvFile.write all
+// used to write path+".tmp", and os.WriteFile follows a symlink planted at
+// that name — an open redirect for anything able to create files in the
+// directory (userconfig.go guards its own copy against exactly this). The
+// writers now go through writeFileAtomic, whose CreateTemp name cannot be
+// planted, so the plant sits untouched and the write lands where it was aimed.
+func TestWriters_IgnoreAPlantedTmpSymlink(t *testing.T) {
+	writers := []struct {
+		name  string
+		write func(path string) error
+	}{
+		{"writeSettings", func(p string) error {
+			return writeSettings(p, map[string]any{"routed": true})
+		}},
+		{"bobWriteKeys", func(p string) error {
+			return bobWriteKeys(p, []bobEdit{{key: "routed", value: true}})
+		}},
+		{"codexEnvFile.write", func(p string) error {
+			return (&codexEnvFile{lines: []string{"ROUTED=1"}}).write(p)
+		}},
 	}
-	victim := filepath.Join(dir, "stolen")
-	if err := os.WriteFile(victim, []byte("untouched\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	plant := real + ".tmp"
-	if err := os.Symlink(victim, plant); err != nil {
-		t.Fatal(err)
-	}
+	for _, w := range writers {
+		t.Run(w.name, func(t *testing.T) {
+			dir := t.TempDir()
+			settings := filepath.Join(dir, "settings.json")
+			if err := os.WriteFile(settings, []byte("{}\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			victim := filepath.Join(dir, "stolen")
+			if err := os.WriteFile(victim, []byte("untouched\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(victim, settings+".tmp"); err != nil {
+				t.Fatal(err)
+			}
 
-	if err := writeFileAtomic(real, []byte("{\"routed\":true}\n"), 0o600); err != nil {
-		t.Fatalf("writeFileAtomic past a planted tmp symlink: %v", err)
-	}
+			if err := w.write(settings); err != nil {
+				t.Fatalf("%s past a planted tmp symlink: %v", w.name, err)
+			}
 
-	got, err := os.ReadFile(victim)
-	if err != nil {
-		t.Fatal(err)
+			if got, _ := os.ReadFile(victim); string(got) != "untouched\n" {
+				t.Errorf("the planted tmp symlink redirected the write: victim now %q", got)
+			}
+			got, err := os.ReadFile(settings)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(got), "routed") && !strings.Contains(string(got), "ROUTED") {
+				t.Errorf("the write did not land at the real path: %q", got)
+			}
+		})
 	}
-	if string(got) != "untouched\n" {
-		t.Errorf("the planted tmp symlink redirected the write: victim now %q", got)
-	}
-	// The plant itself is not our problem to clean, but it must not have been
-	// followed. Its target is intact above; the real file carries the write.
-	rgot, err := os.ReadFile(real)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(rgot), "routed") {
-		t.Errorf("the write did not land at the real path: %q", rgot)
-	}
-	_ = plant
 }

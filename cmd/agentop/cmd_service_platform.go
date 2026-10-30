@@ -423,13 +423,19 @@ func unloadService(goos string, p servicePaths) error {
 	return nil
 }
 
-// runningPID returns the pid from a pidfile only when it is alive AND is one of
-// ours. Built on setup_probe's proxyRunning — the set install.sh uses — so the
-// service path and the setup path can no longer disagree about whether the
-// proxy is running (#1565): the private copy here returned 0 whenever ps
+// runningPID returns the pid from a pidfile only when the probe says the proxy
+// is running. Built on setup_probe's proxyRunning — the set install.sh uses —
+// so the service path and the setup path can no longer disagree about whether
+// the proxy is running (#1565): the private copy here returned 0 whenever ps
 // failed, while setup's deliberately sandbox-blind check reported the proxy
 // running, and a hand-started proxy the install path then failed to see and
 // stop crash-looped the supervised copy against the port.
+//
+// The trade-off that blindness buys, stated so no one "fixes" it back: when ps
+// cannot see the process (seatbelt sandboxes, hidepid), the pidfile is trusted
+// as-is, exactly as install.sh trusts it. That means a stale pidfile naming a
+// recycled pid can be signalled here — the price of never failing to stop a
+// proxy ps is merely blind to. Tighten both call sites together or neither.
 func runningPID(pidFile string) int {
 	if pid, ok := proxyRunning(pidFile); ok {
 		return pid
@@ -751,9 +757,8 @@ func writeProxyStamp(p servicePaths) {
 	if h == "" || p.stampFile == "" {
 		return
 	}
-	if err := writeFileAtomic(p.stampFile, []byte(h+"\n"), 0o600); err != nil {
-		return
-	}
+	// Best effort by design — see the doc comment above.
+	_ = writeFileAtomic(p.stampFile, []byte(h+"\n"), 0o600)
 }
 
 // readProxyStamp returns the recorded hash, or "" when there is none to read.

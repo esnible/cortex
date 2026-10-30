@@ -150,6 +150,12 @@ func TestSnapshotRestoresASymlinkAsASymlink(t *testing.T) {
 	if err != nil || got != target {
 		t.Errorf("restore left %q (%v), want a link to %s", got, err, target)
 	}
+	// The target's bytes are part of the state now that writes follow the
+	// link: undo must take the write back out of the dotfiles repo too, or the
+	// user's settings still route to a proxy the undo just removed.
+	if b, err := os.ReadFile(target); err != nil || string(b) != "{}" {
+		t.Errorf("restore left the link's target at %q (%v), want the snapshot's original bytes", b, err)
+	}
 }
 
 func TestSnapshotRestoresASymlinkUnderAMissingParent(t *testing.T) {
