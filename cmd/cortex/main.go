@@ -614,7 +614,7 @@ func main() {
 	// a port another proxy holds then stops this one before it has touched their files. See
 	// listeners.go. log.Fatalf rather than fatalf is right here and only here — nothing is open
 	// yet for fatalf to flush.
-	plan, perr := listenerPlan(cfg, localInstall)
+	plan, perr := config.ListenerPlan(cfg, localInstall)
 	if perr != nil {
 		log.Fatalf("%v", perr)
 	}

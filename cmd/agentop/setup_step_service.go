@@ -115,12 +115,20 @@ func (serviceStep) preflightPorts(env *setupEnv) (forwardHold, *problem) {
 		// A fresh install has no config yet — "Nothing was changed" is
 		// accurate — so pointing the fix at config.yaml told the user to
 		// edit a file setup refused to write (#1545). The config is written
-		// on demand first.
-		return forwardHold{}, &problem{reason: reason,
-			fix: []string{
-				"free it, or write the config first: " + filepath.Join(env.binDir, "cortex") + " --local --write-config,",
+		// on demand first, but only by a cortex that exists: this refusal
+		// happens in the plan phase, before the binaries step installs one,
+		// so on a machine with no Cortex the only runnable fix is freeing
+		// the port.
+		fix := []string{
+			"free it, then " + env.rerun() + "; the ports can be moved in " + env.tilde(env.configPath()) + " once Cortex is installed",
+		}
+		if _, serr := os.Stat(filepath.Join(env.binDir, "cortex")); serr == nil {
+			fix = []string{
+				"free it, or write the config first: " + env.shellPath(filepath.Join(env.binDir, "cortex")) + " --local --write-config",
 				"then change the ports in " + env.tilde(env.configPath()) + " and " + env.rerun(),
-			}}
+			}
+		}
+		return forwardHold{}, &problem{reason: reason, fix: fix}
 	}
 	// Every listener the config names, not just the forward one: the proxy
 	// reserves all of them before it serves anything, so a foreign holder on
@@ -130,7 +138,11 @@ func (serviceStep) preflightPorts(env *setupEnv) (forwardHold, *problem) {
 	// calling the install ready (#1545).
 	pidFile := filepath.Join(env.cortexDir, "proxy.pid")
 	for _, l := range existingListeners(env) {
-		pid, exe, ok := portHolder(l.port)
+		_, port, perr := net.SplitHostPort(l.Addr)
+		if perr != nil {
+			continue // a port portHolder cannot name is one the bind refuses at boot
+		}
+		pid, exe, ok := portHolder(port)
 		if !ok || ourProxy(env.binDir, pidFile, pid, exe) {
 			continue
 		}
@@ -144,7 +156,7 @@ func (serviceStep) preflightPorts(env *setupEnv) (forwardHold, *problem) {
 			fix = append(fix, "or, if it is an older Cortex service: systemctl --user disable --now "+systemdUnit)
 		}
 		return forwardHold{}, &problem{
-			reason: fmt.Sprintf("the %s port %s is held by %s (pid %d), not this Cortex", l.name, l.addr, env.tilde(exe), pid),
+			reason: fmt.Sprintf("the %s port %s is held by %s (pid %d), not this Cortex", l.Name, l.Addr, env.tilde(exe), pid),
 			fix:    fix,
 		}
 	}
@@ -159,49 +171,23 @@ func (serviceStep) preflightPorts(env *setupEnv) (forwardHold, *problem) {
 	return forwardHold{}, nil
 }
 
-// listenerPort names one listener the existing config binds: its display name,
-// its address, and the port portHolder is asked about.
-type listenerPort struct {
-	name string
-	addr string
-	port string
-}
-
-// existingListeners is every listener the config names, the same set
-// cmd/cortex's listenerPlan reserves — the proxy binds all of them or none,
-// so all of them must be free (or ours) before setup starts it.
-func existingListeners(env *setupEnv) []listenerPort {
+// existingListeners is every listener the config names: config.ListenerPlan,
+// the same list the proxy reserves, asked on the local-install terms both
+// setup starts share (the config lives under ~/.cortex, which the proxy
+// counts as local). The transparent listeners are therefore absent — a local
+// install has no iptables to feed them, so the proxy never binds them and a
+// foreign holder there is not setup's to refuse.
+func existingListeners(env *setupEnv) []config.PlannedListener {
 	cfg, err := config.Load(env.configPath())
 	if err != nil {
 		return nil
 	}
 	config.ApplyPreset(cfg)
-	var out []listenerPort
-	add := func(name, addr string) {
-		if _, p, serr := net.SplitHostPort(addr); serr == nil && p != "" {
-			out = append(out, listenerPort{name: name, addr: addr, port: p})
-		}
+	plan, perr := config.ListenerPlan(cfg, true)
+	if perr != nil {
+		return nil
 	}
-	roles := cfg.Listener.ActiveRoles()
-	if roles[config.RoleReverse] {
-		if !cfg.Listener.InboundTransparent() {
-			add("reverse-proxy", cfg.Listener.ReverseProxyAddr)
-		} else if cfg.Listener.TransparentInboundAddr != "" {
-			add("transparent-inbound", cfg.Listener.TransparentInboundAddr)
-		}
-	}
-	if roles[config.RoleForward] {
-		add("forward-proxy", cfg.Listener.ForwardProxyAddr)
-		if cfg.Listener.TransparentProxyAddr != "" {
-			add("transparent-proxy", cfg.Listener.TransparentProxyAddr)
-		}
-	}
-	add("stats", cfg.Stats.StatsAddress)
-	if cfg.Session.SessionEnabled() && cfg.Listener.SessionAPIAddr != "" {
-		add("session-api", cfg.Listener.SessionAPIAddr)
-	}
-	add("health", cfg.Listener.HealthAddr)
-	return out
+	return plan
 }
 
 // forwardListener is the existing config's forward proxy address and its port,

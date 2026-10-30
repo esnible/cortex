@@ -128,13 +128,15 @@ esac
 
 // TestPreflightPorts_FreshInstallFixNamesWriteConfig: on a fresh install the
 // collision fix pointed at config.yaml — a file setup refused to write, so
-// the user had nothing to edit. It must name the command that produces the
-// file first.
+// the user had nothing to edit. Where a cortex is already on disk (an
+// upgrade whose config was deleted), the fix must name the command that
+// produces the file first.
 func TestPreflightPorts_FreshInstallFixNamesWriteConfig(t *testing.T) {
 	fakeSupervisor(t)
 	env := newTestSetupEnv(t)
 	env.configFresh = true
 	freePorts(t)
+	writeExe(t, filepath.Join(env.binDir, "cortex"), "#!/bin/sh\nexit 0\n")
 	saved := portInUse
 	portInUse = func(string) bool { return true }
 	t.Cleanup(func() { portInUse = saved })
@@ -149,5 +151,63 @@ func TestPreflightPorts_FreshInstallFixNamesWriteConfig(t *testing.T) {
 	}
 	if !strings.Contains(joined, "change the ports") {
 		t.Errorf("fix does not say to change the ports: %v", prob.fix)
+	}
+}
+
+// TestPreflightPorts_FreshInstallWithoutCortexNamesNoCommand: this refusal
+// happens in the plan phase, before the binaries step installs anything, so
+// on a machine with no Cortex the write-config remedy names a command that
+// cannot run — the same broken advice (edit a file that does not exist) the
+// fix replaced. The remedy there is freeing the port and re-running.
+func TestPreflightPorts_FreshInstallWithoutCortexNamesNoCommand(t *testing.T) {
+	fakeSupervisor(t)
+	env := newTestSetupEnv(t)
+	env.configFresh = true
+	freePorts(t)
+	saved := portInUse
+	portInUse = func(string) bool { return true }
+	t.Cleanup(func() { portInUse = saved })
+
+	_, prob := serviceStep{}.preflightPorts(env)
+	if prob == nil {
+		t.Fatal("taken default ports passed a fresh install's preflight")
+	}
+	joined := strings.Join(prob.fix, " ")
+	if strings.Contains(joined, "--write-config") {
+		t.Errorf("fix names a command whose binary this machine does not have: %v", prob.fix)
+	}
+	if !strings.Contains(joined, "re-run") {
+		t.Errorf("fix does not say to re-run: %v", prob.fix)
+	}
+}
+
+// TestPreflightPorts_TransparentAddrIsNotChecked: a hand-edited laptop config
+// may carry a transparent_proxy_addr, but the proxy setup starts never binds
+// it — both starts are local installs (the config lives under ~/.cortex),
+// which skip the transparent listeners — so a foreign holder on that port is
+// not a preflight problem.
+func TestPreflightPorts_TransparentAddrIsNotChecked(t *testing.T) {
+	fakeSupervisor(t)
+	env := serviceEnv(t, ok200)
+	freePorts(t)
+
+	cfgPath := env.configPath()
+	b, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := strings.Replace(string(b), "roles: [forward]",
+		"roles: [forward]\n  transparent_proxy_addr: 127.0.0.1:47891", 1)
+	if err := os.WriteFile(cfgPath, []byte(cfg), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	stranger := startSleeperAt(t, filepath.Join(t.TempDir(), "stranger-proxy"))
+	installStub(t, "lsof", "#!/bin/sh\ncase \"$*\" in *47891*) echo p"+strconv.Itoa(stranger)+" ;; -p*) echo n"+filepath.Join(t.TempDir(), "stranger-proxy")+" ;; esac\n")
+	installStub(t, "ss", "#!/bin/sh\nexit 1\n")
+
+	_, prob := serviceStep{}.preflightPorts(env)
+	if prob != nil {
+		t.Fatalf("a transparent port the local proxy never binds is a problem: %v", prob)
 	}
 }
