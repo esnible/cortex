@@ -912,7 +912,7 @@ func (s *Server) handleResponseBody(ctx context.Context, body []byte, pctx *pipe
 	// unparseable halves — and on the Anthropic dialect the event at risk is message_delta, so
 	// what goes missing is the OUTPUT tally while the response still settles at the prompt-only
 	// floor.
-	if isEventStream(pctx.ResponseHeaders.Get("Content-Type")) {
+	if httpx.IsEventStream(pctx.ResponseHeaders.Get("Content-Type")) {
 		// BOUNDED LIKE THE OTHER ARM. The carry itself is capped at one frame's worth, but the join
 		// below is carry + THIS MESSAGE, and nothing else caps the message: the maxBodySize check in
 		// Process covers the REQUEST body only. appendBoundedBody puts both under the same ceiling
@@ -1396,7 +1396,7 @@ func countHeader(headers *corev3.HeaderMap, key string) int {
 // counts of every event that DID complete were dispatched when their message arrived, and the
 // terminal marker below is what turns them into a settled figure.
 func dispatchTerminalFrame(ctx context.Context, p *pipeline.Holder, pctx *pipeline.Context) {
-	if isEventStream(pctx.ResponseHeaders.Get("Content-Type")) {
+	if httpx.IsEventStream(pctx.ResponseHeaders.Get("Content-Type")) {
 		_ = p.RunResponseFrame(ctx, pctx, nil, true)
 		return
 	}
@@ -1405,7 +1405,7 @@ func dispatchTerminalFrame(ctx context.Context, p *pipeline.Holder, pctx *pipeli
 
 func dispatchBufferedFrames(ctx context.Context, p *pipeline.Holder, pctx *pipeline.Context, last bool) pipeline.Action {
 	contentType := pctx.ResponseHeaders.Get("Content-Type")
-	if isEventStream(contentType) && len(pctx.ResponseBody) > 0 {
+	if httpx.IsEventStream(contentType) && len(pctx.ResponseBody) > 0 {
 		// PARSE ONLY WHAT IS COMPLETE, AND KEEP THE REST FOR THE NEXT MESSAGE. sseframe
 		// delivers an unterminated trailing event at EOF — correct for a stream that really
 		// ended, wrong for one that merely ran out of THIS chunk — so a straddling event would
@@ -1447,17 +1447,4 @@ func dispatchBufferedFrames(ctx context.Context, p *pipeline.Holder, pctx *pipel
 		return pipeline.Action{Type: pipeline.Continue}
 	}
 	return p.RunResponseFrame(ctx, pctx, pctx.ResponseBody, true)
-}
-
-// isEventStream reports whether a Content-Type header value names the
-// SSE media type. Tolerates parameters and ASCII case differences.
-// Mirrors the helpers in forwardproxy/reverseproxy.
-func isEventStream(contentType string) bool {
-	if contentType == "" {
-		return false
-	}
-	if idx := strings.IndexByte(contentType, ';'); idx >= 0 {
-		contentType = contentType[:idx]
-	}
-	return strings.EqualFold(strings.TrimSpace(contentType), "text/event-stream")
 }
