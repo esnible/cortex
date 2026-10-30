@@ -17,20 +17,31 @@ import (
 // `go tool pprof http://127.0.0.1:47603/debug/pprof/heap`.
 const pprofAddrEnv = "AGENTOP_PPROF_ADDR"
 
-// startPprof serves the profile mux on addr. The returned shutdown closes the
+// startPprof serves the profile mux on addr and returns the address it landed
+// on, with a :0 port resolved to the real one. The returned shutdown closes the
 // listener; process exit closes it too, so a caller that forgets the shutdown
 // loses nothing but a port.
-func startPprof(addr string) (shutdown func(), err error) {
+//
+// Loopback only, checked on the bound address rather than the string: the Host
+// and Origin guards stop browsers, not a curl that sets Host: localhost, so a
+// bind on every interface (":47603", "0.0.0.0:47603") would hand the heap to
+// anyone on the network. #1603 gates its pprof the same way, on the stats
+// port's bind_loopback_only.
+func startPprof(addr string) (bound string, shutdown func(), err error) {
 	ln, err := net.Listen("tcp", addr)
 	if err != nil {
-		return nil, err
+		return "", nil, err
+	}
+	if tcp, ok := ln.Addr().(*net.TCPAddr); !ok || !tcp.IP.IsLoopback() {
+		ln.Close()
+		return "", nil, fmt.Errorf("%s did not land on a loopback address; pprof is served on loopback only", addr)
 	}
 	// Handler is set, never nil: net/http/pprof's init also registers
 	// /debug/pprof/* on http.DefaultServeMux, which a nil Handler would serve
 	// ungated.
 	srv := &http.Server{Handler: pprofMux()}
 	go func() { _ = srv.Serve(ln) }()
-	return func() { _ = srv.Close() }, nil
+	return ln.Addr().String(), func() { _ = srv.Close() }, nil
 }
 
 // pprofMux is the viewer's /debug/pprof surface: httpx.RegisterPprof's guarded
@@ -54,11 +65,11 @@ func maybeServePprof() (shutdown func()) {
 	if addr == "" {
 		return nil
 	}
-	stop, err := startPprof(addr)
+	bound, stop, err := startPprof(addr)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "agentop: not serving pprof on %s: %v\n", addr, err)
 		return nil
 	}
-	fmt.Fprintf(os.Stderr, "agentop: serving pprof on http://%s/debug/pprof/\n", addr)
+	fmt.Fprintf(os.Stderr, "agentop: serving pprof on http://%s/debug/pprof/\n", bound)
 	return stop
 }
