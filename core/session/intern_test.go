@@ -221,6 +221,7 @@ func TestAppend_DoesNotShareAcrossSessions(t *testing.T) {
 // Short strings skip the table: a role or a finish reason costs less to duplicate than
 // to hash, and the savings are in bodies.
 func TestIntern_SkipsShortStrings(t *testing.T) {
+	var in Interner // the zero value is ready to use
 	st := in.stateFor("")
 	next := map[string]string{}
 	short := strings.Repeat("x", InternMinLen-1)
@@ -237,8 +238,6 @@ func TestIntern_SkipsShortStrings(t *testing.T) {
 		t.Errorf("table holds %d entries after one long string, want 1", len(next))
 	}
 }
-
-var in = Interner{} // the zero value, ready to use, for the direct unit tests
 
 // A2A part content interns too — the other place a conversation repeats itself.
 func TestAppend_SharesA2APartContent(t *testing.T) {

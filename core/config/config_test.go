@@ -1128,16 +1128,25 @@ pipeline:
 }
 
 // MemoryLimitBytes: nil block and explicit zero are off; a positive limit
-// converts to bytes. The local-install default is applied by cmd/cortex, not
-// here — the library must stay usable where no default is wanted.
+// converts to bytes. The local-install default is COMPUTED here, never
+// written into the stored config: the reloader compares the active config
+// against a fresh disk load on every reload, so a boot-time cfg.Memory
+// assignment would refuse every reload on a local install.
 func TestMemoryLimitBytes(t *testing.T) {
-	if got := (&Config{}).MemoryLimitBytes(); got != 0 {
-		t.Errorf("nil memory block: limit = %d, want 0", got)
+	if got := (&Config{}).MemoryLimitBytes(false); got != 0 {
+		t.Errorf("nil memory block off a local install: limit = %d, want 0", got)
 	}
-	if got := (&Config{Memory: &MemoryConfig{}}).MemoryLimitBytes(); got != 0 {
-		t.Errorf("empty memory block: limit = %d, want 0", got)
+	c := &Config{}
+	if got := c.MemoryLimitBytes(true); got != DefaultLocalMemoryLimitMB<<20 {
+		t.Errorf("nil memory block on a local install: limit = %d, want the %dMB default", got, DefaultLocalMemoryLimitMB)
 	}
-	if got := (&Config{Memory: &MemoryConfig{LimitMB: 2048}}).MemoryLimitBytes(); got != 2048<<20 {
-		t.Errorf("limit 2048MB = %d bytes, want %d", got, 2048<<20)
+	if c.Memory != nil {
+		t.Error("computing the local default mutated the stored config — a reload would refuse it")
+	}
+	if got := (&Config{Memory: &MemoryConfig{}}).MemoryLimitBytes(true); got != 0 {
+		t.Errorf("empty memory block on a local install: limit = %d, want 0 (explicit zero is off)", got)
+	}
+	if got := (&Config{Memory: &MemoryConfig{LimitMB: 1024}}).MemoryLimitBytes(false); got != 1024<<20 {
+		t.Errorf("limit 1024MB = %d bytes, want %d", got, 1024<<20)
 	}
 }

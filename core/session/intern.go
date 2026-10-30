@@ -372,15 +372,18 @@ func (in *Interner) InternEvent(e *pipeline.SessionEvent) {
 //
 // The three shapes:
 //
-//   - full match, no tail (the response-phase event of the request just
-//     interned): the shared slice itself, zero allocation.
+//   - prefix match, no tail (the response-phase event of the request just
+//     interned, or a truncated re-send): the shared array's prefix itself,
+//     zero allocation.
 //   - full match, with tail (the next turn): append to the shared array,
 //     reallocating as a transcript does — amortized one header copy per new
 //     message, none per event.
 //   - partial match (a compaction rewrote history): share only the verified
-//     prefix; the rest is canonicalized into a fresh tail and the state's
-//     array is rebased to it. The event's slice and the state's diverge from
-//     here on, exactly as they do for strings that disappear and come back.
+//     prefix, taking its elements from the state's array so the event holds
+//     the canonical strings earlier events already hold; the rest is
+//     canonicalized into a fresh tail and the state's array is rebased to it.
+//     The event's slice and the state's diverge from here on, exactly as they
+//     do for strings that disappear and come back.
 func shareMessages(st *convState, msgs []pipeline.InferenceMessage, next map[string]string) []pipeline.InferenceMessage {
 	k := 0
 	for k < len(msgs) && k < len(st.msgs) && equalMessage(msgs[k], st.msgs[k]) {
@@ -392,11 +395,13 @@ func shareMessages(st *convState, msgs []pipeline.InferenceMessage, next map[str
 		st.internID(st.msgs[k].Role, next)
 		k++
 	}
-	if k == len(st.msgs) && k <= len(msgs) {
-		// The conversation extends (or exactly repeats) its previous array.
-		if k == len(msgs) {
-			return st.msgs // full repeat: the request's own response-phase event
-		}
+	if k == len(msgs) {
+		// The whole arriving history is the shared array's prefix — a verbatim
+		// repeat or a truncation of it. The prefix itself: canonical elements,
+		// zero copy.
+		return st.msgs[:k]
+	}
+	if k == len(st.msgs) {
 		tail := make([]pipeline.InferenceMessage, len(msgs)-k)
 		for i := range tail {
 			tail[i] = msgs[k+i]
@@ -406,9 +411,11 @@ func shareMessages(st *convState, msgs []pipeline.InferenceMessage, next map[str
 		st.msgs = append(st.msgs, tail...)
 		return st.msgs
 	}
-	// Partial match or a shorter history: rebuild from the verified prefix.
+	// Partial match: rebuild from the verified prefix, CANONICAL side first —
+	// copying the arriving elements instead would retain the event's own wire
+	// copy of every prefix string alongside the canonical one.
 	out := make([]pipeline.InferenceMessage, len(msgs))
-	copy(out, msgs[:k])
+	copy(out, st.msgs[:k])
 	for i := k; i < len(msgs); i++ {
 		out[i] = msgs[i]
 		out[i].Role = st.internID(out[i].Role, next)
@@ -434,10 +441,10 @@ func shareTools(st *convState, tools []pipeline.InferenceTool, next map[string]s
 		st.internID(st.tools[k].Name, next)
 		k++
 	}
-	if k == len(st.tools) && k <= len(tools) {
-		if k == len(tools) {
-			return st.tools
-		}
+	if k == len(tools) {
+		return st.tools[:k]
+	}
+	if k == len(st.tools) {
 		tail := make([]pipeline.InferenceTool, len(tools)-k)
 		for i := range tail {
 			tail[i] = tools[k+i]
@@ -449,7 +456,7 @@ func shareTools(st *convState, tools []pipeline.InferenceTool, next map[string]s
 		return st.tools
 	}
 	out := make([]pipeline.InferenceTool, len(tools))
-	copy(out, tools[:k])
+	copy(out, st.tools[:k])
 	for i := k; i < len(tools); i++ {
 		out[i] = tools[i]
 		out[i].Name = st.internID(out[i].Name, next)
@@ -472,10 +479,10 @@ func shareToolResults(st *convState, results []pipeline.InferenceToolResult, nex
 		st.internID(st.results[k].ToolUseID, next)
 		k++
 	}
-	if k == len(st.results) && k <= len(results) {
-		if k == len(results) {
-			return st.results
-		}
+	if k == len(results) {
+		return st.results[:k]
+	}
+	if k == len(st.results) {
 		tail := make([]pipeline.InferenceToolResult, len(results)-k)
 		for i := range tail {
 			tail[i] = results[k+i]
@@ -486,7 +493,7 @@ func shareToolResults(st *convState, results []pipeline.InferenceToolResult, nex
 		return st.results
 	}
 	out := make([]pipeline.InferenceToolResult, len(results))
-	copy(out, results[:k])
+	copy(out, st.results[:k])
 	for i := k; i < len(results); i++ {
 		out[i] = results[i]
 		out[i].ToolUseID = st.internID(out[i].ToolUseID, next)

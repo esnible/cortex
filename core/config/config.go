@@ -247,17 +247,34 @@ func (c *CostLedgerConfig) Validate() error {
 type MemoryConfig struct {
 	// LimitMB is the soft limit in megabytes. Zero disables the limit (an
 	// explicitly-set zero is kept as "off"); the block absent entirely leaves
-	// the defaulting to the binary — cmd/cortex applies 2048 for a local
-	// install, none anywhere else.
+	// the defaulting to the binary — cmd/cortex applies
+	// DefaultLocalMemoryLimitMB for a local install, none anywhere else.
 	LimitMB int `yaml:"limit_mb" json:"limit_mb"`
 }
 
+// DefaultLocalMemoryLimitMB is the soft memory limit a local install uses
+// when the config carries no memory block. The default must be COMPUTED
+// (MemoryLimitBytes), never written into a stored *Config: the reloader
+// compares the active config against a fresh disk load on every reload, so a
+// boot-time cfg.Memory assignment would refuse every reload on a local
+// install. Same shape as ArchiveRunsOnLocalInstall — a method, not state.
+const DefaultLocalMemoryLimitMB = 2048
+
 // MemoryLimitBytes reports the configured soft limit in bytes, or 0 for off.
-func (c *Config) MemoryLimitBytes() int64 {
-	if c.Memory == nil || c.Memory.LimitMB <= 0 {
-		return 0
+// A nil memory block on a local install defaults to
+// DefaultLocalMemoryLimitMB; anywhere else it is off. localInstall is a
+// parameter because the binary, not the file, knows it.
+func (c *Config) MemoryLimitBytes(localInstall bool) int64 {
+	if c.Memory != nil {
+		if c.Memory.LimitMB <= 0 {
+			return 0
+		}
+		return int64(c.Memory.LimitMB) << 20
 	}
-	return int64(c.Memory.LimitMB) << 20
+	if localInstall {
+		return int64(DefaultLocalMemoryLimitMB) << 20
+	}
+	return 0
 }
 
 // TLSBridgeConfig configures the outbound TLS bridge (TLS termination of

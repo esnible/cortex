@@ -191,7 +191,9 @@ func TestIntern_CompactionRebasesNotCorrupts(t *testing.T) {
 	full := interleaveFixture(0, 6)
 	s.Append("s1", pipeline.SessionEvent{Inference: &pipeline.InferenceExtension{Model: "m", Messages: full}})
 	// Compaction: the first three messages replaced by a summary, the rest kept.
-	compacted := append([]pipeline.InferenceMessage(nil), full...)
+	// Fresh strings (interleaveFixture clones), so a sharing assertion below can
+	// tell the canonical copies from the compacted event's own wire strings.
+	compacted := interleaveFixture(0, 6)
 	compacted[2] = pipeline.InferenceMessage{Role: "user", Content: strings.Repeat("summary of the early conversation ", 8)}
 	s.Append("s1", pipeline.SessionEvent{Inference: &pipeline.InferenceExtension{Model: "m", Messages: compacted}})
 	// And the next turn extends the compacted history.
@@ -211,6 +213,35 @@ func TestIntern_CompactionRebasesNotCorrupts(t *testing.T) {
 	first := v.Events[0].Inference.Messages
 	if got, want := first[2].Content, full[2].Content; got != want {
 		t.Errorf("the pre-compaction event was rewritten: got %.40q want %.40q", got, want)
+	}
+	// And the surviving PREFIX must be the canonical copies the first event
+	// registered, not the compacted event's own wire strings — "shares only
+	// the verified prefix" is the claim the rebuild path makes.
+	second := v.Events[1].Inference.Messages
+	for i := 0; i < 2; i++ {
+		if backing(second[i].Content) != backing(first[i].Content) {
+			t.Errorf("compaction re-copied prefix message %d instead of sharing the canonical", i)
+		}
+	}
+}
+
+// TestIntern_TruncatedHistorySharesThePrefix: a turn that re-sends only the
+// first k messages of the conversation (a client trimming its history) takes
+// the shared array's prefix itself — canonical elements, zero copy — rather
+// than re-copying the arriving wire strings, which retained a second copy of
+// every prefix message.
+func TestIntern_TruncatedHistorySharesThePrefix(t *testing.T) {
+	s := New(0, 0, 100)
+	defer s.Close()
+	s.Append("s1", pipeline.SessionEvent{Inference: &pipeline.InferenceExtension{
+		Model: "m", Messages: interleaveFixture(0, 6)}})
+	s.Append("s1", pipeline.SessionEvent{Inference: &pipeline.InferenceExtension{
+		Model: "m", Messages: interleaveFixture(0, 3)}})
+	v := s.View("s1")
+	for i := 0; i < 3; i++ {
+		if backing(v.Events[1].Inference.Messages[i].Content) != backing(v.Events[0].Inference.Messages[i].Content) {
+			t.Errorf("the truncated re-send kept its own copy of message %d — the verified prefix must be the canonical one", i)
+		}
 	}
 }
 
