@@ -167,6 +167,26 @@ func (m *model) rebuildEventsTable() {
 	rows := make([]table.Row, 0, len(eventRows))
 	m.visibleRows = m.visibleRows[:0]
 	m.hiddenInactive = 0
+
+	// Subagent blocks (#1047), only while CHRONOLOGICAL: under a sort the row
+	// order is a ranking, and pulling a subagent's rows under a header would
+	// contradict the very thing the operator sorted to see. Collected over the
+	// same population the row loop renders — the inactive filter is applied
+	// identically, via the same predicate — so a header's rollup counts the rows
+	// expanding it would show.
+	//
+	// headerRows is rebuilt with them; subagentOpen (the operator's collapses)
+	// is cleared when the session under the table changed, since a subagent id
+	// belongs to the session that spawned it.
+	m.headerRows = nil
+	if m.eventsBuiltFor != m.selectedSess {
+		m.subagentOpen = nil
+	}
+	if m.sortCol == "" {
+		m.subagentBlocks = m.collectSubagentBlocks(ctxs, partner)
+	} else {
+		m.subagentBlocks = nil
+	}
 	// keys is the sort value for each row that survived the filters, parallel to
 	// rows and m.visibleRows. Collected inside the loop because the sortKey funcs
 	// take the same cellContext the cells do — including the chronological index the
@@ -197,9 +217,35 @@ func (m *model) rebuildEventsTable() {
 		// activity (deny/modify/observe/allow). It hides whole exchanges: a row whose
 		// partner is shown is shown too, or a routed request refused for its model —
 		// no plugin acts on the 403 — would look as if it never got an answer.
-		if m.hideInactive && eventInactive(cc.invs) && !partnerActive(ctxs, partner, j) {
+		// The predicate is rowInactiveHidden, shared with collectSubagentBlocks
+		// so the two filter the same rows.
+		if m.rowInactiveHidden(ctxs, partner, j) {
 			m.hiddenInactive++
 			continue
+		}
+
+		// Subagent blocks: a row naming an agent joins that agent's block, whose
+		// header sits at the block's first surviving row. Collapsed (the default,
+		// and always while no search is live) the row is not rendered at all — the
+		// header's rollup is what a collapsed block says. m.visibleRows keeps an
+		// empty eventRow for the header so it stays parallel to the rendered rows;
+		// headerRows is what says a rendered row is a header.
+		if b := m.subagentBlocks[cc.row.event.Subagent]; b != nil {
+			if !b.anchored {
+				b.anchored = true
+				rows = append(rows, b.headerRow(m.subagentLabel(b.id), m.blockOpen(b.id, q != "")))
+				m.visibleRows = append(m.visibleRows, eventRow{})
+				if m.headerRows == nil {
+					m.headerRows = make(map[int]*subagentBlock)
+				}
+				m.headerRows[len(rows)-1] = b
+				if q != "" {
+					full = append(full, table.SearchRow{Cells: []string{m.subagentLabel(b.id)}})
+				}
+			}
+			if !m.blockOpen(b.id, q != "") {
+				continue
+			}
 		}
 
 		// Cells come from the selected columns, in their order — see

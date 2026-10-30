@@ -723,8 +723,26 @@ type model struct {
 	// one per network message. Populated by rebuildEventsTable so
 	// selectedEvent / selectedEventRow can return the message the cursor is
 	// on (and any folded tunnel) without re-walking the cache. Reset on
-	// every rebuild.
+	// every rebuild. A subagent block's HEADER row contributes an empty
+	// eventRow here (it has no event of its own); headerRows says which
+	// rendered rows those are.
 	visibleRows []eventRow
+
+	// subagentBlocks is the events pane's per-agent grouping of the session
+	// being viewed (#1047): one block per subagent id named by a row, nil
+	// while a sort ranks the rows (grouping would contradict the ranking) or
+	// when no row names one. Rebuilt on every rebuild; the collapse state
+	// lives in subagentOpen, not here.
+	subagentBlocks map[string]*subagentBlock
+	// subagentOpen is the subagent ids whose blocks are expanded. Absent =
+	// collapsed, which is the default. Kept across rebuilds so a live tail
+	// does not re-collapse a block the operator opened; cleared when another
+	// session is opened, since ids are per-session.
+	subagentOpen map[string]bool
+	// headerRows maps a rendered-row index to the block whose header row sits
+	// there, so Enter can tell a header from a message without a second walk.
+	// Rebuilt on every rebuild.
+	headerRows map[int]*subagentBlock
 
 	// selectedEventKey pins the events-pane cursor to an event across
 	// rebuilds (see eventKey). Zero value = unpinned.

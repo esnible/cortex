@@ -504,6 +504,22 @@ func (m *model) revealPendingSeq() bool {
 	if m.revealSeq == 0 || m.revealSess != m.selectedSess {
 		return false
 	}
+	// An event inside a COLLAPSED subagent block is not among visibleRows, so the
+	// loop below could not land on it and the reveal would wait forever. The
+	// Timeline draws a lane per subagent, so Enter there names subagent rows as
+	// readily as the conversation's — open the block that holds the target and
+	// rebuild, then land as usual.
+	for _, ev := range m.events[m.selectedSess] {
+		if ev.Seq != m.revealSeq || ev.Subagent == "" || m.blockOpen(ev.Subagent, false) {
+			continue
+		}
+		if m.subagentOpen == nil {
+			m.subagentOpen = make(map[string]bool)
+		}
+		m.subagentOpen[ev.Subagent] = true
+		m.rebuildEventsTable()
+		break
+	}
 	for i, r := range m.visibleRows {
 		if r.event != nil && r.event.Seq == m.revealSeq && eventSession(m.selectedSess, r.event) == m.selectedSess {
 			setCursorVisible(&m.eventsTbl, i)

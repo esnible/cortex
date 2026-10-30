@@ -698,6 +698,12 @@ func (m *model) handleKey(msg tea.KeyMsg) tea.Cmd {
 			// Snapshot in case the stream hasn't yet delivered history.
 			return m.snapshotCmd(id)
 		case paneEvents:
+			// Enter on a subagent block's header collapses/expands it, the tree
+			// convention; on a message it stays the detail drill-down. One key,
+			// the row decides — same as the pickers.
+			if m.toggleSubagentBlock() {
+				return nil
+			}
 			er, ok := m.selectedEventRow()
 			if !ok {
 				return nil
