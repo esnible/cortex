@@ -12,7 +12,10 @@ on:
   pull_request:
     branches:
       - main
-    # Markdown cannot break a Dockerfile; docs-only PRs skip image builds.
+    # Docs edits can't break an image build, so docs-only PRs skip it. One edge:
+    # deploy/sparc-service/Dockerfile COPYs that dir's README (pyproject metadata),
+    # so deleting it is a docs-only change that fails the build — caught by the
+    # push run on main, not the PR.
     # Footgun: a filtered-out run reports "Expected" forever if this workflow is
     # ever added to branch protection as a required check.
     paths-ignore:

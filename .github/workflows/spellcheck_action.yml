@@ -12,26 +12,6 @@ permissions:
   contents: read
 
 jobs:
-  pre-commit:
-    # ci.yaml skips docs-only PRs (paths-ignore: "**.md"), which used to be the
-    # only place these hooks ran in CI. This job restores them: pre-commit runs
-    # against changed files only, so on a docs PR it is just the markdown
-    # whitespace and merge-conflict hooks — a minute of runner, not the Go matrix.
-    name: Pre-commit (docs PRs)
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
-
-      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0  # v7.1.0
-        with:
-          python-version: '3.12'
-
-      - name: Run pre-commit
-        uses: pre-commit/action@2c7b3805fd2a0fd8c1884dcaebf91fc102a13ecd  # v3.0.1
-        env:
-          SKIP: ai-assisted-by-trailer
-
   spellcheck:
     # disable spell check with 'false' value.
     if: false
