@@ -356,7 +356,7 @@ func TestAdoptablePID_MissingBinariesFromAnotherDir(t *testing.T) {
 	// which would pass these tests without reaching samePath at all.
 	named := func(t *testing.T, pid int) string {
 		t.Helper()
-		exe := pidExePath(pid)
+		exe := setupPIDExePath(pid)
 		if exe == "" {
 			t.Fatalf("fixture: pid %d's executable cannot be named after its binary was removed", pid)
 		}
@@ -396,12 +396,14 @@ func TestAdoptablePID_MissingBinariesFromAnotherDir(t *testing.T) {
 		if err := os.Remove(filepath.Join(other, "authbridge-proxy")); err != nil {
 			t.Fatalf("fixture: the binary is not at the link's parent: %v", err)
 		}
-		// On macOS the path must arrive as typed, or this case is not the one it
-		// claims. Linux's /proc reports it resolved; TestSamePathFollowsLinksBeforeDotDot
-		// covers the rule there.
-		if exe := named(t, stranger); runtime.GOOS == "darwin" && !strings.Contains(exe, "/../") {
-			t.Fatalf("fixture: ps reported %q, not the path as typed", exe)
-		}
+		// The path shape this subtest was named for — spelled through a link
+		// and ".." — reached adoptablePID as ps comm reported it, which kept
+		// the "../" on macOS. setupPIDExePath (the unified probe, #1565)
+		// resolves through lsof first, so the exe arrives resolved and the
+		// dotdot rule itself is pinned by TestSamePathFollowsLinksBeforeDotDot.
+		// What this subtest still proves: a stranger from another directory is
+		// refused however its executable is spelled.
+		_ = named(t, stranger)
 		if err := os.WriteFile(p.pidFile, []byte(strconv.Itoa(stranger)), 0o600); err != nil {
 			t.Fatal(err)
 		}

@@ -424,61 +424,31 @@ func unloadService(goos string, p servicePaths) error {
 }
 
 // runningPID returns the pid from a pidfile only when it is alive AND is one of
-// ours — see isProxyComm. Same narrow check install.sh's proxy_running uses.
+// ours. Built on setup_probe's proxyRunning — the set install.sh uses — so the
+// service path and the setup path can no longer disagree about whether the
+// proxy is running (#1565): the private copy here returned 0 whenever ps
+// failed, while setup's deliberately sandbox-blind check reported the proxy
+// running, and a hand-started proxy the install path then failed to see and
+// stop crash-looped the supervised copy against the port.
 func runningPID(pidFile string) int {
-	pid := livePID(pidFile)
-	if pid == 0 {
-		return 0
+	if pid, ok := proxyRunning(pidFile); ok {
+		return pid
 	}
-	out, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "comm=").Output()
-	if err != nil || !isProxyComm(string(out)) {
-		return 0 // pid recycled onto something else
-	}
-	return pid
+	return 0
 }
 
-func livePID(pidFile string) int {
-	b, err := os.ReadFile(pidFile) //nolint:gosec // operator-supplied path
-	if err != nil {
-		return 0
-	}
-	pid, err := strconv.Atoi(strings.TrimSpace(string(b)))
-	if err != nil || pid <= 0 {
-		return 0
-	}
-	if err := syscall.Kill(pid, 0); err != nil {
-		return 0
-	}
-	return pid
-}
-
+// adoptablePID is runningPID plus the pre-rename proxy: a live pidfile process
+// whose executable is v0.7.0's authbridge-proxy, which an upgrade adopts
+// rather than fight for the port. preRenameProxyRunning is setup_probe's
+// version of the same check.
 func adoptablePID(p servicePaths) int {
 	if pid := runningPID(p.pidFile); pid > 0 {
 		return pid
 	}
-	pid := livePID(p.pidFile)
-	if pid == 0 {
-		return 0
+	if pid, ok := preRenameProxyRunning(filepath.Dir(p.binary), p.pidFile); ok {
+		return pid
 	}
-	exe := pidExePath(pid)
-	if exe == "" || !samePath(exe, filepath.Join(filepath.Dir(p.binary), "authbridge-proxy")) {
-		return 0
-	}
-	return pid
-}
-
-func pidExePath(pid int) string {
-	if exe, err := os.Readlink("/proc/" + strconv.Itoa(pid) + "/exe"); err == nil {
-		return strings.TrimSuffix(exe, " (deleted)")
-	}
-	out, err := exec.Command("ps", "-p", strconv.Itoa(pid), "-o", "comm=").Output()
-	if err != nil {
-		return ""
-	}
-	if comm := strings.TrimSpace(string(out)); filepath.IsAbs(comm) {
-		return comm
-	}
-	return ""
+	return 0
 }
 
 // samePath reports whether a and b name one file: equal as text, or equal once
@@ -791,13 +761,8 @@ func writeProxyStamp(p servicePaths) {
 	if h == "" || p.stampFile == "" {
 		return
 	}
-	tmp := p.stampFile + ".tmp"
-	if err := os.WriteFile(tmp, []byte(h+"\n"), 0o600); err != nil {
-		_ = os.Remove(tmp) //nolint:errcheck // best effort
+	if err := writeFileAtomic(p.stampFile, []byte(h+"\n"), 0o600); err != nil {
 		return
-	}
-	if err := os.Rename(tmp, p.stampFile); err != nil {
-		_ = os.Remove(tmp) //nolint:errcheck // best effort
 	}
 }
 

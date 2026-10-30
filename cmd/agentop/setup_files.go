@@ -116,7 +116,19 @@ func symlinkAtomic(target, path string) error {
 // writeFileAtomic replaces path through a temp sibling and a rename, so nothing
 // ever reads a half-written file, and sets mode explicitly rather than leaving it
 // to the umask.
+// writeFileAtomic writes data to path through a temp file and a rename, so a
+// crash mid-write leaves the previous contents intact (#1565: os.WriteFile
+// truncates first, and a kill in that window used to leave the ownership
+// record torn — after which readState refused it and every later enable was
+// blocked). A SYMLINKED path is resolved first, so the write lands at the
+// link's target and the link survives: a ~/.claude/settings.json managed into
+// a dotfiles repo keeps tracking (renaming over a symlink replaces the link).
+// The temp file is CreateTemp'd beside the target — never a fixed name, which
+// an attacker-planted symlink at path+".tmp" would redirect.
 func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		path = resolved
+	}
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
@@ -153,6 +165,26 @@ func writeFileAtomic(path string, data []byte, mode os.FileMode) error {
 		return err
 	}
 	ok = true
+	return nil
+}
+
+// backupOnce writes path's current contents to path+".bak" only if no backup
+// exists yet. Overwriting on every call meant a second enable, or an
+// enable/disable pair, replaced the pristine pre-Cortex file with one already
+// edited — losing the only copy of settings the user actually wrote, on files
+// that commonly hold API tokens. A stale-but-original backup is worth more
+// than a fresh one of our own output. cur is the bytes the caller already
+// read; absent callers pass nil and are skipped.
+func backupOnce(path string, cur []byte) error {
+	if cur == nil {
+		return nil
+	}
+	bak := path + ".bak"
+	if _, serr := os.Stat(bak); os.IsNotExist(serr) {
+		if werr := os.WriteFile(bak, cur, 0o600); werr != nil {
+			return fmt.Errorf("writing backup %s: %w", bak, werr)
+		}
+	}
 	return nil
 }
 

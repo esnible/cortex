@@ -124,8 +124,23 @@ func TestSnapshotRestoresASymlinkAsASymlink(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// What writeSettings does: replace the link with a regular file.
+	// What writeSettings does since #1565: write THROUGH the link, which
+	// survives, and the target carries the bytes.
 	if err := writeFileAtomic(link, []byte(`{"env":{}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.Readlink(link); err != nil || got != target {
+		t.Fatalf("writeFileAtomic replaced the link: %q (%v), want a link to %s", got, err, target)
+	}
+	if b, _ := os.ReadFile(target); string(b) != `{"env":{}}` {
+		t.Fatalf("the write did not reach the link's target: %q", b)
+	}
+	// Restore is for the day something ELSE breaks the link — a tool that
+	// still renames over it. It must put the symlink back as a symlink.
+	if err := os.Remove(link); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(link, []byte(`{"replaced":"by another tool"}`), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.restore(); err != nil {
@@ -134,9 +149,6 @@ func TestSnapshotRestoresASymlinkAsASymlink(t *testing.T) {
 	got, err := os.Readlink(link)
 	if err != nil || got != target {
 		t.Errorf("restore left %q (%v), want a link to %s", got, err, target)
-	}
-	if b, _ := os.ReadFile(target); string(b) != "{}" {
-		t.Errorf("link target changed: %q", b)
 	}
 }
 
