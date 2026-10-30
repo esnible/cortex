@@ -374,14 +374,14 @@ func agentOf(e *pipeline.SessionEvent) (string, bool) {
 	return "", false
 }
 
-// isSideCall is Claude Code only: its literals match Claude's progress and recap prompts, and
-// its no-tools rule holds because Claude always sends a manifest on real turns. Another
-// client's tool-less calls (Bob's security classifier) are real turns with real cost.
+// isSideCall drops a call that is not an agent's work. The no-tools rule is Claude Code only
+// (AgentRole set): it holds because Claude always sends a manifest on real turns, while another
+// client's tool-less calls (Bob's security classifier) are real turns with real cost. The prompt
+// literals run for every client: they match Claude's own progress and recap prompt text, which
+// no other client sends, and a recap storm reads as turns on any session that carries one —
+// including pre-marker Claude Code traffic, attributed by client name alone.
 func isSideCall(inf *pipeline.InferenceExtension) bool {
-	if inf.AgentRole == "" {
-		return false
-	}
-	if len(inf.Tools) == 0 && inf.ToolCount == 0 {
+	if inf.AgentRole != "" && len(inf.Tools) == 0 && inf.ToolCount == 0 {
 		return true
 	}
 	for i := len(inf.Messages) - 1; i >= 0; i-- {

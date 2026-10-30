@@ -932,3 +932,26 @@ func TestBobSessionToolsCloseAndReturnsStayEmpty(t *testing.T) {
 		t.Fatalf("Returns = %+v, Jobs = %+v; both are Claude Code markers Bob never sends", tl.Returns, tl.Jobs)
 	}
 }
+
+// A pre-marker Claude Code call (AgentRole empty, attributed by its client name) still drops
+// its recap: the prompt literals are Claude's own prompt text, so they run for every client,
+// while the no-tools rule stays Claude Code only.
+func TestPreMarkerRecapIsNotATurn(t *testing.T) {
+	var r rec
+	client := &pipeline.EventClient{Name: "claude-code"}
+	id := r.id()
+	r.add(pipeline.SessionEvent{At: at(0), Phase: pipeline.SessionRequest, RequestID: id, Host: "llm.example", Client: client,
+		Inference: &pipeline.InferenceExtension{Tools: tools, Messages: []pipeline.InferenceMessage{
+			user("The user stepped away and is coming back. Recap in under 40 words.")}}})
+	r.add(pipeline.SessionEvent{At: at(1), Phase: pipeline.SessionResponse, RequestID: id, Host: "llm.example", Client: client,
+		StatusCode: 200, Inference: &pipeline.InferenceExtension{FinishReason: "end_turn"}})
+	id = r.id()
+	r.add(pipeline.SessionEvent{At: at(2), Phase: pipeline.SessionRequest, RequestID: id, Host: "llm.example", Client: client,
+		Inference: &pipeline.InferenceExtension{Tools: tools, Messages: []pipeline.InferenceMessage{user("go")}}})
+	r.add(pipeline.SessionEvent{At: at(3), Phase: pipeline.SessionResponse, RequestID: id, Host: "llm.example", Client: client,
+		StatusCode: 200, Inference: &pipeline.InferenceExtension{FinishReason: "end_turn"}})
+	tl := Build("s", r.events, at(4))
+	if len(tl.Turns) != 1 || !tl.Turns[0].Start.Equal(at(2)) {
+		t.Errorf("turns = %+v, want only the real call at 2s", tl.Turns)
+	}
+}
