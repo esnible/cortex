@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/rossoctl/cortex/cmd/agentop/checklist"
+	"github.com/rossoctl/cortex/core/config"
 )
 
 // serviceStep starts the proxy: under launchd or systemd through `agentop service
@@ -111,27 +112,96 @@ func (serviceStep) preflightPorts(env *setupEnv) (forwardHold, *problem) {
 		if len(busy) > 1 {
 			reason = "ports " + portList(busy) + " are already in use by something else"
 		}
+		// A fresh install has no config yet — "Nothing was changed" is
+		// accurate — so pointing the fix at config.yaml told the user to
+		// edit a file setup refused to write (#1545). The config is written
+		// on demand first.
 		return forwardHold{}, &problem{reason: reason,
-			fix: []string{"free it, or change the ports in " + env.tilde(env.configPath()) + ", then " + env.rerun()}}
+			fix: []string{
+				"free it, or write the config first: " + filepath.Join(env.binDir, "cortex") + " --local --write-config,",
+				"then change the ports in " + env.tilde(env.configPath()) + " and " + env.rerun(),
+			}}
 	}
-	addr, port := forwardListener(env)
+	// Every listener the config names, not just the forward one: the proxy
+	// reserves all of them before it serves anything, so a foreign holder on
+	// ANY port is a start that will never become healthy — and before this
+	// loop, only the forward port was checked, so a taken session API or
+	// stats port sailed through preflight and failed at boot with setup
+	// calling the install ready (#1545).
+	pidFile := filepath.Join(env.cortexDir, "proxy.pid")
+	for _, l := range existingListeners(env) {
+		pid, exe, ok := portHolder(l.port)
+		if !ok || ourProxy(env.binDir, pidFile, pid, exe) {
+			continue
+		}
+		fix := []string{fmt.Sprintf("kill %d", pid)}
+		switch job := holderJob(env.goos, pid); {
+		case job != "": // a kill would only have its supervisor start it again
+			fix = []string{"stop the job that runs it: " + job}
+		case env.goos == "darwin":
+			fix = append(fix, "or, if it is an older Cortex service: "+launchdBootout(launchdLabel))
+		default:
+			fix = append(fix, "or, if it is an older Cortex service: systemctl --user disable --now "+systemdUnit)
+		}
+		return forwardHold{}, &problem{
+			reason: fmt.Sprintf("the %s port %s is held by %s (pid %d), not this Cortex", l.name, l.addr, env.tilde(exe), pid),
+			fix:    fix,
+		}
+	}
+	// The forward port's holder, when it is ours, is what the service step
+	// adopts; the loop above has already cleared every listener of foreign
+	// holders.
+	_, port := forwardListener(env)
 	pid, exe, ok := portHolder(port)
-	if !ok {
-		return forwardHold{}, nil
-	}
-	if ourProxy(env.binDir, filepath.Join(env.cortexDir, "proxy.pid"), pid, exe) {
+	if ok && ourProxy(env.binDir, pidFile, pid, exe) {
 		return forwardHold{pid: pid, known: true}, nil
 	}
-	fix := []string{fmt.Sprintf("kill %d", pid)}
-	switch job := holderJob(env.goos, pid); {
-	case job != "": // a kill would only have its supervisor start it again
-		fix = []string{"stop the job that runs it: " + job}
-	case env.goos == "darwin":
-		fix = append(fix, "or, if it is an older Cortex service: "+launchdBootout(launchdLabel))
-	default:
-		fix = append(fix, "or, if it is an older Cortex service: systemctl --user disable --now "+systemdUnit)
+	return forwardHold{}, nil
+}
+
+// listenerPort names one listener the existing config binds: its display name,
+// its address, and the port portHolder is asked about.
+type listenerPort struct {
+	name string
+	addr string
+	port string
+}
+
+// existingListeners is every listener the config names, the same set
+// cmd/cortex's listenerPlan reserves — the proxy binds all of them or none,
+// so all of them must be free (or ours) before setup starts it.
+func existingListeners(env *setupEnv) []listenerPort {
+	cfg, err := config.Load(env.configPath())
+	if err != nil {
+		return nil
 	}
-	return forwardHold{}, &problem{reason: fmt.Sprintf("%s is held by %s (pid %d), not this Cortex", addr, env.tilde(exe), pid), fix: fix}
+	config.ApplyPreset(cfg)
+	var out []listenerPort
+	add := func(name, addr string) {
+		if _, p, serr := net.SplitHostPort(addr); serr == nil && p != "" {
+			out = append(out, listenerPort{name: name, addr: addr, port: p})
+		}
+	}
+	roles := cfg.Listener.ActiveRoles()
+	if roles[config.RoleReverse] {
+		if !cfg.Listener.InboundTransparent() {
+			add("reverse-proxy", cfg.Listener.ReverseProxyAddr)
+		} else if cfg.Listener.TransparentInboundAddr != "" {
+			add("transparent-inbound", cfg.Listener.TransparentInboundAddr)
+		}
+	}
+	if roles[config.RoleForward] {
+		add("forward-proxy", cfg.Listener.ForwardProxyAddr)
+		if cfg.Listener.TransparentProxyAddr != "" {
+			add("transparent-proxy", cfg.Listener.TransparentProxyAddr)
+		}
+	}
+	add("stats", cfg.Stats.StatsAddress)
+	if cfg.Session.SessionEnabled() && cfg.Listener.SessionAPIAddr != "" {
+		add("session-api", cfg.Listener.SessionAPIAddr)
+	}
+	add("health", cfg.Listener.HealthAddr)
+	return out
 }
 
 // forwardListener is the existing config's forward proxy address and its port,
@@ -405,6 +475,19 @@ func (serviceStep) applyUnsupervised(env *setupEnv) (string, undo, error) {
 	env.startedBackground = true
 	if healthy {
 		return "in the background · healthy", u, nil
+	}
+	// Alive but never healthy: fine only when the proxy is merely slow to
+	// answer. A proxy that logged "cannot start" during the wait is one that
+	// will NEVER answer — a port it reserves is held — and reporting the
+	// install ready here is the false-ready that shipped the user a broken
+	// install with exit 0 (#1545).
+	for _, line := range logTail(env, logPath, mark) {
+		if strings.Contains(line, "cannot start") {
+			return "", u, stepError{
+				reason: "the proxy started but cannot bind one of its listeners",
+				detail: append([]string{"see " + env.tilde(logPath)}, logTail(env, logPath, mark)...),
+			}
+		}
 	}
 	return "in the background · not answering yet; see " + env.tilde(filepath.Join(env.cortexDir, "proxy.log")), u, nil
 }
