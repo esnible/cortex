@@ -173,7 +173,7 @@ func (in *Interner) stateForEvent(inf *pipeline.InferenceExtension) *convState {
 		return st
 	}
 	if st, ok := in.convs[base]; ok {
-		if len(st.msgs) >= 2 && len(inf.Messages) >= 2 && !equalMessage(inf.Messages[1], st.msgs[1]) {
+		if len(st.msgs) >= 2 && len(inf.Messages) >= 2 && inf.Messages[1] != st.msgs[1] {
 			// A sibling: same prompt, different task. Split it off under its
 			// full key; the original keeps the base key its own turns fall
 			// back to.
@@ -366,9 +366,8 @@ func (in *Interner) InternEvent(e *pipeline.SessionEvent) {
 // shareMessages returns the event's message slice, sharing the conversation's
 // growing backing array for the prefix that matches its last event and
 // appending the canonicalized tail. Equal after canonicalization means
-// equal struct-by-struct — Role, Content and ContentBytes are all comparable —
-// so a shared prefix element is byte-identical to the one the event arrived
-// with.
+// struct equality, so a shared prefix element is byte-identical to the one
+// the event arrived with.
 //
 // The three shapes:
 //
@@ -386,7 +385,10 @@ func (in *Interner) InternEvent(e *pipeline.SessionEvent) {
 //     do for strings that disappear and come back.
 func shareMessages(st *convState, msgs []pipeline.InferenceMessage, next map[string]string) []pipeline.InferenceMessage {
 	k := 0
-	for k < len(msgs) && k < len(st.msgs) && equalMessage(msgs[k], st.msgs[k]) {
+	// Struct ==, not a field list: a field added to InferenceMessage joins the
+	// comparison by itself, and a non-comparable one breaks the build rather
+	// than being silently dropped from it.
+	for k < len(msgs) && k < len(st.msgs) && msgs[k] == st.msgs[k] {
 		// Record the matched element so the table stays "the last event's
 		// strings" — a later verbatim re-send of an old message (a compaction)
 		// must still find its canonical. Recorded from the ARRAY's copy, never
@@ -425,18 +427,10 @@ func shareMessages(st *convState, msgs []pipeline.InferenceMessage, next map[str
 	return out
 }
 
-// equalMessage compares two messages after canonicalization: a prefix element
-// was interned when it was appended, so == on the shared element and the
-// arriving one is a content comparison that matches exactly the strings the
-// interner would have shared.
-func equalMessage(a, b pipeline.InferenceMessage) bool {
-	return a.Role == b.Role && a.Content == b.Content && a.ContentBytes == b.ContentBytes
-}
-
 // shareTools is shareMessages for the tool manifest.
 func shareTools(st *convState, tools []pipeline.InferenceTool, next map[string]string) []pipeline.InferenceTool {
 	k := 0
-	for k < len(tools) && k < len(st.tools) && equalTool(tools[k], st.tools[k]) {
+	for k < len(tools) && k < len(st.tools) && tools[k] == st.tools[k] {
 		st.intern(st.tools[k].Description, next)
 		st.internID(st.tools[k].Name, next)
 		k++
@@ -467,14 +461,10 @@ func shareTools(st *convState, tools []pipeline.InferenceTool, next map[string]s
 	return out
 }
 
-func equalTool(a, b pipeline.InferenceTool) bool {
-	return a.Name == b.Name && a.Description == b.Description && a.Parameters == b.Parameters
-}
-
 // shareToolResults is shareMessages for tool results.
 func shareToolResults(st *convState, results []pipeline.InferenceToolResult, next map[string]string) []pipeline.InferenceToolResult {
 	k := 0
-	for k < len(results) && k < len(st.results) && equalToolResult(results[k], st.results[k]) {
+	for k < len(results) && k < len(st.results) && results[k] == st.results[k] {
 		st.intern(st.results[k].Content, next)
 		st.internID(st.results[k].ToolUseID, next)
 		k++
@@ -501,8 +491,4 @@ func shareToolResults(st *convState, results []pipeline.InferenceToolResult, nex
 	}
 	st.results = out
 	return out
-}
-
-func equalToolResult(a, b pipeline.InferenceToolResult) bool {
-	return a.ToolUseID == b.ToolUseID && a.Content == b.Content && a.IsError == b.IsError
 }
