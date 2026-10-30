@@ -511,12 +511,20 @@ func (w *Writer) Record(_ string, e *pipeline.SessionEvent) {
 	if c := pricing.UnitOf(w.rates, e.Host, model); c != "" {
 		r.Currency = rowLabel(c)
 	}
-	if e.StatusCode >= 400 || e.Phase == pipeline.SessionDenied {
+	// ONE definition of the error and priceable rules, shared with the ring
+	// (#1566): the writer's private copies had drifted — any 4xx counted as an
+	// error where the ring excludes the egress refusals that are policy
+	// working, and "priceable" required a non-zero token count where the ring
+	// counts a successful model-bearing response with no usage as an unpriced
+	// GAP, so a truncated OpenAI stream read "9/9 priced" on today while the
+	// 1h window named the gap.
+	if usage.CountsAsError(e) {
 		r.Errors = 1
 	}
-	// Priceable: carried a model and a non-zero token count. The denominator for
-	// coverage — Requests is the wrong one, since only inference can be priced.
-	if r.Model != "" && r.Tokens > 0 {
+	// Priceable: the parser named a model and the request was not a usage-free
+	// failure. The denominator for coverage — Requests is the wrong one, since
+	// only inference can be priced.
+	if usage.PriceableRequest(e) {
 		r.PriceableRequests = 1
 	}
 	// The figure core/cost/settle settled. Record, not Decode: an unpriced record
@@ -926,10 +934,9 @@ func (w *Writer) logDrops() {
 // writer, not about anybody's read: it happened once, no later read can rediscover it, and
 // every reader of this ledger is equally short because of it.
 //
-// No non-test caller today, and it stays exported anyway: it is the completeness signal the
-// package doc and Window's contract both cite, and the /v1/usage response has a Degraded
-// field already carrying the two READ-side counts beside it (see Caveats). This is the
-// write-side one that belongs there next, which is a sessionapi change rather than a reason
+// Called by sessionapi's /v1/usage handler, which surfaces it beside the
+// read-side Caveats. It stays exported for out-of-tree readers of the ledger
+// too, who need the same completeness signal.
 // to withdraw the number.
 func (w *Writer) Dropped() int64 { return w.dropped.Load() }
 

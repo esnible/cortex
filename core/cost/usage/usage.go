@@ -1280,12 +1280,29 @@ func (a *Aggregator) evictColdestLocked() {
 // configured it to, on traffic that was never going to be allowed through — a
 // nonzero "error rate" made of refusals is the policy working, not the proxy
 // failing. The Finisher sees it as an allow for the same reason.
-func countsAsError(e *pipeline.SessionEvent) bool {
+func CountsAsError(e *pipeline.SessionEvent) bool {
 	if e.Error != nil && (e.Error.Kind == pipeline.ErrorKindUpgradeDeclined ||
 		e.Error.Kind == pipeline.ErrorKindDestinationPrivate) {
 		return false
 	}
 	return e.Error != nil || e.StatusCode >= 400 || e.Phase == pipeline.SessionDenied
+}
+
+// PriceableRequest is the one definition of "this request could have been
+// priced", shared by the ring and the ledger (#1566): the parser recognised
+// the traffic well enough to name a model, and the request was not a failure
+// that carried no usage — a truncated OpenAI-dialect stream succeeds at the
+// HTTP layer but yields no counters, and hiding it from the denominator made
+// coverage read "9/9 priced" while real spend was missing. A FAILED response
+// WITH usage is priceable: the counters exist and the rates apply.
+func PriceableRequest(e *pipeline.SessionEvent) bool {
+	if e.Inference == nil || e.Inference.Model == "" {
+		return false
+	}
+	if e.Inference.TotalTokens > 0 {
+		return true
+	}
+	return e.StatusCode < 400 && e.Phase != pipeline.SessionDenied
 }
 
 // foldInto accumulates one event into one ring.
@@ -1368,7 +1385,7 @@ func (a *Aggregator) foldInto(ring []bucket, t time.Time, sessionID string, e *p
 	if ec.incompleteReason != "" {
 		addLabel(&b.byIncomplete, ringLabel(ec.incompleteReason), Counts{Requests: 1})
 	}
-	if countsAsError(e) {
+	if CountsAsError(e) {
 		one.Errors = 1
 	}
 	b.Counts.Add(one)

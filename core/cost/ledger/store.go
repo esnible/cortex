@@ -99,6 +99,15 @@ type store struct {
 	dir string
 	// retainDays is how many day files survive prune. Zero means the default.
 	retainDays int
+	// dayCache holds decoded PAST day files, keyed by the file's path with its
+	// size and mtime at decode time (#1566). agentop polls the spend window
+	// every minute, and a month window on the 31st decoded 31 files per poll
+	// for days that had almost never changed since they closed. A cached entry
+	// is used only when size and mtime still match, so a file rewritten under
+	// us (a repair, a manual edit) decodes fresh; TODAY's file matches nothing
+	// for long and effectively always re-reads, which is the correct behavior
+	// for the one file that changes.
+	dayCache map[string]dayCacheEntry
 	// loc is the zone the ledger's DAY BOUNDARY is defined in, and the single answer
 	// to "which day does this instant belong to" for every part of this file.
 	//
@@ -490,8 +499,40 @@ const maxLineBytes = 1 << 20
 // level, and not into a local, which reaches no caller, no exported counter and no API
 // response. The count is what lets an operator tell "my ledger is fine" from "my ledger is
 // losing lines", so it has to leave this function. See dayIssues and Caveats.SkippedLines.
+// dayCacheEntry is one decoded day file with the (size, mtime) it was decoded
+// at. Rows are shared by every query that hits the entry — safe because a
+// query never mutates the rows it folds (Fold copies into its own totals) and
+// the entry is replaced, never appended, when the file changes.
+type dayCacheEntry struct {
+	size, mtimeNs int64
+	rows          []Row
+	issues        dayIssues
+}
+
 func (s *store) readDay(day time.Time) ([]Row, dayIssues, error) {
-	f, err := os.Open(s.path(day))
+	path := s.path(day)
+	if fi, err := os.Stat(path); err == nil {
+		key := path
+		if s.dayCache == nil {
+			s.dayCache = make(map[string]dayCacheEntry)
+		}
+		if e, ok := s.dayCache[key]; ok && e.size == fi.Size() && e.mtimeNs == fi.ModTime().UnixNano() {
+			return e.rows, e.issues, nil
+		}
+		rows, issues, err := s.decodeDay(path)
+		if err == nil {
+			s.dayCache[key] = dayCacheEntry{size: fi.Size(), mtimeNs: fi.ModTime().UnixNano(), rows: rows, issues: issues}
+		}
+		return rows, issues, err
+	} else if !os.IsNotExist(err) {
+		return nil, dayIssues{}, err
+	}
+	return nil, dayIssues{}, nil
+}
+
+// decodeDay reads and sanitises one day file from disk.
+func (s *store) decodeDay(path string) ([]Row, dayIssues, error) {
+	f, err := os.Open(path)
 	if os.IsNotExist(err) {
 		return nil, dayIssues{}, nil
 	}
@@ -546,7 +587,7 @@ func (s *store) readDay(day time.Time) ([]Row, dayIssues, error) {
 		// by however much came after this point, and by an amount the file cannot say.
 		issues.truncated = true
 		slog.Warn("costledger: stopped part-way through a day file; the total for it is short",
-			"day", day.Format(dayLayout), "rowsRead", len(out),
+			"day", filepath.Base(path), "rowsRead", len(out),
 			"linesSkipped", issues.skippedLines, "error", serr)
 		return out, issues, nil
 	}
@@ -554,7 +595,7 @@ func (s *store) readDay(day time.Time) ([]Row, dayIssues, error) {
 		// WARN, not Debug. A number missing rows is exactly what an operator has to be
 		// able to see, and the default level does not carry Debug.
 		slog.Warn("costledger: skipped undecodable lines; the total for this day is short",
-			"day", day.Format(dayLayout), "rowsRead", len(out), "linesSkipped", issues.skippedLines)
+			"day", filepath.Base(path), "rowsRead", len(out), "linesSkipped", issues.skippedLines)
 	}
 	return out, issues, nil
 }
