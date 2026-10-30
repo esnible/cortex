@@ -93,8 +93,17 @@ bridge CA — copy it over and export it:
 
 ```sh
 scp you@server:.cortex/ca/ca.crt ~/.cortex/remote-ca.pem
-export NODE_EXTRA_CA_CERTS=~/.cortex/remote-ca.pem   # or SSL_CERT_FILE, per agent
+export NODE_EXTRA_CA_CERTS=~/.cortex/remote-ca.pem
 ```
+
+`NODE_EXTRA_CA_CERTS` *adds* to Node's own roots, so the bare remote CA is the right
+file for it. Variables that *replace* the trust store (`SSL_CERT_FILE`,
+`GIT_SSL_CAINFO`, `CURL_CA_BUNDLE`, `REQUESTS_CA_BUNDLE`) must not get it — they
+would trust one private CA and nothing else — and the server's `bundle.crt` is no
+substitute either, since it carries the *server's* public roots. Give those a file
+holding your machine's roots plus the remote CA, e.g. your local `bundle.crt` with
+`remote-ca.pem` appended. [`agents/any-agent.md`](agents/any-agent.md) lists which
+variables add and which replace.
 
 Two caveats:
 
