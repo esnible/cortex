@@ -517,3 +517,127 @@ func TestForwardProxy_ADeniedRedirectRecordsBothHosts(t *testing.T) {
 		t.Errorf("origin b served a denied request: %v", hosts)
 	}
 }
+
+// #1595's headline: a session redirected away from a server that has since died.
+// The pre-forge probe of the dead origin must not fall back to a plain tunnel — a
+// plain tunnel dials the same dead origin, and an opaque tunnel is the one shape a
+// redirect cannot reach. The bridge proceeds, and the redirect sends the request to
+// the live server.
+func TestConnectBridge_RedirectWorksWhenTheNamedOriginIsDead(t *testing.T) {
+	a := newOrigin(t, "FROM-A", (*httptest.Server).StartTLS)
+	b := newOrigin(t, "FROM-B", (*httptest.Server).StartTLS)
+	engine := redirectBridge(t, portOf(a.authority()), certPEM(a.Server))
+	store := session.New(5*time.Minute, 100, 0)
+	defer store.Close()
+	proxy := newRedirectProxy(t, store, engine, &redirectPlugin{target: b.URL})
+
+	a.Close() // the server the client still names is gone
+
+	status, body := bridgedGet(t, proxy, engine.CAPEM, a.authority(), "/secret")
+	if status != http.StatusOK || body != "FROM-B" {
+		t.Fatalf("response = %d %q, want 200 FROM-B — the redirect never applied", status, body)
+	}
+	if hosts, _ := b.gets(); len(hosts) != 1 || hosts[0] != b.authority() {
+		t.Errorf("origin b saw GETs %v, want one for %s", hosts, b.authority())
+	}
+}
+
+// The passthrough fallback keeps its reason to exist: an origin that is reachable
+// but whose certificate the bridge cannot verify. Bridging would re-originate into
+// the same verification failure, so the connection is tunnelled untouched and the
+// agent's own e2e TLS decides.
+func TestConnectBridge_UntrustedOriginStillFallsOpenToTunnel(t *testing.T) {
+	a := newOrigin(t, "FROM-A", (*httptest.Server).StartTLS)
+	foreign, err := tlsbridge.NewEphemeralSource()
+	if err != nil {
+		t.Fatalf("NewEphemeralSource: %v", err)
+	}
+	// The bridge's upstream client trusts a CA that is not the origin's.
+	engine := redirectBridge(t, portOf(a.authority()), foreign.CACertPEM())
+	store := session.New(5*time.Minute, 100, 0)
+	defer store.Close()
+	proxy := newRedirectProxy(t, store, engine, &redirectPlugin{target: a.URL})
+
+	rawConn, err := net.Dial("tcp", mustParseURL(proxy.URL).Host)
+	if err != nil {
+		t.Fatalf("dial proxy: %v", err)
+	}
+	defer func() { _ = rawConn.Close() }()
+	_ = rawConn.SetDeadline(time.Now().Add(10 * time.Second))
+	connectReq, err := http.NewRequest(http.MethodConnect, "//"+a.authority(), nil)
+	if err != nil {
+		t.Fatalf("new CONNECT request: %v", err)
+	}
+	connectReq.Host = a.authority()
+	connectReq.URL.Host = a.authority()
+	if err := connectReq.Write(rawConn); err != nil {
+		t.Fatalf("write CONNECT: %v", err)
+	}
+	br := bufio.NewReader(rawConn)
+	connectResp, err := http.ReadResponse(br, connectReq)
+	if err != nil {
+		t.Fatalf("read CONNECT response: %v", err)
+	}
+	_ = connectResp.Body.Close()
+	if connectResp.StatusCode != http.StatusOK {
+		t.Fatalf("CONNECT status = %d, want 200", connectResp.StatusCode)
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(engine.CAPEM) {
+		t.Fatal("bridge CA PEM did not parse")
+	}
+	tconn := tls.Client(&bufferedConn{Conn: rawConn, r: br}, &tls.Config{
+		ServerName: hostOnly(a.authority()),
+		RootCAs:    pool,
+		NextProtos: []string{"http/1.1"},
+	})
+	if err := tconn.Handshake(); err == nil {
+		_ = tconn.Close()
+		t.Fatal("handshake against a leaf the bridge did not forge succeeded; the connection should have been tunnelled to the real origin, whose cert this client does not trust")
+	}
+	eventually(t, func() bool {
+		return len(tunnelReasons(store, session.DefaultSessionID)) > 0
+	}, "the passthrough tunnel's open row to be recorded")
+	for _, reason := range tunnelReasons(store, session.DefaultSessionID) {
+		if reason != pipeline.TunnelOriginUnverified {
+			t.Errorf("tunnel reason = %q, want %q", reason, pipeline.TunnelOriginUnverified)
+		}
+	}
+}
+
+// A failed pre-dial is memoized: a client that opens a CONNECT per request
+// (undici) must not pay a dead destination's dial cost — on a filtered
+// destination, its full connectDialTimeout — on every one of them.
+func TestConnectBridge_DeadOriginDialIsMemoized(t *testing.T) {
+	a := newOrigin(t, "FROM-A", (*httptest.Server).StartTLS)
+	b := newOrigin(t, "FROM-B", (*httptest.Server).StartTLS)
+	engine := redirectBridge(t, portOf(a.authority()), certPEM(a.Server))
+	store := session.New(5*time.Minute, 100, 0)
+	defer store.Close()
+	proxy := newRedirectProxy(t, store, engine, &redirectPlugin{target: b.URL})
+
+	var dials struct {
+		mu sync.Mutex
+		n  int
+	}
+	inner := dialTCP
+	dialTCP = func(network, addr string, d time.Duration) (net.Conn, error) {
+		dials.mu.Lock()
+		dials.n++
+		dials.mu.Unlock()
+		return inner(network, addr, d)
+	}
+	t.Cleanup(func() { dialTCP = inner })
+
+	a.Close() // the server the client still names is gone
+	for i := 0; i < 2; i++ {
+		if status, body := bridgedGet(t, proxy, engine.CAPEM, a.authority(), "/secret"); status != http.StatusOK || body != "FROM-B" {
+			t.Fatalf("request %d: response = %d %q, want 200 FROM-B", i, status, body)
+		}
+	}
+	dials.mu.Lock()
+	defer dials.mu.Unlock()
+	if dials.n != 1 {
+		t.Errorf("pre-dial ran %d times for 2 connections, want 1 (failures are memoized)", dials.n)
+	}
+}

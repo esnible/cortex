@@ -208,6 +208,11 @@ type Server struct {
 	caFingerprintStr  string
 	bridgeWarnOnce    sync.Once
 	bridgeWarned      atomic.Bool
+
+	// dialMu guards dialFails, the memo of failed CONNECT pre-dials (dialUpstream).
+	// Lazy: the Server can be built as a literal in tests.
+	dialMu    sync.Mutex
+	dialFails map[string]dialFailMemo
 }
 
 // MTLSOptions configures outbound mTLS for the forward proxy. When
@@ -1047,29 +1052,40 @@ func (s *Server) bridgeMemory(tl *tunnelLog, host string) (*tlsbridge.SkipSet, s
 // bridgeServe records its close too. A bridged tunnel is settled by whichever of
 // finish and the last handler's release comes last, which records what the tunnel
 // still owes — its open and a close — only if no request recorded a row. On the
-// false path the caller tunnels and records the close itself.
-func (s *Server) bridgeServe(client net.Conn, authority, host string, tl *tunnelLog) bool {
+// false path the caller tunnels and records the close itself. originDead says the
+// CONNECT's own pre-dial failed, in which case the origin probe is skipped: see
+// step 1.
+func (s *Server) bridgeServe(client net.Conn, authority, host string, tl *tunnelLog, originDead bool) bool {
 	// 1) Verify upstream reachability + cert via the dedicated client, BEFORE forging.
 	//    HEAD avoids GET side-effects; a non-2xx status still returns err==nil (cert
 	//    verified), which is all we need. Only a transport/TLS error fails here. The
 	//    verify is bounded by its own context timeout so a slow/stalled origin can't
 	//    pin the bridging goroutine — the timeout is on this probe ONLY, not on the
 	//    relay (which must stay unbounded for streaming responses).
-	ctx, cancel := context.WithTimeout(context.Background(), upstreamVerifyTimeout)
-	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodHead, "https://"+authority, nil)
-	if err != nil {
-		slog.Info("tls-bridge passthrough", "host", host, "reason", "upstream-verify", "error", err)
-		tl.open(pipeline.TunnelOriginUnverified)
-		return false
+	//
+	//    Skipped when the pre-dial already failed (originDead): the probe would only
+	//    re-confirm a dead origin at up to upstreamVerifyTimeout more, and its
+	//    passthrough fallback dials the same dead origin. Bridging proceeds so a
+	//    plugin redirect (inference-router moving a pinned session) can still send
+	//    the request to a live server (#1595); the re-originated request is verified
+	//    against whatever host it actually goes to.
+	if !originDead {
+		ctx, cancel := context.WithTimeout(context.Background(), upstreamVerifyTimeout)
+		defer cancel()
+		req, err := http.NewRequestWithContext(ctx, http.MethodHead, "https://"+authority, nil)
+		if err != nil {
+			slog.Info("tls-bridge passthrough", "host", host, "reason", "upstream-verify", "error", err)
+			tl.open(pipeline.TunnelOriginUnverified)
+			return false
+		}
+		resp, err := s.TLSBridge.Upstream.Do(req)
+		if err != nil {
+			slog.Info("tls-bridge passthrough", "host", host, "reason", "upstream-verify", "error", err)
+			tl.open(pipeline.TunnelOriginUnverified)
+			return false // fall back to plain tunnel — agent's own e2e TLS still reaches origin
+		}
+		_ = resp.Body.Close()
 	}
-	resp, err := s.TLSBridge.Upstream.Do(req)
-	if err != nil {
-		slog.Info("tls-bridge passthrough", "host", host, "reason", "upstream-verify", "error", err)
-		tl.open(pipeline.TunnelOriginUnverified)
-		return false // fall back to plain tunnel — agent's own e2e TLS still reaches origin
-	}
-	_ = resp.Body.Close()
 
 	// 2) Forge + terminate downstream.
 	tconn, err := s.TLSBridge.Term.Terminate(client, hostOnly(authority))
@@ -1184,6 +1200,69 @@ func (s *Server) bridgeServe(client net.Conn, authority, host string, tl *tunnel
 	// handler still running returns.
 	tl.finish()
 	return true
+}
+
+// dialFailMemo is a memoized failed CONNECT pre-dial: the error and when it was
+// taken. dialFailMemoTTL bounds how long it is believed.
+type dialFailMemo struct {
+	err error
+	at  time.Time
+}
+
+// dialFailMemoTTL is how long a failed pre-dial is remembered, so a destination
+// that drops packets — where a dial burns the whole connectDialTimeout — is not
+// re-dialed per CONNECT. Short because the memo never misroutes: a skipped dial is
+// re-attempted wherever its result would have been used (the plain-tunnel path
+// dials fresh in tunnelOrDial; the bridge path re-originates to a different host
+// and dials that), so the staleness it can buy is one skipped dial, never a
+// misrouted request.
+const dialFailMemoTTL = 30 * time.Second
+
+// dialTCP is net.DialTimeout; a variable so tests can count dials.
+var dialTCP = net.DialTimeout
+
+// dialUpstream is a CONNECT's pre-dial, memoizing failures per target for
+// dialFailMemoTTL (#1595: a client that opens a CONNECT per request must not pay
+// a dead destination's dial timeout every time).
+func (s *Server) dialUpstream(dialTarget string) (net.Conn, error) {
+	s.dialMu.Lock()
+	if s.dialFails == nil {
+		s.dialFails = make(map[string]dialFailMemo)
+	}
+	if m, ok := s.dialFails[dialTarget]; ok {
+		if time.Since(m.at) < dialFailMemoTTL {
+			s.dialMu.Unlock()
+			return nil, m.err
+		}
+		delete(s.dialFails, dialTarget)
+	}
+	s.dialMu.Unlock()
+
+	conn, err := dialTCP("tcp", dialTarget, connectDialTimeout)
+	if err == nil {
+		return conn, nil
+	}
+	s.dialMu.Lock()
+	s.dialFails[dialTarget] = dialFailMemo{err: err, at: time.Now()}
+	s.dialMu.Unlock()
+	return nil, err
+}
+
+// tunnelOrDial serves a tunnel whose pre-dialed upstream is gone — the bridge
+// declined the connection, or fell open after the origin probe failed — by dialing
+// fresh: a working dial tunnels normally, a failing one closes the client with the
+// dial error on the close row. The client already has its 200, so that stays the
+// status and the error says why the tunnel died.
+func (s *Server) tunnelOrDial(clientConn net.Conn, dialTarget string, tl *tunnelLog) {
+	up2, derr := net.DialTimeout("tcp", dialTarget, connectDialTimeout)
+	if derr != nil {
+		_ = clientConn.Close()
+		tl.close(http.StatusOK, dialError(derr), 0, 0)
+		return
+	}
+	sent, received := tunnel(clientConn, up2)
+	_ = up2.Close()
+	tl.close(http.StatusOK, nil, sent, received)
 }
 
 // misdirectedBody is the 421's body. Static: the Host it refuses is the client's own
@@ -2575,31 +2654,48 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			// Not a refusal: the name would not resolve. Same shape as a dial
-			// failure — nothing was dialed, and the client gets the 502.
+			// failure — nothing was dialed, and the client gets the 502. With the
+			// bridge enabled, fall through instead: the dial below fails the same
+			// way and takes the bridge-first branch, where a redirect can still
+			// move the request to a name that resolves (#1595).
 			// Both values sanitized: the name is client-controlled, and the error
 			// embeds it (net.DNSError quotes the name it failed to resolve).
-			slog.Warn("forward-proxy: CONNECT destination resolution failed",
-				"host", pipeline.SanitizeControlRunes(r.Host),
-				"error", pipeline.SanitizeControlRunes(cerr.Error()))
-			http.Error(w, `{"error":"bad gateway"}`, http.StatusBadGateway)
-			tl.open(pipeline.TunnelDialFailed)
-			tl.close(http.StatusBadGateway, dialError(cerr), 0, 0)
-			return
+			if s.TLSBridge == nil {
+				slog.Warn("forward-proxy: CONNECT destination resolution failed",
+					"host", pipeline.SanitizeControlRunes(r.Host),
+					"error", pipeline.SanitizeControlRunes(cerr.Error()))
+				http.Error(w, `{"error":"bad gateway"}`, http.StatusBadGateway)
+				tl.open(pipeline.TunnelDialFailed)
+				tl.close(http.StatusBadGateway, dialError(cerr), 0, 0)
+				return
+			}
 		}
 		dialTarget = checked
 		// The audit trail against rebinding: "asked for the name, dialed this
 		// address" — moca's egress conformance reads it off the tunnel open row.
 		pctx.DialedAddr = checked
 	}
-	upstream, err := net.DialTimeout("tcp", dialTarget, connectDialTimeout)
+	upstream, err := s.dialUpstream(dialTarget)
+	// dialFail remembers a pre-dial that failed while the TLS bridge is enabled:
+	// the connection continues with no upstream, because the bridge can still take
+	// it — a plugin redirect (inference-router moving a pinned session) sends the
+	// decrypted request to a live server, and an opaque tunnel to a dead origin
+	// helps nobody (#1595). Every path below that would have used the upstream
+	// handles a nil one by closing with this error or re-dialing (tunnelOrDial).
+	var dialFail error
 	if err != nil {
-		slog.Warn("forward-proxy: CONNECT upstream dial failed", "host", r.Host, "error", err)
-		http.Error(w, `{"error":"bad gateway"}`, http.StatusBadGateway)
-		// Recorded rather than dropped: an unreachable destination used to leave no
-		// trace in the timeline at all.
-		tl.open(pipeline.TunnelDialFailed)
-		tl.close(http.StatusBadGateway, dialError(err), 0, 0)
-		return
+		if s.TLSBridge == nil {
+			slog.Warn("forward-proxy: CONNECT upstream dial failed", "host", r.Host, "error", err)
+			http.Error(w, `{"error":"bad gateway"}`, http.StatusBadGateway)
+			// Recorded rather than dropped: an unreachable destination used to leave no
+			// trace in the timeline at all.
+			tl.open(pipeline.TunnelDialFailed)
+			tl.close(http.StatusBadGateway, dialError(err), 0, 0)
+			return
+		}
+		slog.Warn("forward-proxy: CONNECT upstream dial failed; trying the TLS bridge",
+			"host", r.Host, "error", err)
+		dialFail = err
 	}
 
 	clientConn, _, err := w.(http.Hijacker).Hijack()
@@ -2615,7 +2711,9 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// io.Copy goroutines until the OS finally times the socket out.
 	// 30s is loose enough to not perturb idle traffic and tight enough
 	// that operators get prompt cleanup on dead connections.
-	enableKeepalive(upstream)
+	if upstream != nil {
+		enableKeepalive(upstream)
+	}
 	enableKeepalive(clientConn)
 
 	// Tell the agent the tunnel is up. Per RFC 7231 §4.3.6 a 200 to
@@ -2640,27 +2738,17 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 		reason, bridge = s.bridgeVerdict(r, tl, key, first)
 		if bridge {
 			s.noteBridgeAttempt()
-			_ = upstream.Close() // bridgeServe dials its own verified upstream
-			if s.bridgeServe(clientConn, authority, key, tl) {
+			if upstream != nil {
+				_ = upstream.Close() // bridgeServe dials its own verified upstream
+			}
+			if s.bridgeServe(clientConn, authority, key, tl, dialFail != nil) {
 				return
 			}
-			// fell open → re-dial for the tunnel. That tunnel is opaque, so it closes
-			// like any other opaque one. dialTarget, not r.Host: the address was
-			// already checked once, and re-resolving here would reopen the rebinding
-			// window the check closed.
-			up2, derr := net.DialTimeout("tcp", dialTarget, connectDialTimeout)
-			if derr != nil {
-				// The client already has its 200, so that stays the status, and the
-				// error says why the tunnel died. Closing the client is what makes
-				// that close row true: the hijacked conn is this handler's to close,
-				// and it used to be left open for the client to time out on.
-				_ = clientConn.Close()
-				tl.close(http.StatusOK, dialError(derr), 0, 0)
-				return
-			}
-			sent, received := tunnel(clientConn, up2)
-			_ = up2.Close()
-			tl.close(http.StatusOK, nil, sent, received)
+			// fell open → re-dial for the tunnel. That tunnel is opaque, so it
+			// closes like any other opaque one. dialTarget, not r.Host: the address
+			// was already checked once, and re-resolving here would reopen the
+			// rebinding window the check closed.
+			s.tunnelOrDial(clientConn, dialTarget, tl)
 			return
 		}
 	}
@@ -2668,6 +2756,14 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// Every path that reaches here left the bytes opaque without entering
 	// bridgeServe, so this is where their reason gets recorded.
 	tl.open(reason)
+
+	// The pre-dial failed (or was skipped as memoized-dead) and the bridge
+	// declined the connection: dial now — the memo's optimism was for the bridge
+	// path, and a plain tunnel still needs a real upstream.
+	if upstream == nil {
+		s.tunnelOrDial(clientConn, dialTarget, tl)
+		return
+	}
 
 	// Bidirectional copy until either side closes.
 	sent, received := tunnel(clientConn, upstream)

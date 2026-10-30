@@ -183,18 +183,34 @@ func (s *Server) HandleTransparentConn(clientConn net.Conn, dst string) {
 		dialTarget = checked
 		pctx.DialedAddr = checked
 	}
-	upstream, err := net.DialTimeout("tcp", dialTarget, connectDialTimeout)
+	upstream, err := s.dialUpstream(dialTarget)
+	// dialFail remembers a pre-dial that failed while the TLS bridge is enabled:
+	// the connection continues with no upstream, because the bridge can still take
+	// it and a plugin redirect can send the decrypted request to a live server
+	// (#1595) — the same rule as handleConnect's CONNECT path.
+	var dialFail error
 	if err != nil {
-		slog.Warn("transparent-proxy: upstream dial failed", "host", host, "dst", dst, "error", err)
-		// The 502 is synthetic — this path sends the client no status at all — but the
-		// failure is recorded as it is on CONNECT rather than leaving no trace.
-		tl.open(pipeline.TunnelDialFailed)
-		tl.close(http.StatusBadGateway, dialError(err), 0, 0)
-		return
+		if s.TLSBridge == nil {
+			slog.Warn("transparent-proxy: upstream dial failed", "host", host, "dst", dst, "error", err)
+			// The 502 is synthetic — this path sends the client no status at all — but the
+			// failure is recorded as it is on CONNECT rather than leaving no trace.
+			tl.open(pipeline.TunnelDialFailed)
+			tl.close(http.StatusBadGateway, dialError(err), 0, 0)
+			return
+		}
+		slog.Warn("transparent-proxy: upstream dial failed; trying the TLS bridge",
+			"host", host, "dst", dst, "error", err)
+		dialFail = err
 	}
-	defer func() { _ = upstream.Close() }()
+	defer func() {
+		if upstream != nil {
+			_ = upstream.Close()
+		}
+	}()
 
-	enableKeepalive(upstream)
+	if upstream != nil {
+		enableKeepalive(upstream)
+	}
 
 	// The transparent path records before its own bridge decision for now, so it
 	// reports only that the tunnel opened. Threading the reason through here too
@@ -215,27 +231,29 @@ func (s *Server) HandleTransparentConn(clientConn net.Conn, dst string) {
 		if !s.TLSBridge.Skip.Contains(key) {
 			v, reason := s.TLSBridge.Decision.Classify(key, portOf(dst), first)
 			if v == tlsbridge.Terminate {
-				_ = upstream.Close() // bridgeServe dials its own verified upstream; drop the pre-dial
+				if upstream != nil {
+					_ = upstream.Close() // bridgeServe dials its own verified upstream; drop the pre-dial
+				}
 				// The open is already recorded above, so bridgeServe's own open calls are
 				// no-ops here; what it still records through tl is the close.
-				if s.bridgeServe(clientConn, host, key, tl) {
+				if s.bridgeServe(clientConn, host, key, tl, dialFail != nil) {
 					return
 				}
 				// bridgeServe fell open (upstream-verify failed) → re-dial for the tunnel.
 				// dialTarget: the checked address, never re-resolved — same rule as
 				// handleConnect's fall-open re-dial.
-				up2, derr := net.DialTimeout("tcp", dialTarget, connectDialTimeout)
-				if derr != nil {
-					tl.close(http.StatusOK, dialError(derr), 0, 0)
-					return
-				}
-				sent, received := tunnel(clientConn, up2)
-				_ = up2.Close()
-				tl.close(http.StatusOK, nil, sent, received)
+				s.tunnelOrDial(clientConn, dialTarget, tl)
 				return
 			}
 			slog.Info("tls-bridge passthrough", "host", key, "reason", reason)
 		}
+	}
+	// The pre-dial failed (or was skipped as memoized-dead) and the bridge
+	// declined the connection: dial now — a plain tunnel still needs a real
+	// upstream, the same rule as handleConnect's.
+	if upstream == nil {
+		s.tunnelOrDial(clientConn, dialTarget, tl)
+		return
 	}
 	sent, received := tunnel(clientConn, upstream)
 	tl.close(http.StatusOK, nil, sent, received)
