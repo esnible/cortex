@@ -658,13 +658,13 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 	// x-api-key). Content-Length / Content-Encoding are managed by the
 	// body-rewrite block below and the transport, so leave them untouched.
 	// Mirrors reverseproxy's forwarded-request header sync.
-	syncHeaders(r, pctx.Headers)
+	httpx.SyncRequestHeaders(r, pctx.Headers)
 
 	// If a WritesRequestBody plugin rewrote pctx.Body, ship the new bytes
 	// upstream and clear Content-Encoding (see forwardproxy response
 	// path for the rationale).
 	if pctx.BodyMutated() {
-		setBody(r, pctx.Body)
+		httpx.SetRequestBody(r, pctx.Body)
 	}
 
 	// The pipeline this request runs on for the rest of the handler: every
@@ -851,7 +851,7 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 		// `{"detail":"Method Not Allowed"}` arrived as the literal string "Unknown error"
 		// once isKnownMislabeledSSE started matching every status, not just success.
 		mislabeled := resp.StatusCode/100 == 2 && isKnownMislabeledSSE(r.Host, r.URL.Path)
-		if (isEventStream(resp.Header.Get("Content-Type")) || mislabeled) && resp.Body != nil {
+		if (httpx.IsEventStream(resp.Header.Get("Content-Type")) || mislabeled) && resp.Body != nil {
 			if pinned.WritesResponseBody() {
 				// A response mutator needs the whole response to rewrite it, so
 				// it can't stream — fall back to the buffered path with a warning.
@@ -956,18 +956,14 @@ func (s *Server) serveOutbound(w http.ResponseWriter, r *http.Request, tl *tunne
 
 	}
 
-	for key, values := range resp.Header {
-		for _, value := range values {
-			w.Header().Add(key, value)
-		}
-	}
+	copyResponseHeaders(w, resp)
 	w.WriteHeader(resp.StatusCode)
 	// A skipped response of unknown length — an event stream, a long poll — is relayed as
 	// it arrives, as httputil.ReverseProxy does; buffered, its first bytes would wait for
 	// the next 4KB. skip_hosts never sent one here, but self-traffic does: OpenCode's TUI
 	// follows its service's event stream through this path.
 	var dst io.Writer = w
-	if f, ok := w.(http.Flusher); ok && skipped && (resp.ContentLength == -1 || isEventStream(resp.Header.Get("Content-Type"))) {
+	if f, ok := w.(http.Flusher); ok && skipped && (resp.ContentLength == -1 || httpx.IsEventStream(resp.Header.Get("Content-Type"))) {
 		f.Flush()
 		dst = flushWriter{w: w, f: f}
 	}
@@ -1893,31 +1889,50 @@ func (s *Server) attributeForRecording(pctx *pipeline.Context, clientHeaders htt
 // recordOutboundRequestEvent records pctx's request row under sid. Its pair is
 // recordOutboundResponseEvent, which files under pctx.OutboundSessionID, so the
 // caller pins that to sid first.
-// syncHeaders makes r's headers the pipeline's: pctx.Headers started as a clone of
-// r.Header, so a plugin's set, replace and delete on it are the upstream-facing
-// header set. Content-Length and Content-Encoding are left to setBody and the
-// transport.
-func syncHeaders(r *http.Request, h http.Header) {
-	skip := func(k string) bool {
-		return strings.EqualFold(k, "Content-Length") || strings.EqualFold(k, "Content-Encoding")
+
+// hopByHopHeaders is the response-side twin of the request-side list stripForUpstream
+// deletes. RFC 9110 §7.6.3: these describe one connection, not the resource, and must
+// not be forwarded in either direction.
+var hopByHopHeaders = map[string]bool{
+	"Connection":          true,
+	"Keep-Alive":          true,
+	"Proxy-Authenticate":  true,
+	"Proxy-Authorization": true,
+	"Proxy-Connection":    true,
+	"Te":                  true,
+	"Trailer":             true,
+	"Transfer-Encoding":   true,
+	"Upgrade":             true,
+}
+
+// copyResponseHeaders forwards resp's end-to-end headers to w, skipping the hop-by-hop
+// set — including anything the response's own Connection header names as hop-by-hop for
+// this connection (#1567). The four response paths used to copy resp.Header verbatim
+// while requests were stripped, so an HTTP/1.1 origin's Keep-Alive reached the client;
+// through the TLS bridge that lands inside an HTTP/2 HEADERS frame, which clients like
+// Node's http2 reject outright.
+//
+// Content-Length is NOT skipped here: the buffered paths forward a body that matches it,
+// and the streaming paths delete it themselves after this call.
+func copyResponseHeaders(w http.ResponseWriter, resp *http.Response) {
+	// The Connection header itself is in the skip list; its values are read first
+	// because a response can demote a normally end-to-end header to hop-by-hop by
+	// naming it ("Connection: X-Hop-Extra" makes X-Hop-Extra per-connection).
+	named := map[string]bool{}
+	for _, v := range resp.Header.Values("Connection") {
+		for _, name := range strings.Split(v, ",") {
+			if name = strings.TrimSpace(name); name != "" {
+				named[http.CanonicalHeaderKey(name)] = true
+			}
+		}
 	}
-	for k := range r.Header {
-		if skip(k) {
+	for key, values := range resp.Header {
+		if hopByHopHeaders[http.CanonicalHeaderKey(key)] || named[http.CanonicalHeaderKey(key)] {
 			continue
 		}
-		if _, ok := h[k]; !ok {
-			r.Header.Del(k) // plugin removed it
+		for _, value := range values {
+			w.Header().Add(key, value)
 		}
-	}
-	for k, vv := range h {
-		if skip(k) {
-			continue
-		}
-		if len(vv) == 0 {
-			r.Header.Del(k) // pctx.Headers[k] = nil is a delete, same as Del(k)
-			continue
-		}
-		r.Header[k] = append([]string(nil), vv...) // set / overwrite
 	}
 }
 
@@ -1979,15 +1994,6 @@ func stripForUpstream(r *http.Request, ownEncoding, keepUpgrade bool) {
 	}
 }
 
-// setBody gives r the body a plugin wrote, and clears Content-Encoding, since the
-// bytes are the plugin's and carry none.
-func setBody(r *http.Request, body []byte) {
-	r.Body = io.NopCloser(bytes.NewReader(body))
-	r.ContentLength = int64(len(body))
-	r.Header.Set("Content-Length", fmt.Sprintf("%d", len(body)))
-	r.Header.Del("Content-Encoding")
-}
-
 // resendIfAsked gives the outbound pipeline's Resenders a look at each refused answer,
 // at most pipeline.MaxResends times, and sends the request again when one asks. It
 // returns the answer to relay: resp itself, or the last send's.
@@ -2031,8 +2037,8 @@ func (s *Server) resendIfAsked(r *http.Request, pctx *pipeline.Context, client *
 			s.recordOutboundRequestEvent(tl, pctx, pctx.OutboundSessionID)
 		}
 		again := r.Clone(r.Context())
-		syncHeaders(again, pctx.Headers)
-		setBody(again, pctx.Body)
+		httpx.SyncRequestHeaders(again, pctx.Headers)
+		httpx.SetRequestBody(again, pctx.Body)
 		// No keepUpgrade: a resent request is never a forwarded upgrade — the
 		// 101 branch in serveOutbound skips resendIfAsked entirely, and only that
 		// branch leaves the headers unstripped.
@@ -2461,21 +2467,6 @@ func classifyBrokenStream(pctx *pipeline.Context, r *http.Request, resp *http.Re
 	return fail, true
 }
 
-// isEventStream reports whether a Content-Type header value names the
-// SSE media type. Content-Type may carry parameters (charset=, boundary=,
-// etc.) so we match on the bare type/subtype prefix and tolerate any
-// suffix. Case-insensitive per RFC 9110 §8.3.1.
-func isEventStream(contentType string) bool {
-	if contentType == "" {
-		return false
-	}
-	// Strip parameters: "text/event-stream; charset=utf-8" → "text/event-stream".
-	if idx := strings.IndexByte(contentType, ';'); idx >= 0 {
-		contentType = contentType[:idx]
-	}
-	return strings.EqualFold(strings.TrimSpace(contentType), "text/event-stream")
-}
-
 // isKnownMislabeledSSE reports whether host+path is a known endpoint that sends real SSE
 // wire bytes (event:/data: lines) under the wrong Content-Type.
 //
@@ -2557,12 +2548,8 @@ func (s *Server) handleStreamingResponse(w http.ResponseWriter, r *http.Request,
 
 	// Forward headers and the streaming status code BEFORE the first
 	// frame is written. Strip Content-Length since we'll be writing
-	// chunked, and clear hop-by-hop headers as net/http would.
-	for key, values := range resp.Header {
-		for _, value := range values {
-			w.Header().Add(key, value)
-		}
-	}
+	// chunked; copyResponseHeaders clears the hop-by-hop set as net/http would.
+	copyResponseHeaders(w, resp)
 	w.Header().Del("Content-Length")
 	w.WriteHeader(resp.StatusCode)
 	flusher.Flush()
@@ -2676,11 +2663,7 @@ func (s *Server) streamPassthrough(w http.ResponseWriter, r *http.Request, resp 
 
 	// Forward headers + status before the first byte. Drop Content-Length since
 	// we relay an open-ended chunked stream.
-	for key, values := range resp.Header {
-		for _, value := range values {
-			w.Header().Add(key, value)
-		}
-	}
+	copyResponseHeaders(w, resp)
 	w.Header().Del("Content-Length")
 	w.WriteHeader(resp.StatusCode)
 	flusher.Flush()
@@ -2793,11 +2776,7 @@ func (s *Server) streamFallbackBuffered(w http.ResponseWriter, r *http.Request, 
 		}
 	}
 	s.recordOutboundResponseEvent(pctx, resp.StatusCode, nil)
-	for key, values := range resp.Header {
-		for _, value := range values {
-			w.Header().Add(key, value)
-		}
-	}
+	copyResponseHeaders(w, resp)
 	w.WriteHeader(resp.StatusCode)
 	if _, err := io.Copy(w, resp.Body); err != nil {
 		slog.Debug("response copy error", "host", r.Host, "error", err)

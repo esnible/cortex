@@ -15,7 +15,6 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -410,10 +409,7 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	// the backend and clear Content-Encoding (same rationale as the
 	// response path — plugin may have decompressed).
 	if pctx.BodyMutated() {
-		r.Body = io.NopCloser(bytes.NewReader(pctx.Body))
-		r.ContentLength = int64(len(pctx.Body))
-		r.Header.Set("Content-Length", fmt.Sprintf("%d", len(pctx.Body)))
-		r.Header.Del("Content-Encoding")
+		httpx.SetRequestBody(r, pctx.Body)
 	}
 
 	// Propagate every header mutation the inbound pipeline made to the forwarded
@@ -422,27 +418,7 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 	// Authorization used to be forwarded, silently dropping any other injected header
 	// (e.g. static-inject's x-api-key). Content-Length / Content-Encoding are managed
 	// by the body-rewrite block above and the transport, so leave them untouched.
-	skip := func(k string) bool {
-		return strings.EqualFold(k, "Content-Length") || strings.EqualFold(k, "Content-Encoding")
-	}
-	for k := range r.Header {
-		if skip(k) {
-			continue
-		}
-		if _, ok := pctx.Headers[k]; !ok {
-			r.Header.Del(k) // plugin removed it
-		}
-	}
-	for k, vv := range pctx.Headers {
-		if skip(k) {
-			continue
-		}
-		if len(vv) == 0 {
-			r.Header.Del(k) // pctx.Headers[k] = nil is a delete, same as Del(k)
-			continue
-		}
-		r.Header[k] = append([]string(nil), vv...) // set / overwrite
-	}
+	httpx.SyncRequestHeaders(r, pctx.Headers)
 
 	// Record the inbound request event whenever there is something
 	// observable: an A2A conversation, plugin invocations, or plugin-public
@@ -535,7 +511,7 @@ func (s *Server) modifyResponse(resp *http.Response) error {
 	// WritesResponseBody is incompatible with streaming (we can't rewrite a
 	// body we've already started forwarding) — fall back to buffered
 	// with a warning.
-	if isEventStream(resp.Header.Get("Content-Type")) &&
+	if httpx.IsEventStream(resp.Header.Get("Content-Type")) &&
 		pinned.HasStreamingResponders() &&
 		resp.Body != nil {
 		if pinned.WritesResponseBody() {
@@ -1050,19 +1026,6 @@ func (b *streamingResponseBody) Close() error {
 		b.onClose(b.statusCode)
 	}
 	return b.upstream.Close()
-}
-
-// isEventStream reports whether a Content-Type header value names the
-// SSE media type. Tolerates parameters and ASCII case differences.
-// Mirrors the forwardproxy helper of the same name.
-func isEventStream(contentType string) bool {
-	if contentType == "" {
-		return false
-	}
-	if idx := strings.IndexByte(contentType, ';'); idx >= 0 {
-		contentType = contentType[:idx]
-	}
-	return strings.EqualFold(strings.TrimSpace(contentType), "text/event-stream")
 }
 
 // inboundSessionID returns the bucket ID for an inbound event. Mirrors
