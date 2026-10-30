@@ -13,7 +13,8 @@ import (
 // page decoded it from the first event.
 func TestSegment_RotatesOnEventCount(t *testing.T) {
 	base := time.Date(2026, 10, 30, 12, 0, 0, 0, time.UTC)
-	a, err := Open(t.TempDir(), WithClock(func() time.Time { return base }))
+	a, err := Open(t.TempDir(), WithClock(func() time.Time { return base }),
+		func(a *Archive) { a.tickEvery = time.Hour })
 	if err != nil {
 		t.Fatal(err)
 	}
