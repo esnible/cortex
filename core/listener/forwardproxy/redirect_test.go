@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rossoctl/cortex/core/listener/egressguard"
 	"github.com/rossoctl/cortex/core/pipeline"
 	"github.com/rossoctl/cortex/core/session"
 	"github.com/rossoctl/cortex/core/tlsbridge"
@@ -655,7 +656,10 @@ func TestHandleConnect_DeadPredialCleanupsDoNotPanic(t *testing.T) {
 	target := l.Addr().String()
 	_ = l.Close() // the pre-dial target: refused fast on loopback
 
-	d, err := tlsbridge.NewDecision(tlsbridge.DecisionOpts{Ports: map[int]bool{1: true}})
+	// The bridge must handle the target's port: the fall-through is gated on
+	// that, so a Decision for a port nothing uses would take the 502 path and
+	// never reach the nil-upstream cleanups this test exists to drive.
+	d, err := tlsbridge.NewDecision(tlsbridge.DecisionOpts{Ports: map[int]bool{portOf(target): true}})
 	if err != nil {
 		t.Fatalf("NewDecision: %v", err)
 	}
@@ -747,5 +751,209 @@ func TestHandleConnect_NoBridgeDialsFreshAfterAFailedDial(t *testing.T) {
 	_, _, resp := sendConnect(t, proxyAddr, target)
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("second CONNECT status = %d, want 200 — the origin is back, so the dial must be attempted again", resp.StatusCode)
+	}
+}
+
+// A dead destination on a port the bridge never terminates keeps its immediate
+// 502: the fall-through that lets the bridge take a dead origin exists so a
+// redirect can apply, and a redirect can only apply on a port the bridge
+// intercepts. Everywhere else the old answer stands.
+func TestConnectBridge_UnbridgedPortKeepsItsDialFailure502(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	target := l.Addr().String()
+	_ = l.Close() // dead for the pre-dial
+
+	d, err := tlsbridge.NewDecision(tlsbridge.DecisionOpts{Ports: map[int]bool{1: true}})
+	if err != nil {
+		t.Fatalf("NewDecision: %v", err)
+	}
+	store := session.New(5*time.Minute, 100, 0)
+	defer store.Close()
+	s := connectServer(t, store, &tlsbridge.Engine{Decision: d, Skip: tlsbridge.NewSkipSet()})
+	proxy := httptest.NewServer(http.HandlerFunc(s.handleRequest))
+	defer proxy.Close()
+
+	_, _, resp := sendConnect(t, strings.TrimPrefix(proxy.URL, "http://"), target)
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("CONNECT status = %d, want 502 — a dead destination on a port the bridge cannot take is answered, not fallen through", resp.StatusCode)
+	}
+}
+
+// declineAndCountDials serves a proxy whose bridge intercepts target's port but
+// declines the connection — the client's post-CONNECT bytes are not a TLS
+// record — over a dead target, counting every dial the proxy makes. It returns
+// the proxy's address and a snapshot of the dial count.
+func declineAndCountDials(t *testing.T, target string) (proxyAddr string, dials func() int) {
+	t.Helper()
+	d, err := tlsbridge.NewDecision(tlsbridge.DecisionOpts{Ports: map[int]bool{portOf(target): true}})
+	if err != nil {
+		t.Fatalf("NewDecision: %v", err)
+	}
+	store := session.New(5*time.Minute, 100, 0)
+	t.Cleanup(store.Close)
+	s := connectServer(t, store, &tlsbridge.Engine{Decision: d, Skip: tlsbridge.NewSkipSet()})
+
+	var mu sync.Mutex
+	n := 0
+	inner := dialTCP
+	dialTCP = func(network, addr string, d time.Duration) (net.Conn, error) {
+		mu.Lock()
+		n++
+		mu.Unlock()
+		return inner(network, addr, d)
+	}
+	t.Cleanup(func() { dialTCP = inner })
+
+	proxy := httptest.NewServer(http.HandlerFunc(s.handleRequest))
+	t.Cleanup(proxy.Close)
+	return strings.TrimPrefix(proxy.URL, "http://"), func() int {
+		mu.Lock()
+		defer mu.Unlock()
+		return n
+	}
+}
+
+// connectAndDecline sends a CONNECT to a dead target and follows it with five
+// plaintext bytes, so the bridge's peek classifies the connection as non-TLS
+// and declines it. It fails the test unless the CONNECT is answered 200.
+func connectAndDecline(t *testing.T, proxyAddr, target string) {
+	t.Helper()
+	raw, br, resp := sendConnect(t, proxyAddr, target)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("CONNECT status = %d, want 200", resp.StatusCode)
+	}
+	if _, err := raw.Write([]byte("HELLO")); err != nil { // not a TLS record: the bridge declines
+		t.Fatalf("write through tunnel: %v", err)
+	}
+	_, _ = io.ReadAll(br) // the proxy closes the tunnel; wait for it
+}
+
+// The bridge declined and the pre-dial already failed on a real dial: the
+// client has its 200, and a second dial would only repeat the first one's
+// failure — on a filtered destination, another full connectDialTimeout —
+// before the close. One dial, then the close, with the dial-failed row the
+// docs and dashboards key on.
+func TestConnectBridge_DeclinedBridgeDoesNotRedialAFreshFailure(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	target := l.Addr().String()
+	_ = l.Close() // dead for the pre-dial
+
+	proxyAddr, dials := declineAndCountDials(t, target)
+	connectAndDecline(t, proxyAddr, target)
+
+	if n := dials(); n != 1 {
+		t.Errorf("dials = %d, want 1 — the pre-dial already failed; re-dialing repeats it behind the client's 200", n)
+	}
+}
+
+// A memo hit is the one decline where the re-dial is wanted: nothing was dialed
+// for this connection, and the origin may have come back within the memo's TTL.
+// Two CONNECTs therefore cost two dials — the first one's failed pre-dial, and
+// the second one's fresh attempt — not three.
+func TestConnectBridge_AMemoizedFailureRedialsWhenTheBridgeDeclines(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	target := l.Addr().String()
+	_ = l.Close() // dead for every dial
+
+	proxyAddr, dials := declineAndCountDials(t, target)
+	connectAndDecline(t, proxyAddr, target)
+	connectAndDecline(t, proxyAddr, target)
+
+	if n := dials(); n != 2 {
+		t.Errorf("dials = %d, want 2 — the first CONNECT's failed pre-dial, and the memo-hit CONNECT's fresh re-dial", n)
+	}
+}
+
+// A resolution failure is the answer, not a dial of the empty checked address:
+// with the bridge able to take the connection nothing is dialed (the bridge
+// re-originates the redirected request itself), so no "missing address" error
+// can mask the resolver's, and no empty memo key can pool every unresolvable
+// name.
+func TestConnectBridge_ResolutionFailureIsNotDialed(t *testing.T) {
+	b := newOrigin(t, "FROM-B", (*httptest.Server).StartTLS)
+	engine := redirectBridge(t, 443, certPEM(b.Server))
+	store := session.New(5*time.Minute, 100, 0)
+	defer store.Close()
+	p, err := pipeline.New([]pipeline.Plugin{&redirectPlugin{target: b.URL}})
+	if err != nil {
+		t.Fatalf("pipeline.New: %v", err)
+	}
+	s := &Server{
+		OutboundPipeline: pipeline.NewHolder(p),
+		Sessions:         store,
+		Client:           http.DefaultClient,
+		TLSBridge:        engine,
+		// The zero Guard has no resolver, so checking the name fails with a
+		// non-refusal error — the shape a real guard produces for a name that
+		// will not resolve.
+		EgressGuard: &egressguard.Guard{},
+	}
+	proxy := httptest.NewServer(s.Handler())
+	defer proxy.Close()
+
+	var mu sync.Mutex
+	n := 0
+	inner := dialTCP
+	dialTCP = func(network, addr string, d time.Duration) (net.Conn, error) {
+		mu.Lock()
+		n++
+		mu.Unlock()
+		return inner(network, addr, d)
+	}
+	t.Cleanup(func() { dialTCP = inner })
+
+	if status, body := bridgedGet(t, proxy, engine.CAPEM, "no-such-host.test:443", "/secret"); status != http.StatusOK || body != "FROM-B" {
+		t.Fatalf("response = %d %q, want 200 FROM-B — the redirect never applied", status, body)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if n != 0 {
+		t.Errorf("dials = %d, want 0 — a resolution failure must not be dialed, least of all as an empty address", n)
+	}
+}
+
+// The memo is keyed by client-named targets, and a scanner CONNECTing to many
+// distinct dead names must not grow it without bound: recording a failure
+// sweeps the entries the TTL has already expired.
+func TestDialUpstream_SweepsExpiredMemoEntries(t *testing.T) {
+	store := session.New(5*time.Minute, 100, 0)
+	defer store.Close()
+	s := connectServer(t, store, nil)
+
+	s.dialMu.Lock()
+	s.dialFails = map[string]dialFailMemo{
+		"expired:1": {err: errors.New("old"), at: time.Now().Add(-dialFailMemoTTL - time.Second)},
+		"fresh:1":   {err: errors.New("recent"), at: time.Now()},
+	}
+	s.dialMu.Unlock()
+
+	inner := dialTCP
+	dialTCP = func(network, addr string, d time.Duration) (net.Conn, error) {
+		return nil, errors.New("dead")
+	}
+	t.Cleanup(func() { dialTCP = inner })
+
+	if _, err, _ := s.dialUpstream("other:1", true); err == nil {
+		t.Fatal("dialUpstream succeeded against a failing dial")
+	}
+
+	s.dialMu.Lock()
+	defer s.dialMu.Unlock()
+	if _, ok := s.dialFails["expired:1"]; ok {
+		t.Error("the expired memo entry survived recording a new failure")
+	}
+	for _, key := range []string{"fresh:1", "other:1"} {
+		if _, ok := s.dialFails[key]; !ok {
+			t.Errorf("memo entry %q missing; want only the expired one swept", key)
+		}
 	}
 }

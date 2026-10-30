@@ -183,14 +183,17 @@ func (s *Server) HandleTransparentConn(clientConn net.Conn, dst string) {
 		dialTarget = checked
 		pctx.DialedAddr = checked
 	}
-	upstream, err := s.dialUpstream(dialTarget)
-	// dialFail remembers a pre-dial that failed while the TLS bridge is enabled:
-	// the connection continues with no upstream, because the bridge can still take
-	// it and a plugin redirect can send the decrypted request to a live server
-	// (#1595) — the same rule as handleConnect's CONNECT path.
-	var dialFail error
+	upstream, err, memoized := s.dialUpstream(dialTarget, s.bridgeable(dst))
+	// dialFail remembers a pre-dial that failed where the bridge could take the
+	// connection: the connection continues with no upstream, because the bridge
+	// can still take it and a plugin redirect can send the decrypted request to a
+	// live server (#1595) — the same rule as handleConnect's CONNECT path.
+	// freshDialFail is the failure when it came from a dial this connection made
+	// itself, not a memo hit: a re-dial would only repeat it, so tunnelOrDial
+	// closes with it instead.
+	var dialFail, freshDialFail error
 	if err != nil {
-		if s.TLSBridge == nil {
+		if !s.bridgeable(dst) {
 			slog.Warn("transparent-proxy: upstream dial failed", "host", host, "dst", dst, "error", err)
 			// The 502 is synthetic — this path sends the client no status at all — but the
 			// failure is recorded as it is on CONNECT rather than leaving no trace.
@@ -201,6 +204,9 @@ func (s *Server) HandleTransparentConn(clientConn net.Conn, dst string) {
 		slog.Warn("transparent-proxy: upstream dial failed; trying the TLS bridge",
 			"host", host, "dst", dst, "error", err)
 		dialFail = err
+		if !memoized {
+			freshDialFail = err
+		}
 	}
 	defer func() {
 		if upstream != nil {
@@ -241,8 +247,9 @@ func (s *Server) HandleTransparentConn(clientConn net.Conn, dst string) {
 				}
 				// bridgeServe fell open (upstream-verify failed) → re-dial for the tunnel.
 				// dialTarget: the checked address, never re-resolved — same rule as
-				// handleConnect's fall-open re-dial.
-				s.tunnelOrDial(clientConn, dialTarget, tl)
+				// handleConnect's fall-open re-dial. freshDialFail, when set, skips
+				// the re-dial: the pre-dial already failed on a real dial.
+				s.tunnelOrDial(clientConn, dialTarget, tl, freshDialFail)
 				return
 			}
 			slog.Info("tls-bridge passthrough", "host", key, "reason", reason)
@@ -250,9 +257,11 @@ func (s *Server) HandleTransparentConn(clientConn net.Conn, dst string) {
 	}
 	// The pre-dial failed (or was skipped as memoized-dead) and the bridge
 	// declined the connection: dial now — a plain tunnel still needs a real
-	// upstream, the same rule as handleConnect's.
+	// upstream, the same rule as handleConnect's. A fresh failure needs no second
+	// dial; a memo hit is up to dialFailMemoTTL old, and the origin may have
+	// come back.
 	if upstream == nil {
-		s.tunnelOrDial(clientConn, dialTarget, tl)
+		s.tunnelOrDial(clientConn, dialTarget, tl, freshDialFail)
 		return
 	}
 	sent, received := tunnel(clientConn, upstream)
