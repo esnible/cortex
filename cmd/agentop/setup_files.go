@@ -113,9 +113,6 @@ func symlinkAtomic(target, path string) error {
 	return nil
 }
 
-// writeFileAtomic replaces path through a temp sibling and a rename, so nothing
-// ever reads a half-written file, and sets mode explicitly rather than leaving it
-// to the umask.
 // writeFileAtomic writes data to path through a temp file and a rename, so a
 // crash mid-write leaves the previous contents intact (#1565: os.WriteFile
 // truncates first, and a kill in that window used to leave the ownership

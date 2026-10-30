@@ -480,16 +480,6 @@ func resolvePath(p string) (string, error) {
 	return filepath.Join(dir, base), nil
 }
 
-// isProxyComm reports whether a `ps -o comm=` value names our proxy: its basename is
-// exactly "cortex". Not a substring, because macOS reports the full path and "cortex"
-// is also the repo's name, the product's, and ~/.cortex — a substring would claim a
-// process run from any checkout of this repo, and install stops what runningPID
-// returns. Linux reports the kernel's comm field instead, the basename capped at 15
-// characters, which "cortex" fits whole.
-func isProxyComm(comm string) bool {
-	return filepath.Base(strings.TrimSpace(comm)) == "cortex"
-}
-
 // stopPID asks politely, then waits. A proxy from before restarts stopped draining
 // allows itself 15s to, and this may be stopping one, so it waits longer than that
 // before giving up rather than reporting success on a process that still holds the
