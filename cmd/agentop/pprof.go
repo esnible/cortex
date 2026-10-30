@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"net"
 	"net/http"
-	"net/http/pprof"
 	"os"
-	"strings"
+
+	"github.com/rossoctl/cortex/core/listener/httpx"
 )
 
 // pprofAddrEnv names the env var that serves Go's pprof endpoints from the
@@ -33,49 +33,14 @@ func startPprof(addr string) (shutdown func(), err error) {
 	return func() { _ = srv.Close() }, nil
 }
 
-// pprofMux is the guarded /debug/pprof surface: the handlers refuse any
-// non-loopback Host and any request carrying Origin — the browser defenses of
-// the proxy's stats server (#1603) and the session API's erase guards, copied
-// rather than shared because this is a different binary.
+// pprofMux is the viewer's /debug/pprof surface: httpx.RegisterPprof's guarded
+// handlers, which refuse any non-loopback Host and any request carrying
+// Origin — the browser defenses shared with the proxy's stats server (#1603)
+// and the session API's erase guards.
 func pprofMux() *http.ServeMux {
-	guard := func(h http.HandlerFunc) http.HandlerFunc {
-		return func(w http.ResponseWriter, r *http.Request) {
-			if !loopbackHost(r.Host) {
-				http.Error(w, "pprof is served only for a loopback Host", http.StatusForbidden)
-				return
-			}
-			if r.Header.Get("Origin") != "" {
-				http.Error(w, "pprof is refused from a browser: the request carries an Origin header", http.StatusForbidden)
-				return
-			}
-			h(w, r)
-		}
-	}
 	mux := http.NewServeMux()
-	mux.HandleFunc("/debug/pprof/", guard(pprof.Index))
-	mux.HandleFunc("/debug/pprof/cmdline", guard(pprof.Cmdline))
-	mux.HandleFunc("/debug/pprof/profile", guard(pprof.Profile))
-	mux.HandleFunc("/debug/pprof/symbol", guard(pprof.Symbol))
-	mux.HandleFunc("/debug/pprof/trace", guard(pprof.Trace))
+	httpx.RegisterPprof(mux)
 	return mux
-}
-
-// loopbackHost reports whether hostport names exactly localhost, 127.0.0.1 or
-// ::1, with or without a port. A twin of core/observe's unexported loopbackHost
-// (itself a twin of sessionapi's): copied rather than shared because the
-// binaries do not export it to each other. A short allowlist, not 127.0.0.0/8
-// or a localhost suffix — the point is to refuse a name an attacker controls.
-func loopbackHost(hostport string) bool {
-	host := hostport
-	if h, _, err := net.SplitHostPort(hostport); err == nil {
-		host = h
-	}
-	host = strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")
-	switch strings.ToLower(host) {
-	case "localhost", "127.0.0.1", "::1":
-		return true
-	}
-	return false
 }
 
 // maybeServePprof starts the pprof listener when pprofAddrEnv is set, printing

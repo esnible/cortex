@@ -7,12 +7,12 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"net/http/pprof"
 	"strings"
 	"time"
 
 	"github.com/rossoctl/cortex/core/auth"
 	"github.com/rossoctl/cortex/core/config"
+	"github.com/rossoctl/cortex/core/listener/httpx"
 	"github.com/rossoctl/cortex/core/redact"
 )
 
@@ -73,12 +73,13 @@ func WithTLSBridgeUnread(h http.Handler) Option {
 // tracing — so the host enables it only where the stats port is loopback-only
 // (cmd/cortex reads listener.bind_loopback_only, the same gate as the session
 // API's clear). The handlers also refuse a non-loopback Host and any request
-// carrying Origin, the erase guards' browser defenses.
+// carrying Origin, the erase guards' browser defenses — httpx.RegisterPprof's,
+// the one guarded pprof surface shared with the agentop viewer.
 //
 // Side effect of the import: net/http/pprof's init registers /debug/pprof/* on
-// http.DefaultServeMux in every binary linking this package. Nothing in this
-// tree serves that mux — an http.Server built with a nil Handler would, and
-// would expose these ungated, so none may be.
+// http.DefaultServeMux in every binary linking httpx. Nothing in this tree
+// serves that mux — an http.Server built with a nil Handler would, and would
+// expose these ungated, so none may be.
 func WithPprof(enabled bool) Option {
 	return func(o *statServerOpts) { o.pprof = enabled }
 }
@@ -107,24 +108,7 @@ func NewStatServer(addr string, configProvider ConfigProvider, statsProvider Sta
 		mux.Handle("/tls-bridge/unread", o.tlsBridgeUnread)
 	}
 	if o.pprof {
-		pprofGuard := func(h http.HandlerFunc) http.HandlerFunc {
-			return func(w http.ResponseWriter, r *http.Request) {
-				if !loopbackHost(r.Host) {
-					http.Error(w, "pprof is served only for a loopback Host", http.StatusForbidden)
-					return
-				}
-				if r.Header.Get("Origin") != "" {
-					http.Error(w, "pprof is refused from a browser: the request carries an Origin header", http.StatusForbidden)
-					return
-				}
-				h(w, r)
-			}
-		}
-		mux.HandleFunc("/debug/pprof/", pprofGuard(pprof.Index))
-		mux.HandleFunc("/debug/pprof/cmdline", pprofGuard(pprof.Cmdline))
-		mux.HandleFunc("/debug/pprof/profile", pprofGuard(pprof.Profile))
-		mux.HandleFunc("/debug/pprof/symbol", pprofGuard(pprof.Symbol))
-		mux.HandleFunc("/debug/pprof/trace", pprofGuard(pprof.Trace))
+		httpx.RegisterPprof(mux)
 	}
 
 	indexPage := statServerIndex
@@ -214,21 +198,3 @@ const statServerIndex = `<!DOCTYPE html>
     </ul>
   </body>
 </html>`
-
-// loopbackHost reports whether hostport names exactly localhost, 127.0.0.1 or
-// ::1, with or without a port. A twin of sessionapi's unexported loopbackHost
-// (the erase guards): copied rather than shared because observe must not import
-// the session API. A short allowlist, not 127.0.0.0/8 or a localhost suffix —
-// the point is to refuse a name an attacker controls.
-func loopbackHost(hostport string) bool {
-	host := hostport
-	if h, _, err := net.SplitHostPort(hostport); err == nil {
-		host = h
-	}
-	host = strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")
-	switch strings.ToLower(host) {
-	case "localhost", "127.0.0.1", "::1":
-		return true
-	}
-	return false
-}
