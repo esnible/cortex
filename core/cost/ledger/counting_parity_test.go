@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/rossoctl/cortex/core/cost/usage"
 	"github.com/rossoctl/cortex/core/pipeline"
 )
 
@@ -13,10 +14,12 @@ import (
 // predicates, and only the ring's were ever updated: a truncated OpenAI
 // stream (200, model, no usage) read "9/9 priced" on today while the 1h
 // window named the gap, and a 403 destination_private was an error on one
-// surface and not the other. Both rules now live in core/cost/usage and are
-// called from the writer; this drives the REAL writer and reads the rows
-// back through Query, so the agreement is the shipped code's, not a
-// re-implementation of its rules.
+// surface and not the other.
+//
+// Each shape is pinned to its expected counts AND compared against the real
+// ring: usage.Aggregator folds the same event and its Snapshot totals must
+// equal the ledger's row. The priceable comparison is the one that can drift,
+// since the ring decides it in costOf and the ledger in PriceableRequest.
 func TestLedger_CountsTheRingShapes(t *testing.T) {
 	truncated := &pipeline.SessionEvent{
 		At: at, Phase: pipeline.SessionResponse, StatusCode: 200, Host: "api.openai.com",
@@ -35,16 +38,23 @@ func TestLedger_CountsTheRingShapes(t *testing.T) {
 		At: at, Phase: pipeline.SessionResponse, StatusCode: 200, Host: "api.example.com",
 		Inference: &pipeline.InferenceExtension{Model: "m", TotalTokens: 100},
 	}
+	// Usage counts with no TotalTokens. The parsers always fill TotalTokens,
+	// so this is hand-built: it pins that the two rules read usage alike.
+	failedPartialUsage := &pipeline.SessionEvent{
+		At: at, Phase: pipeline.SessionResponse, StatusCode: 502, Host: "api.example.com",
+		Inference: &pipeline.InferenceExtension{Model: "m", InputTokens: 10},
+	}
 
 	for _, tc := range []struct {
-		name                   string
-		e                      *pipeline.SessionEvent
-		wantPriceable, wantErr bool
+		name                    string
+		e                       *pipeline.SessionEvent
+		wantPriceable, wantErrs int64
 	}{
-		{"truncated OpenAI stream is a coverage gap, not parity", truncated, true, false},
-		{"egress-guard refusal is policy working, not an error", refusedPrivate, true, false},
-		{"failed with no usage is an error and not priceable", failed, false, true},
-		{"healthy inference is priceable and no error", healthy, true, false},
+		{"truncated OpenAI stream is a coverage gap, not parity", truncated, 1, 0},
+		{"egress-guard refusal is policy working, not an error", refusedPrivate, 1, 0},
+		{"failed with no usage is an error and not priceable", failed, 0, 1},
+		{"healthy inference is priceable and no error", healthy, 1, 0},
+		{"failed with usage counts and no total is priceable", failedPartialUsage, 1, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			clock := func() time.Time { return at }
@@ -61,11 +71,22 @@ func TestLedger_CountsTheRingShapes(t *testing.T) {
 				t.Fatalf("query returned %d rows, want 1", len(rows))
 			}
 			r := rows[0]
-			if (r.PriceableRequests == 1) != tc.wantPriceable {
-				t.Errorf("PriceableRequests = %d, want priceable=%v (the ring calls this %v)", r.PriceableRequests, tc.wantPriceable, tc.wantPriceable)
+			if r.PriceableRequests != tc.wantPriceable || r.Errors != tc.wantErrs {
+				t.Errorf("ledger row: priceable=%d errors=%d, want priceable=%d errors=%d",
+					r.PriceableRequests, r.Errors, tc.wantPriceable, tc.wantErrs)
 			}
-			if (r.Errors == 1) != tc.wantErr {
-				t.Errorf("Errors = %d, want error=%v", r.Errors, tc.wantErr)
+
+			agg := usage.New(usage.WithClock(clock))
+			agg.Record("s", tc.e)
+			totals := agg.Snapshot(time.Hour, time.Minute, "", usage.GroupNone).Totals
+
+			if r.PriceableRequests != totals.PriceableRequests {
+				t.Errorf("priceable: ledger says %d, ring says %d — the two surfaces disagree on this shape",
+					r.PriceableRequests, totals.PriceableRequests)
+			}
+			if r.Errors != totals.Errors {
+				t.Errorf("errors: ledger says %d, ring says %d — the two surfaces disagree on this shape",
+					r.Errors, totals.Errors)
 			}
 		})
 	}

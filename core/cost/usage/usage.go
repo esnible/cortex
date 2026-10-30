@@ -265,8 +265,7 @@ type Counts struct {
 	// adds to a rate table would make one of these disappear, so naming it there would
 	// point at an entry that already exists.
 	IncompleteRequests int64 `json:"incompleteRequests,omitempty"`
-	// PriceableRequests counts the requests that COULD be priced — those carrying a
-	// model and a non-zero token count.
+	// PriceableRequests counts the requests that COULD be priced; see PriceableRequest.
 	//
 	// It exists because Requests is the wrong denominator for coverage. Requests
 	// counts every proxied response, including MCP tool calls and health checks, while
@@ -726,8 +725,8 @@ type eventCost struct {
 	// unlabelledReason for the case where the producer disclosed the caveat and not the
 	// reason.
 	incompleteReason string
-	// priceable is 1 when the request carried a model and tokens, so it belongs in
-	// the coverage denominator whether or not a rate was found.
+	// priceable is 1 when the request belongs in the coverage denominator whether
+	// or not a rate was found.
 	priceable int64
 	// provenance names where the figure came from, so a reported total can say how
 	// much of it is a gateway's own number and how much is modelled from a rate
@@ -1288,18 +1287,19 @@ func CountsAsError(e *pipeline.SessionEvent) bool {
 	return e.Error != nil || e.StatusCode >= 400 || e.Phase == pipeline.SessionDenied
 }
 
-// PriceableRequest is the one definition of "this request could have been
-// priced", shared by the ring and the ledger (#1566): the parser recognised
-// the traffic well enough to name a model, and the request was not a failure
-// that carried no usage — a truncated OpenAI-dialect stream succeeds at the
-// HTTP layer but yields no counters, and hiding it from the denominator made
-// coverage read "9/9 priced" while real spend was missing. A FAILED response
-// WITH usage is priceable: the counters exist and the rates apply.
+// PriceableRequest is the ledger's definition of "this request could have been
+// priced" (#1566), matching costOf's arms: the parser recognised
+// the traffic well enough to name a model, and the request either carried
+// usage or was not a failure — a truncated OpenAI-dialect stream succeeds at
+// the HTTP layer but yields no counters, and hiding it from the denominator
+// made coverage read "9/9 priced" while real spend was missing. A FAILED
+// response WITH usage is priceable: the counters exist and the rates apply.
+// Usage is read through pricing.UsageFromInference, as costOf reads it.
 func PriceableRequest(e *pipeline.SessionEvent) bool {
 	if e.Inference == nil || e.Inference.Model == "" {
 		return false
 	}
-	if e.Inference.TotalTokens > 0 {
+	if pricing.UsageFromInference(e.Inference) != (pricing.Usage{}) {
 		return true
 	}
 	return e.StatusCode < 400 && e.Phase != pipeline.SessionDenied

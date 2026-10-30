@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/rossoctl/cortex/core/cost/usage"
@@ -108,6 +109,11 @@ type store struct {
 	// for long and effectively always re-reads, which is the correct behavior
 	// for the one file that changes.
 	dayCache map[string]dayCacheEntry
+	// cacheMu guards dayCache. Query runs on sessionapi's HTTP goroutines with
+	// no lock of its own, and prune evicts entries from the writer goroutine,
+	// so the map is reached concurrently. Held around the map operations only,
+	// never across a decode, so one slow day file cannot block another query.
+	cacheMu sync.Mutex
 	// loc is the zone the ledger's DAY BOUNDARY is defined in, and the single answer
 	// to "which day does this instant belong to" for every part of this file.
 	//
@@ -152,7 +158,7 @@ func newStore(dir string, retainDays int, loc *time.Location) (*store, error) {
 	if err := os.MkdirAll(dir, dirMode); err != nil {
 		return nil, fmt.Errorf("costledger: cannot create %s: %w", dir, err)
 	}
-	return &store{dir: dir, retainDays: retainDays, loc: loc}, nil
+	return &store{dir: dir, retainDays: retainDays, loc: loc, dayCache: make(map[string]dayCacheEntry)}, nil
 }
 
 // dayOf is the package dayOf resolved in the STORE's zone. The one place the day an
@@ -511,23 +517,26 @@ type dayCacheEntry struct {
 
 func (s *store) readDay(day time.Time) ([]Row, dayIssues, error) {
 	path := s.path(day)
-	if fi, err := os.Stat(path); err == nil {
-		key := path
-		if s.dayCache == nil {
-			s.dayCache = make(map[string]dayCacheEntry)
+	fi, err := os.Stat(path)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return nil, dayIssues{}, err
 		}
-		if e, ok := s.dayCache[key]; ok && e.size == fi.Size() && e.mtimeNs == fi.ModTime().UnixNano() {
-			return e.rows, e.issues, nil
-		}
-		rows, issues, err := s.decodeDay(path)
-		if err == nil {
-			s.dayCache[key] = dayCacheEntry{size: fi.Size(), mtimeNs: fi.ModTime().UnixNano(), rows: rows, issues: issues}
-		}
-		return rows, issues, err
-	} else if !os.IsNotExist(err) {
-		return nil, dayIssues{}, err
+		return nil, dayIssues{}, nil
 	}
-	return nil, dayIssues{}, nil
+	s.cacheMu.Lock()
+	e, ok := s.dayCache[path]
+	s.cacheMu.Unlock()
+	if ok && e.size == fi.Size() && e.mtimeNs == fi.ModTime().UnixNano() {
+		return e.rows, e.issues, nil
+	}
+	rows, issues, err := s.decodeDay(path)
+	if err == nil {
+		s.cacheMu.Lock()
+		s.dayCache[path] = dayCacheEntry{size: fi.Size(), mtimeNs: fi.ModTime().UnixNano(), rows: rows, issues: issues}
+		s.cacheMu.Unlock()
+	}
+	return rows, issues, err
 }
 
 // decodeDay reads and sanitises one day file from disk.
@@ -812,8 +821,14 @@ func (s *store) prune(now time.Time) error {
 		// silently replace a condemned file's rows with these. Nothing is worth losing to save a
 		// syscall on a path that only runs when the host clock has already misbehaved.
 		from := filepath.Join(s.dir, d.name)
-		if rerr := condemnDayFile(from, from+expiredSuffix); rerr != nil && firstErr == nil {
-			firstErr = rerr
+		if rerr := condemnDayFile(from, from+expiredSuffix); rerr != nil {
+			if firstErr == nil {
+				firstErr = rerr
+			}
+		} else {
+			s.cacheMu.Lock()
+			delete(s.dayCache, from)
+			s.cacheMu.Unlock()
 		}
 	}
 	return firstErr

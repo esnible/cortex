@@ -378,7 +378,7 @@ func (w *Writer) Record(_ string, e *pipeline.SessionEvent) {
 	//
 	// IT CANNOT MOVE THE COVERAGE RATIO, which is what the guard is really protecting. A
 	// row admitted on this clause alone sets neither PricedRequests nor PriceableRequests —
-	// the model-and-tokens test below fails on a nil extension and the priced branch is not
+	// usage.PriceableRequest fails on a nil extension and the priced branch is not
 	// taken — so priced-versus-priceable is untouched and the "1/10 priced forever" failure
 	// stays closed. What it adds is one Requests, for a request that really happened.
 	avoidedCost := hasCost && ev.TotalAvoidedMicros() > 0
@@ -511,8 +511,8 @@ func (w *Writer) Record(_ string, e *pipeline.SessionEvent) {
 	if c := pricing.UnitOf(w.rates, e.Host, model); c != "" {
 		r.Currency = rowLabel(c)
 	}
-	// ONE definition of the error and priceable rules, shared with the ring
-	// (#1566): the writer's private copies had drifted — any 4xx counted as an
+	// The error rule is the ring's own function and the priceable rule matches
+	// the ring's costOf (#1566): the writer's private copies had drifted — any 4xx counted as an
 	// error where the ring excludes the egress refusals that are policy
 	// working, and "priceable" required a non-zero token count where the ring
 	// counts a successful model-bearing response with no usage as an unpriced
@@ -561,10 +561,9 @@ func (w *Writer) Record(_ string, e *pipeline.SessionEvent) {
 			r.CostMicros = ev.Micros()
 			r.PricedRequests = 1
 			// PRICED IMPLIES PRICEABLE, and it has to be said here because the test above
-			// does not cover this case. A response carrying the gateway's own cost header
-			// but no parsed token counts — a body-less response, which the proxy charges —
-			// has Tokens == 0, so the model-and-tokens test leaves PriceableRequests at 0
-			// while this branch sets PricedRequests to 1.
+			// does not cover every case. A response carrying the gateway's own cost header
+			// but no inference extension, or a failed one with no usage, leaves
+			// PriceableRequests at 0 while this branch sets PricedRequests to 1.
 			//
 			// That inverts the subset: every consumer computes coverage as
 			// priceable-minus-priced (see agentop's `cost` command and its spend strip), and
