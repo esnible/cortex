@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -639,5 +640,112 @@ func TestConnectBridge_DeadOriginDialIsMemoized(t *testing.T) {
 	defer dials.mu.Unlock()
 	if dials.n != 1 {
 		t.Errorf("pre-dial ran %d times for 2 connections, want 1 (failures are memoized)", dials.n)
+	}
+}
+
+// The two cleanups after a failed pre-dial — the hijack failing, and the 200
+// write failing because the client is already gone — both closed the upstream,
+// which is nil exactly when the pre-dial failed with the bridge enabled. A nil
+// net.Conn has no method to call, so each cleanup panicked instead.
+func TestHandleConnect_DeadPredialCleanupsDoNotPanic(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	target := l.Addr().String()
+	_ = l.Close() // the pre-dial target: refused fast on loopback
+
+	d, err := tlsbridge.NewDecision(tlsbridge.DecisionOpts{Ports: map[int]bool{1: true}})
+	if err != nil {
+		t.Fatalf("NewDecision: %v", err)
+	}
+	store := session.New(5*time.Minute, 100, 0)
+	defer store.Close()
+	s := connectServer(t, store, &tlsbridge.Engine{Decision: d, Skip: tlsbridge.NewSkipSet()})
+
+	connect := func() *http.Request {
+		return &http.Request{
+			Method: http.MethodConnect,
+			Host:   target,
+			URL:    &url.URL{Host: target},
+			Header: http.Header{},
+		}
+	}
+
+	t.Run("hijack fails", func(t *testing.T) {
+		s.handleConnect(&hijackStubRW{hijackErr: errors.New("not now")}, connect())
+	})
+	t.Run("client gone before the 200", func(t *testing.T) {
+		s.handleConnect(&hijackStubRW{}, connect())
+	})
+}
+
+// hijackStubRW hands handleConnect a hijacked connection it controls:
+// hijackErr makes Hijack itself fail; otherwise the conn's Write fails, standing
+// in for a client that hung up before the proxy could answer 200.
+type hijackStubRW struct {
+	hijackErr error
+}
+
+func (w *hijackStubRW) Header() http.Header       { return http.Header{} }
+func (w *hijackStubRW) Write([]byte) (int, error) { return 0, nil }
+func (w *hijackStubRW) WriteHeader(int)           {}
+
+func (w *hijackStubRW) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	if w.hijackErr != nil {
+		return nil, nil, w.hijackErr
+	}
+	return &failingWriteConn{}, bufio.NewReadWriter(bufio.NewReader(strings.NewReader("")), bufio.NewWriter(io.Discard)), nil
+}
+
+// failingWriteConn is a hijacked client conn whose Write always fails and whose
+// Close is a no-op; only those two are called on it before handleConnect returns.
+type failingWriteConn struct{ net.Conn }
+
+func (c *failingWriteConn) Write([]byte) (int, error) { return 0, errors.New("client gone") }
+func (c *failingWriteConn) Close() error              { return nil }
+
+// Without the bridge, a failed pre-dial must not be memoized: the 502 is the
+// last word on that path — nothing re-dials where the dial's result would have
+// been used — so a memo hit would keep answering 502 for an origin that came
+// back within the memo's TTL.
+func TestHandleConnect_NoBridgeDialsFreshAfterAFailedDial(t *testing.T) {
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	target := l.Addr().String()
+	_ = l.Close() // dead for the first CONNECT
+
+	store := session.New(5*time.Minute, 100, 0)
+	defer store.Close()
+	s := connectServer(t, store, nil)
+	proxy := httptest.NewServer(http.HandlerFunc(s.handleRequest))
+	defer proxy.Close()
+	proxyAddr := strings.TrimPrefix(proxy.URL, "http://")
+
+	if _, _, resp := sendConnect(t, proxyAddr, target); resp.StatusCode != http.StatusBadGateway {
+		t.Fatalf("first CONNECT status = %d, want 502 (the destination is dead)", resp.StatusCode)
+	}
+
+	// The origin comes back on the same port.
+	origin, err := net.Listen("tcp", target)
+	if err != nil {
+		t.Fatalf("re-listen: %v", err)
+	}
+	defer func() { _ = origin.Close() }()
+	go func() {
+		for {
+			c, err := origin.Accept()
+			if err != nil {
+				return
+			}
+			_ = c.Close()
+		}
+	}()
+
+	_, _, resp := sendConnect(t, proxyAddr, target)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("second CONNECT status = %d, want 200 — the origin is back, so the dial must be attempted again", resp.StatusCode)
 	}
 }

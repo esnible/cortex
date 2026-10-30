@@ -1211,11 +1211,12 @@ type dialFailMemo struct {
 
 // dialFailMemoTTL is how long a failed pre-dial is remembered, so a destination
 // that drops packets — where a dial burns the whole connectDialTimeout — is not
-// re-dialed per CONNECT. Short because the memo never misroutes: a skipped dial is
+// re-dialed per CONNECT. Bridge-enabled CONNECTs only: there a skipped dial is
 // re-attempted wherever its result would have been used (the plain-tunnel path
 // dials fresh in tunnelOrDial; the bridge path re-originates to a different host
 // and dials that), so the staleness it can buy is one skipped dial, never a
-// misrouted request.
+// misrouted request. Without the bridge the 502 is the last word, so a memo hit
+// would keep answering 502 for an origin that came back within the TTL.
 const dialFailMemoTTL = 30 * time.Second
 
 // dialTCP is net.DialTimeout; a variable so tests can count dials.
@@ -1225,26 +1226,30 @@ var dialTCP = net.DialTimeout
 // dialFailMemoTTL (#1595: a client that opens a CONNECT per request must not pay
 // a dead destination's dial timeout every time).
 func (s *Server) dialUpstream(dialTarget string) (net.Conn, error) {
-	s.dialMu.Lock()
-	if s.dialFails == nil {
-		s.dialFails = make(map[string]dialFailMemo)
-	}
-	if m, ok := s.dialFails[dialTarget]; ok {
-		if time.Since(m.at) < dialFailMemoTTL {
-			s.dialMu.Unlock()
-			return nil, m.err
+	if s.TLSBridge != nil {
+		s.dialMu.Lock()
+		if s.dialFails == nil {
+			s.dialFails = make(map[string]dialFailMemo)
 		}
-		delete(s.dialFails, dialTarget)
+		if m, ok := s.dialFails[dialTarget]; ok {
+			if time.Since(m.at) < dialFailMemoTTL {
+				s.dialMu.Unlock()
+				return nil, m.err
+			}
+			delete(s.dialFails, dialTarget)
+		}
+		s.dialMu.Unlock()
 	}
-	s.dialMu.Unlock()
 
 	conn, err := dialTCP("tcp", dialTarget, connectDialTimeout)
 	if err == nil {
 		return conn, nil
 	}
-	s.dialMu.Lock()
-	s.dialFails[dialTarget] = dialFailMemo{err: err, at: time.Now()}
-	s.dialMu.Unlock()
+	if s.TLSBridge != nil {
+		s.dialMu.Lock()
+		s.dialFails[dialTarget] = dialFailMemo{err: err, at: time.Now()}
+		s.dialMu.Unlock()
+	}
 	return nil, err
 }
 
@@ -2700,7 +2705,9 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 
 	clientConn, _, err := w.(http.Hijacker).Hijack()
 	if err != nil {
-		_ = upstream.Close()
+		if upstream != nil {
+			_ = upstream.Close()
+		}
 		slog.Error("forward-proxy: CONNECT hijack failed", "host", r.Host, "error", err)
 		return
 	}
@@ -2721,7 +2728,9 @@ func (s *Server) handleConnect(w http.ResponseWriter, r *http.Request) {
 	// subsequent bytes from either side are application data.
 	if _, err := clientConn.Write([]byte("HTTP/1.1 200 Connection Established\r\n\r\n")); err != nil {
 		_ = clientConn.Close()
-		_ = upstream.Close()
+		if upstream != nil {
+			_ = upstream.Close()
+		}
 		slog.Debug("forward-proxy: CONNECT 200 write failed", "host", r.Host, "error", err)
 		return
 	}
