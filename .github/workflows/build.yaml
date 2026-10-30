@@ -12,6 +12,11 @@ on:
   pull_request:
     branches:
       - main
+    # Markdown cannot break a Dockerfile; docs-only PRs skip image builds.
+    # Footgun: a filtered-out run reports "Expected" forever if this workflow is
+    # ever added to branch protection as a required check.
+    paths-ignore:
+      - "**.md"
   # Allow manual trigger
   workflow_dispatch:
 
