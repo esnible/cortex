@@ -893,7 +893,7 @@ func TestUnknownClientGetsNoTurns(t *testing.T) {
 	var r rec
 	id := r.id()
 	r.add(pipeline.SessionEvent{At: at(0), Phase: pipeline.SessionRequest, RequestID: id, Host: "llm.example",
-		Client: &pipeline.EventClient{Name: ""},
+		Client:    &pipeline.EventClient{Name: ""},
 		Inference: &pipeline.InferenceExtension{Model: "m", Messages: []pipeline.InferenceMessage{user("hi")}, Tools: tools}})
 	r.add(pipeline.SessionEvent{At: at(5), Phase: pipeline.SessionResponse, RequestID: id, Host: "llm.example", StatusCode: 200})
 	if tl := Build("s", r.events, at(10)); len(tl.Turns) != 0 {
