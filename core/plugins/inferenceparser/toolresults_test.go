@@ -28,6 +28,9 @@ func TestChatCompletionsToolResultsCarryTheCallID(t *testing.T) {
 	for _, m := range ext.Messages {
 		if m.Role == "tool" && m.Content == "file_a\nfile_b" {
 			toolMsg = true
+			if m.ToolUseID != "call_1" {
+				t.Fatalf("role:tool message ToolUseID = %q, want call_1", m.ToolUseID)
+			}
 		}
 	}
 	if !toolMsg {

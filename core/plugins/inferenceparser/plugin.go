@@ -147,6 +147,7 @@ func parseOpenAIRequest(body []byte) *pipeline.InferenceExtension {
 			Role:         msg.Role,
 			Content:      msg.Content,
 			ContentBytes: msg.ContentBytes,
+			ToolUseID:    msg.ToolCallID,
 		})
 	}
 	// A chat-completions tool result is a "role":"tool" message naming the call it answers
